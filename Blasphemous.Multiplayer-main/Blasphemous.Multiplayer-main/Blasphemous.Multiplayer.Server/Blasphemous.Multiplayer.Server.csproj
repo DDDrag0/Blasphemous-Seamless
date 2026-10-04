@@ -1,0 +1,63 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-x64</RuntimeIdentifiers>
+    <ApplicationIcon>Resources/icon.ico</ApplicationIcon>
+    
+    <AssemblyName>blas1mpserver</AssemblyName>
+    <ExportName>BlasServer</ExportName>
+      
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>true</PublishTrimmed>
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Basalt.CommandParser" Version="2.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Blasphemous.Multiplayer.Common\Blasphemous.Multiplayer.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="SimpleTCP">
+      <HintPath>..\resources\data\SimpleTCP.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="PrepareBuild" AfterTargets="PostBuildEvent" Condition="'$(SolutionDir)' != '*Undefined*'">
+    
+    <!-- Find build folder -->
+    <ItemGroup>
+      <BuildFolder Include="$(OutDir)\*.*" />
+    </ItemGroup>
+
+    <!-- Find publish folder -->
+    <PropertyGroup>
+      <PublishFolder>$(SolutionDir)\publish\$(ExportName)</PublishFolder>
+    </PropertyGroup>
+
+    <!-- Export to publish folder --> 
+    <RemoveDir Directories="$(PublishFolder)" />
+    <Copy SourceFiles="@(BuildFolder)" DestinationFolder="$(PublishFolder)" SkipUnchangedFiles="true" />
+    <ZipDirectory SourceDirectory="$(PublishFolder)" DestinationFile="$(PublishFolder)\..\$(ExportName).zip" Overwrite="true" />
+
+  </Target>
+  
+  <Target Name="PreparePublish" AfterTargets="Publish">
+
+    <!-- Find publish folder -->
+    <PropertyGroup>
+      <PublishFolder>$(ProjectDir)..\publish\$(ExportName)-$(RuntimeIdentifier)</PublishFolder>
+      <ZipFile>$(ProjectDir)..\publish\$(ExportName)-$(RuntimeIdentifier).zip</ZipFile>
+    </PropertyGroup>
+
+    <!-- Zip the published file  -->
+    <ZipDirectory SourceDirectory="$(PublishFolder)" DestinationFile="$(ZipFile)" Overwrite="true" />
+
+  </Target>
+  
+</Project>
