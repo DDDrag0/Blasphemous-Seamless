@@ -604,17 +604,18 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>
         /// True when the game's own AI is currently chasing THIS machine's player.
         ///
-        /// The game stores the target in EnemyBehaviour, so asking it is exact - no guessing from
-        /// distance. On this machine the local player IS Core.Logic.Penitent, so a match means the enemy
-        /// is engaged here.
+        /// This reads Enemy.Target DIRECTLY, not EnemyBehaviour.GetTarget(). That method looks equivalent
+        /// but is not: its IL falls back to Core.Logic.Penitent when the enemy has no target, and that
+        /// singleton is each machine's OWN player. Every machine would therefore always report "aggroed to
+        /// me", which is precisely the observed "whoever grabs aggro first keeps every enemy forever".
+        ///
+        /// Enemy.Target is a public field the game's AI writes (Acolyte.OnUpdate, BellGhost.OnUpdate, and
+        /// dozens more), so reading it is exact. A null Target means the enemy is chasing nobody, which is
+        /// the case the ownership rule needs in order to release an enemy.
         /// </summary>
         private static bool IsAggroedToLocalPlayer(Enemy enemy)
         {
-            var behaviour = enemy.EnemyBehaviour;
-            if (behaviour == null)
-                return false;
-
-            Transform target = behaviour.GetTarget();
+            GameObject target = enemy.Target;
             if (target == null)
                 return false;
 
@@ -622,7 +623,61 @@ namespace Blasphemous.Multiplayer.Client
             if (local == null)
                 return false;
 
-            return target == local.transform || target.IsChildOf(local.transform);
+            return target == local.gameObject || target.transform.IsChildOf(local.transform);
+        }
+
+        /// <summary>
+        /// Periodic snapshot of what each machine sees, for comparing the two sides by hand.
+        ///
+        /// This exists because the remaining problems (animations, aggro, the handover) cannot be reasoned
+        /// out from a single summary: they need the two machines' views lined up over time. Animation is
+        /// the one thing that genuinely has to be compared, since it is what the game uses to show state.
+        /// </summary>
+        private static void LogDiagnosticSnapshot()
+        {
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                string id = _ids[i];
+                Enemy enemy = ResolveEnemy(id);
+                if (enemy == null)
+                    continue;
+
+                EnemyState state;
+                _lastSent.TryGetValue(id, out state);
+
+                int animState;
+                float animTime;
+                ReadAnimation(enemy, out animState, out animTime);
+                string animName = AnimatorOf(enemy) != null
+                    ? AnimatorStateName(enemy)
+                    : "nessun-animator";
+
+                ModLog.Info($"[EnemyTick] {ShortId(id)} aggro={IsAggroedToLocalPlayer(enemy)} " +
+                            $"owner={(state != null ? state.OwnedByLocal.ToString() : "?")} " +
+                            $"remote={(state != null ? state.OwnedByRemote.ToString() : "?")} " +
+                            $"anim={(animState == 0 ? "0" : animName)} life={enemy.CurrentLife:F0} " +
+                            $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+            }
+        }
+
+        private static string AnimatorStateName(Enemy enemy)
+        {
+            Animator animator = AnimatorOf(enemy);
+            if (animator == null || animator.runtimeAnimatorController == null)
+                return "n/d";
+
+            AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+            return state.IsName("Idle") ? "Idle" : state.shortNameHash.ToString();
+        }
+
+        /// <summary>Short, readable form of an id for logs: the spawn point name and position.</summary>
+        private static string ShortId(string id)
+        {
+            string[] parts = id.Split('|');
+            if (parts.Length >= 2)
+                return parts[1] + (parts.Length >= 3 ? "@" + parts[2] : string.Empty);
+
+            return id;
         }
 
         /// <summary>
@@ -712,6 +767,10 @@ namespace Blasphemous.Multiplayer.Client
                     // the host does not have, or the indices would stop meaning the same thing.
                     RegisterEnemies(_scene);
                 }
+
+                // Snapshot on BOTH machines, so the two logs can be lined up: same enemy, same moment,
+                // what does each side think the aggro, ownership, animation and life are.
+                LogDiagnosticSnapshot();
             }
 
             // Both machines receive: the owner to follow the authoritative state, the non-owner to apply
