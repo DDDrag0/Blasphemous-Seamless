@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
+using Gameplay.GameControllers.Penitent;
 using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
@@ -59,7 +60,23 @@ namespace Blasphemous.Multiplayer.Client
             public float Life;
             public int AnimState;
             public float LastSweep;
+
+            // Who is allowed to simulate this enemy. Simulated here means "runs the game's own AI", which
+            // is what makes attacks and deaths animate: the animation comes from the enemy's own
+            // *AnimatorInyector code, driven by the behaviour tree. Forcing states from outside cannot
+            // reproduce that, because the game has a separate inyector per enemy type.
+            public bool OwnedByLocal;
+            public float OwnerSince;
         }
+
+        /// <summary>
+        /// Minimum time an owner keeps an enemy before the role can move again.
+        ///
+        /// Aggro flips whenever the target enters or leaves sight, so without a hold two machines can
+        /// hand the same enemy back and forth many times per second, and with ~100 ms of latency the
+        /// enemy visibly jumps between two positions. Holding makes that rare instead of constant.
+        /// </summary>
+        private const float OWNER_HOLD_SECONDS = 0.5f;
 
         private static readonly Dictionary<string, EnemyState> _lastSent = new Dictionary<string, EnemyState>();
 
@@ -279,6 +296,25 @@ namespace Blasphemous.Multiplayer.Client
 
             behaviour.PauseBehaviour();
             behaviour.enabled = false;
+        }
+
+        /// <summary>
+        /// Gives an enemy back to its own AI, on the machine that now owns it.
+        ///
+        /// PauseBehaviour only stops the NodeCanvas behaviour tree, not the Animator, so a non-owner keeps
+        /// animating idle and walking on its own and shows hit reactions through the synced health. What a
+        /// paused enemy cannot do is decide to attack, which is exactly why the owner runs the AI: attacks
+        /// and deaths then come from the game's own per-enemy *AnimatorInyector code instead of being
+        /// forced from outside.
+        /// </summary>
+        private static void ResumeEnemy(Enemy enemy)
+        {
+            var behaviour = enemy.EnemyBehaviour;
+            if (behaviour == null || behaviour.enabled)
+                return;
+
+            behaviour.enabled = true;
+            behaviour.StartBehaviour();
         }
 
         /// <summary>
@@ -528,6 +564,83 @@ namespace Blasphemous.Multiplayer.Client
             return name.Substring(0, end);
         }
 
+        /// <summary>
+        /// True when the game's own AI is currently chasing THIS machine's player.
+        ///
+        /// The game stores the target in EnemyBehaviour, so asking it is exact - no guessing from
+        /// distance. On this machine the local player IS Core.Logic.Penitent, so a match means the enemy
+        /// is engaged here.
+        /// </summary>
+        private static bool IsAggroedToLocalPlayer(Enemy enemy)
+        {
+            var behaviour = enemy.EnemyBehaviour;
+            if (behaviour == null)
+                return false;
+
+            Transform target = behaviour.GetTarget();
+            if (target == null)
+                return false;
+
+            Penitent local = Core.Logic.Penitent;
+            if (local == null)
+                return false;
+
+            return target == local.transform || target.IsChildOf(local.transform);
+        }
+
+        /// <summary>
+        /// Decides whether this machine should be the one simulating an enemy, and reports whether the
+        /// role changed.
+        ///
+        /// The rule, deliberately sticky:
+        ///   - a machine whose player is being chased wants the enemy, because running the AI there is
+        ///     what produces real attacks and deaths;
+        ///   - otherwise the enemy stays where it is, and if it has no owner yet the host takes it, so
+        ///     an idle enemy is never left with nobody simulating it;
+        ///   - the role only moves after OWNER_HOLD_SECONDS, which is what stops the two machines from
+        ///     trading the same enemy many times per second.
+        ///
+        /// The host is the arbiter: it applies this decision and tells the peer, rather than both sides
+        /// deciding independently and possibly disagreeing.
+        /// </summary>
+        private static bool DecideOwnership(Enemy enemy, EnemyState state, bool localIsHost)
+        {
+            bool wants = IsAggroedToLocalPlayer(enemy);
+            bool changed = false;
+
+            if (state.OwnerSince <= 0f)
+            {
+                // First time this enemy is considered: the host takes it, so an enemy that nobody is
+                // chasing is never left with no machine simulating it. A peer only claims it if the
+                // enemy is already chasing the peer's player.
+                state.OwnedByLocal = localIsHost || wants;
+                state.OwnerSince = Time.time;
+                return false;
+            }
+
+            // The host arbitrates: it takes the enemy when it is being chased here, and hands it over
+            // when this machine is not the one being chased.
+            if (localIsHost)
+            {
+                bool shouldOwn = wants;
+                if (shouldOwn != state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+                {
+                    state.OwnedByLocal = shouldOwn;
+                    state.OwnerSince = Time.time;
+                    changed = true;
+                }
+            }
+            else if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+            {
+                // The peer asks for an enemy that is chasing it.
+                state.OwnedByLocal = true;
+                state.OwnerSince = Time.time;
+                changed = true;
+            }
+
+            return changed;
+        }
+
         /// <summary>Called from Multiplayer.OnLateUpdate, on every machine.</summary>
         public static void Update()
         {
@@ -554,8 +667,10 @@ namespace Blasphemous.Multiplayer.Client
                 }
             }
 
-            // Broadcasting is the host's job only.
-            if (!IsHost || !Main.Multiplayer.NetworkManager.IsConnected)
+            // Both machines receive: the owner to follow the authoritative state, the non-owner to apply
+            // it. Receiving is what tells a machine whether it should be simulating a given enemy, so it
+            // cannot be limited to the host.
+            if (!Main.Multiplayer.NetworkManager.IsConnected)
                 return;
 
             if (_ids.Count == 0)
@@ -574,9 +689,6 @@ namespace Blasphemous.Multiplayer.Client
 
             List<string> dead = null;
 
-            // The wire handle is the numeric index into _ids, not the id string: a short name is ~40
-            // bytes, which dwarfs the position and health it accompanies. The index is stable because
-            // both machines build the same list from the same authored spawn points.
             for (int i = 0; i < _ids.Count; i++)
             {
                 string id = _ids[i];
@@ -611,7 +723,24 @@ namespace Blasphemous.Multiplayer.Client
                 EnemyState previous;
                 bool hasPrevious = _lastSent.TryGetValue(id, out previous);
 
-                if (!fullSweep && hasPrevious)
+                if (!hasPrevious)
+                {
+                    previous = new EnemyState();
+                    _lastSent[id] = previous;
+                }
+
+                // Decide who simulates this enemy. Only the host arbitrates; the peer's request is folded
+                // into the same rule inside DecideOwnership.
+                bool ownershipChanged = DecideOwnership(enemy, previous, IsHost);
+
+                // "Owned here" means this machine runs the game's own AI for this enemy, which is what
+                // produces real attacks and deaths. The other machine pauses its AI and applies state.
+                if (previous.OwnedByLocal)
+                    ResumeEnemy(enemy);
+                else
+                    PauseEnemy(enemy);
+
+                if (!fullSweep && hasPrevious && !ownershipChanged)
                 {
                     bool changed = Mathf.Abs(previous.Position.x - position.x) > POSITION_EPSILON ||
                                    Mathf.Abs(previous.Position.y - position.y) > POSITION_EPSILON ||
@@ -625,15 +754,18 @@ namespace Blasphemous.Multiplayer.Client
                 if (!hasPrevious || previous.AnimState != animState)
                     animTime = 0f; // Only pass a playback position when the state actually changes.
 
-                _lastSent[id] = new EnemyState
-                {
-                    Position = position,
-                    Life = life,
-                    AnimState = animState,
-                    LastSweep = Time.time
-                };
+                previous.Position = position;
+                previous.Life = life;
+                previous.AnimState = animState;
+                previous.LastSweep = Time.time;
+
+                // A peer only broadcasts the enemies it owns; the host broadcasts everything, because it
+                // is the arbiter and the peer learns its ownership from the host's updates.
+                if (!IsHost && !previous.OwnedByLocal)
+                    continue;
+
                 _updatesSent++;
-                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint);
+                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint, previous.OwnedByLocal);
             }
 
             if (dead != null)
@@ -669,7 +801,7 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
-        public static void ReceiveEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint)
+        public static void ReceiveEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint, bool ownedRemotely)
         {
             _updatesReceived++;
 
@@ -689,17 +821,27 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null)
                 return;
 
-            // Peers do not simulate: the host is the single source of truth for enemy state.
-            // PauseBehaviour is the game's own way to stop an AI; disabling the component is blunter
-            // and can leave the movement controller running.
-            if (!IsHost)
+            // Ownership decides what happens here. If the sender owns this enemy, this machine must NOT
+            // simulate it: pause the behaviour tree and follow the state being sent.
+            //
+            // PauseBehaviour stops only the behaviour tree, never the Animator, so idle and walking keep
+            // animating locally and hit reactions still show through the synced health. What a paused enemy
+            // cannot do is decide to attack - which is why the owner runs the real AI.
+            if (ownedRemotely)
             {
                 PauseEnemy(enemy);
 
-                // PauseBehaviour only stops the NodeCanvas behaviour tree, not the Animator, so a peer
-                // still animates idle/walk on its own but would never show an attack. Drive the state
-                // from the host instead.
+                // The state is still applied on the non-owner. PauseBehaviour leaves the Animator running,
+                // so idle/walk animate locally anyway, but anything the behaviour tree would have triggered
+                // - attacks, hurt, death - has to come from here. This is deliberately narrow: only the
+                // state is forced, never the whole animation graph.
                 ApplyAnimation(enemy, animState, animTime);
+            }
+            else
+            {
+                // The sender says this machine owns the enemy: let its own AI drive it, so animations come
+                // from the game's per-enemy code instead of being forced from outside.
+                ResumeEnemy(enemy);
             }
 
             enemy.transform.position = position;
