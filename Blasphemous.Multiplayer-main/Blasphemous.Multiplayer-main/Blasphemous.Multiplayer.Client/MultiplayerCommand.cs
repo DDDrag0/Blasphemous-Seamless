@@ -29,13 +29,17 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Enemy sync diagnostics. This feature has never been exercised in game, so these two commands
-        /// are the fastest way to tell whether it works: "multiplayer sync" prints a health summary and
-        /// "multiplayer sync dump" lists every tracked enemy id, which must be identical on both machines.
+        /// Enemy sync diagnostics. This feature has never been exercised in game, so these commands are
+        /// the fastest way to tell whether it works:
+        ///   "multiplayer sync"       one-line health summary, including the id-list fingerprint
+        ///   "multiplayer sync dump"  every tracked enemy id (they must match on both machines)
+        ///   "multiplayer sync world" raw scan of enemies, spawn points and game GUIDs in the scene
         /// </summary>
         private void Sync(string[] parameters)
         {
-            if (parameters.Length > 0 && parameters[0].ToLowerInvariant() == "dump")
+            string mode = parameters.Length > 0 ? parameters[0].ToLowerInvariant() : string.Empty;
+
+            if (mode == "dump")
             {
                 List<string> lines = EnemySyncManager.Dump();
                 Write($"Enemy sync dump ({lines.Count} entries):");
@@ -44,8 +48,19 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             }
 
+            if (mode == "world")
+            {
+                List<string> lines = EnemyDiagnostics.DumpWorld();
+                Write($"Enemy world scan ({lines.Count} lines), anche nel log:");
+                foreach (string line in lines)
+                    Write(line);
+
+                EnemyDiagnostics.LogWorld();
+                return;
+            }
+
             Write("Enemy sync: " + EnemySyncManager.Describe());
-            Write("Use 'multiplayer sync dump' to list every tracked enemy id.");
+            Write("Comandi: 'multiplayer sync dump' (id tracciati), 'multiplayer sync world' (scan grezzo della scena).");
         }
 
         private void Obsolete(string[] parameters)

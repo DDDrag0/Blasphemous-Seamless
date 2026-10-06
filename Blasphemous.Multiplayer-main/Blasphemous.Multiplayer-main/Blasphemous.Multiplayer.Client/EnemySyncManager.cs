@@ -259,16 +259,18 @@ namespace Blasphemous.Multiplayer.Client
             _fingerprintMismatchReported = 0;
             _countedDuplicates.Clear();
 
-            ScanSpawnPoints(scene);
+            // At this point the game has not spawned anything yet (this runs from OnLevelLoaded, before
+            // EnemySpawner.SpawnEnemiesOnLoad), so this normally only picks up spawn points that survive
+            // from a previous state. The real registration happens in OnEnemiesSpawned.
+            RegisterEnemies(scene);
 
-            // Sort once, here, and never again. _ids is the wire handle table, so its order must stay
-            // frozen for the lifetime of the scene: re-sorting after a later discovery would insert an
-            // id in the middle and shift every subsequent index, and any packet in flight during that
-            // window would be applied to the wrong enemy. Late discoveries are appended instead.
+            // Sort once here and only here for the ids known so far; later discoveries are appended by
+            // OnEnemiesSpawned, which sorts and re-fingerprints again. _ids is the wire handle table, so
+            // its order must stay frozen for the lifetime of the scene.
             _ids.Sort(string.CompareOrdinal);
             _listFingerprint = ComputeFingerprint();
 
-            ModLog.Info($"[EnemySync] Scene {scene}: tracking {_enemies.Count} enemies / {_spawnPoints.Count} spawn points (IsHost: {IsHost})");
+            ModLog.Info($"[EnemySync] Scene {scene}: level loaded, {_enemies.Count} enemies / {_spawnPoints.Count} spawn points so far (IsHost: {IsHost})");
         }
 
         /// <summary>
@@ -292,58 +294,151 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Every spawn point is authored in the scene, so the id set is identical on both machines.
-        /// Spawn points whose enemy is not created yet (or already consumed) are still registered.
-        ///
-        /// Called once per scene and then periodically to pick up spawn points enabled later. The
-        /// caller is responsible for sorting <see cref="_ids"/> once; this method only appends, so
-        /// indices already in use never move.
+        /// Called right after the game spawns enemies (EnemySpawner.SpawnEnemiesOnLoad), which is the
+        /// first moment enemies actually exist. Anything registered here gets sorted and fingerprinted
+        /// immediately, so the id table is complete before any packet is sent.
         /// </summary>
-        private static void ScanSpawnPoints(string scene)
+        public static void OnEnemiesSpawned()
         {
-            EnemySpawnPoint[] points = Object.FindObjectsOfType<EnemySpawnPoint>();
-            if (points == null)
-                return;
+            RegisterEnemies(_scene);
 
-            // Collisions are two spawn points in the SAME scan producing the same id (authored
-            // duplicate). A rescan finding a known id is perfectly normal, so it must not be reported
-            // as a collision - that distinction is what this per-scan set is for.
+            _ids.Sort(string.CompareOrdinal);
+            _listFingerprint = ComputeFingerprint();
+
+            ModLog.Info($"[EnemySync] Post-spawn: {_enemies.Count} enemies / {_spawnPoints.Count} spawn points / {_ids.Count} ids");
+        }
+
+        /// <summary>
+        /// Registers everything it can see without ever renaming or shifting an id that is already in
+        /// use. Called after the game spawns enemies and then periodically, because some enemies are
+        /// created later by triggers and standby activations.
+        /// </summary>
+        private static void RegisterEnemies(string scene)
+        {
             HashSet<string> seenThisScan = new HashSet<string>();
 
-            for (int i = 0; i < points.Length; i++)
+            // Enemies that belong to a spawn point: the spawn point is the authored, stable object.
+            EnemySpawnPoint[] points = Object.FindObjectsOfType<EnemySpawnPoint>();
+            if (points != null)
             {
-                EnemySpawnPoint point = points[i];
-                if (point == null || point.gameObject == null)
-                    continue;
-
-                string id = BuildId(scene, point);
-
-                if (!seenThisScan.Add(id))
+                for (int i = 0; i < points.Length; i++)
                 {
-                    if (_countedDuplicates.Add(id))
-                        _duplicateIds++;
-                    continue;
+                    EnemySpawnPoint point = points[i];
+                    if (point == null || point.gameObject == null)
+                        continue;
+
+                    string id = BuildSpawnPointId(scene, point);
+                    if (!seenThisScan.Add(id))
+                    {
+                        // Two spawn points in the SAME scan producing one id: an authored duplicate.
+                        if (_countedDuplicates.Add(id))
+                            _duplicateIds++;
+                        continue;
+                    }
+
+                    if (!_spawnPoints.ContainsKey(id))
+                    {
+                        _spawnPoints.Add(id, point);
+                        _ids.Add(id);
+                    }
+
+                    Enemy spawned = point.SpawnedEnemy;
+                    if (spawned != null && !_enemies.ContainsKey(id))
+                    {
+                        _enemies.Add(id, spawned);
+                        _registrations++;
+                    }
                 }
+            }
 
-                if (!_spawnPoints.ContainsKey(id))
+            // Enemies with no spawn point (triggered encounters, arena waves, and every boss: bosses are
+            // Enemy components placed directly in the scene, not spawned from an EnemySpawnPoint).
+            // These have no authored anchor, so they are identified by their own name plus position.
+            //
+            // They must be found while still INACTIVE: a boss sits disabled in the scene until its
+            // cutscene enables it, and FindObjectsOfType<Enemy>() skips disabled objects entirely, so
+            // walking the object tree is the only way to see it before the fight starts.
+            Enemy[] enemies = FindAllEnemiesIncludingInactive();
+            if (enemies != null)
+            {
+                for (int i = 0; i < enemies.Length; i++)
                 {
-                    _spawnPoints.Add(id, point);
-                    _ids.Add(id);
-                }
+                    Enemy enemy = enemies[i];
+                    if (enemy == null || enemy.gameObject == null)
+                        continue;
 
-                Enemy spawned = point.SpawnedEnemy;
-                if (spawned != null && !_enemies.ContainsKey(id))
-                {
-                    _enemies.Add(id, spawned);
-                    _registrations++;
+                    if (enemy.GetComponentInParent<EnemySpawnPoint>() != null)
+                        continue; // already covered through its spawn point
+
+                    string id = BuildEnemyId(scene, enemy);
+                    if (!seenThisScan.Add(id))
+                        continue;
+
+                    if (!_enemies.ContainsKey(id))
+                    {
+                        _enemies.Add(id, enemy);
+                        _ids.Add(id);
+                        _registrations++;
+                    }
                 }
             }
         }
 
-        private static string BuildId(string scene, EnemySpawnPoint point)
+        /// <summary>
+        /// Every Enemy in the loaded scene, active or not.
+        ///
+        /// FindObjectsOfType only returns active objects, which silently excludes anything the scene has
+        /// not enabled yet - most importantly bosses, which stay disabled until their fight starts and
+        /// were therefore never registered.
+        /// </summary>
+        private static Enemy[] FindAllEnemiesIncludingInactive()
+        {
+            List<Enemy> found = new List<Enemy>();
+
+            GameObject[] roots = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects();
+            for (int i = 0; i < roots.Length; i++)
+            {
+                GameObject root = roots[i];
+                if (root == null)
+                    continue;
+
+                // GetComponentsInChildren(true) descends into disabled children too, so a boss parked
+                // inactive under a level object is still found.
+                Enemy[] inRoot = root.GetComponentsInChildren<Enemy>(true);
+                for (int j = 0; j < inRoot.Length; j++)
+                {
+                    if (inRoot[j] != null)
+                        found.Add(inRoot[j]);
+                }
+            }
+
+            return found.ToArray();
+        }
+
+        /// <summary>
+        /// Identity of a spawn-point enemy. The spawn point is authored scene data, so name and position
+        /// are the same on both machines.
+        /// </summary>
+        private static string BuildSpawnPointId(string scene, EnemySpawnPoint point)
         {
             Vector3 p = point.transform.position;
-            return $"{scene}|{point.gameObject.name}|{p.x:F2}|{p.y:F2}";
+            return $"sp|{scene}|{point.gameObject.name}|{p.x:F2}|{p.y:F2}";
+        }
+
+        /// <summary>
+        /// Identity of an enemy with no spawn point. The game names these EntityName + GetHashCode(), and
+        /// that hash is a per-process instance id, so it is stripped: only the authored name and the
+        /// position are used, which are scene data.
+        /// </summary>
+        private static string BuildEnemyId(string scene, Enemy enemy)
+        {
+            string name = enemy.gameObject.name;
+            int separator = name.IndexOf('_');
+            if (separator > 0)
+                name = name.Substring(0, separator);
+
+            Vector3 p = enemy.transform.position;
+            return $"en|{scene}|{name}|{p.x:F2}|{p.y:F2}";
         }
 
         /// <summary>Called from Multiplayer.OnLateUpdate.</summary>
@@ -356,7 +451,7 @@ namespace Blasphemous.Multiplayer.Client
             if (_rescanTimer >= RESCAN_INTERVAL)
             {
                 _rescanTimer = 0f;
-                ScanSpawnPoints(Core.LevelManager.currentLevel != null ? Core.LevelManager.currentLevel.LevelName : string.Empty);
+                RegisterEnemies(Core.LevelManager.currentLevel != null ? Core.LevelManager.currentLevel.LevelName : string.Empty);
             }
 
             if (_ids.Count == 0)
@@ -386,6 +481,11 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (enemy == null || enemy.gameObject == null)
                     continue; // not spawned yet, or already gone
+
+                // Registered but not yet in play (a boss waiting for its cutscene). Sending no state is
+                // correct: nothing is moving, and the peer applies everything as soon as it appears.
+                if (!enemy.gameObject.activeInHierarchy)
+                    continue;
 
                 if (enemy.Dead || enemy.CurrentLife <= 0f)
                 {
