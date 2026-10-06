@@ -153,7 +153,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     }
 
     // Enemy sync network helpers
-    public void SendEnemyUpdate(ushort enemyIndex, Vector2 position, float currentLife, int animState, float animTime) => NetworkManager.SendEnemyUpdate(enemyIndex, position, currentLife, animState, animTime);
+    public void SendEnemyUpdate(ushort enemyIndex, Vector2 position, float currentLife, int animState, float animTime, int fingerprint) => NetworkManager.SendEnemyUpdate(enemyIndex, position, currentLife, animState, animTime, fingerprint);
     // Used for both directions: a peer asks the host to apply a hit, and the host broadcasts one it
     // already applied. The server routes by sender, so a single packet type covers both.
     public void SendEnemyDamageRequest(ushort enemyIndex, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyIndex, damageAmount);

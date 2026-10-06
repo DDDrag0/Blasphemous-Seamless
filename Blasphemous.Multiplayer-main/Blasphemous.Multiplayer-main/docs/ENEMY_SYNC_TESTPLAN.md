@@ -86,11 +86,16 @@ The `[index]` column and the id strings **must be byte-identical on both machine
 from authored scene data, so any difference means the two machines disagree about which enemy is which,
 and every position update would be applied to the wrong enemy.
 
-- The index is the wire handle and is sorted, so it does not depend on Unity's enumeration order.
+- The index is the wire handle; the host also sends a **fingerprint** of its whole id list with every
+  update, and the peer compares it against its own. If they disagree, the peer logs
+  `[EnemySync] IMPRONTA DIVERSA` and says so in `multiplayer sync`. **Check that the `fingerprint=` value
+  matches on both machines** - it is the fastest single check that the identity scheme is working.
+- The list is sorted **once** at level load, so indices never move during a scene. Enemies discovered
+  later (a spawn point enabled by a trigger) are appended, which cannot disturb ids already in use.
 - `life` and `pos` will differ (one machine is the host, the other interpolates nothing yet), that is
-  expected. Only the ids and indices must match.
+  expected. Only the ids, indices and fingerprint must match.
 
-Run `multiplayer sync` on both as well: `spawnPoints` must be equal.
+Run `multiplayer sync` on both as well: `spawnPoints`, `ids` and `fingerprint` must be equal.
 
 ## 3. Authority – who is driving
 
@@ -115,15 +120,27 @@ look steppy at 20 Hz. That is expected for now and is a separate improvement.
 
 ## 5. Damage
 
-1. Have the **peer** hit an enemy.
-2. Expected: the hit registers on the peer after a round trip (it is host-authoritative), the host's
-   health drops, and the health bar agrees on both screens.
-3. On the peer, `dmgSent` increments; on the host, `dmgApplied` increments.
-4. Kill an enemy entirely from the peer and confirm both machines remove it and both players receive the
+Damage is host-authoritative, and it works in **both** directions:
+
+| Who swings | What happens |
+| ---------- | ------------ |
+| the peer | the peer's own game applies the hit locally; it also sends a request; the host applies it and the server broadcasts it to the *other* peers (never back to the sender) |
+| the host | the host applies the hit and broadcasts it to the peers |
+
+Each machine therefore applies a given hit exactly once.
+
+1. Have the **peer** hit an enemy. Expected: health drops on both screens by the same amount, and the
+   health bar agrees.
+2. Have the **host** hit an enemy. Expected: the same. (This direction was broken until commit
+   `d4b9e1f`-era fix: the host applied damage but never broadcast it, so peers saw enemies at full
+   health while the host killed them.)
+3. On the peer, `dmgSent` climbs when the peer swings; on the host, `dmgApplied` climbs for hits the
+   host originated.
+4. Kill an enemy entirely from the peer and confirm both machines remove it and both players get the
    drop/tears.
 
-Watch specifically for **double damage**: if the host's enemy loses twice the expected health per swing,
-the re-entrancy guard is not working.
+Watch specifically for **double damage**: if the enemy loses twice the expected health per swing, the
+re-entrancy guard is not holding. Each swing must produce exactly one damage application per machine.
 
 ## 6. Host migration
 

@@ -58,6 +58,8 @@ namespace Blasphemous.Multiplayer.Client
         private static int _killsSent;
         private static int _registrations;
         private static int _duplicateIds;
+        private static int _listFingerprint;
+        private static int _fingerprintMismatchReported;
         private static readonly HashSet<string> _countedDuplicates = new HashSet<string>();
 
         /// <summary>
@@ -72,17 +74,21 @@ namespace Blasphemous.Multiplayer.Client
             string warning = string.Empty;
             if (_duplicateIds > 0)
                 warning += $" ATTENZIONE: {_duplicateIds} spawn point con identita' duplicata (id non univoci!)";
+            if (_fingerprintMismatchReported != 0)
+                warning += " ATTENZIONE: impronta lista diversa dall'host (vedi log)!";
             if (notSpawned > 0)
                 warning += $" NOTA: {notSpawned} nemici non ancora creati dallo spawn point";
 
             return string.Format(
-                "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} | sent={6} recv={7} dmgSent={8} dmgApplied={9} killsSent={10}{11}",
+                "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} ids={6} fingerprint={7} | sent={8} recv={9} dmgSent={10} dmgApplied={11} killsSent={12}{13}",
                 _scene,
                 IsHost ? (Main.Multiplayer.NetworkManager.IsConnected ? "HOST" : "solo") : "peer",
                 Main.Multiplayer.NetworkManager.IsConnected,
                 _spawnPoints.Count,
                 _enemies.Count,
                 _registrations,
+                _ids.Count,
+                _listFingerprint,
                 _updatesSent,
                 _updatesReceived,
                 _damageSent,
@@ -220,16 +226,49 @@ namespace Blasphemous.Multiplayer.Client
             _killsSent = 0;
             _registrations = 0;
             _duplicateIds = 0;
+            _listFingerprint = 0;
+            _fingerprintMismatchReported = 0;
             _countedDuplicates.Clear();
 
             ScanSpawnPoints(scene);
+
+            // Sort once, here, and never again. _ids is the wire handle table, so its order must stay
+            // frozen for the lifetime of the scene: re-sorting after a later discovery would insert an
+            // id in the middle and shift every subsequent index, and any packet in flight during that
+            // window would be applied to the wrong enemy. Late discoveries are appended instead.
+            _ids.Sort(string.CompareOrdinal);
+            _listFingerprint = ComputeFingerprint();
 
             ModLog.Info($"[EnemySync] Scene {scene}: tracking {_enemies.Count} enemies / {_spawnPoints.Count} spawn points (IsHost: {IsHost})");
         }
 
         /// <summary>
+        /// Cheap order-sensitive hash of the id list. Both machines must produce the same value, because
+        /// the index into this list is the wire handle: if the lists differ, updates get applied to the
+        /// wrong enemy. The host sends it with every update so a divergence is reported instead of
+        /// silently corrupting the scene.
+        /// </summary>
+        private static int ComputeFingerprint()
+        {
+            unchecked
+            {
+                int hash = 17;
+                for (int i = 0; i < _ids.Count; i++)
+                {
+                    hash = hash * 31 + _ids[i].GetHashCode();
+                    hash = hash * 31 + i;
+                }
+                return hash;
+            }
+        }
+
+        /// <summary>
         /// Every spawn point is authored in the scene, so the id set is identical on both machines.
         /// Spawn points whose enemy is not created yet (or already consumed) are still registered.
+        ///
+        /// Called once per scene and then periodically to pick up spawn points enabled later. The
+        /// caller is responsible for sorting <see cref="_ids"/> once; this method only appends, so
+        /// indices already in use never move.
         /// </summary>
         private static void ScanSpawnPoints(string scene)
         {
@@ -270,10 +309,6 @@ namespace Blasphemous.Multiplayer.Client
                     _registrations++;
                 }
             }
-
-            // The wire handle is the position in _ids, and FindObjectsOfType has no documented order,
-            // so sort to make the indices identical on every machine regardless of discovery order.
-            _ids.Sort(string.CompareOrdinal);
         }
 
         private static string BuildId(string scene, EnemySpawnPoint point)
@@ -357,7 +392,7 @@ namespace Blasphemous.Multiplayer.Client
                 _lastSentLife[id] = life;
                 _lastSentAnim[id] = animState;
                 _updatesSent++;
-                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime);
+                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint);
             }
 
             if (dead != null)
@@ -368,9 +403,21 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
-        public static void ReceiveEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime)
+        public static void ReceiveEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime, int fingerprint)
         {
             _updatesReceived++;
+
+            // Detect the one failure that would otherwise corrupt things silently: if the two machines
+            // built different id lists, every index means something different and updates land on the
+            // wrong enemy. Report it once, with enough detail to diagnose it.
+            if (fingerprint != _listFingerprint && _fingerprintMismatchReported == 0)
+            {
+                _fingerprintMismatchReported = 1;
+                ModLog.Error($"[EnemySync] IMPRONTA DIVERSA: host={fingerprint} locale={_listFingerprint} " +
+                             $"- le due macchine hanno liste di nemici diverse, gli aggiornamenti finiranno " +
+                             $"sul nemico sbagliato. Confronta 'multiplayer sync dump' sui due PC " +
+                             $"(spawn point locali: {_spawnPoints.Count}, id locali: {_ids.Count}).");
+            }
 
             Enemy enemy = ResolveByIndex(index);
             if (enemy == null)

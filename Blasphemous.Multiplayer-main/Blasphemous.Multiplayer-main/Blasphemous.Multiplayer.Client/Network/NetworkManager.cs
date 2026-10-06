@@ -487,7 +487,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         // (scene|name|x|y) is only about 40 bytes, which would dwarf the state it accompanies; the index
         // is stable because both machines build the same list from the same authored spawn points.
 
-        public void SendEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime)
+        public void SendEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime, int fingerprint)
         {
             List<byte> bytes = new();
             bytes.AddRange(BitConverter.GetBytes(index));
@@ -496,6 +496,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.AddRange(BitConverter.GetBytes(currentLife));
             bytes.AddRange(BitConverter.GetBytes(animState));
             bytes.AddRange(BitConverter.GetBytes(animTime));
+            bytes.AddRange(BitConverter.GetBytes(fingerprint));
             QueueMesssage(bytes.ToArray(), NetworkType.EnemyUpdate);
         }
 
@@ -507,8 +508,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             float currentLife = BitConverter.ToSingle(data, 10);
             int animState = BitConverter.ToInt32(data, 14);
             float animTime = BitConverter.ToSingle(data, 18);
+            int fingerprint = BitConverter.ToInt32(data, 22);
 
-            EnemySyncManager.ReceiveEnemyUpdate(index, new Vector2(xpos, ypos), currentLife, animState, animTime);
+            EnemySyncManager.ReceiveEnemyUpdate(index, new Vector2(xpos, ypos), currentLife, animState, animTime, fingerprint);
         }
 
         public void SendEnemyDamageRequest(ushort index, float damageAmount)
@@ -555,6 +557,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 5;
+        private const byte PROTOCOL_VERSION = 6;
     }
 }
