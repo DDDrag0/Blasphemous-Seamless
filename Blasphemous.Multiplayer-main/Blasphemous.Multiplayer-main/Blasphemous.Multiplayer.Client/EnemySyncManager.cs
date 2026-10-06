@@ -3,6 +3,7 @@ using UnityEngine;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
 using Gameplay.GameControllers.Penitent;
+using Gameplay.GameControllers.Enemies.Framework.IA;
 using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
@@ -278,6 +279,80 @@ namespace Blasphemous.Multiplayer.Client
                 _lastSent[id] = state;
             }
             return state;
+        }
+
+        /// <summary>
+        /// Every enemy spawn point in the scene, with the flags that decide whether it spawns.
+        ///
+        /// This is the diagnostic for the death problem. The game gives enemies no static id: it tracks a
+        /// defeated spawn point by its POSITION (EnemySpawner keeps a List&lt;Vector3&gt;) and offers no
+        /// per-spawn-point string id at all. SpawningId, which looks like one, is just
+        /// gameObject.GetHashCode() - different on every machine and every run.
+        ///
+        /// CreateEnemy returns early when EnemySpawnDisabled is set, or when the point is already Consumed,
+        /// or when HasEnemySpawned is set. Reading those three flags on both machines shows exactly why one
+        /// machine spawns an enemy the other considers dead.
+        /// </summary>
+        public static List<string> DumpSpawnPoints()
+        {
+            List<string> lines = new List<string>();
+            EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
+            lines.Add($"spawn point nella scena: {points.Length}");
+
+            for (int i = 0; i < points.Length; i++)
+            {
+                EnemySpawnPoint sp = points[i];
+                if (sp == null)
+                    continue;
+
+                Vector3 p = sp.transform.position;
+                Enemy spawned = sp.SpawnedEnemy;
+
+                lines.Add($"[{i,2}] {sp.name} @({p.x:F2},{p.y:F2}) " +
+                          $"entita='{sp.EntityName}' consumed={sp.Consumed} spawned={sp.HasEnemySpawned} " +
+                          $"persistenza={sp.EnablePersistence} disabilitato={sp.EnemySpawnDisabled} " +
+                          $"nemico={(spawned == null ? "nessuno" : spawned.name)} " +
+                          $"vivo={(spawned == null ? "n/d" : (!spawned.Dead && spawned.CurrentLife > 0f).ToString())}");
+            }
+
+            return lines;
+        }
+
+        /// <summary>
+        /// The spawn points the game ITSELF considers defeated - the list EnemySpawner keeps.
+        ///
+        /// This is the authoritative answer to "what does the game think is dead here", and it is cleared
+        /// when the player rests at a bonfire (EnemySpawner.RespawnDeadEnemies). Comparing this on the two
+        /// machines shows directly whether they agree, instead of inferring it from behaviour.
+        /// </summary>
+        public static List<string> DumpConsumedSpawnPoints()
+        {
+            List<string> lines = new List<string>();
+
+            EnemySpawner spawner = Core.Logic != null ? Core.Logic.EnemySpawner : null;
+            if (spawner == null)
+            {
+                lines.Add("EnemySpawner non disponibile");
+                return lines;
+            }
+
+            EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
+
+            // IsSpawnerConsumed is the game's own predicate, so ask it instead of reading its private list.
+            int consumed = 0;
+            for (int i = 0; i < points.Length; i++)
+            {
+                EnemySpawnPoint sp = points[i];
+                if (sp == null || !spawner.IsSpawnerConsumed(sp))
+                    continue;
+
+                consumed++;
+                Vector3 p = sp.transform.position;
+                lines.Add($"[consumato] {sp.name} @({p.x:F2},{p.y:F2}) entita='{sp.EntityName}'");
+            }
+
+            lines.Add($"il gioco considera morti {consumed} spawn point su {points.Length}");
+            return lines;
         }
 
         /// <summary>
