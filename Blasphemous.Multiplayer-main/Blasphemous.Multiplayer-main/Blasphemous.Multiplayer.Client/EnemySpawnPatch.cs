@@ -45,6 +45,11 @@ namespace Blasphemous.Multiplayer.Client
             Enemy[] enemies = Object.FindObjectsOfType<Enemy>();
             lines.Add($"Enemy attivi nella scena: {(enemies == null ? 0 : enemies.Length)}");
 
+            // Tracked includes enemies that exist but are not enabled yet (a boss waiting for its
+            // cutscene), so the two numbers legitimately differ. Saying so avoids a false alarm.
+            lines.Add($"Nemici tracciati dalla mod: {EnemySyncManager.Enemies.Count} " +
+                      $"(la differenza sono nemici registrati ma non ancora attivi, es. un boss prima della cutscene)");
+
             if (enemies != null)
             {
                 for (int i = 0; i < enemies.Length; i++)

@@ -42,6 +42,9 @@ namespace Blasphemous.Multiplayer.Client
         // moves is never mistaken for a new one.
         private static readonly HashSet<Enemy> _registered = new HashSet<Enemy>();
 
+        /// <summary>Enemies currently tracked in this scene, keyed by network id. Read-only use.</summary>
+        public static Dictionary<string, Enemy> Enemies => _enemies;
+
         // Last broadcast state, used to skip enemies that did not change.
         private static readonly Dictionary<string, Vector2> _lastSentPos = new Dictionary<string, Vector2>();
         private static readonly Dictionary<string, float> _lastSentLife = new Dictionary<string, float>();
@@ -149,6 +152,8 @@ namespace Blasphemous.Multiplayer.Client
         public static List<string> Dump()
         {
             List<string> lines = new List<string>();
+            lines.Add($"enemies={_enemies.Count} spawnPoints={_spawnPoints.Count} ids={_ids.Count} fingerprint={_listFingerprint}");
+
             for (int i = 0; i < _ids.Count; i++)
             {
                 string id = _ids[i];
@@ -156,14 +161,11 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (enemy == null)
                 {
-                    lines.Add(string.Format("[{0,3}] {1} -> non ancora spawnato", i, id));
+                    lines.Add($"[{i,3}] ID {id} -> nemico non risolto");
                     continue;
                 }
 
-                lines.Add(string.Format(
-                    "[{0,3}] {1} -> alive={2} dead={3} life={4:F1} pos=({5:F2},{6:F2})",
-                    i, id, enemy.gameObject.activeSelf, enemy.Dead, enemy.CurrentLife,
-                    enemy.transform.position.x, enemy.transform.position.y));
+                lines.Add($"[{i,3}] ID {id}");
             }
             return lines;
         }
