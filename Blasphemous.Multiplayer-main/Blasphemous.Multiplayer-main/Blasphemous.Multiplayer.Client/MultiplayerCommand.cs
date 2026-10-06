@@ -29,42 +29,53 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Enemy sync diagnostics. This feature has never been exercised in game, so these commands are
-        /// the fastest way to tell whether it works:
-        ///   "multiplayer sync"       one-line health summary, including the id-list fingerprint
-        ///   "multiplayer sync dump"  every tracked enemy id (they must match on both machines)
-        ///   "multiplayer sync world" raw scan of enemies, spawn points and game GUIDs in the scene
+        /// Enemy sync diagnostics. Everything is also written to the log file via ModLog, because console
+        /// output does not reach LogOutput.log - which previously meant a remote bug report contained none
+        /// of the data needed to diagnose it.
+        ///
+        ///   "multiplayer sync"        summary + tracked ids + raw scene scan (the usual one)
+        ///   "multiplayer sync brief"  summary only
+        ///   "multiplayer sync dump"   tracked ids only
+        ///   "multiplayer sync world"  raw scene scan only
         /// </summary>
         private void Sync(string[] parameters)
         {
-            string mode = parameters.Length > 0 ? parameters[0].ToLowerInvariant() : string.Empty;
+            string mode = parameters.Length > 0 ? parameters[0].ToLowerInvariant() : "all";
 
-            // Logged first, before anything can throw. Without this it is impossible to tell from a log
-            // whether the command ran at all, which is exactly the ambiguity that cost a test round.
-            ModLog.Info($"[EnemyCmd] multiplayer sync invoked, mode='{(string.IsNullOrEmpty(mode) ? "(none)" : mode)}'");
+            if (mode != "brief" && mode != "dump" && mode != "world")
+                mode = "all";
 
-            if (mode == "dump")
+            // Logged first, before anything can throw, so a log always shows whether the command ran.
+            ModLog.Info($"[EnemyCmd] multiplayer sync invoked, mode='{mode}'");
+
+            if (mode == "brief" || mode == "all")
+            {
+                string summary = EnemySyncManager.Describe();
+                Write("Enemy sync: " + summary);
+                ModLog.Info("[EnemySummary] " + summary);
+            }
+
+            if (mode == "dump" || mode == "all")
             {
                 List<string> lines = EnemySyncManager.Dump();
-                Write($"Enemy sync dump ({lines.Count} entries):");
+                Write($"Enemy sync dump ({lines.Count} righe):");
                 foreach (string line in lines)
+                {
                     Write(line);
-                return;
+                    ModLog.Info("[EnemyDump] " + line);
+                }
             }
 
-            if (mode == "world")
+            if (mode == "world" || mode == "all")
             {
                 List<string> lines = EnemyDiagnostics.DumpWorld();
-                Write($"Enemy world scan ({lines.Count} lines), anche nel log:");
+                Write($"Enemy world scan ({lines.Count} righe):");
                 foreach (string line in lines)
+                {
                     Write(line);
-
-                EnemyDiagnostics.LogWorld();
-                return;
+                    ModLog.Info("[EnemyWorld] " + line);
+                }
             }
-
-            Write("Enemy sync: " + EnemySyncManager.Describe());
-            Write("Comandi: 'multiplayer sync dump' (id tracciati), 'multiplayer sync world' (scan grezzo della scena).");
         }
 
         private void Obsolete(string[] parameters)
