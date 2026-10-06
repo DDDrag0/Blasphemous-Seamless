@@ -458,6 +458,15 @@ namespace Blasphemous.Multiplayer.Client
             _damageSent++;
         }
 
+        /// <summary>
+        /// Called by the damage patch on the host, once per hit it applies itself, so the diagnostic
+        /// count reflects damage the host originated rather than damage relayed to it.
+        /// </summary>
+        public static void RecordDamageApplied()
+        {
+            _damageApplied++;
+        }
+
         /// <summary>Authoritative death, so peers always see the corpse and the drop.</summary>
         public static void ReceiveEnemyKill(ushort index)
         {

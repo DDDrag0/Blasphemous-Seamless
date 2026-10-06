@@ -13,45 +13,57 @@ namespace Blasphemous.Multiplayer.Client
     /// inventory (it is subscribed to the static EnemyDamageArea.OnDamagedGlobal, which fires *after*
     /// the damage has already been applied), so patching it would neither block nor duplicate damage.
     ///
-    /// Behaviour:
-    ///   - offline            -> vanilla, untouched;
-    ///   - host               -> vanilla, it is the authority;
-    ///   - peer, local swing  -> block locally and ask the host, which relays the approved damage;
-    ///   - peer, host relay   -> allowed through (IsApplyingRemoteDamage), otherwise it would loop.
+    /// It is a postfix, which is what makes the authority model work out:
+    ///   - the HOST lets the vanilla damage happen and then broadcasts it, so peers can show it;
+    ///   - a PEER never sees its own hit applied (the host will), and asks the host to apply it;
+    ///   - damage the host relays back is marked by <see cref="EnemySyncManager.IsApplyingRemoteDamage"/>
+    ///     and is ignored here, which is what stops the loop and any double application.
+    ///
+    /// A prefix could not express this: on the host it would have to both let the damage through and
+    /// emit a packet, and a prefix that returns true cannot know whether the damage actually landed
+    /// (EnemyDamageArea drops a second hit on the same frame).
     /// </summary>
     [HarmonyPatch(typeof(EnemyDamageArea), "TakeDamage")]
     public class EnemyDamagePatch
     {
-        [HarmonyPrefix]
-        public static bool Prefix(EnemyDamageArea __instance, Hit hit)
+        [HarmonyPostfix]
+        public static void Postfix(EnemyDamageArea __instance, Hit hit)
         {
-            // The host relaying approved damage, or a non-network context: let the game apply it.
+            // Damage relayed by the host: already authorised, and re-broadcasting it would loop.
             if (EnemySyncManager.IsApplyingRemoteDamage)
-                return true;
+                return;
 
             if (!Main.Multiplayer.NetworkManager.IsConnected)
-                return true;
+                return;
 
             // Only hits dealt by the local penitent are ours to route.
             if (!IsLocalPlayerHit(hit))
-                return true;
-
-            if (EnemySyncManager.IsHost)
-                return true;
+                return;
 
             Enemy enemy = FindEnemy(__instance);
             if (enemy == null)
-                return true;
+                return;
 
             ushort index;
             if (!EnemySyncManager.TryGetEnemyIndex(enemy, out index))
-                return true;
+                return;
 
-            // The game truncates DamageAmount to int in TakeDamageAmount; send the same value so the
-            // host and the peers end up with identical health.
-            EnemySyncManager.RecordDamageSent();
-            Main.Multiplayer.SendEnemyDamageRequest(index, (float)(int)hit.DamageAmount);
-            return false; // The host decides; the approved damage comes back over the network.
+            // The game truncates DamageAmount to int in TakeDamageAmount; send the same value so every
+            // machine ends up with the same health.
+            float amount = (float)(int)hit.DamageAmount;
+
+            if (EnemySyncManager.IsHost)
+            {
+                // The damage already landed here; the server relays this to the peers in the scene so
+                // they can show it too.
+                EnemySyncManager.RecordDamageApplied();
+                Main.Multiplayer.SendEnemyDamageRequest(index, amount);
+            }
+            else
+            {
+                EnemySyncManager.RecordDamageSent();
+                Main.Multiplayer.SendEnemyDamageRequest(index, amount);
+            }
         }
 
         private static bool IsLocalPlayerHit(Hit hit)
@@ -70,9 +82,7 @@ namespace Blasphemous.Multiplayer.Client
                 return null;
 
             // Every Enemy needs an EnemyBehaviour, so looking the behaviour up is a reliable fallback.
-            Gameplay.GameControllers.Enemies.Framework.IA.EnemyBehaviour behaviour =
-                area.GetComponentInParent<Gameplay.GameControllers.Enemies.Framework.IA.EnemyBehaviour>();
-
+            var behaviour = area.GetComponentInParent<Gameplay.GameControllers.Enemies.Framework.IA.EnemyBehaviour>();
             if (behaviour != null)
                 return behaviour.GetComponent<Enemy>() ?? behaviour.GetComponentInParent<Enemy>();
 
