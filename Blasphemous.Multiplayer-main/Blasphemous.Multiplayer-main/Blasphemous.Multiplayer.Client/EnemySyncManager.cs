@@ -704,6 +704,45 @@ namespace Blasphemous.Multiplayer.Client
 
             enemy.transform.position = position;
             enemy.CurrentLife = currentLife;
+
+            // Death is treated as a CONSEQUENCE OF HEALTH, not only as its own packet. The death packet
+            // proved unreliable in game - the peer kept showing a frozen enemy with full life because the
+            // kill never landed - and health already travels in every update, so a zero (or negative,
+            // which is what "life + 1" produces) can be acted on immediately and cannot be missed.
+            if (!IsHost && (enemy.Dead || currentLife <= 0f))
+            {
+                KillEnemyLocally(enemy, handle);
+            }
+        }
+
+        /// <summary>
+        /// Runs the native death sequence on an enemy whose health reached zero, then stops tracking it.
+        ///
+        /// The native path is used rather than activating the object off, so the game plays its own death
+        /// animation and handles whatever the enemy drops.
+        /// </summary>
+        private static void KillEnemyLocally(Enemy enemy, uint handle)
+        {
+            if (enemy == null)
+                return;
+
+            if (!enemy.Dead)
+            {
+                // DamageThroughNativePath so the hurt/death animation and the drop follow the normal flow.
+                ApplyDamage(enemy, enemy.CurrentLife + 1f);
+            }
+
+            if (enemy.Dead || enemy.CurrentLife <= 0f)
+            {
+                for (int i = 0; i < _ids.Count; i++)
+                {
+                    if (HandleOf(_ids[i]) == handle)
+                    {
+                        ForgetEnemy(_ids[i]);
+                        break;
+                    }
+                }
+            }
         }
 
         private static void ReadAnimation(Enemy enemy, out int stateHash, out float normalizedTime)
