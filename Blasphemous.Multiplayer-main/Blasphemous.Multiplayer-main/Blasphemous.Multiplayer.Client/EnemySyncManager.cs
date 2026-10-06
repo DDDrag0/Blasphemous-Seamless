@@ -501,30 +501,35 @@ namespace Blasphemous.Multiplayer.Client
             return name.Substring(0, end);
         }
 
-        /// <summary>Called from Multiplayer.OnLateUpdate.</summary>
+        /// <summary>Called from Multiplayer.OnLateUpdate, on every machine.</summary>
         public static void Update()
         {
-            if (!IsHost || !Main.Multiplayer.NetworkManager.IsConnected)
-                return;
-
+            // Building the id table is needed on BOTH machines: the host sends indices into it and the
+            // peer resolves indices against it. It used to live inside the host-only guard below, so a
+            // peer never finalised its table and every incoming index was rejected as out of range
+            // ("max -1" means an empty list). Only the broadcasting is host-only.
             _rescanTimer += Time.deltaTime;
             if (_rescanTimer >= RESCAN_INTERVAL)
             {
                 _rescanTimer = 0f;
 
-                // Fallback for scenes where the spawn never fires (every spawn point disabled, or no
-                // spawner at all): finalise once here instead, so those scenes still get an id table.
                 if (!_spawnFinalized)
                 {
+                    // The spawn event never produced a table for this scene (it either fired before the
+                    // scene name was known, or never fired at all). Finalise here instead.
                     OnEnemiesSpawned();
                 }
-                else
+                else if (IsHost)
                 {
-                    // Only append later discoveries. The table is already built and must not be rebuilt,
-                    // or the indices in flight would shift under the peer.
+                    // Only append later discoveries, and only on the host: the peer must not invent ids
+                    // the host does not have, or the indices would stop meaning the same thing.
                     RegisterEnemies(_scene);
                 }
             }
+
+            // Broadcasting is the host's job only.
+            if (!IsHost || !Main.Multiplayer.NetworkManager.IsConnected)
+                return;
 
             if (_ids.Count == 0)
                 return;
