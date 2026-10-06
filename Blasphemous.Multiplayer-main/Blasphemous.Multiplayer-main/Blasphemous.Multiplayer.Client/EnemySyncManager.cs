@@ -183,10 +183,12 @@ namespace Blasphemous.Multiplayer.Client
             _isHost = isHost;
             ModLog.Info($"[EnemySync] Host role: {isHost}");
 
-            // Promoted (typically because the previous host disconnected): take over simulation.
-            // Without this the new host would keep broadcasting frozen puppet enemies.
+            // Note the asymmetry with IsHost: that property also reports true while offline, so a client
+            // that is connected but not (or no longer) the host must be brought in line here.
             if (isHost && !wasHost)
             {
+                // Promoted (typically because the previous host disconnected): take over simulation.
+                // Without this the new host would keep broadcasting frozen puppet enemies.
                 _sendTimer = 0f;
                 for (int i = 0; i < _ids.Count; i++)
                 {
@@ -202,6 +204,33 @@ namespace Blasphemous.Multiplayer.Client
                     behaviour.StartBehaviour();
                 }
             }
+            else if (!isHost && wasHost)
+            {
+                // Demoted: stop simulating, otherwise the AI keeps running locally and fights the state
+                // the real host is broadcasting.
+                for (int i = 0; i < _ids.Count; i++)
+                {
+                    Enemy enemy = ResolveEnemy(_ids[i]);
+                    if (enemy == null)
+                        continue;
+
+                    PauseEnemy(enemy);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Hands an enemy over to the host: pause the behaviour tree and disable the component, which is
+        /// the same treatment a peer applies to enemies it receives updates for.
+        /// </summary>
+        private static void PauseEnemy(Enemy enemy)
+        {
+            var behaviour = enemy.EnemyBehaviour;
+            if (behaviour == null || !behaviour.enabled)
+                return;
+
+            behaviour.PauseBehaviour();
+            behaviour.enabled = false;
         }
 
         /// <summary>Called from Multiplayer.OnLevelLoaded.</summary>
@@ -428,12 +457,7 @@ namespace Blasphemous.Multiplayer.Client
             // and can leave the movement controller running.
             if (!IsHost)
             {
-                var behaviour = enemy.EnemyBehaviour;
-                if (behaviour != null && behaviour.enabled)
-                {
-                    behaviour.PauseBehaviour();
-                    behaviour.enabled = false;
-                }
+                PauseEnemy(enemy);
 
                 // PauseBehaviour only stops the NodeCanvas behaviour tree, not the Animator, so a peer
                 // still animates idle/walk on its own but would never show an attack. Drive the state
