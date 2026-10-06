@@ -9,12 +9,10 @@ using Framework.Managers;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Gameplay.GameControllers.Enemies.Framework.Persistence;
+using Framework.FrameworkCore;
 using Framework.Managers;
 using System;
-using System.Reflection;
-using Gameplay.GameControllers.Enemies.Framework.Persistence;
-using Framework.FrameworkCore;
-using System.Reflection;
+using System.Globalization;
 
 namespace Blasphemous.Multiplayer.Client
 {
@@ -327,10 +325,34 @@ namespace Blasphemous.Multiplayer.Client
                           $"entita='{sp.EntityName}' consumed={sp.Consumed} spawned={sp.HasEnemySpawned} " +
                           $"persistenza={sp.EnablePersistence} disabilitato={sp.EnemySpawnDisabled} " +
                           $"nemico={(spawned == null ? "nessuno" : spawned.name)} " +
-                          $"vivo={(spawned == null ? "n/d" : (!spawned.Dead && spawned.CurrentLife > 0f).ToString())}");
+                          DescribeEnemyState(spawned));
             }
 
             return lines;
+        }
+
+        /// <summary>
+        /// The flags that separate a live enemy from the inert "ghost".
+        ///
+        /// The ghost reported in game was visible, idle and untargetable with no health, which is not a live
+        /// enemy and not a corpse either: Dead was set but the death sequence never finished, leaving the
+        /// entity in the middle. Printing these fields shows which of those states a stuck enemy is really
+        /// in, instead of guessing from how it looks.
+        /// </summary>
+        private static string DescribeEnemyState(Enemy enemy)
+        {
+            if (enemy == null)
+                return "vivo=n/d";
+
+            EntityStatus status = enemy.Status;
+            string untouchable = status != null ? status.Unattacable.ToString() : "n/d";
+            string invulnerable = status != null ? status.Invulnerable.ToString() : "n/d";
+
+            return $"vivo={(!enemy.Dead && enemy.CurrentLife > 0f)} Dead={enemy.Dead} " +
+                   $"vita={enemy.CurrentLife:F1} vulnerabile={enemy.IsVulnerable} " +
+                   $"intargettabile={untouchable} invulnerabile={invulnerable} " +
+                   $"attivo={enemy.gameObject.activeSelf} " +
+                   $"behaviour={(enemy.EnemyBehaviour == null ? "assente" : enemy.EnemyBehaviour.enabled.ToString())}";
         }
 
         /// <summary>
@@ -656,15 +678,30 @@ namespace Blasphemous.Multiplayer.Client
             _registered.Add(enemy);
             _registrations++;
 
-            // A death announced while this machine was elsewhere, or before this enemy existed. Applied
-            // here because this is the moment the enemy actually appears: after a scene reload the game
-            // spawns it alive, and only this record says it should not be.
-            if (_pendingDeaths.Remove(id))
-                ApplyPersistentDeath(enemy);
+            // A death announced while this machine was elsewhere, or before this enemy existed. The spawn
+            // point was already marked consumed by the announcement, so the game should not have created
+            // this enemy at all; if it did - the death arrived after SpawnEnemiesOnLoad had already run -
+            // mark it again for the next load and take this instance down.
+            if (_pendingDeaths.Contains(id))
+            {
+                MarkSpawnPointConsumed(id);
+                DestroyDeadEnemy(enemy);
+            }
         }
 
-        private static bool IsRegistered(Enemy enemy)
+        /// <summary>Id of a tracked enemy, or empty when it is not tracked.</summary>
+        private static string IdOf(Enemy enemy)
         {
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                if (ResolveEnemy(_ids[i]) == enemy)
+                    return _ids[i];
+            }
+
+            return string.Empty;
+        }
+
+        private static bool IsRegistered(Enemy enemy)        {
             return _registered.Contains(enemy);
         }
 
@@ -1333,101 +1370,96 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Records a death announced from another scene, and applies it if the enemy is here.
+        /// Records a death announced from another scene, and applies it here.
         ///
-        /// This is what kills the ghost across rooms. Without it, a player who was elsewhere when the kill
-        /// happened never hears about it, and on re-entering the room the game spawns that enemy alive.
-        ///
-        /// The death is applied through the game's OWN persistence component rather than by killing the
-        /// enemy again, because PersistentEnemy knows about more than health: it also switches on the corpse
-        /// sprite and the objects that belong to the dead state, and it survives the scene reload that
-        /// respawns everything else. SetCurrentPersistentState is a plain state applier - verified in IL, it
-        /// never touches PersistentManager - so calling it outside the load flow is safe.
+        /// The important part is MarkSpawnPointConsumed: it registers the spawn point in the GAME's own
+        /// consumed list, which CreateEnemy already consults before creating anything. That is what stops
+        /// the ghost from coming back on the next scene reload, without us having to intercept anything.
         /// </summary>
         public static void ReceiveEnemyDeathGlobal(string enemyId)
         {
             if (string.IsNullOrEmpty(enemyId))
                 return;
 
-            // Already tracked here: apply the death now.
+            _pendingDeaths.Add(enemyId);
+            MarkSpawnPointConsumed(enemyId);
+
+            // Already tracked here: the enemy exists (or is being created) in this scene, so it has to be
+            // taken down as well. Marking the spawn point only prevents FUTURE creations.
             for (int i = 0; i < _ids.Count; i++)
             {
                 if (_ids[i] != enemyId)
                     continue;
 
-                Enemy enemy = ResolveEnemy(enemyId);
-                if (enemy != null)
-                    ApplyPersistentDeath(enemy);
-
+                DestroyDeadEnemy(ResolveEnemy(enemyId));
                 return;
             }
-
-            // Not spawned here (another room, or not yet created): nothing to do now. The game will restore
-            // it dead from its own persistent data when it does spawn, provided that data was written.
-            _pendingDeaths.Add(enemyId);
         }
 
         /// <summary>
-        /// Marks an enemy as dead in the game's own persistence, so it stays dead through a scene reload.
+        /// Registers the dead enemy's spawn point in the game's consumed list, keyed by position.
         ///
-        /// The data object is PersistentEnemy's nested PietyPersistenceData, which is not public, so it is
-        /// built by reflection. If anything about that fails the enemy is simply killed, which is the old
-        /// behaviour and no worse than before.
+        /// This is the game's own bookkeeping: EnemySpawner keeps a List&lt;Vector3&gt; and clears it when
+        /// the player rests at a bonfire (RespawnDeadEnemies), so the reset comes for free and stays
+        /// consistent with single player. It is idempotent, so calling it repeatedly is harmless.
+        ///
+        /// Note the key is the POSITION, not the name. Several spawn points can share a position (the dump
+        /// showed SPAWN (11) and SPAWN (15) both at -697,15), and the game treats those as the same spot:
+        /// killing one consumes the other too. That is the base game's behaviour, not something to fix.
         /// </summary>
-        private static void ApplyPersistentDeath(Enemy enemy)
+        private static void MarkSpawnPointConsumed(string enemyId)
+        {
+            EnemySpawner spawner = Core.Logic != null ? Core.Logic.EnemySpawner : null;
+            if (spawner == null || !enemyId.StartsWith("sp|"))
+                return;
+
+            string[] parts = enemyId.Split('|');
+            if (parts.Length < 5)
+                return;
+
+            float x;
+            float y;
+            if (!float.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out x) ||
+                !float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out y))
+                return;
+
+            Vector3 position = new Vector3(x, y, 0f);
+            EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
+            for (int i = 0; i < points.Length; i++)
+            {
+                EnemySpawnPoint sp = points[i];
+                if (sp == null)
+                    continue;
+
+                // Close enough to be the same authored spot: positions are stored with two decimals.
+                if (Vector3.Distance(sp.transform.position, position) > 0.5f)
+                    continue;
+
+                spawner.AddConsumedSpawner(sp);
+                return;
+            }
+        }
+
+        /// <summary>
+        /// Takes a dead enemy down completely, so nothing inert is left standing in the scene.
+        ///
+        /// The state that produced the ghost was: Dead set, but the entity neither animated its death nor
+        /// deactivated - visible, idle and untargetable, which is the middle of a death sequence that never
+        /// finished. Destroying the GameObject is the definitive end of it.
+        /// </summary>
+        private static void DestroyDeadEnemy(Enemy enemy)
         {
             if (enemy == null)
                 return;
 
-            PersistentEnemy persistent = enemy.GetComponent<PersistentEnemy>();
-            if (persistent != null && TrySetPersistentDead(persistent, enemy.transform.position))
-                return;
-
             if (!enemy.Dead)
                 KillEnemyLocally(enemy, HandleOf(IdOf(enemy)));
+
+            // The game may have already deactivated it; either way it must not remain in the scene.
+            if (enemy != null && enemy.gameObject != null)
+                UnityEngine.Object.Destroy(enemy.gameObject);
         }
 
-        private static bool TrySetPersistentDead(PersistentEnemy persistent, Vector3 position)
-        {
-            try
-            {
-                // The concrete data type the method casts to internally.
-                System.Type dataType = persistent.GetType().GetNestedType("PietyPersistenceData", BindingFlags.NonPublic);
-                if (dataType == null)
-                    return false;
-
-                object data = System.Activator.CreateInstance(dataType);
-                if (data == null)
-                    return false;
-
-                System.Reflection.FieldInfo alive = dataType.GetField("IsAlive");
-                System.Reflection.FieldInfo pos = dataType.GetField("Position");
-                if (alive == null || pos == null)
-                    return false;
-
-                alive.SetValue(data, false);
-                pos.SetValue(data, position);
-
-                persistent.SetCurrentPersistentState((PersistentManager.PersistentData)data, false, string.Empty);
-                return true;
-            }
-            catch (System.Exception e)
-            {
-                ModLog.Error($"[EnemySync] morte persistente non applicata, ripiego sull'uccisione: {e.Message}");
-                return false;
-            }
-        }
-
-        private static string IdOf(Enemy enemy)
-        {
-            for (int i = 0; i < _ids.Count; i++)
-            {
-                if (ResolveEnemy(_ids[i]) == enemy)
-                    return _ids[i];
-            }
-
-            return string.Empty;
-        }
 
         /// <summary>Authoritative death, so peers always see the corpse and the drop.</summary>
         public static void ReceiveEnemyKill(uint handle)
