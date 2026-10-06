@@ -123,20 +123,6 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static readonly Dictionary<string, Vector2> _remoteTargets = new Dictionary<string, Vector2>();
 
-        /// <summary>
-        /// Handles already known to be dead in this scene.
-        ///
-        /// This is what kills the ghost. A dead enemy is removed from the id list on the machine that
-        /// simulated it, so it stops being broadcast - and a player entering the scene afterwards never
-        /// hears about it, because the single update that carried life = 0 was sent before they arrived.
-        /// The enemy they spawn fresh is therefore alive and nobody ever corrects it.
-        ///
-        /// Remembering the handles lets a late arrival kill them on sight: whoever registers an enemy
-        /// whose handle is in this set kills it at once, instead of waiting for a broadcast that will
-        /// never come.
-        /// </summary>
-        private static readonly HashSet<uint> _deadHandles = new HashSet<uint>();
-
         /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
         private const float FOLLOW_LERP = 0.25f;
 
@@ -432,12 +418,6 @@ namespace Blasphemous.Multiplayer.Client
             _registered.Clear();
             _ids.Clear();
             _lastSent.Clear();
-            _remoteTargets.Clear();
-
-            // Deaths belong to one scene. Handles are derived from the scene name, so keeping them across
-            // a scene change would be pointless at best - and wrong if a scene were ever reloaded with the
-            // enemy meant to be alive again (a boss retry, for instance).
-            _deadHandles.Clear();
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
@@ -585,12 +565,6 @@ namespace Blasphemous.Multiplayer.Client
             _ids.Add(id);
             _registered.Add(enemy);
             _registrations++;
-
-            // This enemy is already dead as far as the other machine is concerned: it was killed while this
-            // player was out of the scene, so no update carrying life = 0 will ever arrive and the freshly
-            // spawned copy would stay alive forever as a ghost. Kill it now.
-            if (_deadHandles.Contains(HandleOf(id)))
-                KillEnemyLocally(enemy, HandleOf(id));
         }
 
         private static bool IsRegistered(Enemy enemy)
@@ -1050,7 +1024,7 @@ namespace Blasphemous.Multiplayer.Client
             if (dead != null)
             {
                 for (int i = 0; i < dead.Count; i++)
-                    ForgetEnemy(dead[i], died: true);
+                    ForgetEnemy(dead[i]);
             }
         }
 
@@ -1064,7 +1038,7 @@ namespace Blasphemous.Multiplayer.Client
         /// Dropping the id itself is safe now that the wire carries a content-derived handle: indices no
         /// longer mean anything, so the list may shrink or reorder without disturbing a peer.
         /// </summary>
-        private static void ForgetEnemy(string id, bool died = false)
+        private static void ForgetEnemy(string id)
         {
             // Look the enemy up FIRST: after the removal the lookup is gone, and then it could never be
             // dropped from the registered set, so a later respawn would be treated as a new enemy.
@@ -1075,12 +1049,6 @@ namespace Blasphemous.Multiplayer.Client
             _ids.Remove(id);
             _lastSent.Remove(id);
             _remoteTargets.Remove(id);
-
-            // Remember the death, so a player entering the scene later kills this enemy instead of
-            // spawning a live copy nobody will ever correct. Only real deaths are recorded: an enemy that
-            // merely left the scene may come back alive.
-            if (died)
-                _deadHandles.Add(HandleOf(id));
 
             if (enemy != null)
                 _registered.Remove(enemy);
@@ -1181,7 +1149,7 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     if (HandleOf(_ids[i]) == handle)
                     {
-                        ForgetEnemy(_ids[i], died: true);
+                        ForgetEnemy(_ids[i]);
                         break;
                     }
                 }
