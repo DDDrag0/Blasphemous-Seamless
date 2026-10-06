@@ -34,8 +34,12 @@ is consistent with the feature never having been run: it was never in a position
 
 Before testing:
 
-1. Install the Blasphemous mod loader (the Modding API that provides `Blasphemous.ModdingAPI`, which this
-   mod depends on) into `D:\SteamLibrary\steamapps\common\Blasphemous`.
+1. Install the mod loader (BepInEx 5 + Modding API + Cheat Console) into
+   `D:\SteamLibrary\steamapps\common\Blasphemous`. `MOD_LOADER_SETUP.md` explains what is missing and
+   `tools\install-mod-loader.ps1` installs it with hash-verified downloads:
+   ```
+   pwsh -NoProfile -File ".\tools\install-mod-loader.ps1"
+   ```
 2. Either update the `DevFolder` property in the `.csproj`, or copy manually from
    `publish\BlasClient\`:
    - `plugins\BlasClient.dll` -> `<game>\Modding\plugins\`
