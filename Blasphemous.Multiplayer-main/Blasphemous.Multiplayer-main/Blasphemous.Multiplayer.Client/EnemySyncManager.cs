@@ -691,10 +691,33 @@ namespace Blasphemous.Multiplayer.Client
                 string owner = hasState ? (state.OwnedByLocal ? "io" : "altro") : "nuovo";
                 string remote = hasState ? state.OwnedByRemote.ToString() : "?";
 
+                // Both raw positions, because the ownership rule lives or dies on them. The two machines
+                // reported distances to the SAME enemy that differed by ~20 units, which cannot happen if
+                // they agree on where the two players are - so these are the numbers to compare directly.
+                Penitent localPlayer = Core.Logic.Penitent;
+                string localPos = localPlayer != null
+                    ? $"({localPlayer.transform.position.x:F1},{localPlayer.transform.position.y:F1})"
+                    : "n/d";
+                string remotePos = "n/d";
+                var others = Main.Multiplayer.OtherPlayerManager;
+                if (others != null)
+                {
+                    foreach (OtherPlayerScript other in others.AllActivePlayers)
+                    {
+                        if (other == null || other.gameObject == null)
+                            continue;
+
+                        Vector3 p = other.GetPosition();
+                        remotePos = $"({p.x:F1},{p.y:F1})";
+                        break;
+                    }
+                }
+
                 ModLog.Info($"[EnemyTick] {ShortId(id)} owner={owner} remoto={remote} " +
                             $"dist_io={localDistance:F1} dist_altro={(remoteDistance == float.MaxValue ? "n/d" : remoteDistance.ToString("F1"))} " +
                             $"anim={(animState == 0 ? "0" : AnimatorStateName(enemy))} " +
-                            $"life={enemy.CurrentLife:F0} pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+                            $"life={enemy.CurrentLife:F0} posNemico=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1}) " +
+                            $"posMia={localPos} posAltro={remotePos}");
             }
         }
 
