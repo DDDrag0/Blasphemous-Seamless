@@ -67,7 +67,17 @@ namespace Blasphemous.Multiplayer.Client
             // reproduce that, because the game has a separate inyector per enemy type.
             public bool OwnedByLocal;
             public float OwnerSince;
-        }
+
+            /// <summary>
+            /// The other machine's claim on this enemy, learned from the ownership flag in its updates.
+            ///
+            /// Without this the arbitration is impossible: the host can only see its OWN aggro, so it never
+            /// learns that the peer is being chased and never lets go. That was the real cause of "whoever
+            /// grabs aggro first keeps every enemy forever" - the host kept simulating enemies the peer had
+            /// already claimed, and the two machines fought over the position.
+            /// </summary>
+            public bool OwnedByRemote;
+            public bool RemoteEverClaimed;        }
 
         /// <summary>
         /// Minimum time an owner keeps an enemy before the role can move again.
@@ -200,8 +210,35 @@ namespace Blasphemous.Multiplayer.Client
                     return ResolveEnemy(_ids[i]);
             }
 
-            ModLog.Error($"[EnemySync] Handle {handle} non trovato fra i {_ids.Count} id locali: le due macchine non hanno la stessa lista di nemici.");
+            // Silent on purpose: a peer is told about deaths through the synced health, so it can still
+            // receive packets for an enemy it has already removed. That is normal, not an error.
             return null;
+        }
+
+        private static bool FindIdOfHandle(uint handle, out string id)
+        {
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                if (HandleOf(_ids[i]) == handle)
+                {
+                    id = _ids[i];
+                    return true;
+                }
+            }
+
+            id = null;
+            return false;
+        }
+
+        private static EnemyState GetOrCreateState(string id)
+        {
+            EnemyState state;
+            if (!_lastSent.TryGetValue(id, out state))
+            {
+                state = new EnemyState();
+                _lastSent[id] = state;
+            }
+            return state;
         }
 
         /// <summary>
@@ -618,14 +655,24 @@ namespace Blasphemous.Multiplayer.Client
                 return false;
             }
 
-            // The host arbitrates: it takes the enemy when it is being chased here, and hands it over
-            // when this machine is not the one being chased.
+            // The host arbitrates. It knows its own aggro directly, and the peer's claim from the
+            // ownership flag in the peer's updates - without that second input the host would never
+            // release an enemy the peer is already simulating.
             if (localIsHost)
             {
-                bool shouldOwn = wants;
-                if (shouldOwn != state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+                bool peerWants = state.RemoteEverClaimed && !wants;
+
+                // Take it when this machine is being chased; give it up when the peer is the one being
+                // chased. Neither case applies for an enemy nobody is chasing, which stays here.
+                if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
                 {
-                    state.OwnedByLocal = shouldOwn;
+                    state.OwnedByLocal = true;
+                    state.OwnerSince = Time.time;
+                    changed = true;
+                }
+                else if (peerWants && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+                {
+                    state.OwnedByLocal = false;
                     state.OwnerSince = Time.time;
                     changed = true;
                 }
@@ -820,6 +867,17 @@ namespace Blasphemous.Multiplayer.Client
             Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
                 return;
+
+            // Record the sender's claim. This is the input the arbitrating host was missing: without it
+            // the host never learned that the peer was simulating an enemy, so it kept simulating too and
+            // the two positions fought each other.
+            if (FindIdOfHandle(handle, out string claimedId))
+            {
+                EnemyState claimState = GetOrCreateState(claimedId);
+                claimState.OwnedByRemote = ownedRemotely;
+                if (ownedRemotely)
+                    claimState.RemoteEverClaimed = true;
+            }
 
             // Ownership decides what happens here. If the sender owns this enemy, this machine must NOT
             // simulate it: pause the behaviour tree and follow the state being sent.
