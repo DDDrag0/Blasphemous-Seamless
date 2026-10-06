@@ -45,11 +45,23 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>Enemies currently tracked in this scene, keyed by network id. Read-only use.</summary>
         public static Dictionary<string, Enemy> Enemies => _enemies;
 
-        // Last broadcast state, used to skip enemies that did not change.
-        private static readonly Dictionary<string, Vector2> _lastSentPos = new Dictionary<string, Vector2>();
-        private static readonly Dictionary<string, float> _lastSentLife = new Dictionary<string, float>();
-        private static readonly Dictionary<string, int> _lastSentAnim = new Dictionary<string, int>();
-        private static readonly Dictionary<string, float> _lastFullSend = new Dictionary<string, float>();
+        /// <summary>
+        /// Last state broadcast for an enemy, used to skip updates when nothing changed.
+        ///
+        /// Everything lives in ONE object per id on purpose. Reading separate parallel dictionaries with
+        /// an indexer threw KeyNotFoundException for a freshly registered enemy whose entry did not
+        /// exist yet, which aborted Update() before it sent anything at all. With a single record there
+        /// is either a complete previous state or none, and no partially-filled case to get wrong.
+        /// </summary>
+        private class EnemyState
+        {
+            public Vector2 Position;
+            public float Life;
+            public int AnimState;
+            public float LastSweep;
+        }
+
+        private static readonly Dictionary<string, EnemyState> _lastSent = new Dictionary<string, EnemyState>();
 
         private static bool _isHost;
         private static float _sendTimer;
@@ -246,10 +258,7 @@ namespace Blasphemous.Multiplayer.Client
             _spawnPoints.Clear();
             _ids.Clear();
             _registered.Clear();
-            _lastSentPos.Clear();
-            _lastSentLife.Clear();
-            _lastSentAnim.Clear();
-            _lastFullSend.Clear();
+            _lastSent.Clear();
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
@@ -535,24 +544,32 @@ namespace Blasphemous.Multiplayer.Client
                 ReadAnimation(enemy, out animState, out animTime);
 
                 // Skip unchanged enemies to save bandwidth; the periodic full sweep above guarantees
-                // that everything is still resent regularly.
-                if (!fullSweep && _lastSentPos.TryGetValue(id, out Vector2 prevPos))
+                // that everything is still resent regularly. TryGetValue, never an indexer: a freshly
+                // registered enemy has no previous record yet.
+                EnemyState previous;
+                bool hasPrevious = _lastSent.TryGetValue(id, out previous);
+
+                if (!fullSweep && hasPrevious)
                 {
-                    bool changed = Mathf.Abs(prevPos.x - position.x) > POSITION_EPSILON ||
-                                   Mathf.Abs(prevPos.y - position.y) > POSITION_EPSILON ||
-                                   Mathf.Abs(_lastSentLife[id] - life) > LIFE_EPSILON ||
-                                   _lastSentAnim[id] != animState;
+                    bool changed = Mathf.Abs(previous.Position.x - position.x) > POSITION_EPSILON ||
+                                   Mathf.Abs(previous.Position.y - position.y) > POSITION_EPSILON ||
+                                   Mathf.Abs(previous.Life - life) > LIFE_EPSILON ||
+                                   previous.AnimState != animState;
 
                     if (!changed)
                         continue;
                 }
 
-                if (_lastSentAnim[id] != animState)
+                if (!hasPrevious || previous.AnimState != animState)
                     animTime = 0f; // Only pass a playback position when the state actually changes.
 
-                _lastSentPos[id] = position;
-                _lastSentLife[id] = life;
-                _lastSentAnim[id] = animState;
+                _lastSent[id] = new EnemyState
+                {
+                    Position = position,
+                    Life = life,
+                    AnimState = animState,
+                    LastSweep = Time.time
+                };
                 _updatesSent++;
                 Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint);
             }

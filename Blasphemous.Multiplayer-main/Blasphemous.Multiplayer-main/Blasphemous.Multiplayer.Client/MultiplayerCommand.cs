@@ -39,6 +39,10 @@ namespace Blasphemous.Multiplayer.Client
         {
             string mode = parameters.Length > 0 ? parameters[0].ToLowerInvariant() : string.Empty;
 
+            // Logged first, before anything can throw. Without this it is impossible to tell from a log
+            // whether the command ran at all, which is exactly the ambiguity that cost a test round.
+            ModLog.Info($"[EnemyCmd] multiplayer sync invoked, mode='{(string.IsNullOrEmpty(mode) ? "(none)" : mode)}'");
+
             if (mode == "dump")
             {
                 List<string> lines = EnemySyncManager.Dump();
