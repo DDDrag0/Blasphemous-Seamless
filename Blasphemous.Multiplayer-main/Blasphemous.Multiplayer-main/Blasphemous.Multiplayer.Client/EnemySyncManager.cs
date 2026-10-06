@@ -806,9 +806,11 @@ namespace Blasphemous.Multiplayer.Client
                 previous.AnimState = animState;
                 previous.LastSweep = Time.time;
 
-                // A peer only broadcasts the enemies it owns; the host broadcasts everything, because it
-                // is the arbiter and the peer learns its ownership from the host's updates.
-                if (!IsHost && !previous.OwnedByLocal)
+                // ONLY THE OWNER TRANSMITS. The host used to broadcast every enemy, including the ones the
+                // peer was simulating, so both machines published a position for the same enemy and the two
+                // values fought each other - visible as a small desync whenever the non-owner interacted
+                // with it. One enemy now has exactly one source of position.
+                if (!previous.OwnedByLocal)
                     continue;
 
                 _updatesSent++;
