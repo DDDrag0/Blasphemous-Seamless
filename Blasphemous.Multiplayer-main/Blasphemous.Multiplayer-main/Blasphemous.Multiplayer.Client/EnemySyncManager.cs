@@ -100,6 +100,18 @@ namespace Blasphemous.Multiplayer.Client
 
         private static readonly Dictionary<string, EnemyState> _lastSent = new Dictionary<string, EnemyState>();
 
+        /// <summary>
+        /// Last known position of every OTHER player, keyed by name, fed straight from the position
+        /// packets that arrive from the server.
+        ///
+        /// This exists because reading the position off the scene object does not work: GetPosition() on
+        /// the "other player" returned this machine's OWN coordinates on the host and nothing at all on
+        /// the peer. The distance rule was therefore comparing an enemy against the local player twice,
+        /// which made every machine believe it was the closest and left two owners for one enemy.
+        /// Caching what actually arrives removes the dependency on that scene object entirely.
+        /// </summary>
+        private static readonly Dictionary<string, Vector2> _remotePositions = new Dictionary<string, Vector2>();
+
         private static bool _isHost;
         private static float _sendTimer;
         private static float _rescanTimer;
@@ -636,19 +648,18 @@ namespace Blasphemous.Multiplayer.Client
             float localDistance = Vector2.Distance(enemyPos, local.transform.position);
 
             float nearestRemote = float.MaxValue;
-            var others = Main.Multiplayer.OtherPlayerManager;
-            if (others != null)
+            foreach (Vector2 remote in _remotePositions.Values)
             {
-                foreach (OtherPlayerScript other in others.AllActivePlayers)
-                {
-                    if (other == null || other.gameObject == null)
-                        continue;
-
-                    float d = Vector2.Distance(enemyPos, other.GetPosition());
-                    if (d < nearestRemote)
-                        nearestRemote = d;
-                }
+                float d = Vector2.Distance(enemyPos, remote);
+                if (d < nearestRemote)
+                    nearestRemote = d;
             }
+
+            // No remote position known yet (still connecting, or the other player is in another scene, in
+            // which case their packet never arrives): nobody can be closer, so keep the enemy here rather
+            // than handing it to a player we cannot even locate.
+            if (nearestRemote == float.MaxValue)
+                return true;
 
             // A remote player has to be MEANINGFULLY closer, not a hair closer. Positions arrive about
             // 20 times a second, so a bare comparison would flip the owner back and forth while the two
@@ -699,18 +710,10 @@ namespace Blasphemous.Multiplayer.Client
                     ? $"({localPlayer.transform.position.x:F1},{localPlayer.transform.position.y:F1})"
                     : "n/d";
                 string remotePos = "n/d";
-                var others = Main.Multiplayer.OtherPlayerManager;
-                if (others != null)
+                foreach (Vector2 p in _remotePositions.Values)
                 {
-                    foreach (OtherPlayerScript other in others.AllActivePlayers)
-                    {
-                        if (other == null || other.gameObject == null)
-                            continue;
-
-                        Vector3 p = other.GetPosition();
-                        remotePos = $"({p.x:F1},{p.y:F1})";
-                        break;
-                    }
+                    remotePos = $"({p.x:F1},{p.y:F1})";
+                    break;
                 }
 
                 ModLog.Info($"[EnemyTick] {ShortId(id)} owner={owner} remoto={remote} " +
@@ -721,20 +724,27 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        /// <summary>Distance to the nearest other player, or float.MaxValue when none is in the scene.</summary>
+        /// <summary>
+        /// Records where another player is, called for every position packet that arrives.
+        ///
+        /// The ownership rule needs the other player's position, and this is the one place the value is
+        /// known to be correct: it is what the game actually sent.
+        /// </summary>
+        public static void NoteRemotePlayerPosition(string playerName, Vector2 position)
+        {
+            if (string.IsNullOrEmpty(playerName))
+                return;
+
+            _remotePositions[playerName] = position;
+        }
+
+        /// <summary>Distance to the nearest other player, or float.MaxValue when none is known.</summary>
         private static float NearestRemoteDistance(Enemy enemy)
         {
             float nearest = float.MaxValue;
-            var others = Main.Multiplayer.OtherPlayerManager;
-            if (others == null)
-                return nearest;
-
-            foreach (OtherPlayerScript other in others.AllActivePlayers)
+            foreach (Vector2 remote in _remotePositions.Values)
             {
-                if (other == null || other.gameObject == null)
-                    continue;
-
-                float d = Vector2.Distance(enemy.transform.position, other.GetPosition());
+                float d = Vector2.Distance(enemy.transform.position, remote);
                 if (d < nearest)
                     nearest = d;
             }

@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Framework.Managers;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -322,6 +322,11 @@ namespace Blasphemous.Multiplayer.Client.Players
         public void ReceivePosition(string playerName, Vector2 position)
         {
             if (!Main.Multiplayer.CurrentlyInLevel) return;
+
+            // Feed the enemy-sync ownership rule directly. That rule needs to know which player is closest
+            // to an enemy, and this is the only place where the other player's position is known to be
+            // right - reading it back off the scene object gave the local player's coordinates instead.
+            EnemySyncManager.NoteRemotePlayerPosition(playerName, position);
 
             OtherPlayerScript player = FindActivePlayer(playerName);
             if (player != null)
