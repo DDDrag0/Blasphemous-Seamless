@@ -153,9 +153,9 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     }
 
     // Enemy sync network helpers
-    public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife, int animState, float animTime) => NetworkManager.SendEnemyUpdate(enemyId, position, currentLife, animState, animTime);
-    public void SendEnemyDamageRequest(string enemyId, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyId, damageAmount);
-    public void SendEnemyKill(string enemyId) => NetworkManager.SendEnemyKill(enemyId);
+    public void SendEnemyUpdate(ushort enemyIndex, Vector2 position, float currentLife, int animState, float animTime) => NetworkManager.SendEnemyUpdate(enemyIndex, position, currentLife, animState, animTime);
+    public void SendEnemyDamageRequest(ushort enemyIndex, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyIndex, damageAmount);
+    public void SendEnemyKill(ushort enemyIndex) => NetworkManager.SendEnemyKill(enemyIndex);
 
     // TEMP: only called by Network manager to store name/team right now
     public void SetPlayerData(string player, byte team)

@@ -89,6 +89,47 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// Maps a damaged GameObject to its index in the shared id list. The index is the wire handle:
+        /// it is derived from spawn point name and position, which are authored in the scene, so both
+        /// machines build the exact same list and therefore the same indices.
+        /// </summary>
+        public static bool TryGetEnemyIndex(Enemy enemy, out ushort index)
+        {
+            index = 0;
+            if (enemy == null)
+                return false;
+
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                Enemy tracked = ResolveEnemy(_ids[i]);
+                if (tracked == null)
+                    continue;
+
+                if (tracked == enemy || enemy.transform.IsChildOf(tracked.transform))
+                {
+                    if (i > ushort.MaxValue)
+                        return false;
+
+                    index = (ushort)i;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static Enemy ResolveByIndex(ushort index)
+        {
+            if (index >= _ids.Count)
+            {
+                ModLog.Error($"[EnemySync] Indice nemico {index} fuori intervallo (max {_ids.Count - 1}): le due macchine non hanno la stessa lista di nemici.");
+                return null;
+            }
+
+            return ResolveEnemy(_ids[index]);
+        }
+
+        /// <summary>
         /// Per-enemy listing. Run "multiplayer sync dump" on both machines: the id column is the
         /// network identity and must be identical (same order too, since it is built the same way).
         /// </summary>
@@ -260,9 +301,13 @@ namespace Blasphemous.Multiplayer.Client
 
             List<string> dead = null;
 
+            // The wire handle is the numeric index into _ids, not the id string: a short name is ~40
+            // bytes, which dwarfs the position and health it accompanies. The index is stable because
+            // both machines build the same list from the same authored spawn points.
             for (int i = 0; i < _ids.Count; i++)
             {
                 string id = _ids[i];
+                ushort handle = (ushort)i;
                 Enemy enemy = ResolveEnemy(id);
 
                 if (enemy == null || enemy.gameObject == null)
@@ -272,7 +317,7 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     (dead ??= new List<string>()).Add(id);
                     _killsSent++;
-                    Main.Multiplayer.SendEnemyKill(id);
+                    Main.Multiplayer.SendEnemyKill(handle);
                     continue;
                 }
 
@@ -302,7 +347,7 @@ namespace Blasphemous.Multiplayer.Client
                 _lastSentLife[id] = life;
                 _lastSentAnim[id] = animState;
                 _updatesSent++;
-                Main.Multiplayer.SendEnemyUpdate(id, position, life, animState, animTime);
+                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime);
             }
 
             if (dead != null)
@@ -313,11 +358,11 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
-        public static void ReceiveEnemyUpdate(string id, Vector2 position, float currentLife, int animState, float animTime)
+        public static void ReceiveEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime)
         {
             _updatesReceived++;
 
-            Enemy enemy = ResolveEnemy(id);
+            Enemy enemy = ResolveByIndex(index);
             if (enemy == null)
                 return;
 
@@ -387,9 +432,9 @@ namespace Blasphemous.Multiplayer.Client
         /// Damage approved by the host. The machine that swung the sword already applied it natively
         /// (that is the host), so this only ever runs on the peers.
         /// </summary>
-        public static void ReceiveEnemyDamage(string id, float damageAmount)
+        public static void ReceiveEnemyDamage(ushort index, float damageAmount)
         {
-            Enemy enemy = ResolveEnemy(id);
+            Enemy enemy = ResolveByIndex(index);
             if (enemy == null)
                 return;
 
@@ -404,43 +449,18 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>Authoritative death, so peers always see the corpse and the drop.</summary>
-        public static void ReceiveEnemyKill(string id)
+        public static void ReceiveEnemyKill(ushort index)
         {
-            Enemy enemy = ResolveEnemy(id);
+            Enemy enemy = ResolveByIndex(index);
             if (enemy == null)
                 return;
 
-            _enemies.Remove(id);
+            _enemies.Remove(index < _ids.Count ? _ids[index] : null);
 
             if (enemy.Dead || enemy.CurrentLife <= 0f)
                 return;
 
             ApplyDamage(enemy, enemy.CurrentLife + 1f);
-        }
-
-        /// <summary>
-        /// Maps a damaged GameObject to its network id. Used by the damage patch to forward a local hit.
-        /// </summary>
-        public static bool TryGetEnemyId(Enemy enemy, out string id)
-        {
-            id = null;
-            if (enemy == null)
-                return false;
-
-            for (int i = 0; i < _ids.Count; i++)
-            {
-                Enemy tracked = ResolveEnemy(_ids[i]);
-                if (tracked == null)
-                    continue;
-
-                if (tracked == enemy || enemy.transform.IsChildOf(tracked.transform))
-                {
-                    id = _ids[i];
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         private static Enemy ResolveEnemy(string id)

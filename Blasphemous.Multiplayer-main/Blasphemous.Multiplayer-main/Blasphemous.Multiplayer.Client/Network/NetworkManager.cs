@@ -483,25 +483,14 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         // Enemies
 
-        // The enemy id is the authored spawn point identity (scene|name|x|y), so it travels as a string.
-        private static void AddEnemyId(List<byte> bytes, string enemyId)
-        {
-            byte[] idBytes = Encoding.UTF8.GetBytes(enemyId);
-            bytes.Add((byte)idBytes.Length);
-            bytes.AddRange(idBytes);
-        }
+        // The wire handle is a ushort index into the shared spawn point list. The full identity
+        // (scene|name|x|y) is only about 40 bytes, which would dwarf the state it accompanies; the index
+        // is stable because both machines build the same list from the same authored spawn points.
 
-        private static void ReadEnemyId(byte[] data, out string enemyId, out int next)
-        {
-            byte length = data[0];
-            enemyId = Encoding.UTF8.GetString(data, 1, length);
-            next = 1 + length;
-        }
-
-        public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife, int animState, float animTime)
+        public void SendEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime)
         {
             List<byte> bytes = new();
-            AddEnemyId(bytes, enemyId);
+            bytes.AddRange(BitConverter.GetBytes(index));
             bytes.AddRange(BitConverter.GetBytes(position.x));
             bytes.AddRange(BitConverter.GetBytes(position.y));
             bytes.AddRange(BitConverter.GetBytes(currentLife));
@@ -512,43 +501,43 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         private void ReceiveEnemyUpdate(byte[] data)
         {
-            ReadEnemyId(data, out string id, out int idx);
-            float xpos = BitConverter.ToSingle(data, idx);
-            float ypos = BitConverter.ToSingle(data, idx + 4);
-            float currentLife = BitConverter.ToSingle(data, idx + 8);
-            int animState = BitConverter.ToInt32(data, idx + 12);
-            float animTime = BitConverter.ToSingle(data, idx + 16);
+            ushort index = BitConverter.ToUInt16(data, 0);
+            float xpos = BitConverter.ToSingle(data, 2);
+            float ypos = BitConverter.ToSingle(data, 6);
+            float currentLife = BitConverter.ToSingle(data, 10);
+            int animState = BitConverter.ToInt32(data, 14);
+            float animTime = BitConverter.ToSingle(data, 18);
 
-            EnemySyncManager.ReceiveEnemyUpdate(id, new Vector2(xpos, ypos), currentLife, animState, animTime);
+            EnemySyncManager.ReceiveEnemyUpdate(index, new Vector2(xpos, ypos), currentLife, animState, animTime);
         }
 
-        public void SendEnemyDamageRequest(string enemyId, float damageAmount)
+        public void SendEnemyDamageRequest(ushort index, float damageAmount)
         {
             List<byte> bytes = new();
-            AddEnemyId(bytes, enemyId);
+            bytes.AddRange(BitConverter.GetBytes(index));
             bytes.AddRange(BitConverter.GetBytes(damageAmount));
             QueueMesssage(bytes.ToArray(), NetworkType.EnemyDamageRequest);
         }
 
         private void ReceiveEnemyDamageRequest(byte[] data)
         {
-            ReadEnemyId(data, out string id, out int idx);
-            float damageAmount = BitConverter.ToSingle(data, idx);
+            ushort index = BitConverter.ToUInt16(data, 0);
+            float damageAmount = BitConverter.ToSingle(data, 2);
 
-            EnemySyncManager.ReceiveEnemyDamage(id, damageAmount);
+            EnemySyncManager.ReceiveEnemyDamage(index, damageAmount);
         }
 
-        public void SendEnemyKill(string enemyId)
+        public void SendEnemyKill(ushort index)
         {
             List<byte> bytes = new();
-            AddEnemyId(bytes, enemyId);
+            bytes.AddRange(BitConverter.GetBytes(index));
             QueueMesssage(bytes.ToArray(), NetworkType.EnemyDeath);
         }
 
         private void ReceiveEnemyDeath(byte[] data)
         {
-            ReadEnemyId(data, out string id, out int _);
-            EnemySyncManager.ReceiveEnemyKill(id);
+            ushort index = BitConverter.ToUInt16(data, 0);
+            EnemySyncManager.ReceiveEnemyKill(index);
         }
 
         // Authority
@@ -566,6 +555,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 4;
+        private const byte PROTOCOL_VERSION = 5;
     }
 }

@@ -43,14 +43,14 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null)
                 return true;
 
-            string id;
-            if (!EnemySyncManager.TryGetEnemyId(enemy, out id))
+            ushort index;
+            if (!EnemySyncManager.TryGetEnemyIndex(enemy, out index))
                 return true;
 
             // The game truncates DamageAmount to int in TakeDamageAmount; send the same value so the
             // host and the peers end up with identical health.
             EnemySyncManager.RecordDamageSent();
-            Main.Multiplayer.SendEnemyDamageRequest(id, (float)(int)hit.DamageAmount);
+            Main.Multiplayer.SendEnemyDamageRequest(index, (float)(int)hit.DamageAmount);
             return false; // The host decides; the approved damage comes back over the network.
         }
 
