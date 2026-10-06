@@ -761,19 +761,21 @@ public class Server
 
     private void receiveEnemyUpdate(string playerIp, byte[] data)
     {
-        // Only the host may broadcast the authoritative enemy state.
-        if (playerIp != _hostIp)
-            return;
-
+        // NO host-only filter here, and that is deliberate. Enemy state is per-enemy: each machine owns
+        // some enemies and broadcasts only those, so a packet may legitimately come from the peer. An
+        // earlier version dropped everything that did not come from the host, which silently discarded
+        // every update the peer sent for the enemies it was simulating - so the host stayed the only
+        // source of positions and ownership could never take effect.
+        //
+        // The server deliberately does not interpret the ownership flag: it relays bytes and lets each
+        // client decide for itself. Keeping the server ignorant of game rules means the authority scheme
+        // can change without touching it.
         relayToScene(playerIp, data, NetworkType.EnemyUpdate);
     }
 
     private void receiveEnemyDeath(string playerIp, byte[] data)
     {
-        // Only the host decides that an enemy died.
-        if (playerIp != _hostIp)
-            return;
-
+        // Same reasoning as EnemyUpdate: whoever simulated the enemy is the one that knows it died.
         relayToScene(playerIp, data, NetworkType.EnemyDeath);
     }
 
