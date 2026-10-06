@@ -1,4 +1,4 @@
-﻿using Blasphemous.CheatConsole;
+using Blasphemous.CheatConsole;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using System;
@@ -21,10 +21,31 @@ namespace Blasphemous.Multiplayer.Client
                 { "connect", Obsolete },
                 { "disconnect", Obsolete },
                 { "players", Obsolete },
+                { "sync", Sync },
 #if DEBUG
                 { "damage", Damage },
 #endif
             };
+        }
+
+        /// <summary>
+        /// Enemy sync diagnostics. This feature has never been exercised in game, so these two commands
+        /// are the fastest way to tell whether it works: "multiplayer sync" prints a health summary and
+        /// "multiplayer sync dump" lists every tracked enemy id, which must be identical on both machines.
+        /// </summary>
+        private void Sync(string[] parameters)
+        {
+            if (parameters.Length > 0 && parameters[0].ToLowerInvariant() == "dump")
+            {
+                List<string> lines = EnemySyncManager.Dump();
+                Write($"Enemy sync dump ({lines.Count} entries):");
+                foreach (string line in lines)
+                    Write(line);
+                return;
+            }
+
+            Write("Enemy sync: " + EnemySyncManager.Describe());
+            Write("Use 'multiplayer sync dump' to list every tracked enemy id.");
         }
 
         private void Obsolete(string[] parameters)

@@ -30,14 +30,79 @@ namespace Blasphemous.Multiplayer.Client
     {
         private const float SEND_INTERVAL = 0.05f;   // ~20 state broadcasts per second
         private const float RESCAN_INTERVAL = 0.5f;  // spawn points created after the level load
+        private const float FULL_RESEND_INTERVAL = 1f;
+        private const float POSITION_EPSILON = 0.01f;
+        private const float LIFE_EPSILON = 0.01f;
 
         private static readonly Dictionary<string, Enemy> _enemies = new Dictionary<string, Enemy>();
         private static readonly Dictionary<string, EnemySpawnPoint> _spawnPoints = new Dictionary<string, EnemySpawnPoint>();
         private static readonly List<string> _ids = new List<string>();
 
+        // Last broadcast state, used to skip enemies that did not change.
+        private static readonly Dictionary<string, Vector2> _lastSentPos = new Dictionary<string, Vector2>();
+        private static readonly Dictionary<string, float> _lastSentLife = new Dictionary<string, float>();
+        private static readonly Dictionary<string, float> _lastFullSend = new Dictionary<string, float>();
+
         private static bool _isHost;
         private static float _sendTimer;
         private static float _rescanTimer;
+        private static float _lastSweep;
+
+        // Diagnostics: enough to tell whether the feature is actually doing anything in game.
+        private static string _scene = string.Empty;
+        private static int _updatesSent;
+        private static int _updatesReceived;
+        private static int _damageSent;
+        private static int _damageApplied;
+        private static int _killsSent;
+        private static int _registrations;
+
+        /// <summary>
+        /// One-line health summary, surfaced by the "multiplayer sync" command. Built to be compared
+        /// between the two machines: the tracked/spawn point counts must match on both.
+        /// </summary>
+        public static string Describe()
+        {
+            return string.Format(
+                "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} | sent={6} recv={7} dmgSent={8} dmgApplied={9} killsSent={10}",
+                _scene,
+                IsHost ? (Main.Multiplayer.NetworkManager.IsConnected ? "HOST" : "solo") : "peer",
+                Main.Multiplayer.NetworkManager.IsConnected,
+                _spawnPoints.Count,
+                _enemies.Count,
+                _registrations,
+                _updatesSent,
+                _updatesReceived,
+                _damageSent,
+                _damageApplied,
+                _killsSent);
+        }
+
+        /// <summary>
+        /// Per-enemy listing. Run "multiplayer sync dump" on both machines: the id column is the
+        /// network identity and must be identical (same order too, since it is built the same way).
+        /// </summary>
+        public static List<string> Dump()
+        {
+            List<string> lines = new List<string>();
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                string id = _ids[i];
+                Enemy enemy = ResolveEnemy(id);
+
+                if (enemy == null)
+                {
+                    lines.Add(string.Format("[{0,3}] {1} -> non ancora spawnato", i, id));
+                    continue;
+                }
+
+                lines.Add(string.Format(
+                    "[{0,3}] {1} -> alive={2} dead={3} life={4:F1} pos=({5:F2},{6:F2})",
+                    i, id, enemy.gameObject.activeSelf, enemy.Dead, enemy.CurrentLife,
+                    enemy.transform.position.x, enemy.transform.position.y));
+            }
+            return lines;
+        }
 
         /// <summary>
         /// True while damage relayed by the host is being applied, so the damage patch lets it through
@@ -85,8 +150,20 @@ namespace Blasphemous.Multiplayer.Client
             _enemies.Clear();
             _spawnPoints.Clear();
             _ids.Clear();
+            _lastSentPos.Clear();
+            _lastSentLife.Clear();
+            _lastFullSend.Clear();
             _sendTimer = 0f;
             _rescanTimer = 0f;
+            _lastSweep = 0f;
+
+            _scene = scene;
+            _updatesSent = 0;
+            _updatesReceived = 0;
+            _damageSent = 0;
+            _damageApplied = 0;
+            _killsSent = 0;
+            _registrations = 0;
 
             ScanSpawnPoints(scene);
 
@@ -118,7 +195,10 @@ namespace Blasphemous.Multiplayer.Client
 
                 Enemy spawned = point.SpawnedEnemy;
                 if (spawned != null && _enemies.ContainsKey(id) == false)
+                {
                     _enemies.Add(id, spawned);
+                    _registrations++;
+                }
             }
         }
 
@@ -149,6 +229,12 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             _sendTimer = 0f;
 
+            // Once per second every enemy is resent regardless of change, so a dropped packet cannot
+            // leave a peer permanently diverged.
+            bool fullSweep = Time.time - _lastSweep >= FULL_RESEND_INTERVAL;
+            if (fullSweep)
+                _lastSweep = Time.time;
+
             List<string> dead = null;
 
             for (int i = 0; i < _ids.Count; i++)
@@ -162,12 +248,30 @@ namespace Blasphemous.Multiplayer.Client
                 if (enemy.Dead || enemy.CurrentLife <= 0f)
                 {
                     (dead ??= new List<string>()).Add(id);
+                    _killsSent++;
                     Main.Multiplayer.SendEnemyKill(id);
                     continue;
                 }
 
                 Vector2 position = enemy.transform.position;
-                Main.Multiplayer.SendEnemyUpdate(id, position, enemy.CurrentLife);
+                float life = enemy.CurrentLife;
+
+                // Skip unchanged enemies to save bandwidth; the periodic full sweep above guarantees
+                // that everything is still resent regularly.
+                if (!fullSweep && _lastSentPos.TryGetValue(id, out Vector2 prevPos))
+                {
+                    bool changed = Mathf.Abs(prevPos.x - position.x) > POSITION_EPSILON ||
+                                   Mathf.Abs(prevPos.y - position.y) > POSITION_EPSILON ||
+                                   Mathf.Abs(_lastSentLife[id] - life) > LIFE_EPSILON;
+
+                    if (!changed)
+                        continue;
+                }
+
+                _lastSentPos[id] = position;
+                _lastSentLife[id] = life;
+                _updatesSent++;
+                Main.Multiplayer.SendEnemyUpdate(id, position, life);
             }
 
             if (dead != null)
@@ -180,6 +284,8 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>Position + health broadcast sent by the host.</summary>
         public static void ReceiveEnemyUpdate(string id, Vector2 position, float currentLife)
         {
+            _updatesReceived++;
+
             Enemy enemy = ResolveEnemy(id);
             if (enemy == null)
                 return;
@@ -211,7 +317,14 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null)
                 return;
 
+            _damageApplied++;
             ApplyDamage(enemy, damageAmount);
+        }
+
+        /// <summary>Called by the damage patch when a local hit is forwarded instead of applied.</summary>
+        public static void RecordDamageSent()
+        {
+            _damageSent++;
         }
 
         /// <summary>Authoritative death, so peers always see the corpse and the drop.</summary>
