@@ -1082,11 +1082,14 @@ namespace Blasphemous.Multiplayer.Client
                 if (enemy == null || enemy.gameObject == null)
                     continue; // not spawned yet, or already gone
 
-                // Registered but not yet in play (a boss waiting for its cutscene). Sending no state is
-                // correct: nothing is moving, and the peer applies everything as soon as it appears.
-                if (!enemy.gameObject.activeInHierarchy)
-                    continue;
-
+                // DEATH IS CHECKED FIRST, BEFORE the activity check, and that order is the whole point.
+                //
+                // The game deactivates enemies that are off camera (Enemy.DisableBehaviourWhenInvisible,
+                // Enemy.ActivationRange), so a dead enemy outside the view has activeInHierarchy == false.
+                // With the activity check first, the loop skipped it and the death was never announced: the
+                // other player kept a live enemy - the "ghost" - until someone walked close enough to
+                // reactivate it, which is exactly when it disappeared. A dead enemy is dead regardless of
+                // whether it is currently being drawn.
                 if (enemy.Dead || enemy.CurrentLife <= 0f)
                 {
                     (dead ??= new List<string>()).Add(id);
@@ -1097,6 +1100,12 @@ namespace Blasphemous.Multiplayer.Client
                     Main.Multiplayer.SendEnemyDeathGlobal(id);
                     continue;
                 }
+
+                // Registered but not yet in play (a boss waiting for its cutscene), or simply out of view.
+                // Sending no state is correct: nothing is moving, and the peer applies everything as soon as
+                // it appears.
+                if (!enemy.gameObject.activeInHierarchy)
+                    continue;
 
                 Vector2 position = enemy.transform.position;
                 float life = enemy.CurrentLife;
@@ -1410,34 +1419,73 @@ namespace Blasphemous.Multiplayer.Client
         private static void MarkSpawnPointConsumed(string enemyId)
         {
             EnemySpawner spawner = Core.Logic != null ? Core.Logic.EnemySpawner : null;
-            if (spawner == null || !enemyId.StartsWith("sp|"))
+            if (spawner == null || string.IsNullOrEmpty(enemyId) || !enemyId.StartsWith("sp|"))
                 return;
 
-            string[] parts = enemyId.Split('|');
-            if (parts.Length < 5)
-                return;
-
-            float x;
-            float y;
-            if (!float.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out x) ||
-                !float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out y))
-                return;
-
-            Vector3 position = new Vector3(x, y, 0f);
             EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
+            if (points.Length == 0)
+                return;
+
+            // Prefer the enemy's OWN transform: it is the exact position the game will compare against,
+            // whereas the id string only carries two decimals and rebuilding a Vector3 from it can miss by a
+            // fraction. The game's list uses exact Vector3 equality, so a fraction is enough to fail.
+            Vector3 position;
+            Enemy tracked = ResolveEnemyById(enemyId);
+            if (tracked != null)
+            {
+                position = tracked.transform.position;
+            }
+            else if (!TryParseSpawnPointPosition(enemyId, out position))
+            {
+                // Spawn point exists but the enemy is not here yet: fall back to the position in the id,
+                // which is accurate to two decimals and is enough to find the right spot.
+                return;
+            }
+
+            EnemySpawnPoint nearest = null;
+            float nearestDistance = float.MaxValue;
             for (int i = 0; i < points.Length; i++)
             {
                 EnemySpawnPoint sp = points[i];
                 if (sp == null)
                     continue;
 
-                // Close enough to be the same authored spot: positions are stored with two decimals.
-                if (Vector3.Distance(sp.transform.position, position) > 0.5f)
-                    continue;
-
-                spawner.AddConsumedSpawner(sp);
-                return;
+                float d = Vector3.Distance(sp.transform.position, position);
+                if (d < nearestDistance)
+                {
+                    nearestDistance = d;
+                    nearest = sp;
+                }
             }
+
+            // Half a unit is far beyond any rounding error yet far below the spacing between distinct spots.
+            if (nearest != null && nearestDistance <= 0.5f)
+                spawner.AddConsumedSpawner(nearest);
+        }
+
+        /// <summary>Resolves an id to a live Enemy without creating anything.</summary>
+        private static Enemy ResolveEnemyById(string id)
+        {
+            Enemy enemy;
+            return _enemies.TryGetValue(id, out enemy) ? enemy : null;
+        }
+
+        private static bool TryParseSpawnPointPosition(string enemyId, out Vector3 position)
+        {
+            position = Vector3.zero;
+
+            string[] parts = enemyId.Split('|');
+            if (parts.Length < 5)
+                return false;
+
+            float x;
+            float y;
+            if (!float.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out x) ||
+                !float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out y))
+                return false;
+
+            position = new Vector3(x, y, 0f);
+            return true;
         }
 
         /// <summary>
