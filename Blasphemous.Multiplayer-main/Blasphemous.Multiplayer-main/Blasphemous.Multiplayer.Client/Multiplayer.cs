@@ -158,6 +158,8 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     // already applied. The server routes by sender, so a single packet type covers both.
     public void SendEnemyDamageRequest(uint enemyHandle, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyHandle, damageAmount);
     public void SendEnemyKill(uint enemyHandle) => NetworkManager.SendEnemyKill(enemyHandle);
+    // Scene-independent death record: reaches a player who was elsewhere when the kill happened.
+    public void SendEnemyDeathGlobal(string enemyId) => NetworkManager.SendEnemyDeathGlobal(enemyId);
 
     // TEMP: only called by Network manager to store name/team right now
     public void SetPlayerData(string player, byte team)
