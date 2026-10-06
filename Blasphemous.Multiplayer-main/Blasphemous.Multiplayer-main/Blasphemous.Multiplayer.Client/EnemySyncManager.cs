@@ -487,12 +487,20 @@ namespace Blasphemous.Multiplayer.Client
 
         /// <summary>
         /// Damage approved by the host. The machine that swung the sword already applied it natively
-        /// (that is the host), so this only ever runs on the peers.
+        /// (either it is the host, or it is the peer that is then echoed by the server to the others),
+        /// so this only ever runs on machines that did not swing.
         /// </summary>
         public static void ReceiveEnemyDamage(ushort index, float damageAmount)
         {
             Enemy enemy = ResolveByIndex(index);
             if (enemy == null)
+                return;
+
+            // If the peer that swung also landed the killing blow, its local application already killed
+            // the enemy here. Applying the relayed damage to that corpse would run the death sequence a
+            // second time (double purge/tears credit). The host's next update resyncs the exact health,
+            // so skipping is safe.
+            if (enemy.Dead || enemy.CurrentLife <= 0f)
                 return;
 
             _damageApplied++;
