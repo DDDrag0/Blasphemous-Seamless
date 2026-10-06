@@ -6,6 +6,7 @@ using Gameplay.GameControllers.Penitent;
 using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
+using Blasphemous.Multiplayer.Client.Players;
 
 namespace Blasphemous.Multiplayer.Client
 {
@@ -87,6 +88,15 @@ namespace Blasphemous.Multiplayer.Client
         /// enemy visibly jumps between two positions. Holding makes that rare instead of constant.
         /// </summary>
         private const float OWNER_HOLD_SECONDS = 0.5f;
+
+        /// <summary>
+        /// How much closer the other player must be before this machine gives up an enemy, in world units.
+        ///
+        /// Positions arrive around 20 times a second, so comparing raw distances makes the owner flip
+        /// whenever the two players are roughly equidistant - and the enemy would then jump between the two
+        /// machines' positions. A dead zone keeps the owner stable while they are side by side.
+        /// </summary>
+        private const float OWNER_DISTANCE_MARGIN = 2.5f;
 
         private static readonly Dictionary<string, EnemyState> _lastSent = new Dictionary<string, EnemyState>();
 
@@ -602,28 +612,48 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// True when the game's own AI is currently chasing THIS machine's player.
+        /// True when THIS machine's player is the closest to the enemy, so it should simulate it.
         ///
-        /// This reads Enemy.Target DIRECTLY, not EnemyBehaviour.GetTarget(). That method looks equivalent
-        /// but is not: its IL falls back to Core.Logic.Penitent when the enemy has no target, and that
-        /// singleton is each machine's OWN player. Every machine would therefore always report "aggroed to
-        /// me", which is precisely the observed "whoever grabs aggro first keeps every enemy forever".
+        /// Proximity replaces aggro, because aggro simply is not available. Two attempts to read it both
+        /// failed for the same underlying reason: each machine simulates its own copy of the enemy, and
+        /// that copy chases its own player. EnemyBehaviour.GetTarget() falls back to Core.Logic.Penitent
+        /// (the LOCAL player) and Enemy.Target is always set to that same local player, so every machine
+        /// truthfully reports "it is chasing me". There is no field that can express "chasing the other
+        /// player", because in the game's own model the other player does not exist.
         ///
-        /// Enemy.Target is a public field the game's AI writes (Acolyte.OnUpdate, BellGhost.OnUpdate, and
-        /// dozens more), so reading it is exact. A null Target means the enemy is chasing nobody, which is
-        /// the case the ownership rule needs in order to release an enemy.
+        /// Distance is the workable substitute: every machine can compute it from data it already has (its
+        /// own position plus the synced position of the other player), and both reach the same conclusion
+        /// without exchanging anything. It also matches the gameplay - whoever is next to an enemy is
+        /// whoever is fighting it.
         /// </summary>
-        private static bool IsAggroedToLocalPlayer(Enemy enemy)
+        private static bool ShouldOwnByProximity(Enemy enemy)
         {
-            GameObject target = enemy.Target;
-            if (target == null)
-                return false;
-
             Penitent local = Core.Logic.Penitent;
             if (local == null)
-                return false;
+                return true; // no local player yet: keep it, so an enemy is never left unowned
 
-            return target == local.gameObject || target.transform.IsChildOf(local.transform);
+            Vector2 enemyPos = enemy.transform.position;
+            float localDistance = Vector2.Distance(enemyPos, local.transform.position);
+
+            float nearestRemote = float.MaxValue;
+            var others = Main.Multiplayer.OtherPlayerManager;
+            if (others != null)
+            {
+                foreach (OtherPlayerScript other in others.AllActivePlayers)
+                {
+                    if (other == null || other.gameObject == null)
+                        continue;
+
+                    float d = Vector2.Distance(enemyPos, other.GetPosition());
+                    if (d < nearestRemote)
+                        nearestRemote = d;
+                }
+            }
+
+            // A remote player has to be MEANINGFULLY closer, not a hair closer. Positions arrive about
+            // 20 times a second, so a bare comparison would flip the owner back and forth while the two
+            // players stand near each other.
+            return localDistance <= nearestRemote + OWNER_DISTANCE_MARGIN;
         }
 
         /// <summary>
@@ -635,6 +665,8 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void LogDiagnosticSnapshot()
         {
+            Penitent local = Core.Logic.Penitent;
+
             for (int i = 0; i < _ids.Count; i++)
             {
                 string id = _ids[i];
@@ -642,22 +674,49 @@ namespace Blasphemous.Multiplayer.Client
                 if (enemy == null)
                     continue;
 
+                // Reference types: TryGetValue leaves this null when the enemy has no record yet, which is
+                // what produced "owner=?" before - the whole ternary never ran against the looked-up value.
                 EnemyState state;
-                _lastSent.TryGetValue(id, out state);
+                bool hasState = _lastSent.TryGetValue(id, out state);
 
                 int animState;
                 float animTime;
                 ReadAnimation(enemy, out animState, out animTime);
-                string animName = AnimatorOf(enemy) != null
-                    ? AnimatorStateName(enemy)
-                    : "nessun-animator";
 
-                ModLog.Info($"[EnemyTick] {ShortId(id)} aggro={IsAggroedToLocalPlayer(enemy)} " +
-                            $"owner={(state != null ? state.OwnedByLocal.ToString() : "?")} " +
-                            $"remote={(state != null ? state.OwnedByRemote.ToString() : "?")} " +
-                            $"anim={(animState == 0 ? "0" : animName)} life={enemy.CurrentLife:F0} " +
-                            $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+                float localDistance = local != null
+                    ? Vector2.Distance(enemy.transform.position, local.transform.position)
+                    : -1f;
+                float remoteDistance = NearestRemoteDistance(enemy);
+
+                string owner = hasState ? (state.OwnedByLocal ? "io" : "altro") : "nuovo";
+                string remote = hasState ? state.OwnedByRemote.ToString() : "?";
+
+                ModLog.Info($"[EnemyTick] {ShortId(id)} owner={owner} remoto={remote} " +
+                            $"dist_io={localDistance:F1} dist_altro={(remoteDistance == float.MaxValue ? "n/d" : remoteDistance.ToString("F1"))} " +
+                            $"anim={(animState == 0 ? "0" : AnimatorStateName(enemy))} " +
+                            $"life={enemy.CurrentLife:F0} pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
             }
+        }
+
+        /// <summary>Distance to the nearest other player, or float.MaxValue when none is in the scene.</summary>
+        private static float NearestRemoteDistance(Enemy enemy)
+        {
+            float nearest = float.MaxValue;
+            var others = Main.Multiplayer.OtherPlayerManager;
+            if (others == null)
+                return nearest;
+
+            foreach (OtherPlayerScript other in others.AllActivePlayers)
+            {
+                if (other == null || other.gameObject == null)
+                    continue;
+
+                float d = Vector2.Distance(enemy.transform.position, other.GetPosition());
+                if (d < nearest)
+                    nearest = d;
+            }
+
+            return nearest;
         }
 
         private static string AnimatorStateName(Enemy enemy)
@@ -697,7 +756,7 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static bool DecideOwnership(Enemy enemy, EnemyState state, bool localIsHost)
         {
-            bool wants = IsAggroedToLocalPlayer(enemy);
+            bool wants = ShouldOwnByProximity(enemy);
             bool changed = false;
 
             if (state.OwnerSince <= 0f)
