@@ -49,7 +49,9 @@
 
     <!-- Get export directories -->
     <PropertyGroup>
-      <DevFolder>C:\Program Files (x86)\Steam\steamapps\common\Blasphemous\Modding\</DevFolder>
+      <!-- The game is installed under D:\SteamLibrary on this machine. The previous C: path pointed at
+           a leftover Modding folder with no game in it, so the plugin was never loaded by anything. -->
+      <DevFolder>D:\SteamLibrary\steamapps\common\Blasphemous\Modding\</DevFolder>
       <PublishFolder>$(SolutionDir)\publish\$(TargetName)</PublishFolder>
     </PropertyGroup>
 

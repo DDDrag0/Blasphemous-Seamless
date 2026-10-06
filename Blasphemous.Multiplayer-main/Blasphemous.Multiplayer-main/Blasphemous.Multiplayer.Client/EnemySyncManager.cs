@@ -58,7 +58,7 @@ namespace Blasphemous.Multiplayer.Client
         private static int _killsSent;
         private static int _registrations;
         private static int _duplicateIds;
-        private static int _missingSpawnedEnemy;
+        private static readonly HashSet<string> _countedDuplicates = new HashSet<string>();
 
         /// <summary>
         /// One-line health summary, surfaced by the "multiplayer sync" command. Built to be compared
@@ -66,11 +66,14 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         public static string Describe()
         {
+            // Computed rather than counted, so rescans cannot inflate it.
+            int notSpawned = _ids.Count - _enemies.Count;
+
             string warning = string.Empty;
             if (_duplicateIds > 0)
                 warning += $" ATTENZIONE: {_duplicateIds} spawn point con identita' duplicata (id non univoci!)";
-            if (_missingSpawnedEnemy > 0)
-                warning += $" NOTA: {_missingSpawnedEnemy} nemici non ancora creati dallo spawn point";
+            if (notSpawned > 0)
+                warning += $" NOTA: {notSpawned} nemici non ancora creati dallo spawn point";
 
             return string.Format(
                 "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} | sent={6} recv={7} dmgSent={8} dmgApplied={9} killsSent={10}{11}",
@@ -217,7 +220,7 @@ namespace Blasphemous.Multiplayer.Client
             _killsSent = 0;
             _registrations = 0;
             _duplicateIds = 0;
-            _missingSpawnedEnemy = 0;
+            _countedDuplicates.Clear();
 
             ScanSpawnPoints(scene);
 
@@ -234,6 +237,11 @@ namespace Blasphemous.Multiplayer.Client
             if (points == null)
                 return;
 
+            // Collisions are two spawn points in the SAME scan producing the same id (authored
+            // duplicate). A rescan finding a known id is perfectly normal, so it must not be reported
+            // as a collision - that distinction is what this per-scan set is for.
+            HashSet<string> seenThisScan = new HashSet<string>();
+
             for (int i = 0; i < points.Length; i++)
             {
                 EnemySpawnPoint point = points[i];
@@ -241,29 +249,31 @@ namespace Blasphemous.Multiplayer.Client
                     continue;
 
                 string id = BuildId(scene, point);
-                if (_spawnPoints.ContainsKey(id))
+
+                if (!seenThisScan.Add(id))
                 {
-                    // Two spawn points sharing name and position would break the network id, so make it
-                    // visible in the diagnostics instead of failing silently.
-                    _duplicateIds++;
+                    if (_countedDuplicates.Add(id))
+                        _duplicateIds++;
+                    continue;
                 }
-                else
+
+                if (!_spawnPoints.ContainsKey(id))
                 {
                     _spawnPoints.Add(id, point);
                     _ids.Add(id);
                 }
 
                 Enemy spawned = point.SpawnedEnemy;
-                if (spawned == null)
-                {
-                    _missingSpawnedEnemy++;
-                }
-                else if (!_enemies.ContainsKey(id))
+                if (spawned != null && !_enemies.ContainsKey(id))
                 {
                     _enemies.Add(id, spawned);
                     _registrations++;
                 }
             }
+
+            // The wire handle is the position in _ids, and FindObjectsOfType has no documented order,
+            // so sort to make the indices identical on every machine regardless of discovery order.
+            _ids.Sort(string.CompareOrdinal);
         }
 
         private static string BuildId(string scene, EnemySpawnPoint point)
