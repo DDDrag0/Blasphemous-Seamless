@@ -137,14 +137,6 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static readonly HashSet<uint> _deadHandles = new HashSet<uint>();
 
-        /// <summary>
-        /// Which scene the dead-handle set belongs to.
-        ///
-        /// Needed because scene RELOADS must keep the set (re-entering a room respawns every enemy alive,
-        /// so the deaths have to be reapplied) while a genuine scene CHANGE must drop it.
-        /// </summary>
-        private static string _deadHandlesScene;
-
         /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
         private const float FOLLOW_LERP = 0.25f;
 
@@ -442,18 +434,10 @@ namespace Blasphemous.Multiplayer.Client
             _lastSent.Clear();
             _remoteTargets.Clear();
 
-            // _deadHandles is deliberately NOT cleared here, and that is the whole point of the fix.
-            //
-            // Leaving and re-entering a scene makes the game reload it and respawn every enemy from its
-            // spawn point, so the returning machine's copies come back ALIVE at full health and their
-            // updates revive the enemy on the machine that had correctly killed it. Clearing this set on
-            // load would erase the only record that those enemies are dead, which is exactly when it is
-            // needed. Scene changes DO clear it, through the check below.
-            if (_deadHandlesScene != scene)
-            {
-                _deadHandles.Clear();
-                _deadHandlesScene = scene;
-            }
+            // Deaths belong to one scene. Handles are derived from the scene name, so keeping them across
+            // a scene change would be pointless at best - and wrong if a scene were ever reloaded with the
+            // enemy meant to be alive again (a boss retry, for instance).
+            _deadHandles.Clear();
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
@@ -1001,7 +985,6 @@ namespace Blasphemous.Multiplayer.Client
                     (dead ??= new List<string>()).Add(id);
                     _killsSent++;
                     Main.Multiplayer.SendEnemyKill(handle);
-                    Main.Multiplayer.SendEnemyDeathGlobal(id);
                     continue;
                 }
 
@@ -1101,34 +1084,6 @@ namespace Blasphemous.Multiplayer.Client
 
             if (enemy != null)
                 _registered.Remove(enemy);
-        }
-
-        /// <summary>
-        /// Records a death announced from another scene, and kills the enemy if it happens to be here.
-        ///
-        /// This is what makes death survive a room change. The machine that killed the enemy may be
-        /// elsewhere, but it remembers the death for its scene, so when either player re-enters the room -
-        /// where the game respawns every enemy alive - RegisterEnemy finds the record and kills it again.
-        /// </summary>
-        public static void ReceiveEnemyDeathGlobal(string enemyId)
-        {
-            if (string.IsNullOrEmpty(enemyId))
-                return;
-
-            _deadHandles.Add(HandleOf(enemyId));
-
-            // Already tracked here (the enemy is in the current scene): kill it now.
-            for (int i = 0; i < _ids.Count; i++)
-            {
-                if (_ids[i] == enemyId)
-                {
-                    Enemy enemy = ResolveEnemy(enemyId);
-                    if (enemy != null && !enemy.Dead)
-                        KillEnemyLocally(enemy, HandleOf(enemyId));
-
-                    return;
-                }
-            }
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
