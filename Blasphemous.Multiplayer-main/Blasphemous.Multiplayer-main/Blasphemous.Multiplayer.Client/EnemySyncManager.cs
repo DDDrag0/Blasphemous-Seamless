@@ -8,6 +8,13 @@ using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
+using Gameplay.GameControllers.Enemies.Framework.Persistence;
+using Framework.Managers;
+using System;
+using System.Reflection;
+using Gameplay.GameControllers.Enemies.Framework.Persistence;
+using Framework.FrameworkCore;
+using System.Reflection;
 
 namespace Blasphemous.Multiplayer.Client
 {
@@ -123,6 +130,14 @@ namespace Blasphemous.Multiplayer.Client
         /// invented: it is the same path, just followed smoothly instead of in steps.
         /// </summary>
         private static readonly Dictionary<string, Vector2> _remoteTargets = new Dictionary<string, Vector2>();
+
+        /// <summary>
+        /// Deaths announced while this machine was in another scene, or before the enemy existed here.
+        ///
+        /// Applied at registration time instead: the enemy may spawn moments later (or after a scene
+        /// reload), and that is the point at which the death has to be enforced.
+        /// </summary>
+        private static readonly HashSet<string> _pendingDeaths = new HashSet<string>();
 
         /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
         private const float FOLLOW_LERP = 0.25f;
@@ -569,7 +584,7 @@ namespace Blasphemous.Multiplayer.Client
             // The link is EnemySpawnPoint.SpawnedEnemy, NOT the hierarchy: CreateEnemy parents the new
             // enemy to Core.Logic.CurrentLevelConfig, so GetComponentInParent<EnemySpawnPoint>() never
             // matches (the in-game dump confirmed childOfSpawnPoint=no for every enemy).
-            EnemySpawnPoint[] points = Object.FindObjectsOfType<EnemySpawnPoint>();
+            EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
             if (points != null)
             {
                 for (int i = 0; i < points.Length; i++)
@@ -640,6 +655,12 @@ namespace Blasphemous.Multiplayer.Client
             _ids.Add(id);
             _registered.Add(enemy);
             _registrations++;
+
+            // A death announced while this machine was elsewhere, or before this enemy existed. Applied
+            // here because this is the moment the enemy actually appears: after a scene reload the game
+            // spawns it alive, and only this record says it should not be.
+            if (_pendingDeaths.Remove(id))
+                ApplyPersistentDeath(enemy);
         }
 
         private static bool IsRegistered(Enemy enemy)
@@ -1034,6 +1055,9 @@ namespace Blasphemous.Multiplayer.Client
                     (dead ??= new List<string>()).Add(id);
                     _killsSent++;
                     Main.Multiplayer.SendEnemyKill(handle);
+                    // Also announce it scene-independently: the other player may be in another room and
+                    // would otherwise never learn about this death.
+                    Main.Multiplayer.SendEnemyDeathGlobal(id);
                     continue;
                 }
 
@@ -1306,6 +1330,103 @@ namespace Blasphemous.Multiplayer.Client
         public static void RecordDamageApplied()
         {
             _damageApplied++;
+        }
+
+        /// <summary>
+        /// Records a death announced from another scene, and applies it if the enemy is here.
+        ///
+        /// This is what kills the ghost across rooms. Without it, a player who was elsewhere when the kill
+        /// happened never hears about it, and on re-entering the room the game spawns that enemy alive.
+        ///
+        /// The death is applied through the game's OWN persistence component rather than by killing the
+        /// enemy again, because PersistentEnemy knows about more than health: it also switches on the corpse
+        /// sprite and the objects that belong to the dead state, and it survives the scene reload that
+        /// respawns everything else. SetCurrentPersistentState is a plain state applier - verified in IL, it
+        /// never touches PersistentManager - so calling it outside the load flow is safe.
+        /// </summary>
+        public static void ReceiveEnemyDeathGlobal(string enemyId)
+        {
+            if (string.IsNullOrEmpty(enemyId))
+                return;
+
+            // Already tracked here: apply the death now.
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                if (_ids[i] != enemyId)
+                    continue;
+
+                Enemy enemy = ResolveEnemy(enemyId);
+                if (enemy != null)
+                    ApplyPersistentDeath(enemy);
+
+                return;
+            }
+
+            // Not spawned here (another room, or not yet created): nothing to do now. The game will restore
+            // it dead from its own persistent data when it does spawn, provided that data was written.
+            _pendingDeaths.Add(enemyId);
+        }
+
+        /// <summary>
+        /// Marks an enemy as dead in the game's own persistence, so it stays dead through a scene reload.
+        ///
+        /// The data object is PersistentEnemy's nested PietyPersistenceData, which is not public, so it is
+        /// built by reflection. If anything about that fails the enemy is simply killed, which is the old
+        /// behaviour and no worse than before.
+        /// </summary>
+        private static void ApplyPersistentDeath(Enemy enemy)
+        {
+            if (enemy == null)
+                return;
+
+            PersistentEnemy persistent = enemy.GetComponent<PersistentEnemy>();
+            if (persistent != null && TrySetPersistentDead(persistent, enemy.transform.position))
+                return;
+
+            if (!enemy.Dead)
+                KillEnemyLocally(enemy, HandleOf(IdOf(enemy)));
+        }
+
+        private static bool TrySetPersistentDead(PersistentEnemy persistent, Vector3 position)
+        {
+            try
+            {
+                // The concrete data type the method casts to internally.
+                System.Type dataType = persistent.GetType().GetNestedType("PietyPersistenceData", BindingFlags.NonPublic);
+                if (dataType == null)
+                    return false;
+
+                object data = System.Activator.CreateInstance(dataType);
+                if (data == null)
+                    return false;
+
+                System.Reflection.FieldInfo alive = dataType.GetField("IsAlive");
+                System.Reflection.FieldInfo pos = dataType.GetField("Position");
+                if (alive == null || pos == null)
+                    return false;
+
+                alive.SetValue(data, false);
+                pos.SetValue(data, position);
+
+                persistent.SetCurrentPersistentState((PersistentManager.PersistentData)data, false, string.Empty);
+                return true;
+            }
+            catch (System.Exception e)
+            {
+                ModLog.Error($"[EnemySync] morte persistente non applicata, ripiego sull'uccisione: {e.Message}");
+                return false;
+            }
+        }
+
+        private static string IdOf(Enemy enemy)
+        {
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                if (ResolveEnemy(_ids[i]) == enemy)
+                    return _ids[i];
+            }
+
+            return string.Empty;
         }
 
         /// <summary>Authoritative death, so peers always see the corpse and the drop.</summary>

@@ -116,6 +116,7 @@ public class Server
                 case NetworkType.EnemyUpdate:        receiveEnemyUpdate(e.ip, data); break;
                 case NetworkType.EnemyDamageRequest: receiveEnemyDamageRequest(e.ip, data); break;
                 case NetworkType.EnemyDeath:         receiveEnemyDeath(e.ip, data); break;
+        case NetworkType.EnemyDeathGlobal:   receiveEnemyDeathGlobal(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -779,6 +780,20 @@ public class Server
         relayToScene(playerIp, data, NetworkType.EnemyDeath);
     }
 
+    private void receiveEnemyDeathGlobal(string playerIp, byte[] data)
+    {
+        // Sent to EVERY player, deliberately ignoring the scene filter that relayToScene applies.
+        //
+        // The player who needs this most is precisely the one who was NOT in the scene when the enemy died:
+        // on returning, the game spawns that enemy alive, and without this record their copy contradicts
+        // the machine that had it right.
+        foreach (string ip in connectedPlayers.Keys)
+        {
+            if (playerIp != ip)
+                Send(ip, data, NetworkType.EnemyDeathGlobal);
+        }
+    }
+
     private void receiveEnemyDamageRequest(string playerIp, byte[] data)
     {
         PlayerInfo current = getCurrentPlayer(playerIp);
@@ -812,5 +827,5 @@ public class Server
         Send(playerIp, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
     }
 
-    private const byte PROTOCOL_VERSION = 8;
+    private const byte PROTOCOL_VERSION = 9;
 }

@@ -154,6 +154,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyUpdate: ReceiveEnemyUpdate(messageData); break;
                         case NetworkType.EnemyDamageRequest: ReceiveEnemyDamageRequest(messageData); break;
                         case NetworkType.EnemyDeath: ReceiveEnemyDeath(messageData); break;
+                        case NetworkType.EnemyDeathGlobal: ReceiveEnemyDeathGlobal(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -546,6 +547,18 @@ namespace Blasphemous.Multiplayer.Client.Network
             EnemySyncManager.ReceiveEnemyKill(handle);
         }
 
+        // Scene-independent death record. Payload is the enemy ID STRING, not a handle: the receiver is
+        // usually in another scene, where its handle table for that scene does not exist yet.
+        public void SendEnemyDeathGlobal(string enemyId)
+        {
+            QueueMesssage(Encoding.UTF8.GetBytes(enemyId), NetworkType.EnemyDeathGlobal);
+        }
+
+        private void ReceiveEnemyDeathGlobal(byte[] data)
+        {
+            EnemySyncManager.ReceiveEnemyDeathGlobal(Encoding.UTF8.GetString(data));
+        }
+
         // Authority
 
         /// <summary>
@@ -561,6 +574,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 8;
+        private const byte PROTOCOL_VERSION = 9;
     }
 }
