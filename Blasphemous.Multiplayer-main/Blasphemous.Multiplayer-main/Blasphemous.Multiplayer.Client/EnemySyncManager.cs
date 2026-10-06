@@ -68,6 +68,9 @@ namespace Blasphemous.Multiplayer.Client
         private static float _rescanTimer;
         private static float _lastSweep;
 
+        // True once the id table has been built for this scene. Guards the fallback below.
+        private static bool _spawnFinalized;
+
         // Diagnostics: enough to tell whether the feature is actually doing anything in game.
         private static string _scene = string.Empty;
         private static int _updatesSent;
@@ -251,19 +254,35 @@ namespace Blasphemous.Multiplayer.Client
             behaviour.enabled = false;
         }
 
-        /// <summary>Called from Multiplayer.OnLevelLoaded.</summary>
+        /// <summary>
+        /// Begins a scene. Called from Multiplayer.OnLevelLoaded.
+        ///
+        /// This must NOT register or finalise anything. In game the ordering is:
+        ///   1. the game calls EnemySpawner.SpawnEnemiesOnLoad()
+        ///   2. that fires OnEnemiesSpawned(), which builds the id table
+        ///   3. only afterwards does the mod's OnLevelLoaded run, with the real scene name
+        /// Registering here produced ids carrying an empty scene name, which this method then threw
+        /// away while resetting _scene - and every later rescan, using the real name, minted a fresh id
+        /// for the same enemy. That is exactly how 7 enemies became 56 ids.
+        ///
+        /// It is also what made the two machines disagree: they differ in WHEN each one learns the scene
+        /// name relative to the spawn, so the id sets built here diverged and the peer rejected every
+        /// index as out of range.
+        /// </summary>
         public static void LevelLoaded(string scene)
         {
+            _scene = scene;
+            _spawnFinalized = false;
+
             _enemies.Clear();
             _spawnPoints.Clear();
-            _ids.Clear();
             _registered.Clear();
+            _ids.Clear();
             _lastSent.Clear();
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
 
-            _scene = scene;
             _updatesSent = 0;
             _updatesReceived = 0;
             _damageSent = 0;
@@ -275,18 +294,7 @@ namespace Blasphemous.Multiplayer.Client
             _fingerprintMismatchReported = 0;
             _countedDuplicates.Clear();
 
-            // At this point the game has not spawned anything yet (this runs from OnLevelLoaded, before
-            // EnemySpawner.SpawnEnemiesOnLoad), so this normally only picks up spawn points that survive
-            // from a previous state. The real registration happens in OnEnemiesSpawned.
-            RegisterEnemies(scene);
-
-            // Sort once here and only here for the ids known so far; later discoveries are appended by
-            // OnEnemiesSpawned, which sorts and re-fingerprints again. _ids is the wire handle table, so
-            // its order must stay frozen for the lifetime of the scene.
-            _ids.Sort(string.CompareOrdinal);
-            _listFingerprint = ComputeFingerprint();
-
-            ModLog.Info($"[EnemySync] Scene {scene}: level loaded, {_enemies.Count} enemies / {_spawnPoints.Count} spawn points so far (IsHost: {IsHost})");
+            ModLog.Info($"[EnemySync] Scene {scene}: level loaded (IsHost: {IsHost})");
         }
 
         /// <summary>
@@ -310,16 +318,26 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// The single point that finalises the id table: registers everything, sorts, and fingerprints.
         /// Called right after the game spawns enemies (EnemySpawner.SpawnEnemiesOnLoad), which is the
-        /// first moment enemies actually exist. Anything registered here gets sorted and fingerprinted
-        /// immediately, so the id table is complete before any packet is sent.
+        /// first moment enemies exist and the first moment the scene name is meaningful.
+        ///
+        /// Because this is the only place that builds the table, both machines build it from the same
+        /// state, which is what makes the indices agree.
         /// </summary>
         public static void OnEnemiesSpawned()
         {
+            _registered.Clear();
+            _ids.Clear();
+            _enemies.Clear();
+            _lastSent.Clear();
+            _registrations = 0;
+
             RegisterEnemies(_scene);
 
             _ids.Sort(string.CompareOrdinal);
             _listFingerprint = ComputeFingerprint();
+            _spawnFinalized = true;
 
             ModLog.Info($"[EnemySync] Post-spawn: {_enemies.Count} enemies / {_spawnPoints.Count} spawn points / {_ids.Count} ids");
         }
@@ -493,7 +511,19 @@ namespace Blasphemous.Multiplayer.Client
             if (_rescanTimer >= RESCAN_INTERVAL)
             {
                 _rescanTimer = 0f;
-                RegisterEnemies(Core.LevelManager.currentLevel != null ? Core.LevelManager.currentLevel.LevelName : string.Empty);
+
+                // Fallback for scenes where the spawn never fires (every spawn point disabled, or no
+                // spawner at all): finalise once here instead, so those scenes still get an id table.
+                if (!_spawnFinalized)
+                {
+                    OnEnemiesSpawned();
+                }
+                else
+                {
+                    // Only append later discoveries. The table is already built and must not be rebuilt,
+                    // or the indices in flight would shift under the peer.
+                    RegisterEnemies(_scene);
+                }
             }
 
             if (_ids.Count == 0)
