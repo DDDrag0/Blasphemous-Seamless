@@ -639,8 +639,33 @@ namespace Blasphemous.Multiplayer.Client
             if (dead != null)
             {
                 for (int i = 0; i < dead.Count; i++)
-                    _enemies.Remove(dead[i]);
+                    ForgetEnemy(dead[i]);
             }
+        }
+
+        /// <summary>
+        /// Drops a dead enemy completely: from the lookup AND from the id list.
+        ///
+        /// Removing it only from the lookup left the id in _ids, where ResolveEnemy falls back to the
+        /// spawn point and hands the same dead enemy back - so it was found dead again on every tick and
+        /// the death was rebroadcast forever (1008 kill messages in one session).
+        ///
+        /// Dropping the id itself is safe now that the wire carries a content-derived handle: indices no
+        /// longer mean anything, so the list may shrink or reorder without disturbing a peer.
+        /// </summary>
+        private static void ForgetEnemy(string id)
+        {
+            // Look the enemy up FIRST: after the removal the lookup is gone, and then it could never be
+            // dropped from the registered set, so a later respawn would be treated as a new enemy.
+            Enemy enemy;
+            _enemies.TryGetValue(id, out enemy);
+
+            _enemies.Remove(id);
+            _ids.Remove(id);
+            _lastSent.Remove(id);
+
+            if (enemy != null)
+                _registered.Remove(enemy);
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
