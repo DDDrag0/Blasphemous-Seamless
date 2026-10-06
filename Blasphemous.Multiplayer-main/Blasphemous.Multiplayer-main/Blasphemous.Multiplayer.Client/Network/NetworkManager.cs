@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.ProgressSync;
 using Blasphemous.Multiplayer.Client.PvP.Models;
@@ -150,6 +150,10 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.Attack: ReceiveAttack(messageData); break;
                         case NetworkType.Effect: ReceiveEffect(messageData); break;
                         case NetworkType.Ping: ReceivePing(messageData); break;
+                        case NetworkType.HostAssign: ReceiveHostAssign(messageData); break;
+                        case NetworkType.EnemyUpdate: ReceiveEnemyUpdate(messageData); break;
+                        case NetworkType.EnemyDamageRequest: ReceiveEnemyDamageRequest(messageData); break;
+                        case NetworkType.EnemyDeath: ReceiveEnemyDeath(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -477,10 +481,87 @@ namespace Blasphemous.Multiplayer.Client.Network
             Main.Multiplayer.PingManager.ReceivePing(time);
         }
 
+        // Enemies
+
+        // The enemy id is the authored spawn point identity (scene|name|x|y), so it travels as a string.
+        private static void AddEnemyId(List<byte> bytes, string enemyId)
+        {
+            byte[] idBytes = Encoding.UTF8.GetBytes(enemyId);
+            bytes.Add((byte)idBytes.Length);
+            bytes.AddRange(idBytes);
+        }
+
+        private static void ReadEnemyId(byte[] data, out string enemyId, out int next)
+        {
+            byte length = data[0];
+            enemyId = Encoding.UTF8.GetString(data, 1, length);
+            next = 1 + length;
+        }
+
+        public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife)
+        {
+            List<byte> bytes = new();
+            AddEnemyId(bytes, enemyId);
+            bytes.AddRange(BitConverter.GetBytes(position.x));
+            bytes.AddRange(BitConverter.GetBytes(position.y));
+            bytes.AddRange(BitConverter.GetBytes(currentLife));
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyUpdate);
+        }
+
+        private void ReceiveEnemyUpdate(byte[] data)
+        {
+            ReadEnemyId(data, out string id, out int idx);
+            float xpos = BitConverter.ToSingle(data, idx);
+            float ypos = BitConverter.ToSingle(data, idx + 4);
+            float currentLife = BitConverter.ToSingle(data, idx + 8);
+
+            EnemySyncManager.ReceiveEnemyUpdate(id, new Vector2(xpos, ypos), currentLife);
+        }
+
+        public void SendEnemyDamageRequest(string enemyId, float damageAmount)
+        {
+            List<byte> bytes = new();
+            AddEnemyId(bytes, enemyId);
+            bytes.AddRange(BitConverter.GetBytes(damageAmount));
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyDamageRequest);
+        }
+
+        private void ReceiveEnemyDamageRequest(byte[] data)
+        {
+            ReadEnemyId(data, out string id, out int idx);
+            float damageAmount = BitConverter.ToSingle(data, idx);
+
+            EnemySyncManager.ReceiveEnemyDamage(id, damageAmount);
+        }
+
+        public void SendEnemyKill(string enemyId)
+        {
+            List<byte> bytes = new();
+            AddEnemyId(bytes, enemyId);
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyDeath);
+        }
+
+        private void ReceiveEnemyDeath(byte[] data)
+        {
+            ReadEnemyId(data, out string id, out int _);
+            EnemySyncManager.ReceiveEnemyKill(id);
+        }
+
+        // Authority
+
+        /// <summary>
+        /// The server elects the host; this tells the client whether it is the one driving enemies.
+        /// Without this packet the client has no way of knowing, and enemy sync silently does nothing.
+        /// </summary>
+        private void ReceiveHostAssign(byte[] data)
+        {
+            EnemySyncManager.SetHost(data.Length > 0 && data[0] == 1);
+        }
+
         // Maybe replace name with entire ConnectInfo
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 3;
+        private const byte PROTOCOL_VERSION = 4;
     }
 }

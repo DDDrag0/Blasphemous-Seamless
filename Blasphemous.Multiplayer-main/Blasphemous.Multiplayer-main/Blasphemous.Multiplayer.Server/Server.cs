@@ -1,8 +1,9 @@
-﻿using Blasphemous.Multiplayer.Common.Enums;
+using Blasphemous.Multiplayer.Common.Enums;
 using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace Blasphemous.Multiplayer.Server;
@@ -14,6 +15,7 @@ public class Server
 
     private SimpleTcpServer server;
     private Dictionary<string, PlayerInfo> connectedPlayers;
+    private string _hostIp;
 
     public Server(int maxPlayers, string password)
     {
@@ -54,6 +56,7 @@ public class Server
         }
 
         connectedPlayers = new Dictionary<string, PlayerInfo>();
+        _hostIp = null;
         return true;
     }
 
@@ -107,9 +110,12 @@ public class Server
                 case NetworkType.Team:          receivePlayerTeam(e.ip, data); break;
                 case NetworkType.Intro:         receivePlayerIntro(e.ip, data); break;
                 case NetworkType.Progress:      receivePlayerProgress(e.ip, data); break;
-                case NetworkType.Attack:        receivePlayerAttack(e.ip, data); break;
-                case NetworkType.Effect:        receivePlayerEffect(e.ip, data); break;
-                case NetworkType.Ping:          ReceivePing(e.ip, data); break;
+                case NetworkType.Attack:             receivePlayerAttack(e.ip, data); break;
+                case NetworkType.Effect:             receivePlayerEffect(e.ip, data); break;
+                case NetworkType.Ping:               ReceivePing(e.ip, data); break;
+                case NetworkType.EnemyUpdate:        receiveEnemyUpdate(e.ip, data); break;
+                case NetworkType.EnemyDamageRequest: receiveEnemyDamageRequest(e.ip, data); break;
+                case NetworkType.EnemyDeath:         receiveEnemyDeath(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -133,6 +139,18 @@ public class Server
         sendPlayerConnection(e.ip, false);
         connectedPlayers.Remove(e.ip);
         Core.removeUnusedGameData(connectedPlayers);
+
+        if (e.ip == _hostIp)
+        {
+            _hostIp = connectedPlayers.Keys.FirstOrDefault();
+            if (_hostIp != null)
+            {
+                Logger.Info($"Host reassigned to: {connectedPlayers[_hostIp].name} ({_hostIp})");
+                sendHostAssign(_hostIp);
+            }
+            else
+                Logger.Info("Host disconnected, no other players connected.");
+        }
     }
 
     private PlayerInfo getCurrentPlayer(string ip)
@@ -516,6 +534,13 @@ public class Server
         Logger.Info("Player connection accepted");
         PlayerInfo newPlayer = new PlayerInfo(name, team);
         connectedPlayers.Add(playerIp, newPlayer);
+        if (string.IsNullOrEmpty(_hostIp))
+        {
+            _hostIp = playerIp;
+            Logger.Info($"Designated host: {newPlayer.name} ({playerIp})");
+        }
+        // Tell the client whether it is the one that must drive enemy simulation.
+        sendHostAssign(playerIp);
         sendPlayerConnection(playerIp, true);
         sendPlayerIntro(playerIp, RefusalType.Accepted);
     }
@@ -718,5 +743,72 @@ public class Server
         SendPing(playerIp, time);
     }
 
-    private const byte PROTOCOL_VERSION = 3;
+    // Enemies
+
+    // Enemy ids are the authored spawn point identity (scene|name|x|y) and travel as a string, so the
+    // server only has to relay the payload to the peers sharing the sender's scene.
+    private void relayToScene(string playerIp, byte[] data, NetworkType type)
+    {
+        PlayerInfo current = getCurrentPlayer(playerIp);
+        foreach (string ip in connectedPlayers.Keys)
+        {
+            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            {
+                Send(ip, data, type);
+            }
+        }
+    }
+
+    private void receiveEnemyUpdate(string playerIp, byte[] data)
+    {
+        // Only the host may broadcast the authoritative enemy state.
+        if (playerIp != _hostIp)
+            return;
+
+        relayToScene(playerIp, data, NetworkType.EnemyUpdate);
+    }
+
+    private void receiveEnemyDeath(string playerIp, byte[] data)
+    {
+        // Only the host decides that an enemy died.
+        if (playerIp != _hostIp)
+            return;
+
+        relayToScene(playerIp, data, NetworkType.EnemyDeath);
+    }
+
+    private void receiveEnemyDamageRequest(string playerIp, byte[] data)
+    {
+        PlayerInfo current = getCurrentPlayer(playerIp);
+
+        // Se il pacchetto arriva dall'Host, diffondi il danno confermato a tutti gli altri client nella stessa scena
+        if (playerIp == _hostIp)
+        {
+            foreach (string ip in connectedPlayers.Keys)
+            {
+                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+                {
+                    Send(ip, data, NetworkType.EnemyDamageRequest);
+                }
+            }
+        }
+        else
+        {
+            // Se arriva da un peer, inoltralo esclusivamente all'Host se connesso per l'approvazione
+            if (!string.IsNullOrEmpty(_hostIp) && connectedPlayers.ContainsKey(_hostIp))
+            {
+                Send(_hostIp, data, NetworkType.EnemyDamageRequest);
+            }
+        }
+    }
+
+    // Authority
+
+    private void sendHostAssign(string playerIp)
+    {
+        bool isHost = playerIp == _hostIp;
+        Send(playerIp, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
+    }
+
+    private const byte PROTOCOL_VERSION = 4;
 }

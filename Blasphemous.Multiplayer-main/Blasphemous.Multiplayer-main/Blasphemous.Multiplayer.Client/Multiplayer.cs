@@ -1,4 +1,4 @@
-﻿using Blasphemous.CheatConsole;
+using Blasphemous.CheatConsole;
 using Blasphemous.ModdingAPI;
 using Blasphemous.ModdingAPI.Helpers;
 using Blasphemous.ModdingAPI.Persistence;
@@ -94,11 +94,13 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         ProgressManager.ResetProgressSentStatus();
         OtherPlayerManager.RemoveAllConnectedPlayers();
         OtherPlayerManager.RemoveAllActivePlayers();
+        EnemySyncManager.SetHost(false); // The server reassigns the role on reconnect.
         PlayerName = string.Empty;
     }
 
     protected override void OnLevelLoaded(string oldLevel, string newLevel)
     {
+        EnemySyncManager.LevelLoaded(newLevel);
         CurrentlyInLevel = newLevel != "MainMenu";
         NotificationManager.LevelLoaded();
         OtherPlayerManager.LevelLoaded(newLevel);
@@ -144,10 +146,16 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
             MainPlayerManager.Update();
             OtherPlayerManager.Update();
             ProgressManager.Update();
+            EnemySyncManager.Update();
         }
 
         NetworkManager.SendQueue();
     }
+
+    // Enemy sync network helpers
+    public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife) => NetworkManager.SendEnemyUpdate(enemyId, position, currentLife);
+    public void SendEnemyDamageRequest(string enemyId, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyId, damageAmount);
+    public void SendEnemyKill(string enemyId) => NetworkManager.SendEnemyKill(enemyId);
 
     // TEMP: only called by Network manager to store name/team right now
     public void SetPlayerData(string player, byte team)
