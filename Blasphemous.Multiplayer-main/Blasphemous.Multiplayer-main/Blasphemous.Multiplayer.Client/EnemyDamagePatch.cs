@@ -44,8 +44,8 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null)
                 return;
 
-            ushort index;
-            if (!EnemySyncManager.TryGetEnemyIndex(enemy, out index))
+            uint handle;
+            if (!EnemySyncManager.TryGetEnemyHandle(enemy, out handle))
                 return;
 
             // The game truncates DamageAmount to int in TakeDamageAmount; send the same value so every
@@ -57,12 +57,12 @@ namespace Blasphemous.Multiplayer.Client
                 // The damage already landed here; the server relays this to the peers in the scene so
                 // they can show it too.
                 EnemySyncManager.RecordDamageApplied();
-                Main.Multiplayer.SendEnemyDamageRequest(index, amount);
+                Main.Multiplayer.SendEnemyDamageRequest(handle, amount);
             }
             else
             {
                 EnemySyncManager.RecordDamageSent();
-                Main.Multiplayer.SendEnemyDamageRequest(index, amount);
+                Main.Multiplayer.SendEnemyDamageRequest(handle, amount);
             }
         }
 

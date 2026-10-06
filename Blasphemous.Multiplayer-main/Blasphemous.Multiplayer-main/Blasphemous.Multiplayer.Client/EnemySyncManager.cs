@@ -120,13 +120,11 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Maps a damaged GameObject to its index in the shared id list. The index is the wire handle:
-        /// it is derived from spawn point name and position, which are authored in the scene, so both
-        /// machines build the exact same list and therefore the same indices.
+        /// Maps a damaged GameObject to its network handle. Used by the damage patch to forward a hit.
         /// </summary>
-        public static bool TryGetEnemyIndex(Enemy enemy, out ushort index)
+        public static bool TryGetEnemyHandle(Enemy enemy, out uint handle)
         {
-            index = 0;
+            handle = 0;
             if (enemy == null)
                 return false;
 
@@ -138,10 +136,7 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (tracked == enemy || enemy.transform.IsChildOf(tracked.transform))
                 {
-                    if (i > ushort.MaxValue)
-                        return false;
-
-                    index = (ushort)i;
+                    handle = HandleOf(_ids[i]);
                     return true;
                 }
             }
@@ -149,20 +144,52 @@ namespace Blasphemous.Multiplayer.Client
             return false;
         }
 
-        private static Enemy ResolveByIndex(ushort index)
+        /// <summary>
+        /// The wire handle for an id: a 32-bit hash of the id STRING, not its position in a list.
+        ///
+        /// Position indices proved unworkable. The host and the peer do not always hold lists of the same
+        /// size - one machine can have an extra entry for an enemy that no longer exists - and then every
+        /// index beyond the shorter list is rejected and all updates for those enemies are lost. A handle
+        /// derived from the id text is computed independently on each machine and stays correct whatever
+        /// the other list contains.
+        ///
+        /// FNV-1a, written out here because string.GetHashCode() is not guaranteed to agree across
+        /// processes or runtimes.
+        /// </summary>
+        private static uint HandleOf(string id)
         {
-            if (index >= _ids.Count)
+            unchecked
             {
-                ModLog.Error($"[EnemySync] Indice nemico {index} fuori intervallo (max {_ids.Count - 1}): le due macchine non hanno la stessa lista di nemici.");
-                return null;
+                const uint offset = 2166136261;
+                const uint prime = 16777619;
+
+                uint hash = offset;
+                for (int i = 0; i < id.Length; i++)
+                {
+                    hash ^= id[i];
+                    hash *= prime;
+                }
+                return hash;
+            }
+        }
+
+        private static Enemy ResolveByHandle(uint handle)
+        {
+            // A scene holds tens of enemies at most, so a linear scan is cheaper than maintaining a
+            // second dictionary that would have to be kept in step with the id list.
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                if (HandleOf(_ids[i]) == handle)
+                    return ResolveEnemy(_ids[i]);
             }
 
-            return ResolveEnemy(_ids[index]);
+            ModLog.Error($"[EnemySync] Handle {handle} non trovato fra i {_ids.Count} id locali: le due macchine non hanno la stessa lista di nemici.");
+            return null;
         }
 
         /// <summary>
-        /// Per-enemy listing. Run "multiplayer sync dump" on both machines: the id column is the
-        /// network identity and must be identical (same order too, since it is built the same way).
+        /// Per-enemy listing. Run "multiplayer sync" on both machines: the handles must be identical,
+        /// because they are what travels on the wire.
         /// </summary>
         public static List<string> Dump()
         {
@@ -176,11 +203,11 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (enemy == null)
                 {
-                    lines.Add($"[{i,3}] ID {id} -> nemico non risolto");
+                    lines.Add($"[{i,3}] handle={HandleOf(id)} ID {id} -> nemico non risolto");
                     continue;
                 }
 
-                lines.Add($"[{i,3}] ID {id}");
+                lines.Add($"[{i,3}] handle={HandleOf(id)} ID {id}");
             }
             return lines;
         }
@@ -553,7 +580,7 @@ namespace Blasphemous.Multiplayer.Client
             for (int i = 0; i < _ids.Count; i++)
             {
                 string id = _ids[i];
-                ushort handle = (ushort)i;
+                uint handle = HandleOf(id);
                 Enemy enemy = ResolveEnemy(id);
 
                 if (enemy == null || enemy.gameObject == null)
@@ -617,7 +644,7 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
-        public static void ReceiveEnemyUpdate(ushort index, Vector2 position, float currentLife, int animState, float animTime, int fingerprint)
+        public static void ReceiveEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint)
         {
             _updatesReceived++;
 
@@ -633,7 +660,7 @@ namespace Blasphemous.Multiplayer.Client
                              $"(spawn point locali: {_spawnPoints.Count}, id locali: {_ids.Count}).");
             }
 
-            Enemy enemy = ResolveByIndex(index);
+            Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
                 return;
 
@@ -699,9 +726,9 @@ namespace Blasphemous.Multiplayer.Client
         /// (either it is the host, or it is the peer that is then echoed by the server to the others),
         /// so this only ever runs on machines that did not swing.
         /// </summary>
-        public static void ReceiveEnemyDamage(ushort index, float damageAmount)
+        public static void ReceiveEnemyDamage(uint handle, float damageAmount)
         {
-            Enemy enemy = ResolveByIndex(index);
+            Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
                 return;
 
@@ -732,13 +759,22 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>Authoritative death, so peers always see the corpse and the drop.</summary>
-        public static void ReceiveEnemyKill(ushort index)
+        public static void ReceiveEnemyKill(uint handle)
         {
-            Enemy enemy = ResolveByIndex(index);
+            Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
                 return;
 
-            _enemies.Remove(index < _ids.Count ? _ids[index] : null);
+            // Drop the id so the dead enemy stops being broadcast, then run the native death sequence if
+            // it has not already died locally.
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                if (HandleOf(_ids[i]) == handle)
+                {
+                    _enemies.Remove(_ids[i]);
+                    break;
+                }
+            }
 
             if (enemy.Dead || enemy.CurrentLife <= 0f)
                 return;
