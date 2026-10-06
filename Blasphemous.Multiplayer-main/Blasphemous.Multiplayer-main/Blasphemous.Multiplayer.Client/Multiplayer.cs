@@ -153,7 +153,7 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     }
 
     // Enemy sync network helpers
-    public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife) => NetworkManager.SendEnemyUpdate(enemyId, position, currentLife);
+    public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife, int animState, float animTime) => NetworkManager.SendEnemyUpdate(enemyId, position, currentLife, animState, animTime);
     public void SendEnemyDamageRequest(string enemyId, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyId, damageAmount);
     public void SendEnemyKill(string enemyId) => NetworkManager.SendEnemyKill(enemyId);
 

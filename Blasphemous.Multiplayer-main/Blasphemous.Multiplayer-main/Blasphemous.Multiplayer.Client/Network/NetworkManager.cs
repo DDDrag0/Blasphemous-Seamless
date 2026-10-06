@@ -498,13 +498,15 @@ namespace Blasphemous.Multiplayer.Client.Network
             next = 1 + length;
         }
 
-        public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife)
+        public void SendEnemyUpdate(string enemyId, Vector2 position, float currentLife, int animState, float animTime)
         {
             List<byte> bytes = new();
             AddEnemyId(bytes, enemyId);
             bytes.AddRange(BitConverter.GetBytes(position.x));
             bytes.AddRange(BitConverter.GetBytes(position.y));
             bytes.AddRange(BitConverter.GetBytes(currentLife));
+            bytes.AddRange(BitConverter.GetBytes(animState));
+            bytes.AddRange(BitConverter.GetBytes(animTime));
             QueueMesssage(bytes.ToArray(), NetworkType.EnemyUpdate);
         }
 
@@ -514,8 +516,10 @@ namespace Blasphemous.Multiplayer.Client.Network
             float xpos = BitConverter.ToSingle(data, idx);
             float ypos = BitConverter.ToSingle(data, idx + 4);
             float currentLife = BitConverter.ToSingle(data, idx + 8);
+            int animState = BitConverter.ToInt32(data, idx + 12);
+            float animTime = BitConverter.ToSingle(data, idx + 16);
 
-            EnemySyncManager.ReceiveEnemyUpdate(id, new Vector2(xpos, ypos), currentLife);
+            EnemySyncManager.ReceiveEnemyUpdate(id, new Vector2(xpos, ypos), currentLife, animState, animTime);
         }
 
         public void SendEnemyDamageRequest(string enemyId, float damageAmount)

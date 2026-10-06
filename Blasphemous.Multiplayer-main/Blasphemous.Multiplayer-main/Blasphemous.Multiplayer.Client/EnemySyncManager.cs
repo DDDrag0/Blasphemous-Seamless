@@ -41,6 +41,7 @@ namespace Blasphemous.Multiplayer.Client
         // Last broadcast state, used to skip enemies that did not change.
         private static readonly Dictionary<string, Vector2> _lastSentPos = new Dictionary<string, Vector2>();
         private static readonly Dictionary<string, float> _lastSentLife = new Dictionary<string, float>();
+        private static readonly Dictionary<string, int> _lastSentAnim = new Dictionary<string, int>();
         private static readonly Dictionary<string, float> _lastFullSend = new Dictionary<string, float>();
 
         private static bool _isHost;
@@ -56,6 +57,8 @@ namespace Blasphemous.Multiplayer.Client
         private static int _damageApplied;
         private static int _killsSent;
         private static int _registrations;
+        private static int _duplicateIds;
+        private static int _missingSpawnedEnemy;
 
         /// <summary>
         /// One-line health summary, surfaced by the "multiplayer sync" command. Built to be compared
@@ -63,8 +66,14 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         public static string Describe()
         {
+            string warning = string.Empty;
+            if (_duplicateIds > 0)
+                warning += $" ATTENZIONE: {_duplicateIds} spawn point con identita' duplicata (id non univoci!)";
+            if (_missingSpawnedEnemy > 0)
+                warning += $" NOTA: {_missingSpawnedEnemy} nemici non ancora creati dallo spawn point";
+
             return string.Format(
-                "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} | sent={6} recv={7} dmgSent={8} dmgApplied={9} killsSent={10}",
+                "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} | sent={6} recv={7} dmgSent={8} dmgApplied={9} killsSent={10}{11}",
                 _scene,
                 IsHost ? (Main.Multiplayer.NetworkManager.IsConnected ? "HOST" : "solo") : "peer",
                 Main.Multiplayer.NetworkManager.IsConnected,
@@ -75,7 +84,8 @@ namespace Blasphemous.Multiplayer.Client
                 _updatesReceived,
                 _damageSent,
                 _damageApplied,
-                _killsSent);
+                _killsSent,
+                warning);
         }
 
         /// <summary>
@@ -152,6 +162,7 @@ namespace Blasphemous.Multiplayer.Client
             _ids.Clear();
             _lastSentPos.Clear();
             _lastSentLife.Clear();
+            _lastSentAnim.Clear();
             _lastFullSend.Clear();
             _sendTimer = 0f;
             _rescanTimer = 0f;
@@ -164,6 +175,8 @@ namespace Blasphemous.Multiplayer.Client
             _damageApplied = 0;
             _killsSent = 0;
             _registrations = 0;
+            _duplicateIds = 0;
+            _missingSpawnedEnemy = 0;
 
             ScanSpawnPoints(scene);
 
@@ -187,14 +200,24 @@ namespace Blasphemous.Multiplayer.Client
                     continue;
 
                 string id = BuildId(scene, point);
-                if (!_spawnPoints.ContainsKey(id))
+                if (_spawnPoints.ContainsKey(id))
+                {
+                    // Two spawn points sharing name and position would break the network id, so make it
+                    // visible in the diagnostics instead of failing silently.
+                    _duplicateIds++;
+                }
+                else
                 {
                     _spawnPoints.Add(id, point);
                     _ids.Add(id);
                 }
 
                 Enemy spawned = point.SpawnedEnemy;
-                if (spawned != null && _enemies.ContainsKey(id) == false)
+                if (spawned == null)
+                {
+                    _missingSpawnedEnemy++;
+                }
+                else if (!_enemies.ContainsKey(id))
                 {
                     _enemies.Add(id, spawned);
                     _registrations++;
@@ -255,6 +278,9 @@ namespace Blasphemous.Multiplayer.Client
 
                 Vector2 position = enemy.transform.position;
                 float life = enemy.CurrentLife;
+                int animState;
+                float animTime;
+                ReadAnimation(enemy, out animState, out animTime);
 
                 // Skip unchanged enemies to save bandwidth; the periodic full sweep above guarantees
                 // that everything is still resent regularly.
@@ -262,16 +288,21 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     bool changed = Mathf.Abs(prevPos.x - position.x) > POSITION_EPSILON ||
                                    Mathf.Abs(prevPos.y - position.y) > POSITION_EPSILON ||
-                                   Mathf.Abs(_lastSentLife[id] - life) > LIFE_EPSILON;
+                                   Mathf.Abs(_lastSentLife[id] - life) > LIFE_EPSILON ||
+                                   _lastSentAnim[id] != animState;
 
                     if (!changed)
                         continue;
                 }
 
+                if (_lastSentAnim[id] != animState)
+                    animTime = 0f; // Only pass a playback position when the state actually changes.
+
                 _lastSentPos[id] = position;
                 _lastSentLife[id] = life;
+                _lastSentAnim[id] = animState;
                 _updatesSent++;
-                Main.Multiplayer.SendEnemyUpdate(id, position, life);
+                Main.Multiplayer.SendEnemyUpdate(id, position, life, animState, animTime);
             }
 
             if (dead != null)
@@ -281,8 +312,8 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        /// <summary>Position + health broadcast sent by the host.</summary>
-        public static void ReceiveEnemyUpdate(string id, Vector2 position, float currentLife)
+        /// <summary>Position, health and animation state broadcast sent by the host.</summary>
+        public static void ReceiveEnemyUpdate(string id, Vector2 position, float currentLife, int animState, float animTime)
         {
             _updatesReceived++;
 
@@ -301,10 +332,55 @@ namespace Blasphemous.Multiplayer.Client
                     behaviour.PauseBehaviour();
                     behaviour.enabled = false;
                 }
+
+                // PauseBehaviour only stops the NodeCanvas behaviour tree, not the Animator, so a peer
+                // still animates idle/walk on its own but would never show an attack. Drive the state
+                // from the host instead.
+                ApplyAnimation(enemy, animState, animTime);
             }
 
             enemy.transform.position = position;
             enemy.CurrentLife = currentLife;
+        }
+
+        private static void ReadAnimation(Enemy enemy, out int stateHash, out float normalizedTime)
+        {
+            stateHash = 0;
+            normalizedTime = 0f;
+
+            Animator animator = AnimatorOf(enemy);
+            if (animator == null || animator.runtimeAnimatorController == null)
+                return;
+
+            AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+            stateHash = state.shortNameHash;
+            normalizedTime = state.normalizedTime;
+        }
+
+        private static void ApplyAnimation(Enemy enemy, int stateHash, float normalizedTime)
+        {
+            if (stateHash == 0)
+                return;
+
+            Animator animator = AnimatorOf(enemy);
+            if (animator == null || animator.runtimeAnimatorController == null)
+                return;
+
+            if (animator.GetCurrentAnimatorStateInfo(0).shortNameHash == stateHash)
+                return; // Already in that state; replaying it would restart the clip constantly.
+
+            if (normalizedTime > 0f && normalizedTime < 1f)
+                animator.Play(stateHash, 0, normalizedTime);
+            else
+                animator.Play(stateHash, 0, 0f);
+        }
+
+        private static Animator AnimatorOf(Enemy enemy)
+        {
+            if (enemy == null)
+                return null;
+
+            return enemy.Animator != null ? enemy.Animator : enemy.GetComponentInChildren<Animator>();
         }
 
         /// <summary>
