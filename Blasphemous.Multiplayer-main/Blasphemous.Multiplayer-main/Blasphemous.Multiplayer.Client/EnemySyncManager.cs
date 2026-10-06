@@ -38,6 +38,10 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, EnemySpawnPoint> _spawnPoints = new Dictionary<string, EnemySpawnPoint>();
         private static readonly List<string> _ids = new List<string>();
 
+        // Every enemy already given an id. Checks this instead of recomputing an id, so an enemy that
+        // moves is never mistaken for a new one.
+        private static readonly HashSet<Enemy> _registered = new HashSet<Enemy>();
+
         // Last broadcast state, used to skip enemies that did not change.
         private static readonly Dictionary<string, Vector2> _lastSentPos = new Dictionary<string, Vector2>();
         private static readonly Dictionary<string, float> _lastSentLife = new Dictionary<string, float>();
@@ -239,6 +243,7 @@ namespace Blasphemous.Multiplayer.Client
             _enemies.Clear();
             _spawnPoints.Clear();
             _ids.Clear();
+            _registered.Clear();
             _lastSentPos.Clear();
             _lastSentLife.Clear();
             _lastSentAnim.Clear();
@@ -317,7 +322,10 @@ namespace Blasphemous.Multiplayer.Client
         {
             HashSet<string> seenThisScan = new HashSet<string>();
 
-            // Enemies that belong to a spawn point: the spawn point is the authored, stable object.
+            // Enemies that belong to a spawn point: the spawn point is the authored, stable anchor.
+            // The link is EnemySpawnPoint.SpawnedEnemy, NOT the hierarchy: CreateEnemy parents the new
+            // enemy to Core.Logic.CurrentLevelConfig, so GetComponentInParent<EnemySpawnPoint>() never
+            // matches (the in-game dump confirmed childOfSpawnPoint=no for every enemy).
             EnemySpawnPoint[] points = Object.FindObjectsOfType<EnemySpawnPoint>();
             if (points != null)
             {
@@ -337,27 +345,24 @@ namespace Blasphemous.Multiplayer.Client
                     }
 
                     if (!_spawnPoints.ContainsKey(id))
-                    {
                         _spawnPoints.Add(id, point);
-                        _ids.Add(id);
-                    }
 
                     Enemy spawned = point.SpawnedEnemy;
-                    if (spawned != null && !_enemies.ContainsKey(id))
-                    {
-                        _enemies.Add(id, spawned);
-                        _registrations++;
-                    }
+                    if (spawned == null || spawned.gameObject == null)
+                        continue; // not created yet, or already dead
+
+                    RegisterEnemy(id, spawned);
                 }
             }
 
-            // Enemies with no spawn point (triggered encounters, arena waves, and every boss: bosses are
-            // Enemy components placed directly in the scene, not spawned from an EnemySpawnPoint).
-            // These have no authored anchor, so they are identified by their own name plus position.
+            // Everything else: triggered encounters, arena waves, and every boss. These have no authored
+            // anchor, so they are keyed by name plus the position they had when FIRST registered.
+            // The position is captured once and never recomputed: an enemy that walks away from where it
+            // started would otherwise look like a brand new enemy on every scan, which is exactly what
+            // produced 14 ids for 5 enemies in the first in-game test.
             //
             // They must be found while still INACTIVE: a boss sits disabled in the scene until its
-            // cutscene enables it, and FindObjectsOfType<Enemy>() skips disabled objects entirely, so
-            // walking the object tree is the only way to see it before the fight starts.
+            // cutscene enables it, and FindObjectsOfType<Enemy>() skips disabled objects entirely.
             Enemy[] enemies = FindAllEnemiesIncludingInactive();
             if (enemies != null)
             {
@@ -367,21 +372,36 @@ namespace Blasphemous.Multiplayer.Client
                     if (enemy == null || enemy.gameObject == null)
                         continue;
 
-                    if (enemy.GetComponentInParent<EnemySpawnPoint>() != null)
-                        continue; // already covered through its spawn point
+                    if (IsRegistered(enemy))
+                        continue; // already covered through its spawn point, or by an earlier scan
 
-                    string id = BuildEnemyId(scene, enemy);
+                    string id = BuildFreeEnemyId(scene, enemy);
                     if (!seenThisScan.Add(id))
                         continue;
 
-                    if (!_enemies.ContainsKey(id))
-                    {
-                        _enemies.Add(id, enemy);
-                        _ids.Add(id);
-                        _registrations++;
-                    }
+                    RegisterEnemy(id, enemy);
                 }
             }
+        }
+
+        /// <summary>
+        /// Assigns an id exactly once. Already-registered enemies are left untouched, which is what keeps
+        /// ids stable while an enemy moves and stops repeated scans from inventing duplicates.
+        /// </summary>
+        private static void RegisterEnemy(string id, Enemy enemy)
+        {
+            if (_enemies.ContainsKey(id))
+                return;
+
+            _enemies.Add(id, enemy);
+            _ids.Add(id);
+            _registered.Add(enemy);
+            _registrations++;
+        }
+
+        private static bool IsRegistered(Enemy enemy)
+        {
+            return _registered.Contains(enemy);
         }
 
         /// <summary>
@@ -426,19 +446,30 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Identity of an enemy with no spawn point. The game names these EntityName + GetHashCode(), and
-        /// that hash is a per-process instance id, so it is stripped: only the authored name and the
-        /// position are used, which are scene data.
+        /// Identity of an enemy with no spawn point. EnemySpawnPoint.SetEntityName appends an instance
+        /// hash to the name (EntityName + GetHashCode(), but only when EntityName is longer than 3
+        /// characters), and an instance hash differs between processes, so the trailing digits are
+        /// stripped: 'Tutorial757000320' becomes 'Tutorial', while 'Fool(Clone)' keeps its name.
+        /// Enemies still sharing a name differ by the position they had when first registered.
         /// </summary>
-        private static string BuildEnemyId(string scene, Enemy enemy)
+        private static string BuildFreeEnemyId(string scene, Enemy enemy)
         {
-            string name = enemy.gameObject.name;
-            int separator = name.IndexOf('_');
-            if (separator > 0)
-                name = name.Substring(0, separator);
-
+            string name = StripInstanceHash(enemy.gameObject.name);
             Vector3 p = enemy.transform.position;
-            return $"en|{scene}|{name}|{p.x:F2}|{p.y:F2}";
+            return $"en|{scene}|{name}|{p.x:F0}|{p.y:F0}";
+        }
+
+        private static string StripInstanceHash(string name)
+        {
+            int end = name.Length;
+            while (end > 0 && char.IsDigit(name[end - 1]))
+                end--;
+
+            // Only strip when digits were appended to something, never when the name is all digits.
+            if (end == name.Length || end == 0)
+                return name;
+
+            return name.Substring(0, end);
         }
 
         /// <summary>Called from Multiplayer.OnLateUpdate.</summary>
