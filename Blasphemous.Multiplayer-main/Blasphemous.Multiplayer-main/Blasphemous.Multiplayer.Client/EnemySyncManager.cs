@@ -112,6 +112,23 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static readonly Dictionary<string, Vector2> _remotePositions = new Dictionary<string, Vector2>();
 
+        /// <summary>
+        /// Where a non-owned enemy is heading, from the last snapshot received.
+        ///
+        /// State arrives about 20 times a second, and assigning it straight to transform.position made the
+        /// enemy jump 20 times a second - visible as constant stutter on whichever machine is NOT
+        /// simulating it. Keeping the snapshot as a target and moving towards it every frame turns those
+        /// jumps back into motion. The value is the remote machine's real simulation result, so nothing is
+        /// invented: it is the same path, just followed smoothly instead of in steps.
+        /// </summary>
+        private static readonly Dictionary<string, Vector2> _remoteTargets = new Dictionary<string, Vector2>();
+
+        /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
+        private const float FOLLOW_LERP = 0.25f;
+
+        /// <summary>Beyond this the enemy is snapped instead of eased, so a real teleport is not smoothed.</summary>
+        private const float FOLLOW_SNAP_DISTANCE = 6f;
+
         private static bool _isHost;
         private static float _sendTimer;
         private static float _rescanTimer;
@@ -738,9 +755,41 @@ namespace Blasphemous.Multiplayer.Client
             _remotePositions[playerName] = position;
         }
 
-        /// <summary>Distance to the nearest other player, or float.MaxValue when none is known.</summary>
-        private static float NearestRemoteDistance(Enemy enemy)
+        /// <summary>
+        /// Eases every enemy this machine does NOT own towards its last received snapshot.
+        ///
+        /// Only non-owned enemies are moved: an owned enemy is being simulated by the game's own AI, and
+        /// writing to its transform would fight the AI and undo the whole point of running it locally.
+        /// </summary>
+        private static void InterpolateRemoteEnemies()
         {
+            foreach (KeyValuePair<string, Vector2> entry in _remoteTargets)
+            {
+                Enemy enemy = ResolveEnemy(entry.Key);
+                if (enemy == null)
+                    continue;
+
+                EnemyState state;
+                if (_lastSent.TryGetValue(entry.Key, out state) && state.OwnedByLocal)
+                    continue;
+
+                Vector3 current = enemy.transform.position;
+                Vector2 target = entry.Value;
+                Vector2 flat = new Vector2(current.x, current.y);
+                float distance = Vector2.Distance(flat, target);
+
+                Vector2 next;
+                if (distance > FOLLOW_SNAP_DISTANCE)
+                    next = target; // a real jump (spawn, knockback): do not smear it out
+                else
+                    next = Vector2.Lerp(flat, target, FOLLOW_LERP);
+
+                enemy.transform.position = new Vector3(next.x, next.y, current.z);
+            }
+        }
+
+        /// <summary>Distance to the nearest other player, or float.MaxValue when none is known.</summary>
+        private static float NearestRemoteDistance(Enemy enemy)        {
             float nearest = float.MaxValue;
             foreach (Vector2 remote in _remotePositions.Values)
             {
@@ -864,6 +913,10 @@ namespace Blasphemous.Multiplayer.Client
                 // what does each side think the aggro, ownership, animation and life are.
                 LogDiagnosticSnapshot();
             }
+
+            // Follow the remote snapshots smoothly. Runs before the send gate below, because that gate
+            // returns early on most frames and the easing has to happen every frame to look smooth.
+            InterpolateRemoteEnemies();
 
             // Both machines receive: the owner to follow the authoritative state, the non-owner to apply
             // it. Receiving is what tells a machine whether it should be simulating a given enemy, so it
@@ -995,6 +1048,7 @@ namespace Blasphemous.Multiplayer.Client
             _enemies.Remove(id);
             _ids.Remove(id);
             _lastSent.Remove(id);
+            _remoteTargets.Remove(id);
 
             if (enemy != null)
                 _registered.Remove(enemy);
@@ -1055,8 +1109,12 @@ namespace Blasphemous.Multiplayer.Client
                 ResumeEnemy(enemy);
             }
 
-            enemy.transform.position = position;
             enemy.CurrentLife = currentLife;
+
+            // Record the snapshot as a TARGET. The position is applied smoothly in Update, once per frame,
+            // instead of being snapped here 20 times a second.
+            if (FindIdOfHandle(handle, out string targetId))
+                _remoteTargets[targetId] = position;
 
             // Death is treated as a CONSEQUENCE OF HEALTH, not only as its own packet. The death packet
             // proved unreliable in game - the peer kept showing a frozen enemy with full life because the
