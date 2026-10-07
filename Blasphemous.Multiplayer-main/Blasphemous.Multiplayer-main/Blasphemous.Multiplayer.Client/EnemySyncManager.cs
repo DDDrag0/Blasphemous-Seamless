@@ -1204,22 +1204,37 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void PlaceEnemy(Enemy enemy, Vector3 position)
         {
+            // The transform has to move FIRST, and this order is the whole method.
+            //
+            // PlatformCharacterController.ResetPreviousPosition() reads the transform and copies it INTO
+            // the physics - it does not write the transform from the physics:
+            //
+            //   m_prevPos = transform.position;
+            //   m_platformPhysics.ResetPreviousPosition(m_prevPos);
+            //
+            // So calling it after setting the physics silently undoes the move: the physics gets the new
+            // position and is then overwritten with the old transform position again. That is exactly what
+            // happened in the first attempt at this method, and it left the peer's enemies standing still.
+            //
+            // Order: move the transform, tell the physics the new position (Position only, which sets m_pos),
+            // then call ResetPreviousPosition - which now reads the transform we just moved and copies that
+            // same position into both the physics and m_prevPos. Aligning m_prevPos as well is what keeps
+            // InstantVelocity clean; without it the controller derives a huge spurious velocity from the
+            // jump between the old and new position and the enemy shoots off.
+            enemy.transform.position = position;
+
             PlatformCharacterController controller = enemy.Controller;
             if (controller == null)
-            {
-                enemy.transform.position = position;
                 return;
-            }
 
             PlatformCharacterPhysics physics = controller.PlatformCharacterPhysics;
             if (physics == null)
             {
-                enemy.transform.position = position;
                 controller.ResetPreviousPosition();
                 return;
             }
 
-            physics.ResetPreviousPosition(position);
+            physics.Position = position;
             controller.ResetPreviousPosition();
         }
 
