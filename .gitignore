@@ -1,0 +1,23 @@
+# Artefatti di build della mod.
+#
+# Blasphemous.Multiplayer.Client.csproj copia Blasphemous.Multiplayer.Common.dll in
+# resources\data dopo ogni build (target "Copy resources to DevFolder/PublishFolder").
+# Il file e' versionato, quindi ogni build lo riscrive con metadati nuovi e sporca
+# git: e' finito in 8 commit come puro rumore, senza alcuna modifica logica.
+# Ignorarlo mantiene il working tree pulito dopo le build.
+Blasphemous.Multiplayer-main/Blasphemous.Multiplayer-main/resources/data/Blasphemous.Multiplayer.Common.dll
+
+# Pacchetti scaricati e loro estrazioni (vedi tools/install-mod-loader.ps1 e
+# tools/deploy-local.ps1): ricreabili, non codice nostro.
+tools/cache/
+tools/Released/
+tools/modtools-extract/
+tools/Blasphemous.Modding.Installer-main/
+tools/Blasphemous.ModdingAPI-main/
+tools/Blasphemous.CheatConsole-main/
+tools/BepInEx_win_x64_5.4.23.5/
+tools/ModdingTools-win64.zip
+
+# Output di build .NET
+[Bb]in/
+[Oo]bj/
