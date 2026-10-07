@@ -86,6 +86,12 @@ namespace Blasphemous.Multiplayer.Client
             /// </summary>
             public byte Orientation;
 
+            /// <summary>True once the host has told this machine who owns the enemy.</summary>
+            public bool OwnershipKnown;
+
+            /// <summary>Last ownership value the host published, so a change can be detected and sent once.</summary>
+            public bool LastPublishedOwnerIsMe;
+
             /// <summary>
             /// The other machine's claim on this enemy, learned from the ownership flag in its updates.
             ///
@@ -585,17 +591,65 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Hands an enemy over to the host: pause the behaviour tree and disable the component, which is
-        /// the same treatment a peer applies to enemies it receives updates for.
+        /// Hands an enemy over to the host: freeze it completely, so the state the real owner sends is the
+        /// state that shows.
+        ///
+        /// Pausing the behaviour tree alone is NOT enough, and this is the part that took the longest to
+        /// find. Verified in the game's IL:
+        ///
+        ///  - PlatformCharacterController.Update() keeps running. It copies transform.position into the
+        ///    physics, integrates velocity, drag and gravity, and writes the transform straight back. Any
+        ///    position applied from outside is therefore undone on the next frame, and with velocity near
+        ///    zero the enemy is put back exactly where it was - the "enemy stays frozen" seen in game. The
+        ///    game itself switches this cycle off with Controller.enabled = false inside Enemy.EnablePhysics,
+        ///    so that is the lever to use.
+        ///  - The enemy can restart its own AI. BellGhost.OnUpdate and Stoners.OnUpdate call
+        ///    BehaviourTree.StartBehaviour() with no guard, every frame, whenever the local player is within
+        ///    ActivationRange; several other behaviours do the same behind an activation distance. Since
+        ///    Graph.Pause() leaves isRunning false, such a call really does restart the tree, so a pause
+        ///    imposed from outside is cancelled on the next frame. Disabling the component is what makes the
+        ///    pause stick: EnemyBehaviour.Update() only runs while the component is enabled.
+        ///
+        /// The enemy is left active on purpose. On an inactive GameObject Unity delivers no Update at all,
+        /// so the controller would stop - but so would everything else, including the ability to apply the
+        /// position received: switching the GameObject off is the wrong way round.
         /// </summary>
         private static void PauseEnemy(Enemy enemy)
         {
+            FreezePhysics(enemy);
+
             var behaviour = enemy.EnemyBehaviour;
             if (behaviour == null || !behaviour.enabled)
                 return;
 
             behaviour.PauseBehaviour();
             behaviour.enabled = false;
+        }
+
+        /// <summary>
+        /// Stops the enemy's own physics from fighting the position the owner sends.
+        ///
+        /// Clearing velocity and gravity as well as disabling the controller matters for the moment the
+        /// enemy is handed back: the controller would otherwise resume with its old momentum and gravity
+        /// scale, and the enemy would slide away from where the owner had it.
+        /// </summary>
+        private static void FreezePhysics(Enemy enemy)
+        {
+            var controller = enemy.Controller;
+            if (controller == null)
+                return;
+
+            controller.enabled = false;
+
+            var physics = controller.PlatformCharacterPhysics;
+            if (physics == null)
+                return;
+
+            physics.Velocity = Vector3.zero;
+            physics.Acceleration = Vector3.zero;
+            physics.HSpeed = 0f;
+            physics.VSpeed = 0f;
+            physics.GravityScale = 0f;
         }
 
         /// <summary>
@@ -609,12 +663,35 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void ResumeEnemy(Enemy enemy)
         {
+            ThawPhysics(enemy);
+
             var behaviour = enemy.EnemyBehaviour;
             if (behaviour == null || behaviour.enabled)
                 return;
 
             behaviour.enabled = true;
             behaviour.StartBehaviour();
+        }
+
+        /// <summary>
+        /// Gives the enemy its own physics back, mirroring FreezePhysics.
+        ///
+        /// Gravity scale is restored to 1, the value PlatformCharacterPhysics sets in its constructor. It is
+        /// the only value that can be restored without knowing the enemy type: most enemies keep it at 1,
+        /// while a few zero it deliberately after landing (ElderBrother, some SetPositionAtStart overrides),
+        /// and their own OnUpdate puts it back on the next frame anyway.
+        /// </summary>
+        private static void ThawPhysics(Enemy enemy)
+        {
+            var controller = enemy.Controller;
+            if (controller == null || controller.enabled)
+                return;
+
+            var physics = controller.PlatformCharacterPhysics;
+            if (physics != null && physics.GravityScale == 0f)
+                physics.GravityScale = 1f;
+
+            controller.enabled = true;
         }
 
         /// <summary>
@@ -920,17 +997,16 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>
         /// True when THIS machine's player is the closest to the enemy, so it should simulate it.
         ///
-        /// Proximity replaces aggro, because aggro simply is not available. Two attempts to read it both
-        /// failed for the same underlying reason: each machine simulates its own copy of the enemy, and
-        /// that copy chases its own player. EnemyBehaviour.GetTarget() falls back to Core.Logic.Penitent
-        /// (the LOCAL player) and Enemy.Target is always set to that same local player, so every machine
-        /// truthfully reports "it is chasing me". There is no field that can express "chasing the other
-        /// player", because in the game's own model the other player does not exist.
+        /// This is now used ONLY by the host, as the rule it applies when arbitrating. The peer never calls
+        /// it: its ownership comes from the EnemyOwnership token the host sends, because two machines
+        /// measuring distance locally cannot be relied on to agree.
         ///
-        /// Distance is the workable substitute: every machine can compute it from data it already has (its
-        /// own position plus the synced position of the other player), and both reach the same conclusion
-        /// without exchanging anything. It also matches the gameplay - whoever is next to an enemy is
-        /// whoever is fighting it.
+        /// Proximity replaces aggro, because aggro is simply not available. Two attempts to read it failed
+        /// for the same underlying reason: each machine simulates its own copy of the enemy, and that copy
+        /// chases its own player. EnemyBehaviour.GetTarget() falls back to Core.Logic.Penitent (the LOCAL
+        /// player) and Enemy.Target is always set to that same local player, so every machine truthfully
+        /// reports "it is chasing me". No field can express "chasing the other player", because in the
+        /// game's own model the other player does not exist.
         /// </summary>
         private static bool ShouldOwnByProximity(Enemy enemy)
         {
@@ -1181,66 +1257,83 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Decides whether this machine should be the one simulating an enemy, and reports whether the
-        /// role changed.
+        /// The HOST's arbitration: decides which machine simulates an enemy, and reports whether the role
+        /// changed. Called only on the host - the peer receives this decision as a token instead.
         ///
         /// The rule, deliberately sticky:
-        ///   - a machine whose player is being chased wants the enemy, because running the AI there is
-        ///     what produces real attacks and deaths;
-        ///   - otherwise the enemy stays where it is, and if it has no owner yet the host takes it, so
-        ///     an idle enemy is never left with nobody simulating it;
-        ///   - the role only moves after OWNER_HOLD_SECONDS, which is what stops the two machines from
-        ///     trading the same enemy many times per second.
-        ///
-        /// The host is the arbiter: it applies this decision and tells the peer, rather than both sides
-        /// deciding independently and possibly disagreeing.
+        ///   - the host takes an enemy when its own player is the closest;
+        ///   - it hands the enemy over when the peer has claimed it and the host is not closer;
+        ///   - the role only moves after OWNER_HOLD_SECONDS, which stops the two machines from trading the
+        ///     same enemy many times per second.
         /// </summary>
         private static bool DecideOwnership(Enemy enemy, EnemyState state, bool localIsHost)
         {
             bool wants = ShouldOwnByProximity(enemy);
-            bool changed = false;
 
             if (state.OwnerSince <= 0f)
             {
-                // First time this enemy is considered: the host takes it, so an enemy that nobody is
-                // chasing is never left with no machine simulating it. A peer only claims it if the
-                // enemy is already chasing the peer's player.
+                // First time this enemy is considered: the host takes it, so an enemy that nobody is near is
+                // never left with no machine simulating it.
                 state.OwnedByLocal = localIsHost || wants;
                 state.OwnerSince = Time.time;
                 return false;
             }
 
-            // The host arbitrates. It knows its own aggro directly, and the peer's claim from the
-            // ownership flag in the peer's updates - without that second input the host would never
-            // release an enemy the peer is already simulating.
-            if (localIsHost)
-            {
-                bool peerWants = state.RemoteEverClaimed && !wants;
+            if (!localIsHost)
+                return false; // only the host arbitrates; this method is never the peer's path
 
-                // Take it when this machine is being chased; give it up when the peer is the one being
-                // chased. Neither case applies for an enemy nobody is chasing, which stays here.
-                if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
-                {
-                    state.OwnedByLocal = true;
-                    state.OwnerSince = Time.time;
-                    changed = true;
-                }
-                else if (peerWants && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
-                {
-                    state.OwnedByLocal = false;
-                    state.OwnerSince = Time.time;
-                    changed = true;
-                }
-            }
-            else if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+            bool peerWants = state.RemoteEverClaimed && !wants;
+            bool changed = false;
+
+            // Take it when this machine's player is the closest; give it up when the peer has claimed it
+            // and the host is not closer. Neither case applies to an enemy nobody is near, which stays here.
+            if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
-                // The peer asks for an enemy that is chasing it.
                 state.OwnedByLocal = true;
+                state.OwnerSince = Time.time;
+                changed = true;
+            }
+            else if (peerWants && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+            {
+                state.OwnedByLocal = false;
                 state.OwnerSince = Time.time;
                 changed = true;
             }
 
             return changed;
+        }
+
+        /// <summary>
+        /// Applies the host's ownership token. This is the ONLY thing that sets ownership on a peer, so the
+        /// two machines cannot disagree: one enemy, one authority.
+        /// </summary>
+        public static void ReceiveEnemyOwnership(uint handle, bool ownedByMe)
+        {
+            if (IsHost)
+                return; // the host is the one that decides; it never takes orders
+
+            if (!FindIdOfHandle(handle, out string id))
+                return;
+
+            EnemyState state = GetOrCreateState(id);
+            state.OwnershipKnown = true;
+
+            if (state.OwnedByLocal == ownedByMe)
+                return;
+
+            state.OwnedByLocal = ownedByMe;
+            state.OwnerSince = Time.time;
+
+            Enemy enemy = ResolveEnemy(id);
+            if (enemy == null)
+                return;
+
+            // Take effect at once rather than waiting for the next send tick, which only runs 20 times a
+            // second: an enemy that just lost ownership must stop being simulated immediately.
+            if (ownedByMe)
+                ResumeEnemy(enemy);
+            else
+                PauseEnemy(enemy);
         }
 
         /// <summary>Called from Multiplayer.OnLateUpdate, on every machine.</summary>
@@ -1341,12 +1434,6 @@ namespace Blasphemous.Multiplayer.Client
                     continue;
                 }
 
-                // Registered but not yet in play (a boss waiting for its cutscene), or simply out of view.
-                // Sending no state is correct: nothing is moving, and the peer applies everything as soon as
-                // it appears.
-                if (!enemy.gameObject.activeInHierarchy)
-                    continue;
-
                 Vector2 position = enemy.transform.position;
                 float life = enemy.CurrentLife;
                 byte orientation = ReadOrientation(enemy);
@@ -1366,18 +1453,64 @@ namespace Blasphemous.Multiplayer.Client
                     _lastSent[id] = previous;
                 }
 
-                // Decide who simulates this enemy. Only the host arbitrates; the peer's request is folded
-                // into the same rule inside DecideOwnership.
-                bool ownershipChanged = DecideOwnership(enemy, previous, IsHost);
+                // OWNERSHIP IS THE HOST'S, AND ONLY THE HOST'S.
+                //
+                // Previously each machine decided for itself from the distance it measured locally. Those
+                // measurements cannot agree - the two players hold slightly different positions, worst on
+                // slopes - so both machines could decide the closest player was theirs, simulate the same
+                // enemy, and publish two conflicting positions. The result in game was one enemy standing in
+                // two places, with aggro on both players at once.
+                //
+                // Now the host arbitrates and the peer obeys: the peer's OwnedByLocal is set only by the
+                // EnemyOwnership packet, never recalculated here.
+                if (IsHost)
+                {
+                    DecideOwnership(enemy, previous, true);
+
+                    if (!previous.OwnershipKnown || previous.LastPublishedOwnerIsMe != previous.OwnedByLocal)
+                    {
+                        previous.OwnershipKnown = true;
+                        previous.LastPublishedOwnerIsMe = previous.OwnedByLocal;
+
+                        // The wire carries "the owner is YOU, the receiver", which is the opposite of
+                        // OwnedByLocal, where true means "I simulate it". The receiving side assigns the
+                        // payload straight to its own OwnedByLocal:
+                        //
+                        //   ReceiveEnemyOwnership(ownedByMe) -> state.OwnedByLocal = ownedByMe
+                        //
+                        // and the parameter is named ownedByReceiver in NetworkManager and Multiplayer. So
+                        // sending OwnedByLocal sent "you own it" precisely for the enemies the HOST owns: the
+                        // peer then resumed the AI, transmitted, and skipped applying the received position -
+                        // two owners on every contested enemy, the diverging positions seen in the logs. The
+                        // negation is the whole fix.
+                        Main.Multiplayer.SendEnemyOwnership(handle, !previous.OwnedByLocal);
+                    }
+                }
 
                 // "Owned here" means this machine runs the game's own AI for this enemy, which is what
-                // produces real attacks and deaths. The other machine pauses its AI and applies state.
+                // produces real attacks and deaths. The other machine freezes it and applies state.
                 if (previous.OwnedByLocal)
                     ResumeEnemy(enemy);
                 else
                     PauseEnemy(enemy);
 
-                if (!fullSweep && hasPrevious && !ownershipChanged)
+                // The peer obeys the host, so it transmits exactly the enemies the host granted it.
+                if (!previous.OwnedByLocal)
+                    continue;
+
+                // Position and life are transmitted only for an enemy that is actually in play.
+                //
+                // The token above is published for EVERY tracked enemy, including one that is currently
+                // deactivated, and that order is deliberate. The game never deactivates an enemy for being
+                // off camera (verified: every SetActive(false) on an enemy belongs to a death, an execution
+                // or a dispose), so this gate only catches enemies that are not in play yet - a boss waiting
+                // for its cutscene, or one spawned with SpawnEnabledEnemy false. Publishing the token first
+                // means the peer still learns who owns each enemy, instead of being left without an owner
+                // and freezing that enemy for the rest of the scene.
+                if (!enemy.gameObject.activeInHierarchy)
+                    continue;
+
+                if (!fullSweep && hasPrevious)
                 {
                     bool changed = Mathf.Abs(previous.Position.x - position.x) > POSITION_EPSILON ||
                                    Mathf.Abs(previous.Position.y - position.y) > POSITION_EPSILON ||

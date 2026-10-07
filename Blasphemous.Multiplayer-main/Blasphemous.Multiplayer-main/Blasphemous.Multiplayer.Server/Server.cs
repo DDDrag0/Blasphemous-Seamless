@@ -117,6 +117,7 @@ public class Server
                 case NetworkType.EnemyDamageRequest: receiveEnemyDamageRequest(e.ip, data); break;
                 case NetworkType.EnemyDeath:         receiveEnemyDeath(e.ip, data); break;
         case NetworkType.EnemyDeathGlobal:   receiveEnemyDeathGlobal(e.ip, data); break;
+        case NetworkType.EnemyOwnership:     receiveEnemyOwnership(e.ip, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -794,6 +795,15 @@ public class Server
         }
     }
 
+    private void receiveEnemyOwnership(string playerIp, byte[] data)
+    {
+        // The host's ownership token, and only the host may issue one: a peer must not be able to grant
+        // itself an enemy. Relayed to the scene because ownership only matters to players sharing it.
+        if (playerIp != _hostIp)
+            return;
+
+        relayToScene(playerIp, data, NetworkType.EnemyOwnership);
+    }
     private void receiveEnemyDamageRequest(string playerIp, byte[] data)
     {
         PlayerInfo current = getCurrentPlayer(playerIp);
@@ -827,5 +837,5 @@ public class Server
         Send(playerIp, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
     }
 
-    private const byte PROTOCOL_VERSION = 10;
+    private const byte PROTOCOL_VERSION = 11;
 }

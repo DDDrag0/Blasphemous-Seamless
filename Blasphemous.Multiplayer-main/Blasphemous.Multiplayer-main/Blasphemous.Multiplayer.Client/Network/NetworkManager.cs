@@ -155,6 +155,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                         case NetworkType.EnemyDamageRequest: ReceiveEnemyDamageRequest(messageData); break;
                         case NetworkType.EnemyDeath: ReceiveEnemyDeath(messageData); break;
                         case NetworkType.EnemyDeathGlobal: ReceiveEnemyDeathGlobal(messageData); break;
+                        case NetworkType.EnemyOwnership: ReceiveEnemyOwnership(messageData); break;
                     }
                     startIdx += 3 + length;
                 }
@@ -549,6 +550,22 @@ namespace Blasphemous.Multiplayer.Client.Network
             EnemySyncManager.ReceiveEnemyKill(handle);
         }
 
+        // The host's ownership token: which machine may simulate the enemy. The peer applies this instead
+        // of deciding for itself, which is what keeps a single authority per enemy.
+        public void SendEnemyOwnership(uint handle, bool ownedByReceiver)
+        {
+            List<byte> bytes = new();
+            bytes.AddRange(BitConverter.GetBytes(handle));
+            bytes.Add((byte)(ownedByReceiver ? 1 : 0));
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyOwnership);
+        }
+
+        private void ReceiveEnemyOwnership(byte[] data)
+        {
+            uint handle = BitConverter.ToUInt32(data, 0);
+            bool ownedByMe = data[4] == 1;
+            EnemySyncManager.ReceiveEnemyOwnership(handle, ownedByMe);
+        }
         // Scene-independent death record. Payload is the enemy ID STRING, not a handle: the receiver is
         // usually in another scene, where its handle table for that scene does not exist yet.
         public void SendEnemyDeathGlobal(string enemyId)
@@ -576,6 +593,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 10;
+        private const byte PROTOCOL_VERSION = 11;
     }
 }
