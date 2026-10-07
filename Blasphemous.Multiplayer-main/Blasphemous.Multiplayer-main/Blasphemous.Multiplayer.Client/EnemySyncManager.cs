@@ -205,6 +205,18 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static readonly Dictionary<string, int> _appliedAnim = new Dictionary<string, int>();
 
+        /// <summary>
+        /// The gravity scale each frozen enemy had before this machine stopped its controller, keyed by
+        /// instance id, so it can be given back exactly what it had.
+        ///
+        /// Restoring a guessed 1 would be wrong: GravityScale comes from the prefab (it is a
+        /// [SerializeField] on PlatformCharacterPhysics) and most enemies carry 1, but the ones that zero it
+        /// deliberately - ElderBrother after landing, some SetPositionAtStart overrides - would come back
+        /// with gravity they never had. Instance id rather than the enemy id on purpose: this is a fact
+        /// about the live object, and it must not survive the object being replaced.
+        /// </summary>
+        private static readonly Dictionary<int, float> _frozenGravityScale = new Dictionary<int, float>();
+
         /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
         private const float FOLLOW_LERP = 0.25f;
 
@@ -618,8 +630,25 @@ namespace Blasphemous.Multiplayer.Client
         {
             FreezePhysics(enemy);
 
+            // PauseBehaviour is called UNCONDITIONALLY, and that is deliberate.
+            //
+            // The tree is not ticked by EnemyBehaviour.Update: NodeCanvas ticks it through
+            // MonoManager.add_onUpdate, registered by Graph.StartGraph and removed by Graph.Pause.
+            // Disabling the component therefore does NOT keep the tree paused - it only stops OnUpdate
+            // from running. Behaviours that restart the tree directly, without going through
+            // EnemyBehaviour.Update, keep working while the component is disabled:
+            // ShieldMaidenBehaviour.Update, RangedBoomerangBehaviour.Update, FirethrowerBehaviour.Update,
+            // CrossCrawlerBehaviour.Update, NunBehaviour.OnUpdate, FoolBehaviour.OnUpdate,
+            // ExplodingEnemyBehaviour.OnUpdate, LesmesBehaviour.Update, the boss intro coroutines,
+            // BishopHurtBehaviour.OnStateExit, and - worst of all - PlayMaker's
+            // Tools.Playmaker2.Action.BehaviourStart.OnEnter and Tools.PlayMaker.Action.EnableEnemiesBehaviour.
+            //
+            // So guarding on !behaviour.enabled left the real gap: once something outside restarted the
+            // tree, the pause was never re-applied, because the component was already disabled and this
+            // method returned early. Calling PauseBehaviour every time costs nothing - it is idempotent
+            // (it guards on BehaviourTree.isRunning) - and it closes the gap.
             var behaviour = enemy.EnemyBehaviour;
-            if (behaviour == null || !behaviour.enabled)
+            if (behaviour == null)
                 return;
 
             behaviour.PauseBehaviour();
@@ -632,6 +661,15 @@ namespace Blasphemous.Multiplayer.Client
         /// Clearing velocity and gravity as well as disabling the controller matters for the moment the
         /// enemy is handed back: the controller would otherwise resume with its old momentum and gravity
         /// scale, and the enemy would slide away from where the owner had it.
+        ///
+        /// GravityScale is only a value held for the handover: the one consumer of m_gravityScale is
+        /// UpdatePhysics, which is called only from Controller.Update, so while the controller is disabled
+        /// it has no effect at all. What it must not do is destroy the value the prefab started with, which
+        /// is why ThawPhysics restores the original rather than assuming 1.
+        ///
+        /// This runs once per frame per non-owned enemy, not on every packet: the call site is the send
+        /// loop, where PauseEnemy sits above the "only the owner transmits" gate. It is a handful of field
+        /// writes with no allocation, so the cost is negligible next to PlaceEnemy.
         /// </summary>
         private static void FreezePhysics(Enemy enemy)
         {
@@ -645,6 +683,11 @@ namespace Blasphemous.Multiplayer.Client
             if (physics == null)
                 return;
 
+            if (!_frozenGravityScale.ContainsKey(enemy.GetInstanceID()))
+                _frozenGravityScale[enemy.GetInstanceID()] = physics.GravityScale;
+            // HSpeed and VSpeed are not separate states: set_HSpeed writes m_vel.x and set_VSpeed writes
+            // m_vel.y (verified in IL), so zeroing Velocity already covers both. They are written anyway
+            // because the properties exist and are cheap, but Velocity is the one that matters.
             physics.Velocity = Vector3.zero;
             physics.Acceleration = Vector3.zero;
             physics.HSpeed = 0f;
@@ -676,10 +719,8 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>
         /// Gives the enemy its own physics back, mirroring FreezePhysics.
         ///
-        /// Gravity scale is restored to 1, the value PlatformCharacterPhysics sets in its constructor. It is
-        /// the only value that can be restored without knowing the enemy type: most enemies keep it at 1,
-        /// while a few zero it deliberately after landing (ElderBrother, some SetPositionAtStart overrides),
-        /// and their own OnUpdate puts it back on the next frame anyway.
+        /// The gravity scale is restored from the value saved when the enemy was frozen, never assumed:
+        /// see _frozenGravityScale for why 1 would be the wrong guess.
         /// </summary>
         private static void ThawPhysics(Enemy enemy)
         {
@@ -688,8 +729,14 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             var physics = controller.PlatformCharacterPhysics;
-            if (physics != null && physics.GravityScale == 0f)
-                physics.GravityScale = 1f;
+            if (physics != null)
+            {
+                float original;
+                if (_frozenGravityScale.TryGetValue(enemy.GetInstanceID(), out original))
+                    physics.GravityScale = original;
+
+                _frozenGravityScale.Remove(enemy.GetInstanceID());
+            }
 
             controller.enabled = true;
         }
@@ -726,6 +773,7 @@ namespace Blasphemous.Multiplayer.Client
             _remoteTargets.Clear();
             _lastAnim.Clear(); // animation state belongs to the scene being unloaded
             _appliedAnim.Clear();
+            _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _killLogged.Clear();
 
             _sendTimer = 0f;
@@ -1196,8 +1244,9 @@ namespace Blasphemous.Multiplayer.Client
         ///
         /// ResetPreviousPosition(Vector3) sets both m_pos and m_prevPos, which realigns the physics to the new
         /// position and stops the spurious DeltaDisp/InstantVelocity a bare transform write would produce.
-        /// The game itself never calls it (verified: zero callers in both assemblies), so it is a public
-        /// library API meant for exactly this and it disturbs nothing.
+        /// The game uses it as a library API rather than as part of its own flow (the only managed caller in
+        /// Assembly-CSharp is Tools.PlayMaker.Action.PenitentOnElevator.OnEnter, on the Penitent, plus its
+        /// own internal use in firstpass), so calling it on enemies disturbs nothing.
         ///
         /// Falls back to the transform when there is no controller (an enemy not yet initialised), because a
         /// wrong-but-visible position is better than a skipped update.
@@ -1216,26 +1265,42 @@ namespace Blasphemous.Multiplayer.Client
             // position and is then overwritten with the old transform position again. That is exactly what
             // happened in the first attempt at this method, and it left the peer's enemies standing still.
             //
-            // Order: move the transform, tell the physics the new position (Position only, which sets m_pos),
-            // then call ResetPreviousPosition - which now reads the transform we just moved and copies that
-            // same position into both the physics and m_prevPos. Aligning m_prevPos as well is what keeps
-            // InstantVelocity clean; without it the controller derives a huge spurious velocity from the
-            // jump between the old and new position and the enemy shoots off.
+            // Order: move the transform, then call ResetPreviousPosition - which now reads the transform we
+            // just moved and copies that same position into both the physics and m_prevPos. Aligning
+            // m_prevPos is what keeps InstantVelocity clean; without it the controller derives a huge
+            // spurious velocity from the jump between the old and the new position and the enemy shoots off.
+            //
+            // Writing physics.Position by hand is NOT needed: ResetPreviousPosition reaches m_pos through
+            // set_Position plus m_prevPos = get_Position() (verified in IL), so it lands the same value.
             enemy.transform.position = position;
 
             PlatformCharacterController controller = enemy.Controller;
             if (controller == null)
                 return;
 
-            PlatformCharacterPhysics physics = controller.PlatformCharacterPhysics;
-            if (physics == null)
-            {
-                controller.ResetPreviousPosition();
+            // No fallback call when the physics is missing: ResetPreviousPosition dereferences
+            // m_platformPhysics with no null check (verified in IL), so calling it here would throw a
+            // NullReferenceException out of Update() instead of degrading quietly.
+            if (controller.PlatformCharacterPhysics == null)
                 return;
-            }
 
-            physics.Position = position;
             controller.ResetPreviousPosition();
+
+            // The collider is a THIRD copy of the position, and it has to be moved too.
+            //
+            // SmartPlatformCollider is a separate component with its own Update and FixedUpdate. It is not
+            // switched off by controller.enabled = false, and it writes transform.position in five places,
+            // including a rewind to its own m_prevPos when the enemy is squeezed between floor and ceiling.
+            // Its m_prevPos is not the one the two calls above fix, so without this it wakes up every frame
+            // holding a stale position: it fights this write, and with the collider's Update mode its
+            // _OnPreCull hook redraws the enemy at that stale position, which is the difference between
+            // where the enemy is and where it is drawn.
+            //
+            // TeleportTo sets transform.position, its own m_prevPos and clears m_movingPlatforms (verified
+            // in IL), which is exactly the state a teleported collider should be in. One extra call.
+            SmartPlatformCollider collider = controller.SmartPlatformCollider;
+            if (collider != null)
+                collider.TeleportTo(position);
         }
 
         /// <summary>Distance to the nearest other player, or float.MaxValue when none is known.</summary>
