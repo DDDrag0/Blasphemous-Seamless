@@ -140,6 +140,64 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<Enemy, string> _enemyIds = new Dictionary<Enemy, string>();
 
         /// <summary>
+        /// When each enemy was first seen at zero health with its death sequence not yet started, keyed by id.
+        ///
+        /// This is the safety net for the enemies whose death we cannot start from here. Killing a synced
+        /// enemy goes through the game's damage entry point, and for most types that sets their DEATH trigger
+        /// - but the wiring differs per enemy (some set it in &lt;Type&gt;::Damage, others in a behaviour, some
+        /// through an OnDeath handler), so a type we have not met yet can end up at zero health with nothing
+        /// playing. Left alone it would stand there for ever: Entity.Dead already true, so the death paths
+        /// would all decline to act, and EnemyDamageArea switches its own hitbox off only once
+        /// EntityStatus.Dead is set.
+        ///
+        /// After GRACE the mod forces the end itself, so a bad case costs one enemy a second and a half
+        /// instead of leaving an unkillable one in the room.
+        /// </summary>
+        private static readonly Dictionary<string, float> _deathPendingSince = new Dictionary<string, float>();
+
+        /// <summary>How long an enemy may sit at zero health with no death sequence before the mod forces it.</summary>
+        private const float DEATH_GRACE_SECONDS = 1.5f;
+
+        /// <summary>
+        /// Enemy ids that belong to a BOSS, so their health is deliberately left alone.
+        ///
+        /// Bosses derive from Enemy like anything else, so they are tracked, positioned and animated by the
+        /// same code - but their death is not a death animation. It is a scripted sequence
+        /// (Crisanta_StDeath, PontiffGiantBehaviour.DeathSequence, and similar state machines per boss),
+        /// and the only thing that starts it is &lt;Boss&gt;::Damage, which the sword calls. Some bosses even run
+        /// that sequence from a NodeCanvas Death_EnemyAction, so it depends on their behaviour tree being
+        /// alive.
+        ///
+        /// Writing a boss's health to zero therefore does not kill it: it leaves the boss standing with an
+        /// empty health bar and the room unable to advance. Until each boss has been tested, its health
+        /// stays local and only position, animation and facing are shared.
+        /// </summary>
+        private static readonly Dictionary<string, bool> _bossIds = new Dictionary<string, bool>();
+
+        /// <summary>
+        /// True when the enemy is a boss, judged by its namespace rather than by a list of names.
+        ///
+        /// Every boss lives under Gameplay.GameControllers.Bosses (24 types verified in the game assembly),
+        /// while ordinary enemies live under Gameplay.GameControllers.Enemies, so the namespace separates
+        /// them without having to keep a list in step with the game.
+        /// </summary>
+        private static bool IsBoss(Enemy enemy, string id)
+        {
+            bool cached;
+            if (_bossIds.TryGetValue(id, out cached))
+                return cached;
+
+            bool isBoss = false;
+            System.Type type = enemy.GetType();
+            string space = type.Namespace;
+            if (!string.IsNullOrEmpty(space))
+                isBoss = space.StartsWith("Gameplay.GameControllers.Bosses", System.StringComparison.Ordinal);
+
+            _bossIds[id] = isBoss;
+            return isBoss;
+        }
+
+        /// <summary>
         /// Last known position of every OTHER player, keyed by name, fed straight from the position
         /// packets that arrive from the server.
         ///
@@ -780,6 +838,8 @@ namespace Blasphemous.Multiplayer.Client
             _lastAnim.Clear(); // animation state belongs to the scene being unloaded
             _appliedAnim.Clear();
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
+            _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
+            _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _killLogged.Clear();
 
             _sendTimer = 0f;
@@ -1512,6 +1572,10 @@ namespace Blasphemous.Multiplayer.Client
             // returns early on most frames and the easing has to happen every frame to look smooth.
             InterpolateRemoteEnemies();
 
+            // Settle any enemy sitting at zero health whose death never started. Runs every frame so the
+            // grace period is measured in real time, and does nothing at all while everything is healthy.
+            SettleStuckDeaths();
+
             // Every frame, so an attack shorter than the snapshot interval is still recorded. Writes only
             // when the state actually changes.
             LogAnimationChanges();
@@ -1784,7 +1848,21 @@ namespace Blasphemous.Multiplayer.Client
                 ResumeEnemy(enemy);
             }
 
-            enemy.CurrentLife = currentLife;
+            // A BOSS keeps its own health: only position, animation and facing are shared. See _bossIds for
+            // why writing a boss's health to zero leaves it standing with an empty bar and the room stuck.
+            bool isBoss = IsBoss(enemy, IdOf(enemy));
+
+            if (!isBoss)
+            {
+                // The life is written with the game's own setter, never assigned to the field.
+                //
+                // Entity.CurrentLife is a property over Stats.Life.Current, and Entity.SetHealth(float) is
+                // what the game itself uses: it writes the same value and, when it lands at or below zero,
+                // calls KillInstanteneously() for us. Assigning the field instead left the enemy at zero
+                // health with Get_Dead() already true - because Entity.Dead is COMPUTED as
+                // !(Life.Current > 0) - but with the death sequence never started.
+                enemy.SetHealth(currentLife);
+            }
 
             // Record the snapshot as a TARGET. The position is applied smoothly in Update, once per frame,
             // instead of being snapped here 20 times a second.
@@ -1793,9 +1871,9 @@ namespace Blasphemous.Multiplayer.Client
 
             // Death is treated as a CONSEQUENCE OF HEALTH, not only as its own packet. The death packet
             // proved unreliable in game - the peer kept showing a frozen enemy with full life because the
-            // kill never landed - and health already travels in every update, so a zero (or negative,
-            // which is what "life + 1" produces) can be acted on immediately and cannot be missed.
-            if (!IsHost && (enemy.Dead || currentLife <= 0f))
+            // kill never landed - and health already travels in every update, so a zero can be acted on
+            // immediately and cannot be missed.
+            if (!isBoss && !IsHost && (currentLife <= 0f || enemy.Status.Dead))
             {
                 KillEnemyLocally(enemy, handle);
             }
@@ -1807,14 +1885,86 @@ namespace Blasphemous.Multiplayer.Client
         /// The native path is used rather than activating the object off, so the game plays its own death
         /// animation and handles whatever the enemy drops.
         /// </summary>
-        private static void KillEnemyLocally(Enemy enemy, uint handle)
+        /// <summary>
+        /// Settles enemies stuck at zero health with no death sequence running, after a grace period.
+        ///
+        /// Step one is the game's own KillInstanteneously(), which is public, sets EntityStatus.Dead, zeroes
+        /// the health and fires the death events the rest of the level listens to (OnDeath, OnEntityDeath,
+        /// GenericEntityDead). It does not touch the Animator, so an enemy whose type triggers its death
+        /// animation from somewhere the mod cannot reach may still not animate - but it does die properly,
+        /// which is what matters for the room and for the drop.
+        ///
+        /// Step two only runs if even that did not take: the object is removed from the scene outright, so
+        /// nothing inert is left standing. Destroying skips the death events, which is why it is the last
+        /// resort and not the first.
+        /// </summary>
+        private static void SettleStuckDeaths()
         {
-            if (enemy == null)
+            for (int i = _ids.Count - 1; i >= 0; i--)
+            {
+                string id = _ids[i];
+                Enemy enemy = ResolveEnemy(id);
+                if (enemy == null || enemy.gameObject == null)
+                    continue;
+
+                bool healthGone = enemy.CurrentLife <= 0f;
+                if (!healthGone || enemy.Status.Dead)
+                {
+                    _deathPendingSince.Remove(id);
+                    continue;
+                }
+
+                float since;
+                if (!_deathPendingSince.TryGetValue(id, out since))
+                {
+                    _deathPendingSince[id] = Time.time;
+                    continue; // start the clock; the game still has the grace period to do it itself
+                }
+
+                if (Time.time - since < DEATH_GRACE_SECONDS)
+                    continue;
+
+                _deathPendingSince.Remove(id);
+
+                if (_killLogged.Add(id))
+                {
+                    ModLog.Info($"[EnemyDeath] {ShortId(id)} a vita zero da {DEATH_GRACE_SECONDS:F1}s senza " +
+                                $"sequenza di morte: la forzo con KillInstanteneously");
+                }
+
+                enemy.KillInstanteneously();
+
+                if (!enemy.Status.Dead)
+                {
+                    // Even the native kill did not take: take it out of the scene so it cannot be found,
+                    // hit, or block anything. The spawn point is marked so the room does not resurrect it.
+                    ModLog.Info($"[EnemyDeath] {ShortId(id)} resiste anche a KillInstanteneously: lo rimuovo");
+                    MarkSpawnPointConsumed(id);
+                    UnityEngine.Object.Destroy(enemy.gameObject);
+                    ForgetEnemy(id);
+                }
+            }
+        }
+
+        private static void KillEnemyLocally(Enemy enemy, uint handle)
+        {            if (enemy == null)
                 return;
 
-            if (!enemy.Dead)
+            // The guard asks whether the DEATH SEQUENCE has started, not whether the health is at zero.
+            //
+            // Entity.Dead is computed as !(Stats.Life.Current > 0), so it turns true the instant the health
+            // is written to zero - including by this mod while syncing. Guarding on it meant the call below
+            // was never reached: the peer learned an enemy had died, saw Dead already true, and did nothing,
+            // so no Death trigger was ever set. The enemy stayed on its feet at zero health, its damage
+            // collider was never switched off, and it could not be finished off either.
+            //
+            // EntityStatus.Dead is the separate bool that KillInstanteneously() sets, so it is the honest
+            // answer to "has the game begun killing this enemy".
+            if (!enemy.Status.Dead)
             {
-                // DamageThroughNativePath so the hurt/death animation and the drop follow the normal flow.
+                // Through the game's own damage entry point, so the hurt flash, the sound and - for the
+                // many enemy types that set their DEATH trigger there - the death animation all follow the
+                // normal flow instead of being skipped.
                 ApplyDamage(enemy, enemy.CurrentLife + 1f);
             }
 
@@ -1978,7 +2128,13 @@ namespace Blasphemous.Multiplayer.Client
             // the enemy here. Applying the relayed damage to that corpse would run the death sequence a
             // second time (double purge/tears credit). The host's next update resyncs the exact health,
             // so skipping is safe.
-            if (enemy.Dead || enemy.CurrentLife <= 0f)
+            //
+            // The test is Status.Dead, the "death sequence already started" flag, and NOT Entity.Dead.
+            // Entity.Dead is true as soon as the health reads zero, so this guard used to swallow every
+            // relayed hit on an enemy sitting at zero health whose death had not actually begun - which is
+            // precisely the state this whole path exists to fix: no damage, no hurt flash, no sound, and
+            // no death animation on the machine that was not swinging.
+            if (enemy.Status.Dead)
                 return;
 
             _damageApplied++;
@@ -2122,7 +2278,9 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null)
                 return;
 
-            if (!enemy.Dead)
+            // Ask whether the death sequence started, not whether the health is at zero: see
+            // KillEnemyLocally for why Entity.Dead is the wrong question here.
+            if (!enemy.Status.Dead)
                 KillEnemyLocally(enemy, HandleOf(IdOf(enemy)));
 
             // The game may have already deactivated it; either way it must not remain in the scene.
@@ -2149,7 +2307,9 @@ namespace Blasphemous.Multiplayer.Client
                 }
             }
 
-            if (enemy.Dead || enemy.CurrentLife <= 0f)
+            // Status.Dead, not Entity.Dead: an enemy at zero health whose death has not yet started must
+            // still receive this, because this is the only thing that will start it.
+            if (enemy.Status.Dead)
                 return;
 
             ApplyDamage(enemy, enemy.CurrentLife + 1f);
@@ -2195,11 +2355,25 @@ namespace Blasphemous.Multiplayer.Client
                 AttackingEntity = Core.Logic.Penitent != null ? Core.Logic.Penitent.gameObject : null
             };
 
-            // The damage patch sees this call; the flag tells it the hit is already authorised.
+            // Through the game's own damage entry point, not through the hurtbox.
+            //
+            // ((IDamageable)enemy).Damage(hit) is what Weapon.AttackDamageableEntities calls when the
+            // player's sword connects, and it lands in <EnemyType>::Damage(Hit). That is where the hurt
+            // flash (DamageEffectScript.Blink), the hurt sound (Behaviour.Damage) and - for the many enemy
+            // types that set their DEATH trigger there - the death animation are all driven from.
+            //
+            // EnemyDamageArea.TakeDamage, used before, is a lower layer: it applies the health change and
+            // fires the damage events, but skips <EnemyType>::Damage entirely. That is why a hit applied by
+            // this mod produced no visible reaction at all on the machine that had not swung the sword, and
+            // why some enemies could take a killing hit from here and never start dying.
             IsApplyingRemoteDamage = true;
             try
             {
-                enemy.EntityDamageArea.TakeDamage(hit, true);
+                IDamageable damageable = (IDamageable)enemy;
+                if (damageable != null)
+                    damageable.Damage(hit);
+                else if (enemy.EntityDamageArea != null)
+                    enemy.EntityDamageArea.TakeDamage(hit, true);
             }
             finally
             {
