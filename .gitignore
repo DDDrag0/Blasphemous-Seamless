@@ -27,3 +27,5 @@ scratch/
 
 # Staging del pacchetto distribuito: ricostruito dallo script di deploy/zip
 tools/package/
+# Pacchetto distribuito: ricostruito dallo staging tools/package
+tools/BlasphemousCOOP-enemysync.zip
