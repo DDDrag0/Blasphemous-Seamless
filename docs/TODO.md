@@ -1,10 +1,12 @@
 # TODO — Blasphemous COOP
 
-Ultimo aggiornamento: dopo il tag `stato-morte-feedback`.
+Ultimo aggiornamento: dopo il tag `stato-morte-animata-ok`.
 
-Stato raggiunto: **la sincronizzazione di movimento e posizione funziona** fra due giocatori nella
-stessa stanza (tag `stato-sync-movimento-ok`). Morte sincronizzata robusta, feedback del colpo e
-boss esclusi dalla vita condivisa (tag `stato-morte-feedback`).
+> **Il grosso del progetto è concluso.** Movimento e posizione sincronizzati, morte sincronizzata e
+> **animata anche per mano dell'altro giocatore** (era il caso rotto da sempre). Tutte le fasi di
+> test passate, tranne quella sui boss che non è testabile al momento.
+>
+> **Da qui in avanti: bug fix minori e le animazioni mancanti.**
 
 Punti di ritorno, in ordine di creazione:
 
@@ -19,7 +21,8 @@ Punti di ritorno, in ordine di creazione:
 | `stato-thaw-fix` | ThawPhysics non salta più il ripristino |
 | `stato-arbitro-pari` | proprietà decisa dalle distanze, non dall'ordine di connessione |
 | **`stato-sync-movimento-ok`** | **movimento e posizione sincronizzati** |
-| **`stato-morte-feedback`** | **morte robusta, feedback del colpo, boss esclusi** |
+| `stato-morte-feedback` | morte robusta, feedback del colpo, boss esclusi |
+| **`stato-morte-animata-ok`** | **morte animata anche per mano dell'altro giocatore — il grosso del progetto è concluso** |
 
 ---
 
@@ -125,10 +128,11 @@ nemico registrato come `en|` (boss, incontri a trigger) la morte **non viene mar
 
 ## 5. Feedback del colpo — estensione
 
-**Stato: flash e suono applicati** (il sangue **no**, come concordato).
+**Stato: il SUONO si sente in modo netto** (riscontro dell'utente), **il sangue non c'è** (concordato).
 
-Se il flash e il suono non bastano, replicare sangue e scintille su chi non vibra il colpo con il
-metodo del gioco:
+**Da fare:**
+
+1. **Sangue e scintille** su chi non vibra il colpo, con il metodo del gioco:
 
 ```csharp
 PenitentSword s = Core.Logic.Penitent.PenitentAttack.CurrentPenitentWeapon as PenitentSword;
@@ -136,12 +140,23 @@ s.GetSwordSparks(new List<IDamageable>{ enemy }, hit);
 ```
 
 `GetSwordSparks` è l'**unico** chiamante in tutta l'assembly di `SparkOnImpact`/`BleedOnImpact`, e
-esce subito se `_swordSparkSpawner == null`.
+esce subito se `_swordSparkSpawner == null`. Non ha effetti collaterali di gameplay.
 
-**Da verificare in gioco**: il presunto **doppio danno** di `EnemyDamagePatch` (è solo un postfix,
-senza prefix che blocchi). La verifica sul server suggerisce che **non colpisce il proprietario del
-nemico**, quindi è stato lasciato: da confermare con i contatori `dmgSent`/`dmgApplied` prima di
-toccare qualcosa che funziona.
+2. **Il flash di ferita**: l'utente riferisce che **forse non si nota, o non è contemplato per tutti i
+   tipi**. Va capito se dipende dal tipo di nemico (il flash è dentro `<TipoNemico>::Damage`, quindi
+   non tutti lo fanno) o se il componente manca.
+
+   Il metodo esiste ed è pubblico: `DamageEffect.DamageEffectScript::Blink(float, float)` — lo stesso
+   componente che `MeninaBehaviour::OnDeath` disabilita. Fallback a costo zero:
+
+```csharp
+enemy.SpriteRenderer.GetComponent<DamageEffect.DamageEffectScript>().Blink(0f, 0.1f);
+```
+
+3. **Da verificare**: il presunto **doppio danno** di `EnemyDamagePatch` (è solo un postfix, senza
+   prefix che blocchi). La verifica sul server suggerisce che **non colpisce il proprietario del
+   nemico**, quindi è stato lasciato: da confermare con i contatori `dmgSent`/`dmgApplied` prima di
+   toccare qualcosa che funziona.
 
 ---
 
