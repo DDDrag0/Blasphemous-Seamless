@@ -721,11 +721,17 @@ namespace Blasphemous.Multiplayer.Client
         ///
         /// The gravity scale is restored from the value saved when the enemy was frozen, never assumed:
         /// see _frozenGravityScale for why 1 would be the wrong guess.
+        ///
+        /// The restore must NOT be skipped when the controller happens to be enabled already. It usually is:
+        /// the game's own &lt;Enemy&gt;.OnUpdate calls EnablePhysics(true) on several enemy types, which turns the
+        /// controller back on and sets GravityScale itself. Returning early on "already enabled" would then
+        /// leave GravityScale at whatever the game last put there and - worse - leave the saved value in
+        /// _frozenGravityScale for ever. The controller being on is not evidence that nothing needs undoing.
         /// </summary>
         private static void ThawPhysics(Enemy enemy)
         {
             var controller = enemy.Controller;
-            if (controller == null || controller.enabled)
+            if (controller == null)
                 return;
 
             var physics = controller.PlatformCharacterPhysics;
