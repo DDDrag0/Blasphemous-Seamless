@@ -1088,7 +1088,52 @@ namespace Blasphemous.Multiplayer.Client
             // A remote player has to be MEANINGFULLY closer, not a hair closer. Positions arrive about
             // 20 times a second, so a bare comparison would flip the owner back and forth while the two
             // players stand near each other.
-            return localDistance <= nearestRemote + OWNER_DISTANCE_MARGIN;
+            return localDistance + OWNER_DISTANCE_MARGIN < nearestRemote;
+        }
+
+        /// <summary>
+        /// True when the OTHER player is meaningfully closer to the enemy than this machine's player, so
+        /// this machine should give the enemy up.
+        ///
+        /// This is the exact mirror of ShouldOwnByProximity: one is strict "I am closer", the other strict
+        /// "they are closer", and the margin in both means that while the two distances are comparable
+        /// NEITHER is true. That is what stops the owner from flapping when the players stand together.
+        ///
+        /// It exists because the handover used to depend on RemoteEverClaimed - the other machine having
+        /// transmitted an update with ownedRemotely set. But a peer only transmits the enemies the host
+        /// granted it, so it could never claim the very enemy it was trying to take:
+        ///
+        ///   the peer does not claim, because it does not own;
+        ///   it does not own, because it never claimed.
+        ///
+        /// With the distances, which travel in every update, the host can see for itself who is closer and
+        /// hand the enemy over. That is what makes the two players equal: being the arbiter stops being a
+        /// privilege and becomes only the job of comparing two numbers.
+        /// </summary>
+        private static bool PeerIsCloser(Enemy enemy)
+        {
+            Penitent local = Core.Logic.Penitent;
+            if (local == null)
+                return false; // no local player: keep it rather than hand it to nobody
+
+            Vector2 enemyPos = enemy.transform.position;
+            float localDistance = Vector2.Distance(enemyPos, local.transform.position);
+
+            float nearestRemote = float.MaxValue;
+            foreach (Vector2 remote in _remotePositions.Values)
+            {
+                float d = Vector2.Distance(enemyPos, remote);
+                if (d < nearestRemote)
+                    nearestRemote = d;
+            }
+
+            // No remote position known: the other player is not in this scene, or has not reported yet.
+            // Their packet never arrives in that case, and an enemy cannot be handed to a player who
+            // cannot be located.
+            if (nearestRemote == float.MaxValue)
+                return false;
+
+            return nearestRemote + OWNER_DISTANCE_MARGIN < localDistance;
         }
 
         /// <summary>
@@ -1355,31 +1400,42 @@ namespace Blasphemous.Multiplayer.Client
         private static bool DecideOwnership(Enemy enemy, EnemyState state, bool localIsHost)
         {
             bool wants = ShouldOwnByProximity(enemy);
+            bool peerCloser = PeerIsCloser(enemy);
 
             if (state.OwnerSince <= 0f)
             {
-                // First time this enemy is considered: the host takes it, so an enemy that nobody is near is
-                // never left with no machine simulating it.
-                state.OwnedByLocal = localIsHost || wants;
+                // First time this enemy is considered. Whoever's player is closer takes it, and the arbiter
+                // only falls back to keeping it when NEITHER player is meaningfully closer - an enemy out of
+                // everyone's reach must not be left with no machine simulating it.
+                //
+                // It used to read `localIsHost || wants`, which handed the enemy to the arbiter whatever the
+                // distances were. That is what made being the first player to connect feel like a privilege:
+                // the arbiter kept every enemy it touched, and the peer could not take one even standing on
+                // top of it. The distances are known on both machines (they travel in every update), so the
+                // arbiter has no need to favour itself.
+                state.OwnedByLocal = wants || (!peerCloser && localIsHost);
                 state.OwnerSince = Time.time;
                 return false;
             }
 
             if (!localIsHost)
-                return false; // only the host arbitrates; this method is never the peer's path
+                return false; // only the arbiter decides; this method is never the peer's path
 
-            bool peerWants = state.RemoteEverClaimed && !wants;
             bool changed = false;
 
-            // Take it when this machine's player is the closest; give it up when the peer has claimed it
-            // and the host is not closer. Neither case applies to an enemy nobody is near, which stays here.
+            // Take it when this machine's player is meaningfully closer; give it up when the other player
+            // is. Both use the margin, so while the two distances are comparable neither applies and the
+            // owner simply stays - which is what keeps a contested enemy from flapping between the two.
+            //
+            // The handover used to require RemoteEverClaimed, and that is the deadlock this fixes: a peer
+            // only transmits the enemies it owns, so it could never claim the enemy it was trying to take.
             if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
                 state.OwnedByLocal = true;
                 state.OwnerSince = Time.time;
                 changed = true;
             }
-            else if (peerWants && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+            else if (peerCloser && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
                 state.OwnedByLocal = false;
                 state.OwnerSince = Time.time;
