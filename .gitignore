@@ -21,3 +21,9 @@ tools/ModdingTools-win64.zip
 # Output di build .NET
 [Bb]in/
 [Oo]bj/
+
+# Cache di telemetria .NET creata dagli strumenti di analisi
+scratch/
+
+# Staging del pacchetto distribuito: ricostruito dallo script di deploy/zip
+tools/package/
