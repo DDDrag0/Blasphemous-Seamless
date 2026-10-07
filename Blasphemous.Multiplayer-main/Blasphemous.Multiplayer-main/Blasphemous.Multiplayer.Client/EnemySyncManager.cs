@@ -10,6 +10,7 @@ using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Gameplay.GameControllers.Enemies.Framework.Persistence;
 using Framework.FrameworkCore;
+using CreativeSpore.SmartColliders;
 using Framework.Managers;
 using System;
 using System.Globalization;
@@ -1098,8 +1099,52 @@ namespace Blasphemous.Multiplayer.Client
                 else
                     next = Vector2.Lerp(flat, target, FOLLOW_LERP);
 
-                enemy.transform.position = new Vector3(next.x, next.y, current.z);
+                PlaceEnemy(enemy, new Vector3(next.x, next.y, current.z));
             }
+        }
+
+        /// <summary>
+        /// Moves an enemy the only way that actually holds: through its physics state, not its transform.
+        ///
+        /// A Blasphemous enemy is driven by CreativeSpore's PlatformCharacterController, whose Update runs
+        /// every frame and ends by writing the transform FROM its own PlatformCharacterPhysics.Position:
+        ///
+        ///   m_platformPhysics.Position = transform.position
+        ///   m_platformPhysics.UpdatePhysics(dt)
+        ///   transform.position = transform.position + (physics.Position - transform.position)
+        ///
+        /// Writing transform.position therefore survives only until the next Update, and with velocity near
+        /// zero the physics puts the enemy straight back where it was - which is exactly the "enemy stays
+        /// frozen" seen in game. Worse, whether the write lands before or after that Update depends on
+        /// script execution order, so the same enemy could sit in two different places on the two machines.
+        ///
+        /// ResetPreviousPosition(Vector3) sets both m_pos and m_prevPos, which realigns the physics to the new
+        /// position and stops the spurious DeltaDisp/InstantVelocity a bare transform write would produce.
+        /// The game itself never calls it (verified: zero callers in both assemblies), so it is a public
+        /// library API meant for exactly this and it disturbs nothing.
+        ///
+        /// Falls back to the transform when there is no controller (an enemy not yet initialised), because a
+        /// wrong-but-visible position is better than a skipped update.
+        /// </summary>
+        private static void PlaceEnemy(Enemy enemy, Vector3 position)
+        {
+            PlatformCharacterController controller = enemy.Controller;
+            if (controller == null)
+            {
+                enemy.transform.position = position;
+                return;
+            }
+
+            PlatformCharacterPhysics physics = controller.PlatformCharacterPhysics;
+            if (physics == null)
+            {
+                enemy.transform.position = position;
+                controller.ResetPreviousPosition();
+                return;
+            }
+
+            physics.ResetPreviousPosition(position);
+            controller.ResetPreviousPosition();
         }
 
         /// <summary>Distance to the nearest other player, or float.MaxValue when none is known.</summary>
