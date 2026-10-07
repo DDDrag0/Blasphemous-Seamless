@@ -76,6 +76,16 @@ namespace Blasphemous.Multiplayer.Client
             public float OwnerSince;
 
             /// <summary>
+            /// Which way the enemy is facing, as EntityOrientation (Right = 0, Left = 1).
+            ///
+            /// One bit of state, but the visible consequence is large: the game changes it through
+            /// Entity.SetOrientation, which also flips SpriteRenderer.flipX. On a machine where the enemy's
+            /// AI is paused nothing calls SetOrientation, so the enemy keeps facing the wrong way and its
+            /// walking animation looks mirrored even when the position is correct.
+            /// </summary>
+            public byte Orientation;
+
+            /// <summary>
             /// The other machine's claim on this enemy, learned from the ownership flag in its updates.
             ///
             /// Without this the arbitration is impossible: the host can only see its OWN aggro, so it never
@@ -107,6 +117,22 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, EnemyState> _lastSent = new Dictionary<string, EnemyState>();
 
         /// <summary>
+        /// The id assigned to each enemy INSTANCE, decided once and never recomputed.
+        ///
+        /// This is the fix for the identity divergence that showed up in game as a teleport towards the
+        /// wrong enemy plus a duplicated enemy. The free-enemy id embeds the enemy's current position
+        /// (rounded to whole units), so recomputing it later gives a DIFFERENT string as soon as the enemy
+        /// has moved half a unit. The two machines register at different moments, so they produced different
+        /// ids for the same enemy, each tracked an enemy the other did not have, and updates landed on the
+        /// wrong target.
+        ///
+        /// Keyed by instance and not by name: several enemies can share a name (Fool(Clone)), and the model
+        /// is the only thing that truly identifies one. It also stops the same enemy being registered twice
+        /// under two different ids, which is what produced the duplicate.
+        /// </summary>
+        private static readonly Dictionary<Enemy, string> _enemyIds = new Dictionary<Enemy, string>();
+
+        /// <summary>
         /// Last known position of every OTHER player, keyed by name, fed straight from the position
         /// packets that arrive from the server.
         ///
@@ -136,6 +162,41 @@ namespace Blasphemous.Multiplayer.Client
         /// reload), and that is the point at which the death has to be enforced.
         /// </summary>
         private static readonly HashSet<string> _pendingDeaths = new HashSet<string>();
+
+        /// <summary>
+        /// Enemies already reported as dead by the diagnostic snapshot, so each death is logged once.
+        ///
+        /// The kill detection used to live only inside the send loop, which returns early when there is no
+        /// connection - so a single-player test, exactly where the game's own behaviour is easiest to study,
+        /// produced no death records at all.
+        /// </summary>
+        private static readonly HashSet<string> _killLogged = new HashSet<string>();
+
+        /// <summary>
+        /// Last animation state hash seen per enemy, so a change can be logged exactly once.
+        ///
+        /// The game has no single place where enemy animations are triggered: every behaviour class of every
+        /// enemy calls Animator.Play itself (AcolyteOverthrowBehaviour, BellCarrierIdleBehaviour,
+        /// FlagellantHurtBehaviour, ...), and the AnimatorInyector base class exists only for the Penitent.
+        /// There is therefore nothing to hook into, and the only reliable observation point is the Animator's
+        /// own current state, read and compared.
+        ///
+        /// Read every frame rather than once per diagnostic snapshot: an attack can last less than the
+        /// 0.5 second snapshot interval and would be missed entirely. Only CHANGES are written, so an enemy
+        /// standing idle produces no lines at all.
+        /// </summary>
+        private static readonly Dictionary<string, int> _lastAnim = new Dictionary<string, int>();
+
+        /// <summary>
+        /// Last animation state this machine APPLIED from the owner, per enemy.
+        ///
+        /// Applying a state also changes the Animator, and the change was then read back as if it were news -
+        /// transitions fed themselves, which showed up in the logs as one enemy bouncing between the same two
+        /// states 634 times on the peer against 26 on the host. Remembering what was applied lets the
+        /// animation log report only genuine local changes, so the feedback loop disappears from the records
+        /// and the peer stops re-forcing what the owner did not change.
+        /// </summary>
+        private static readonly Dictionary<string, int> _appliedAnim = new Dictionary<string, int>();
 
         /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
         private const float FOLLOW_LERP = 0.25f;
@@ -347,10 +408,22 @@ namespace Blasphemous.Multiplayer.Client
             EntityStatus status = enemy.Status;
             string untouchable = status != null ? status.Unattacable.ToString() : "n/d";
             string invulnerable = status != null ? status.Invulnerable.ToString() : "n/d";
+            string onCamera = status != null ? status.IsVisibleOnCamera.ToString() : "n/d";
+            string hurt = status != null ? status.IsHurt.ToString() : "n/d";
+            string idle = status != null ? status.IsIdle.ToString() : "n/d";
 
+            // Alpha below 0.5 is not decoration: the game switches the damage collider off when the sprite
+            // is semi-transparent, which is one concrete way an enemy looks present yet cannot be hit.
+            SpriteRenderer renderer = enemy.GetComponentInChildren<SpriteRenderer>();
+            string alpha = renderer != null ? renderer.color.a.ToString("F2") : "n/d";
+
+            // Range is the other deactivation path: about seven enemy types disable themselves when the
+            // target is farther than ActivationRange (default 20, set only in the prefab, never at runtime).
             return $"vivo={(!enemy.Dead && enemy.CurrentLife > 0f)} Dead={enemy.Dead} " +
                    $"vita={enemy.CurrentLife:F1} vulnerabile={enemy.IsVulnerable} " +
                    $"intargettabile={untouchable} invulnerabile={invulnerable} " +
+                   $"inCamera={onCamera} hurt={hurt} idle={idle} alpha={alpha} " +
+                   $"distTarget={enemy.DistanceToTarget:F1} range={enemy.ActivationRange:F0} " +
                    $"attivo={enemy.gameObject.activeSelf} " +
                    $"behaviour={(enemy.EnemyBehaviour == null ? "assente" : enemy.EnemyBehaviour.enabled.ToString())}";
         }
@@ -375,20 +448,49 @@ namespace Blasphemous.Multiplayer.Client
 
             EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
 
-            // IsSpawnerConsumed is the game's own predicate, so ask it instead of reading its private list.
-            int consumed = 0;
+            // The game identifies a defeated spawn point by its POSITION: EnemySpawner keeps a
+            // List<Vector3> and both AddConsumedSpawner and IsSpawnerConsumed compare
+            // sp.transform.position with an exact Contains. Two spawn points sharing a position are
+            // therefore the same entry to the game, and killing one defeats both.
+            //
+            // Counting spawn points would report 2 for a single kill whenever a position is shared, which
+            // is misleading: the number that describes the game's state is the number of distinct consumed
+            // POSITIONS. Both figures are shown so the difference is visible instead of confusing.
+            List<Vector3> positions = new List<Vector3>();
+            int consumedPoints = 0;
+
             for (int i = 0; i < points.Length; i++)
             {
                 EnemySpawnPoint sp = points[i];
                 if (sp == null || !spawner.IsSpawnerConsumed(sp))
                     continue;
 
-                consumed++;
+                consumedPoints++;
+
                 Vector3 p = sp.transform.position;
+                bool alreadyListed = false;
+                for (int j = 0; j < positions.Count; j++)
+                {
+                    if (positions[j] == p)
+                    {
+                        alreadyListed = true;
+                        break;
+                    }
+                }
+
+                if (alreadyListed)
+                {
+                    lines.Add($"[consumato] {sp.name} @({p.x:F2},{p.y:F2}) entita='{sp.EntityName}' " +
+                              "(stessa posizione di un'altra: il gioco li considera un unico punto)");
+                    continue;
+                }
+
+                positions.Add(p);
                 lines.Add($"[consumato] {sp.name} @({p.x:F2},{p.y:F2}) entita='{sp.EntityName}'");
             }
 
-            lines.Add($"il gioco considera morti {consumed} spawn point su {points.Length}");
+            lines.Add($"posizioni consumate: {positions.Count}  " +
+                      $"(spawn point che ne risultano consumati: {consumedPoints} su {points.Length})");
             return lines;
         }
 
@@ -399,7 +501,16 @@ namespace Blasphemous.Multiplayer.Client
         public static List<string> Dump()
         {
             List<string> lines = new List<string>();
-            lines.Add($"enemies={_enemies.Count} spawnPoints={_spawnPoints.Count} ids={_ids.Count} fingerprint={_listFingerprint}");
+            lines.Add($"enemies={_enemies.Count} spawnPoints={_spawnPoints.Count} ids={_ids.Count} " +
+                      $"fingerprint={_listFingerprint} duplicati={_duplicateIds}");
+
+            if (_duplicateIds > 0)
+            {
+                // Non-zero means the same enemy was offered a second id, which is exactly the condition
+                // that produced a duplicated enemy in game: the two machines then track different enemies.
+                lines.Add("ATTENZIONE: lo stesso nemico ha ricevuto piu' di un id. " +
+                          "Se il valore non e' 0 su entrambe le macchine, le due liste divergono.");
+            }
 
             for (int i = 0; i < _ids.Count; i++)
             {
@@ -530,6 +641,15 @@ namespace Blasphemous.Multiplayer.Client
             _registered.Clear();
             _ids.Clear();
             _lastSent.Clear();
+
+            // The instances of the scene being unloaded. Their ids must not be reused by the next scene's
+            // enemies, and Unity compares destroyed objects as null so stale keys could never match anyway.
+            _enemyIds.Clear();
+            _remoteTargets.Clear();
+            _lastAnim.Clear(); // animation state belongs to the scene being unloaded
+            _appliedAnim.Clear();
+            _killLogged.Clear();
+
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
@@ -655,6 +775,12 @@ namespace Blasphemous.Multiplayer.Client
                     if (IsRegistered(enemy))
                         continue; // already covered through its spawn point, or by an earlier scan
 
+                    // The id is built from the position the enemy has RIGHT NOW, at its first registration,
+                    // and cached against the instance. Rebuilding it later would produce a different string
+                    // once the enemy moved, which is how the two machines ended up with different lists.
+                    if (_enemyIds.ContainsKey(enemy))
+                        continue; // already assigned an id in an earlier scan
+
                     string id = BuildFreeEnemyId(scene, enemy);
                     if (!seenThisScan.Add(id))
                         continue;
@@ -670,9 +796,26 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void RegisterEnemy(string id, Enemy enemy)
         {
-            if (_enemies.ContainsKey(id))
-                return;
+            // Already has an id from an earlier scan: leave it alone. This is what keeps an enemy's id
+            // stable while it moves, and stops one enemy being tracked twice under two names.
+            string existing;
+            if (_enemyIds.TryGetValue(enemy, out existing))
+            {
+                if (existing != id)
+                    _duplicateIds++; // same enemy offered a second id: the duplicate seen in game
 
+                return;
+            }
+
+            if (_enemies.ContainsKey(id))
+            {
+                // The id is taken by a DIFFERENT instance. Keeping the first is deliberate: reassigning
+                // would move an identity a peer is already following.
+                _duplicateIds++;
+                return;
+            }
+
+            _enemyIds[enemy] = id;
             _enemies.Add(id, enemy);
             _ids.Add(id);
             _registered.Add(enemy);
@@ -844,6 +987,26 @@ namespace Blasphemous.Multiplayer.Client
                 float animTime;
                 ReadAnimation(enemy, out animState, out animTime);
 
+                // Death record, independent of the connection. Reports which enemy died, whether the game
+                // set Dead or the life simply reached zero, and whether it was still being drawn - the three
+                // things needed to tell a normal kill from an enemy that is merely deactivated.
+                //
+                // This lives here rather than in the send loop because that loop returns early when there is
+                // no connection, so a single-player test produced no death records at all.
+                if (enemy.Dead || enemy.CurrentLife <= 0f)
+                {
+                    if (_killLogged.Add(id))
+                    {
+                        ModLog.Info($"[EnemyKill] {ShortId(id)} MORTO Dead={enemy.Dead} " +
+                                    $"vita={enemy.CurrentLife:F1} attivo={enemy.gameObject.activeInHierarchy} " +
+                                    $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+                    }
+                }
+                else
+                {
+                    _killLogged.Remove(id); // alive again (respawn, revive): a later death is news
+                }
+
                 float localDistance = local != null
                     ? Vector2.Distance(enemy.transform.position, local.transform.position)
                     : -1f;
@@ -871,6 +1034,24 @@ namespace Blasphemous.Multiplayer.Client
                             $"anim={(animState == 0 ? "0" : AnimatorStateName(enemy))} " +
                             $"life={enemy.CurrentLife:F0} posNemico=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1}) " +
                             $"posMia={localPos} posAltro={remotePos}");
+
+                // Reveals a desynchronisation INSIDE this mod rather than between machines: the cached
+                // instance against the one the spawn point currently owns. When these differ, every reading
+                // taken through the cache describes an enemy that is no longer in the scene - which is how
+                // the single-player log could report one fixed position while the enemy was walking.
+                Enemy cachedInstance;
+                if (_spawnPoints.TryGetValue(id, out EnemySpawnPoint sp) && sp != null && _enemies.TryGetValue(id, out cachedInstance))
+                {
+                    Enemy authoritative = sp.SpawnedEnemy;
+                    if (authoritative != null && cachedInstance != null && authoritative != cachedInstance)
+                    {
+                        Vector3 c = cachedInstance.transform != null ? cachedInstance.transform.position : Vector3.zero;
+                        Vector3 a = authoritative.transform.position;
+                        ModLog.Info($"[EnemyInstance] {ShortId(id)} CACHE DIVERGE: " +
+                                    $"cache=({c.x:F1},{c.y:F1}) vero=({a.x:F1},{a.y:F1}) " +
+                                    $"istanzaCache={cachedInstance.GetInstanceID()} istanzaVera={authoritative.GetInstanceID()}");
+                    }
+                }
             }
         }
 
@@ -1051,6 +1232,10 @@ namespace Blasphemous.Multiplayer.Client
             // returns early on most frames and the easing has to happen every frame to look smooth.
             InterpolateRemoteEnemies();
 
+            // Every frame, so an attack shorter than the snapshot interval is still recorded. Writes only
+            // when the state actually changes.
+            LogAnimationChanges();
+
             // Both machines receive: the owner to follow the authoritative state, the non-owner to apply
             // it. Receiving is what tells a machine whether it should be simulating a given enemy, so it
             // cannot be limited to the host.
@@ -1093,6 +1278,16 @@ namespace Blasphemous.Multiplayer.Client
                 if (enemy.Dead || enemy.CurrentLife <= 0f)
                 {
                     (dead ??= new List<string>()).Add(id);
+
+                    // Recorded here, before the enemy is dropped from _ids. The snapshot runs only twice a
+                    // second and looked for deaths among the tracked enemies, so by the time it ran the dead
+                    // one had already been removed and no death was ever logged.
+                    if (_killLogged.Add(id))
+                    {
+                        ModLog.Info($"[EnemyKill] {ShortId(id)} MORTO Dead={enemy.Dead} " +
+                                    $"vita={enemy.CurrentLife:F1} attivo={enemy.gameObject.activeInHierarchy} " +
+                                    $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+                    }
                     _killsSent++;
                     Main.Multiplayer.SendEnemyKill(handle);
                     // Also announce it scene-independently: the other player may be in another room and
@@ -1109,6 +1304,7 @@ namespace Blasphemous.Multiplayer.Client
 
                 Vector2 position = enemy.transform.position;
                 float life = enemy.CurrentLife;
+                byte orientation = ReadOrientation(enemy);
                 int animState;
                 float animTime;
                 ReadAnimation(enemy, out animState, out animTime);
@@ -1153,6 +1349,7 @@ namespace Blasphemous.Multiplayer.Client
                 previous.Position = position;
                 previous.Life = life;
                 previous.AnimState = animState;
+                previous.Orientation = orientation;
                 previous.LastSweep = Time.time;
 
                 // ONLY THE OWNER TRANSMITS. The host used to broadcast every enemy, including the ones the
@@ -1163,7 +1360,7 @@ namespace Blasphemous.Multiplayer.Client
                     continue;
 
                 _updatesSent++;
-                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint, previous.OwnedByLocal);
+                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint, previous.OwnedByLocal, orientation);
             }
 
             if (dead != null)
@@ -1196,11 +1393,19 @@ namespace Blasphemous.Multiplayer.Client
             _remoteTargets.Remove(id);
 
             if (enemy != null)
+            {
                 _registered.Remove(enemy);
+
+                // The instance keeps its id on purpose, even though it is no longer tracked: the object can
+                // outlive its tracking for a moment while it dies, and the next scan would otherwise hand it
+                // a NEW id and register it again as a fresh enemy. That is exactly what turned 6 enemies into
+                // 25 registrations and produced the duplicates in game. The map is cleared on a scene change,
+                // which is the only moment instance identity genuinely stops being meaningful.
+            }
         }
 
         /// <summary>Position, health and animation state broadcast sent by the host.</summary>
-        public static void ReceiveEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint, bool ownedRemotely)
+        public static void ReceiveEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint, bool ownedRemotely, byte orientation)
         {
             _updatesReceived++;
 
@@ -1246,6 +1451,11 @@ namespace Blasphemous.Multiplayer.Client
                 // - attacks, hurt, death - has to come from here. This is deliberately narrow: only the
                 // state is forced, never the whole animation graph.
                 ApplyAnimation(enemy, animState, animTime);
+
+                // Facing is part of the state, not a decoration: the game only calls SetOrientation from
+                // the behaviour tree, which is paused here, so without this the enemy would keep facing the
+                // wrong way and its walking animation would look mirrored.
+                ApplyOrientation(enemy, orientation);
             }
             else
             {
@@ -1301,6 +1511,94 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
+        /// <summary>
+        /// Logs every animation change, per enemy, exactly once.
+        ///
+        /// Run every frame: the game devotes a separate behaviour class per enemy to driving its Animator,
+        /// with no common entry point, so the Animator's current state is the only dependable signal. A
+        /// change is written only when the state hash actually differs, which keeps an idle enemy silent.
+        ///
+        /// Its purpose is comparing machines: the same transition should appear on both sides at
+        /// approximately the same moment, and a transition on one side only is a synchronisation gap.
+        /// </summary>
+        private static void LogAnimationChanges()
+        {
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                string id = _ids[i];
+                Enemy enemy = ResolveEnemy(id);
+                if (enemy == null)
+                    continue;
+
+                Animator animator = AnimatorOf(enemy);
+                if (animator == null || animator.runtimeAnimatorController == null)
+                    continue;
+
+                int stateHash;
+                float animTime;
+                ReadAnimation(enemy, out stateHash, out animTime);
+                if (stateHash == 0)
+                    continue; // no state yet: nothing meaningful to report
+
+                int previous;
+                bool known = _lastAnim.TryGetValue(id, out previous);
+
+                // A state we applied ourselves is not a local change: reporting it would describe our own
+                // forcing as if the game had animated something, and that is what produced hundreds of
+                // transitions for a single event.
+                int applied;
+                if (_appliedAnim.TryGetValue(id, out applied) && applied == stateHash)
+                {
+                    _lastAnim[id] = stateHash;
+                    continue;
+                }
+
+                _lastAnim[id] = stateHash;
+                if (known && previous == stateHash)
+                    continue;
+
+                Vector3 p = enemy.transform.position;
+                ModLog.Info($"[EnemyAnim] {ShortId(id)} {previous} -> {stateHash} " +
+                            $"avvio={animTime:F2} vita={enemy.CurrentLife:F0} " +
+                            $"pos=({p.x:F1},{p.y:F1}) " +
+                            $"mia={(IsHost ? "host" : "client")}");
+            }
+        }
+
+        /// <summary>Which way the enemy faces, as a byte: EntityOrientation Right = 0, Left = 1.</summary>
+        private static byte ReadOrientation(Enemy enemy)
+        {
+            EntityStatus status = enemy.Status;
+            if (status == null)
+                return 0;
+
+            return (byte)status.Orientation;
+        }
+
+        /// <summary>
+        /// Applies the owner's facing to a non-owned enemy.
+        ///
+        /// SetOrientation is the game's own single entry point for this: it stores the value and flips the
+        /// sprite. Using the field directly would leave SpriteRenderer.flipX out of step, so the enemy would
+        /// face one way logically and the other way on screen. passFlip is false because the game already
+        /// handles the flip inside, given the previous orientation was kept in sync.
+        /// </summary>
+        private static void ApplyOrientation(Enemy enemy, byte orientation)
+        {
+            EntityStatus status = enemy.Status;
+            if (status == null)
+                return;
+
+            EntityOrientation wanted = orientation == (byte)EntityOrientation.Left
+                ? EntityOrientation.Left
+                : EntityOrientation.Right;
+
+            if (status.Orientation == wanted)
+                return;
+
+            enemy.SetOrientation(wanted, true, true);
+        }
+
         private static void ReadAnimation(Enemy enemy, out int stateHash, out float normalizedTime)
         {
             stateHash = 0;
@@ -1326,6 +1624,10 @@ namespace Blasphemous.Multiplayer.Client
 
             if (animator.GetCurrentAnimatorStateInfo(0).shortNameHash == stateHash)
                 return; // Already in that state; replaying it would restart the clip constantly.
+
+            // Remembered so the animation log does not mistake our own forcing for a local change, which is
+            // what turned one transition into hundreds of them in the peer's log.
+            _appliedAnim[IdOf(enemy)] = stateHash;
 
             if (normalizedTime > 0f && normalizedTime < 1f)
                 animator.Play(stateHash, 0, normalizedTime);
@@ -1535,19 +1837,28 @@ namespace Blasphemous.Multiplayer.Client
 
         private static Enemy ResolveEnemy(string id)
         {
+            // The spawn point is asked FIRST, and that order is the fix for a real defect.
+            //
+            // The cache used to win, but the game can recreate an enemy from its spawn point - on a scene
+            // reload, and probably when an enemy is reactivated. The cache would then keep pointing at the
+            // old instance, detached from the scene, so everything read through it (position, life,
+            // behaviour) described an enemy that no longer existed: in single player the log reported one
+            // position for the whole test while the enemy was visibly walking. The game's own reference is
+            // authoritative; the cache is only a fallback for ids with no spawn point.
+            if (_spawnPoints.TryGetValue(id, out EnemySpawnPoint point) && point != null)
+            {
+                Enemy spawned = point.SpawnedEnemy;
+                if (spawned != null && spawned.gameObject != null)
+                {
+                    _enemies[id] = spawned;
+                    return spawned;
+                }
+            }
+
             if (_enemies.TryGetValue(id, out Enemy cached) && cached != null && cached.gameObject != null)
                 return cached;
 
-            // The enemy may have been (re)created by its spawn point since the last scan.
-            if (!_spawnPoints.TryGetValue(id, out EnemySpawnPoint point) || point == null)
-                return null;
-
-            Enemy spawned = point.SpawnedEnemy;
-            if (spawned == null)
-                return null;
-
-            _enemies[id] = spawned;
-            return spawned;
+            return null;
         }
 
         // Applies a hit through the native damage area so hurt animations, sounds and death all run.

@@ -490,7 +490,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         // past the shorter list was rejected and those enemies never updated. A content-derived handle
         // is computed independently on each machine and survives any difference in list contents.
 
-        public void SendEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint, bool ownedBySender)
+        public void SendEnemyUpdate(uint handle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint, bool ownedBySender, byte orientation)
         {
             List<byte> bytes = new();
             bytes.AddRange(BitConverter.GetBytes(handle));
@@ -501,6 +501,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.AddRange(BitConverter.GetBytes(animTime));
             bytes.AddRange(BitConverter.GetBytes(fingerprint));
             bytes.Add((byte)(ownedBySender ? 1 : 0));
+            bytes.Add(orientation);
             QueueMesssage(bytes.ToArray(), NetworkType.EnemyUpdate);
         }
 
@@ -514,8 +515,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             float animTime = BitConverter.ToSingle(data, 20);
             int fingerprint = BitConverter.ToInt32(data, 24);
             bool ownedBySender = data[28] == 1;
+            byte orientation = data[29];
 
-            EnemySyncManager.ReceiveEnemyUpdate(handle, new Vector2(xpos, ypos), currentLife, animState, animTime, fingerprint, ownedBySender);
+            EnemySyncManager.ReceiveEnemyUpdate(handle, new Vector2(xpos, ypos), currentLife, animState, animTime, fingerprint, ownedBySender, orientation);
         }
 
         public void SendEnemyDamageRequest(uint handle, float damageAmount)
@@ -574,6 +576,6 @@ namespace Blasphemous.Multiplayer.Client.Network
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
 
-        private const byte PROTOCOL_VERSION = 9;
+        private const byte PROTOCOL_VERSION = 10;
     }
 }

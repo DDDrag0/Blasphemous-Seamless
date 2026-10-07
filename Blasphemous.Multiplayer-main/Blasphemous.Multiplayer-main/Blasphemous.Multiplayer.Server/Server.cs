@@ -827,5 +827,5 @@ public class Server
         Send(playerIp, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
     }
 
-    private const byte PROTOCOL_VERSION = 9;
+    private const byte PROTOCOL_VERSION = 10;
 }
