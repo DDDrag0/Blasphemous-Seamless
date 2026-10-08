@@ -929,6 +929,29 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// The game has just brought the dead enemies back - a bonfire, or the penitence that respawns on
+        /// every level load. Everything this mod remembers as "announced dead" has to be forgotten, or the
+        /// enemy the game has just recreated is killed again on the same load.
+        ///
+        /// This mirrors what the game does with its own consumed list, and it is the ONLY place those
+        /// memories may be dropped: _pendingDeaths is what carries a death announced from another room until
+        /// the enemy appears, so clearing it on an ordinary level load would undo that fix.
+        ///
+        /// _killLogged is cleared for the same reason: a death happening after the respawn is news again,
+        /// and swallowing it would lose the kill.
+        /// </summary>
+        public static void OnEnemiesRespawned()
+        {
+            int pending = _pendingDeaths.Count;
+
+            _pendingDeaths.Clear();
+            _killLogged.Clear();
+
+            if (pending > 0)
+                ModLog.Info($"[EnemySync] Nemici rinati: dimenticate {pending} morti annunciate in precedenza");
+        }
+
+        /// <summary>
         /// Registers everything it can see without ever renaming or shifting an id that is already in
         /// use. Called after the game spawns enemies and then periodically, because some enemies are
         /// created later by triggers and standby activations.
@@ -1470,15 +1493,6 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Prefix that marks a progress entry as an enemy-death record rather than a stat.
-        ///
-        /// Death travels as a progress entry because that channel already exists, already carries world
-        /// state and already reaches every player through the server - so this fix needs no new packet
-        /// type, no protocol bump and no change on the server at all.
-        /// </summary>
-        public const string DeathProgressPrefix = "ENEMYDEAD|";
-
-        /// <summary>
         /// Reads the spawn points the GAME considers defeated, as positions.
         ///
         /// EnemySpawner keeps them in a private List&lt;Vector3&gt; and answers IsSpawnerConsumed() with
@@ -1544,103 +1558,64 @@ namespace Blasphemous.Multiplayer.Client
             if (!Main.Multiplayer.NetworkManager.IsConnected)
                 return;
 
+            // Announced as spawn-point ids and on the EnemyDeathGlobal channel, NOT as progress entries.
+            //
+            // The first attempt sent progress records with a custom id and ProgressType.Flag, and that was
+            // wrong twice over: EventManager.SetFlag CREATES a game flag for an unknown name, and
+            // GetCurrentPersistentState serialises every flag - so the record was written into the save file
+            // permanently, and the server kept echoing it to every later joiner. The death channel already
+            // does exactly this job and reaches everyone except the sender.
+            //
+            // The ids are comparable after all: a spawn-point id is built from scene, name and position, all
+            // of which are authored scene data, so both machines produce the same string for the same spawn
+            // point. The earlier note claiming otherwise was wrong.
+            List<string> ids = ConsumedSpawnPointIds();
+            if (ids.Count == 0)
+                return;
+
+            for (int i = 0; i < ids.Count; i++)
+                Main.Multiplayer.SendEnemyDeathGlobal(ids[i]);
+
+            ModLog.Info($"[EnemyJoin] annunciate {ids.Count} morti precedenti al nuovo giocatore");
+        }
+
+        /// <summary>
+        /// The spawn-point ids whose positions the game has marked as consumed.
+        ///
+        /// EnemySpawner stores positions, so the position is looked up against the spawn points present in
+        /// the scene and the matching one's OWN id is recovered. That is the inverse of the lookup
+        /// MarkSpawnPointConsumed does, and it produces the id the death channel speaks.
+        /// </summary>
+        private static List<string> ConsumedSpawnPointIds()
+        {
+            List<string> result = new List<string>();
+
             List<Vector3> consumed = ConsumedSpawnPositions();
             if (consumed.Count == 0)
-                return;
-
-            for (int i = 0; i < consumed.Count; i++)
-            {
-                Vector3 p = consumed[i];
-
-                // Two decimals, the precision ids already use everywhere else and what the receiver
-                // rebuilds its Vector3 from.
-                string id = $"{DeathProgressPrefix}{_scene}|{p.x:F2}|{p.y:F2}";
-
-                Main.Multiplayer.NetworkManager.SendProgress(
-                    new ProgressSync.ProgressUpdate(id, Common.Enums.ProgressType.Flag, 0));
-            }
-
-            ModLog.Info($"[EnemyJoin] annunciate {consumed.Count} morti precedenti al nuovo giocatore");
-        }
-
-        /// <summary>
-        /// Applies a death record received from another machine: the receive half of the join fix.
-        ///
-        /// It lands on machinery that already existed - the game's own consumed list - so the two machines
-        /// stay consistent with each other AND with single player, where the bonfire clears the same list.
-        /// </summary>
-        public static void ReceiveDeathProgress(string id, byte value)
-        {
-            if (string.IsNullOrEmpty(id) || !id.StartsWith(DeathProgressPrefix))
-                return;
-
-            string payload = id.Substring(DeathProgressPrefix.Length);
-            string[] parts = payload.Split('|');
-            if (parts.Length < 3)
-                return;
-
-            // The scene in the record has to be the one loaded here, or the position would be matched
-            // against another room's spawn points.
-            if (parts[0] != _scene)
-                return;
-
-            float x, y;
-            if (!float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out x) ||
-                !float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out y))
-                return;
-
-            ConsumeSpawnPointAt(new Vector3(x, y, 0f));
-        }
-
-        /// <summary>
-        /// Marks the spawn point at a position as defeated, and takes down a live copy of its enemy.
-        ///
-        /// This is MarkSpawnPointConsumed without an id, because the record arrives as a position - which
-        /// is what EnemySpawner compares - and the id the game uses for the point is not known to the other
-        /// machine in a comparable form.
-        /// </summary>
-        private static void ConsumeSpawnPointAt(Vector3 position)
-        {
-            EnemySpawner spawner = Core.Logic != null ? Core.Logic.EnemySpawner : null;
-            if (spawner == null)
-                return;
+                return result;
 
             EnemySpawnPoint[] points = UnityEngine.Object.FindObjectsOfType<EnemySpawnPoint>();
-            EnemySpawnPoint nearest = null;
-            float nearestDistance = float.MaxValue;
+            if (points.Length == 0)
+                return result;
 
-            for (int i = 0; i < points.Length; i++)
+            for (int c = 0; c < consumed.Count; c++)
             {
-                // The game compares positions exactly; finding WHICH point is meant only needs a small
-                // tolerance to absorb the two decimals the record carries.
-                float d = Vector3.Distance(points[i].transform.position, position);
-                if (d < nearestDistance)
+                for (int i = 0; i < points.Length; i++)
                 {
-                    nearestDistance = d;
-                    nearest = points[i];
+                    // The game's own comparison is exact; this only has to decide WHICH point a consumed
+                    // position refers to.
+                    if (Vector3.Distance(points[i].transform.position, consumed[c]) > 0.5f)
+                        continue;
+
+                    string id = BuildSpawnPointId(_scene, points[i]);
+                    if (!string.IsNullOrEmpty(id) && !result.Contains(id))
+                        result.Add(id);
+
+                    break;
                 }
             }
 
-            if (nearest == null || nearestDistance > 0.5f)
-                return;
-
-            spawner.AddConsumedSpawner(nearest);
-            _deathsAppliedFromPeers++;
-
-            // A copy of this enemy is alive here: take it down with its own death sequence, rather than
-            // leaving a live enemy standing on a spawn point the game already counts as defeated.
-            Enemy alive = nearest.SpawnedEnemy;
-            if (alive != null && !alive.Status.Dead)
-            {
-                string aliveId = IdOf(alive);
-                if (!string.IsNullOrEmpty(aliveId) && _killLogged.Add(aliveId))
-                {
-                    ModLog.Info($"[EnemyJoin] nemico gia' ucciso dall'altro giocatore: lo rimuovo " +
-                                $"a ({position.x:F1},{position.y:F1})");
-                }
-
-                KillEnemyLocally(alive, HandleOf(aliveId));
-            }
+            return result;
         }
 
         /// <summary>

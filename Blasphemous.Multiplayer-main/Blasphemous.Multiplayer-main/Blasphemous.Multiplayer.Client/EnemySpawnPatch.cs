@@ -31,6 +31,35 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
+    /// <summary>
+    /// Forgets the remembered deaths when the game brings the dead enemies back.
+    ///
+    /// RespawnDeadEnemies is what a bonfire runs: it clears the spawn points the game considers defeated
+    /// and recreates every enemy. But the mod keeps its own memory of announced deaths, and that memory was
+    /// never cleared - so the enemy was recreated by the game and killed again by RegisterEnemy on the very
+    /// same load. The player who sat at the bonfire saw the enemies come back; the other one saw them stay
+    /// dead for ever, and a second bonfire did not help either.
+    ///
+    ///   the bonfire clears the GAME's consumed list (local, and local it stays)
+    ///   nothing cleared the MOD's pending list
+    ///
+    /// That list is what lets a death announced from another room survive until the enemy appears, so it
+    /// cannot be dropped on every level load: it has to be dropped exactly when the game itself decides
+    /// those enemies are alive again. That is this method, and only this method.
+    ///
+    /// The three callers are the bonfire's first activation, its re-activation, and one penitence's level
+    /// load (verified in IL), so hooking the method covers all of them without hooking any of them.
+    /// </summary>
+    [HarmonyPatch(typeof(EnemySpawner), nameof(EnemySpawner.RespawnDeadEnemies))]
+    public class EnemyRespawnPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            EnemySyncManager.OnEnemiesRespawned();
+        }
+    }
+
     public static class EnemyDiagnostics
     {
         /// <summary>

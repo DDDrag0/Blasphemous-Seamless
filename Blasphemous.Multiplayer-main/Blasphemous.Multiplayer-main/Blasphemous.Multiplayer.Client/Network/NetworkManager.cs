@@ -417,17 +417,6 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             ProgressUpdate progress = new ProgressUpdate(progressId, progressType, progressValue);
 
-            // Enemy-death records travel on this channel but are not stats: they are handled here and go
-            // no further. Two reasons. The queue is applied only once a level is loaded, and the joiner is
-            // still in the menu when these arrive, so queueing would apply them far too late or never. And
-            // no stat helper knows this id, so passing it on would log an error and raise a notification
-            // for every defeated enemy.
-            if (progressId != null && progressId.StartsWith(EnemySyncManager.DeathProgressPrefix))
-            {
-                EnemySyncManager.ReceiveDeathProgress(progressId, progressValue);
-                return;
-            }
-
             Main.Multiplayer.ProgressManager.ReceiveProgress(progress);
             Main.Multiplayer.ProcessRecievedStat(playerName, progress);
 
