@@ -197,6 +197,19 @@ una richiesta di inversione quando `|x_nemico − x_target| < ~1.5-2.0` unità.
 **Rischio: medio. Costo: basso.** Da verificare per primo: che un'inversione **reale** (giocatore che
 passa davanti a 5+ unità) avvenga **comunque una volta sola**.
 
+> ### ⚠️ LO STRUMENTO `orientFlip` MISURA LA COSA SBAGLIATA (accertato)
+> Il contatore è chiamato **solo** dentro `ApplyOrientation`, cioè **le scritture della MOD** (20 Hz).
+> **Le inversioni che si vedono sono quelle del GIOCO, ogni frame** — quindi **`orientFlip=0` non dice
+> nulla sul fenomeno**, dice solo che *noi* non abbiamo scritto l'orientamento.
+> **Prova**: nella sessione di conferma `orientFlip` è **0 su 111 report e su entrambe le macchine**,
+> **ma il fix NON è implementato** — quindi non può essere risolto. L'utente: *"non abbiamo ancora visto
+> il fix"*.
+>
+> **Conseguenza sull'ordine**: per **misurare** le scritture del gioco serve **la stessa Prefix Harmony**
+> che sarebbe il fix. Quindi la Prefix **va scritta in ogni caso**, e **conviene scriverla prima in
+> versione "solo misura"** (conta, non blocca → rischio quasi nullo), **poi**, se il fenomeno si
+> ripresenta, **attivare l'isteresi con una riga**.
+
 **Gravità: 🔴 alta come disturbo visivo, non bloccante, auto-limitante.** Puramente **cosmetico**:
 posizione, vita e morte non ne sono toccati.
 
@@ -399,6 +412,23 @@ già spedito il proprio stato consumato. Non esiste una "storia dell'host" da cu
 - ⚠️ **Interazione con §3**: la lista consumata è **la stessa** che il falò azzera, e il reset è
   **locale**. L'unione è quindi **auto-limitante** (si riallinea al primo falò), ma fino a lì le due
   liste restano diverse: **è §3, non un difetto nuovo.**
+
+> ### ✅ RISOLTO E VERIFICATO IN GIOCO (tag `stato-join-fix-3`)
+> I marcatori, dai log della sessione di conferma:
+> ```
+> G2: [EnemyJoin] annunciate 2 morti precedenti al nuovo giocatore
+> G1: [EnemySync] Nemici rinati: dimenticate 2 morti annunciate in precedenza
+> G1: Received new game progress: ENEMYDEAD    → 0 occorrenze (il percorso vecchio è morto)
+> G2: [Probe] ... animRestart=0 animRepeat=0 stalls100=0 fps=60
+> ```
+> **Il fix del join e quello del falò sono confermati.** L'utente: *"tutto funziona benissimo, il problema è stato risolto"*.
+>
+> **E il contesto al falò è esatto**: `[TRACE][SPAWN] Respawning dead enemies on level.` immediatamente
+> seguito da `[EnemySync] Nemici rinati: dimenticate 2 morti annunciate in precedenza`. **L'aggancio
+> scatta nell'istante giusto.**
+>
+> **Nota**: la pulizia dei flag spazzatura ha prodotto **0 righe**, quindi **il salvataggio era già
+> pulito** — la pulizia resta come rete di sicurezza, non è servita.
 
 **Gravità: 🔴 ALZATA DALL'UTENTE.** Difetto **GARANTITO** (dipende solo da *chi ha ucciso cosa prima
 della connessione*), **frequente** all'ingresso in una stanza già giocata, **auto-limitante**,
