@@ -1460,3 +1460,48 @@ nemico.**
 **Nota di metodo**: questo è il tipo di esclusione che vale più di una diagnosi. **Non sappiamo
 ancora qual è la causa, ma sappiamo con certezza dove NON è** — e **quattro famiglie di cause sono
 state eliminate con una prova, non con un ragionamento.**
+
+---
+
+## [2026-10-08 23:25] Strumento: ripartizione per-nemico degli avvii di animazione (`[AnimByEnemy]`)
+
+**Perché è servito.** Il churn non era **attribuibile**. Contando le transizioni per coppia di stati
+**senza distinguere il nemico**:
+```
+386x  765711723 -> 2081823275
+```
+sembrava **UN nemico in loop**. **Ma lo stesso conteggio si ottiene con PIÙ nemici che la fanno
+qualche decina di volte ciascuno.** **Non è un dettaglio**: cambia se la causa è **un nemico
+impazzito** o **un comportamento generale della stanza**.
+
+> **Errore di metodo già commesso una volta in questa sessione**: ho presentato "386 volte" come se
+> fosse un nemico solo. **Non lo era, e non potevo saperlo** — **i due casi sono indistinguibili dal
+> conteggio che avevo.**
+
+### Cosa è stato aggiunto
+
+| Pezzo | Cosa fa |
+|---|---|
+| `_animRestartsByEnemy` | ripartizione per nemico, **alimentata da `NoteAnimationRestart`** |
+| `LabelOf(enemy)` in `LogAnimationChanges` | **l'etichetta porta la POSIZIONE** (le etichette `SPAWN (NN)` **si permutano fra run**); `LabelOf` è **cache per istanza**, quindi **non alloca sul percorso caldo** |
+| riga `[AnimByEnemy] avvii=...` | **le 4 peggiori**, accanto alle due dell'orientamento ⇒ **i tre report sono confrontabili** |
+
+**Perché `LabelOf` e non `ShortId`**: stessa etichetta usata dai tally dell'orientamento ⇒
+**i report si leggono insieme**, e `ShortId` può guadagnare un suffisso quando due spawn point
+condividono la posizione.
+
+**Scelta deliberata: è un intervento di MISURA, non un fix.** **Non sappiamo ancora se il churn sia
+un difetto** — l'Esploratore sta stabilendo se `2081823275` è **un attacco** (386 ingressi = 386
+attacchi ⇒ **nessun difetto**) o **un idle** (⇒ **qualcosa ce lo rimette**). **Cambiare il
+comportamento prima di saperlo sarebbe stato scrivere codice su un'ipotesi**, ed è la disciplina che
+ci ha evitato tre regressioni.
+
+**Tag**: `stato-anim-tally` · **Rollback**: `stato-fingerprint-fix`
+
+### Cosa aspettarsi dal prossimo test
+```
+[AnimByEnemy] avvii=(-715.1,10.0)=N  (-688.8,10.0)=M  ...
+   -> se il churn è concentrato su UNO, è un nemico impazzito
+   -> se è distribuito su tutti, è un comportamento generale della stanza
+```
+**E `tools/verify-deploy.ps1` ora controlla 8 marcatori**, fra cui i due nuovi.
