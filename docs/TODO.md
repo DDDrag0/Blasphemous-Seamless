@@ -86,6 +86,14 @@ G2 (client): (12) 460696939 -> 2081823275 avvio=0.00    × 58 volte
 riavvii osservabili**. Una transizione **legittima avviene una volta**; 33-58 volte è **questo mod**
 che riavvia il clip.
 
+> ### 🟡 ACCETTABILE — priorità ABBASSATA (deciso dall'utente)
+> **Le animazioni NON sono totalmente fluide, ma sono ACCETTABILI per il momento.** Il passo 2 le ha
+> migliorate **in modo misurabile** (nimRepeat da 33-58 a **0**), e l'utente ha stabilito che la
+> priorità scende **molto più in basso della modalità spettatore** (§5a). **Non è un capitolo chiuso:
+> è un capitolo PARCHEGGIATO con una soglia di qualità accettata.**
+> Resta come **irrobustimento** il passo 4 (ullPathHash + riposizionare davvero), da riprendere
+> **solo se** la fluidità tornasse a dare fastidio.
+
 > ### ✅ RISOLTO E VERIFICATO (passo 2)
 > Rimossa la riga che azzerava `animTime`, i contatori sono passati **da 33-58 a ZERO** su entrambe le
 > macchine: `animRestart=0`, `animRepeat=0`, `stalls100=0`, `fps≈60`, e **`syncMs` invariato**
@@ -658,7 +666,9 @@ precedente se peggiora.
 | ~~1~~ | ~~Test di controllo single-player~~ | ⬇️ **DECLASSATO**: il probe ha già dato la baseline **disconnessa**, e da lì sappiamo che lo stallo esiste disconnesso e i tagli no ⇒ **il test di controllo non discrimina più nulla** | ❌ **cade** |
 | **2** | **B-lite**: togliere `animTime = 0f;` (**`:1754`**) | ✅ **VERIFICATO IN GIOCO**. `animRepeat` è passato da **33-58 per nemico a ZERO** su entrambe le macchine, `animRestart=0`, `stalls100=0`, `fps≈60`, `syncMs` invariato (0.02-0.18 ms): **la cura non è costata nulla altrove**. L'utente riferisce animazioni **fluide** | ✅ **CHIUSO** — `stato-passo2-animtime` |
 | **3** | **Desync al join (§1g)** — pacchetto "stato morte" sul canale Progress + **ri-annuncio a ogni join** | ⬆️ **PROMOSSO da richiesta esplicita dell'utente.** Indipendente da §1, **riusa `ReceiveEnemyDeathGlobal` che è GIÀ scritto e collaudato**, **nessuna modifica al server**, nessun bump di protocollo. È il difetto **funzionale** più visibile rimasto | ⏳ **PROSSIMO** |
-| **4** | **Diagnostica dietro flag** + `RESCAN_INTERVAL` a 2-3 s + **contatore `orientFlip` per nemico** | ↕️ giustificato da §1e(c) (gli **84.5 ms** e l'allocazione), **NON dagli FPS**. Il `orientFlip` è **necessario per rendere MISURABILE il fix dell'orientamento** | ⏳ |
+| **4** | **Contatore `orientFlip` per nemico** | **Necessario per rendere MISURABILE il fix dell'orientamento (§1b)**, che altrimenti si giudica a occhio. Poche righe nel probe | ⏳ **insieme al 3** |
+| **4b** | **Diagnostica dietro flag** + `RESCAN_INTERVAL` a 2-3 s | ↕️ giustificato da §1e(c) (gli **84.5 ms** e l'allocazione ~0.4 MB/s), **NON dagli FPS** | ⏳ |
+| **4c** | **`fullPathHash`** + riposizionare davvero (vecchio passo 3) | ⬇️ **DACCATO SOTTO LO SPETTATORE**: le animazioni sono **accettabili** (decisione dell'utente). Da riprendere **solo se** la fluidità tornasse a dare fastidio | ⏳ **parcheggiato** |
 | ~~5~~ | ~~Solo se `Animator.name != "Body"`~~ | ❌ **CADE**: il nome è `Body` su entrambe le macchine, 4+4 volte | ❌ **cade** |
 | **6** | **Falò A1**: pacchetto `PrieDieuRested` → `RespawnDeadEnemies()` sul ricevente, **senza** refill | Indipendente da §1, rischio basso | ⏳ |
 | **7** | **Oggetti distruttibili**: 4 helper (`PersistentBreakableObject`, `SlashReceiver`, `BreakableObject`, `TriggerBasedTrap`) | Meccanico e isolato, ma **dopo** aver identificato l'oggetto in gioco (`Broke wall: 0`, `Used Lever: 0` anche nell'ultimo test) | ⏳ |
