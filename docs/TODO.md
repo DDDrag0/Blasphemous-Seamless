@@ -3,7 +3,8 @@
 > **Documento vivo.** Va aggiornato a ogni passo: cosa è stato fatto, cosa ha misurato, cosa resta.
 > L'ultima sezione (`Diario dei passi`) è il registro cronologico.
 
-Ultimo aggiornamento: **dopo il passo 0** (strumentazione implementata, deployata, non ancora testata).
+Ultimo aggiornamento: **dopo il passo 2** (implementato, **da testare**). Il passo 0 è stato **testato
+e ha chiuso due ipotesi su tre**.
 
 ---
 
@@ -39,6 +40,7 @@ che riguardano i nemici, le morti **e il Penitente**.
 | `stato-morte-feedback` | morte robusta, feedback del colpo, boss esclusi |
 | **`stato-morte-animata-ok`** | **morte animata anche per mano dell'altro giocatore** |
 | **`stato-passo0-strumentazione`** | **passo 0: solo misure, nessun cambio di comportamento** |
+| **`stato-passo2-animtime`** | **passo 2: la posizione di riproduzione non viene più azzerata (+ contatori nel probe)** |
 
 ---
 
@@ -67,9 +69,26 @@ che riguardano i nemici, le morti **e il Penitente**.
 > quasi sempre** → `Play` viene chiamato **a ogni aggiornamento**, non solo al cambio di stato.
 > Questo spiega perché il taglio è molto peggiore di quanto il solo `animTime = 0` farebbe prevedere.
 
-**Prova nei log:** `[EnemyAnim]` = 274 righe su G1, 248 su G2; **236/274 (86%)** e **211/248 (85%)**
-hanno `avvio=0.00`. `D01Z01S01@SPAWN` ha **100 transizioni (G1) / 87 (G2)** in 29 minuti, con
-`765711723 -> 2081823275 avvio=0.00` ripetuto **una volta per frame per ~30 frame di fila**.
+**Prova nei log — e una CORREZIONE importante.** Il conteggio "86%/85% di righe con `avvio=0.00`" è
+una prova **DEBOLE**: `LogAnimationChanges` campiona **dopo** che il gioco ha già cambiato stato,
+quindi **anche una transizione legittima** appare con `avvio≈0.00`. **Non usare quella statistica.**
+
+**La prova buona è la RIPETIZIONE IDENTICA** — la stessa coppia di hash, per lo **stesso** nemico,
+ripetuta:
+
+```
+G2 (client): (14) 765711723 -> 2081823275 avvio=0.00    × 33 volte
+G2 (client): (12) 460696939 -> 2081823275 avvio=0.00    × 58 volte
+```
+
+**a ~6 riavvii al secondo, con `fps 59` e `frameMs_max 19-31 ms`** — cioè **in frame sanissimi**. Su
+113 righe `[EnemyAnim]` del client, **101** con `avvio=0.00`, di cui **91 in quei due burst: ~80% dei
+riavvii osservabili**. Una transizione **legittima avviene una volta**; 33-58 volte è **questo mod**
+che riavvia il clip.
+
+**Riferimenti di riga corretti** (quelli vecchi si erano spostati): `animTime = 0f` **:1754**,
+`ApplyAnimation` **:2109-2129**, `ReadAnimation` **:2095**, `IdOf` **:1032**, `LogAnimationChanges`
+**:2017**, `RegisterEnemies` **:917**, `LogDiagnosticSnapshot` **:1210**.
 
 ### 1b. Il nemico si gira a destra e sinistra velocissimo
 
@@ -93,54 +112,139 @@ su `Entity::SetOrientation`) — rischio medio.
 Chiarito dal test: **l'animazione di morte parte**, ma in alcuni casi **viene troncata dopo pochi
 millisecondi**. **Non è un problema di morte: è 1a.** **Il capitolo "fantasmi" è chiuso.**
 
-### 1d. 🔴 RIGUARDA ANCHE IL PENITENTE — prima ipotesi individuata, da chiudere
+### 1d. ✅ CHIUSA — le 130 patch NON c'entrano (misurato col passo 0)
 
-**Il Penitente NON è toccato dalla mod**, verificato in tre modi indipendenti:
-- **IL**: `Gameplay.GameControllers.Penitent.Penitent` non ridefinisce `Animator`;
-  `Entity::get_Animator` legge `<Animator>k__BackingField`.
-- **codice mod**: le uniche interazioni sono **letture** (`MainPlayerManager.cs:83`,
-  `Penitent.Animator.GetCurrentAnimatorStateInfo(0)` confrontato con 88 nomi).
-- **log**: la stringa `Current animation doesn't exist!`, che comparirebbe se la mod forzasse stati
-  arbitrari, ha **0 occorrenze** su G1 e G2.
-
-**MA** — `AnimationFixes.cs` installa **~130** `[HarmonyPatch]` sui metodi
+Era il sospetto peggiore: `AnimationFixes.cs` installa **~130** `[HarmonyPatch]` sui metodi
 `OnStateEnter/OnStateUpdate/OnStateExit` delle classi
-`Gameplay.GameControllers.AnimationBehaviours.Player.*`, **tutti** con:
+`Gameplay.GameControllers.AnimationBehaviours.Player.*`, **tutti** con
+`public static bool Prefix(Animator animator) => animator.name == "Body";`. Poiché quei metodi
+restituiscono `Void`, un prefix che torna `false` **salterebbe il corpo originale** — e fra quei
+corpi ci sono `MoveAnimationBehaviour` (che imposta `Animator.speed = 1`) e
+`GroundAttackSubStateBehaviour` (che imposta la velocità d'attacco): **esattamente** camminata e
+combattimento.
 
-```csharp
-public static bool Prefix(Animator animator) => animator.name == "Body";
+**La misura del passo 0 lo ha chiuso:**
+
+```
+[Probe] PENITENT animator.name='Body' animatorGameObject='Body' root='Penitent(Clone)'
+[Probe] Le 130 patch su animator.name == "Body" CORRISPONDONO
 ```
 
-**Verificato in IL che quei metodi restituiscono `Void`**: con Harmony, un prefix `bool` che
-restituisce `false` **salta il corpo originale**. E cosa verrebbe saltato:
+Su **entrambe** le macchine, **4 volte ciascuna** (una per cambio scena). Il prefix torna `true`,
+il corpo originale **non viene saltato**.
 
-| Metodo | Cosa fa (IL) | Cosa si perde |
+**E in più**, verificato nell'intero sorgente della mod: quei prefix **non toccano l'Animator** —
+fanno solo `Main.Multiplayer.NetworkManager.SendEffect(...)` (7 casi) e per il resto sono guardie
+pure. **In tutta la mod non esiste alcuna scrittura sull'Animator del Penitente locale**
+(`EnemySyncManager:2126` è un nemico, `TriggerReceiverHelper:48` un interruttore di livello,
+`OtherPlayerScript` scrive sull'Animator del **ghost**). Nessun `Time.timeScale`, nessun
+`Animator.speed`.
+
+⇒ **Il passo 5 del piano CADE.**
+
+**Resta aperta, come causa separata e NON identificata**, l'osservazione che anche il Penitente
+risulti tagliato. **Candidato falsificabile, non verificato**: il Penitente che si guarda in co-op
+potrebbe essere **il ghost**, la cui animazione è pilotata **per nome** (tabella di 88 voci) e
+**sempre da frame 0** (`OtherPlayerScript` → `CharacterAnim.Play(name)`), **senza posizione di
+riproduzione**.
+
+### 1e. IPOTESI DI CARICO — misurate: il carico *medio* è nullo, il *picco* no
+
+Numeri (102 report per macchina, 2 s ciascuno):
+
+```
+syncMs_avg  = 0.02 – 0.19 ms          ← il costo medio di EnemySyncManager.Update
+lateMs_max  = 2 – 4 ms tipici          ← per TUTTO Multiplayer.OnLateUpdate
+gc0         = 0 nella maggior parte delle finestre (43 al primo report = avvio)
+managedMB   = sega 71→85 MB, una gen0 ogni ~20 s, 9-13 MB per ciclo
+              ⇒ ~0.4-0.65 MB/s di allocazione continua (non zero, ma non causa stallo)
+```
+
+| # | Ipotesi | Esito |
 |---|---|---|
-| `MoveAnimationBehaviour::OnStateEnter` | `Animator.set_speed(1f)`, `SetBool("IS_CLIMBING_LADDER", false)`, `Penitent.set_IsGrabbingLadder(false)`, `StepDustSpawner.set_CurrentStepDustSpawn(...)` | **la camminata** |
-| `GroundAttackSubStateBehaviour::OnStateUpdate` | `set_speed(PenitentAttack.AttackSpeed)` | **il combattimento** |
-| `GroundAttackSubStateBehaviour::OnStateExit` | `set_speed(1)` + `PenitentAttackAnimations.CloseAttackWindow()` + `PenitentAttack.ClearHitEntityList()` | la finestra d'attacco |
-| `HurtSubStateBehaviour::OnStateEnter` | `set_IsHurt(true)`, `Physics.EnablePhysics/EnableColliders/Enable2DCollision(true)`, `GrabLadder.EnableClimbLadderAbility(false)` | la reazione al colpo |
+| a | `IdOf` O(N²) | ❌ **smentita come causa**: nelle stanze dei picchi (0 nemici) la lista è vuota |
+| b | `LogAnimationChanges` ogni frame | ❌ **smentita come stallo**: 604/1303 righe `[EnemyTick]` = I/O sincrono 2×/s **senza alcun picco corrispondente** (frame 19-45 ms) |
+| c | **`RegisterEnemies`** ogni 0,5 s → `FindObjectsOfType` + `GetRootGameObjects()` + `GetComponentsInChildren<Enemy>(true)` per root | ✅ **RESTA VIVA**: è **l'unico codice dentro `UpdateCore` capace di un frame da 84.5 ms** misurato con `_ids` **vuoto**, ed è coerente con ~0.4 MB/s |
+| d | `ProcessQueue` alloca per messaggio | ⚠️ **confermata come allocazione, NON come stallo** (nessun picco correlato) |
+| e | `PvPPatches` su `Entity.Damage` | ❓ non misurabile con questa strumentazione |
+| f | `RunInBackgroundFix` | ❓ non misurabile con questa strumentazione |
 
-> **Se `Animator.name` del Penitente non è esattamente `"Body"`, queste patch uccidono camminata e
-> combattimento di un attore che la sync non tocca.** E il `set_speed` saltato è la spiegazione
-> **esatta** di "la camminata risulta a pochissimi frame".
+> **Il passo 4 (diagnostica dietro flag, `RESCAN_INTERVAL` più lungo) trova la sua giustificazione
+> qui — negli 84.5 ms e nell'allocazione — NON negli FPS.**
 
-**La stringa `"Body"` NON esiste in `Assembly-CSharp.dll`** (verificato: `ldstr "Body"`/`"Slash"` =
-**0 occorrenze**): è un nome di GameObject/prefab di scena → **si legge solo a runtime**.
+### 1f. STALLI DI FRAME (150-512 ms) — esistono, non sono la causa dei tagli
 
-**Il passo 0 lo misura.** Se il nome è `"Body"` → ipotesi chiusa, restano il carico e la diagnostica.
-Se è diverso → **è questa la causa**, ed è 🔴.
+Picchi ≥60 ms: **3/102** su G1, **11/102** su G2. ≥100 ms: **6 in totale**, in due macchine e ~7
+minuti (`512.0` e `205.0` all'avvio, `177.3` e `150.8` alla connessione, `124.1` all'avvio,
+`106.5` in una stanza vuota).
 
-### 1e. IPOTESI DI CARICO, da misurare (passo 0)
+**Collocazione** (i log **non hanno timestamp**: solo ordine di riga, e solo "quali eventi cadono fra
+due report da 2 s"):
 
-| # | Cosa | Dove |
+| Quando | Picchi | Contesto |
 |---|---|---|
-| a | `ApplyAnimation` chiama `IdOf(enemy)`, che fa **scansione lineare di `_ids` con `ResolveEnemy` per elemento** → **O(N²) per pacchetto** | `EnemySyncManager.IdOf` (1028) / `ApplyAnimation` (2100) |
-| b | `LogAnimationChanges` gira **ogni frame su tutti gli id**: `ResolveEnemy` + `AnimatorOf` + `GetCurrentAnimatorStateInfo(0)` + 2 `TryGetValue` + 1 scrittura dizionario **per nemico**, con `string` interpolata e I/O sincrono su disco in caso di cambio | `:1994` |
-| c | `RegisterEnemies` ogni 0,5 s → `FindObjectsOfType` (**alloca 2 array** via `Resources.ConvertObjects`) + `GetRootGameObjects()` + `GetComponentsInChildren<Enemy>(true)` **per ogni root** | `:872` |
-| d | `NetworkManager.ProcessQueue` alloca **per ogni messaggio**: `GetRange(startIdx,2).ToArray()` + `new byte[length]` + copia byte-per-byte → **GC spike** | `NetworkManager.cs:123-167` |
-| e | `PvPPatches.cs:54` patcha `Entity.Damage(float, string)` — IL: `public`, **non virtual**, è il percorso di danno di **ogni entità** → il prefix gira **a ogni colpo**, con `string.Replace` che alloca | `PvPPatches.cs:54` |
-| f | `RunInBackgroundFix.Apply()` è agganciato **solo** a `NewMainMenu.Awake`, `Landing.Awake`, `LogicManager.SetCurrentLevelConfig`. Il gioco logga `Run in background was true! Correcting.`: **se lo riabbassa durante il gioco nessuno lo rialza** e l'host che perde il focus crolla di FPS | `RunInBackgroundPatch.cs` |
+| **avvio** | 205.0 / 512.0 / 124.1 | `2× LoadAndActivateLevel` + `LOADGAME` + `SAVEGAME` + 2 coppie `BLOCK_UNTIL_FPS_STABLE`; **disconnessi, 0 nemici, `gc0=43`** |
+| **connessione** | 150.8 e 177.3 | con `lateMs_max` 142.3 / 167.1 ⇒ **dentro `Multiplayer.OnLateUpdate`**: la stretta di mano della mod, ~150-170 ms **una volta per sessione** |
+| **una porta** | 82.4 | `load + SAVEGAME` nella stessa finestra |
+| **cluster su G2** | 94.4 / 76.6 / 78.6 / **106.5** / 69.2 / 81.0 | stanza con **0 nemici e 0 id**, **nessun evento** nella finestra. Nel frame da 106.5 ms, **84.5 ms dentro `EnemySyncManager.Update`** → §1e(c) |
+
+**Candidati accertati in IL:**
+
+- **`UnityEngine.Resources.UnloadUnusedAssets()`** — **unico call site in tutta l'assembly**:
+  `Framework.FrameworkCore.Level/<Activate>c__Iterator2::MoveNext @IL_0179`, **sincrono sul main
+  thread a ogni attivazione di livello**. È lo stallo classico da centinaia di ms.
+- `LevelManager/<LoadAndActivateLevel>c__Iterator3::MoveNext`: `WaitForPreloadCacheScene` +
+  `level.Activate()` in loop + `InitializeLevel` + **5× `WaitForEndOfFrame`**; nel frame ci stanno
+  `UIManager::RefreshReferences` (**5 `FindObjectOfType`**) e `SpawnManager::SpawnPlayerOnLevelLoad`
+  (**5 `FindObjectsOfType`**).
+- `PersistentManager::SaveGame_Internal`: serializza tutto il save in JSON + Base64 + **scrittura su
+  disco sincrona**, **6 volte per macchina** (a ogni porta/`OnBeforeLevelLoad`).
+- `RegisterEnemies` (§1e c).
+
+**Perché NON spiegano i tagli:** la coincidenza picchi↔taglio è **0/3** su G1 e **1/11** su G2 (e
+quell'uno è la porta); i due picchi più grandi avvengono con **0 nemici e 0 id**, quando **non c'è
+nulla da tagliare**; i tagli avvengono a **59 fps con `frameMs_max` 19-45 ms**. Le due cose **possono
+sommarsi**, ma nei log **non si presentano mai insieme**.
+
+**Nota**: `BLOCK_UNTIL_FPS_STABLE` è la logica `if (1/smoothDeltaTime < 50 && timeWaiting < 3) attendi`
+[IL]: è la **conseguenza** dello stallo, non la causa, e **non è una metrica**.
+
+### 1g. 🟡 Chi si connette DOPO non apprende le morti già avvenute
+
+**Firma nei log.** G2 (la macchina che si è connessa dopo) ha giocato **~120 s da solo** come host di
+sé, poi si è connesso a G1. Le sue uccisioni: **#1** `D01Z01S01@SPAWN` (-715.1,10.0) e **#2** `(11)`
+(-697.1,11.0) **PRIMA** della connessione; **#3** `(13)` dopo. Stato dopo il join:
+- **G1** (host): traccia **6 id su 7 spawn point**, con `SPAWN(-715)` **VIVO a `life=2`**;
+- **G2** (client): traccia `{12,13,14,15,16}`.
+- **Entrambe** loggano `IMPRONTA DIVERSA` (impronte **speculari**: `host=716697266 locale=-908937816`
+  e viceversa).
+
+⇒ **Il nemico #1 di G2 era vivo su G1** (copia indipendente a 2 HP, che G1 poi uccide per conto suo) =
+esattamente ciò che l'utente ha visto. Il **#2** su G1 **non esiste** (tabella 7→6 id all'ingresso in
+stanza, unico evento di morte nel mezzo): **fuori visuale "assente" e "morto" sono
+indistinguibili**.
+
+**Meccanismo (verificato nel codice, ed è strutturale):**
+
+- La morte esiste **solo come evento live**: `SendEnemyKill` + `SendEnemyDeathGlobal` sono dentro
+  `UpdateCore`, che **esce subito se `!IsConnected`** → una morte avvenuta **da disconnessi non viene
+  accodata né ritrasmessa**; subito dopo l'id viene droppato (`ForgetEnemy`) quindi **non torna più**.
+- **Chi entra dopo non riceve lo stato dei consumati**: `_pendingDeaths` è scritto **solo** da
+  `ReceiveEnemyDeathGlobal` (pacchetto **live**); `MarkSpawnPointConsumed` e `DumpConsumedSpawnPoints`
+  sono **locali**. Alla connessione viaggia **solo il progress**.
+- La via "morte come conseguenza della vita" è **gated `!IsHost`**: solo il client uccide su una vita
+  0 ricevuta; l'host fa solo `SetHealth(0)`.
+- **`ApplyPersistentDeath` non esiste** in questo codice (0 occorrenze): il meccanismo reale è
+  `ReceiveEnemyDeathGlobal` → `_pendingDeaths` + `MarkSpawnPointConsumed` → `RegisterEnemy`.
+
+**Gravità: 🟡** — difetto **visibile**, **non bloccante**, **auto-limitante** (uscire e rientrare
+nella stanza ricostruisce la tabella locale). **L'utente l'ha dichiarato irrilevante: NON affrontarlo
+ora.**
+
+**Fix, se e quando**: un pacchetto di "stato morte" nel join, sullo stesso canale del progress —
+l'host manda gli id/posizioni consumati e il joiner applica `MarkSpawnPointConsumed`. ~40-60 righe,
+ma richiede **una decisione di design**: **unione** delle due storie, o **autoritativo dell'host** (le
+due storie solo-player differiscono **per costruzione**).
 
 ---
 
@@ -322,15 +426,15 @@ precedente se peggiora.
 
 | # | Intervento | Perché in questo ordine | Stato |
 |---|---|---|---|
-| **0** | **Strumentazione**: `Animator.name` del Penitente, FPS, `Stopwatch` su `Update` e `OnLateUpdate`, GC. **Nessun cambio di comportamento** | Decide fra **§1d (le 130 patch)** e **§1e (carico/diagnostica)** *prima* di toccare il codice. Il caso del nome è **binario**. Costa un test, ne risparmia tre | ✅ **implementato e deployato** — `stato-passo0-strumentazione` · ⏳ **da testare** |
-| **1** | **Test di controllo**: stesso salvataggio in **single-player con la mod attiva ma disconnessa**, cronometrando la camminata a occhio | Separa "rete" da "non rete" in un colpo. Nessuna modifica al codice | ⏳ da fare insieme al passo 0 |
-| **2** | **B-lite**: togliere `animTime = 0f;` (`:1730-1731`) | Massimo beneficio / rischio minimo. Da solo riduce molto il taglio dei one-shot (attacchi, morti) | ⏳ |
-| **3** | **B-hash**: da `shortNameHash` a `fullPathHash` in `ReadAnimation`/`ApplyAnimation`, e riposizionare davvero | Chiude il riavvio da confronto d'hash sbagliato. Richiede il passo 2 già verde per isolare l'effetto | ⏳ |
-| **4** | **Diagnostica dietro flag**: `LogAnimationChanges`/`LogDiagnosticSnapshot` off di default, `RESCAN_INTERVAL` a 2-3 s | Se il passo 0 mostra FPS bassi, è il rimedio più semplice. **Da rimisurare** con lo stesso strumento | ⏳ |
-| **5** | **Solo se il passo 0 mostra `Animator.name != "Body"`**: rimuovere i prefix sulle classi Player e ri-identificare il ghost **per componente** | È l'unico intervento che tocca il Penitente: va fatto **solo con la prova in mano** | ⏳ condizionale |
-| **6** | **Falò A1**: pacchetto `PrieDieuRested` → `RespawnDeadEnemies()` sul ricevente, **senza** refill | Indipendente da §1, rischio basso. Dopo la strumentazione perché ora si sa quanto costa | ⏳ |
-| **7** | **Oggetti distruttibili**: 4 helper (`PersistentBreakableObject`, `SlashReceiver`, `BreakableObject`, `TriggerBasedTrap`) | Meccanico e isolato, ma **dopo** aver identificato l'oggetto in gioco | ⏳ |
-| **8** | **Prestazioni**: `ProcessQueue` senza allocazioni + `IdOf` con dizionario inverso | Pura prestazione, da fare **solo se** i passi 0/4 non hanno già risolto | ⏳ |
+| **0** | **Strumentazione**: `Animator.name` del Penitente, FPS, `Stopwatch` su `Update` e `OnLateUpdate`, GC. **Nessun cambio di comportamento** | Decide fra **§1d** e **§1e** *prima* di toccare il codice | ✅ **TESTATA e conclusiva**: nome=`Body` (→ §1d chiusa), FPS 43-61 con picchi 124-512 ms, costo mod **0.02-0.19 ms** medi, `gc0≈0` → `stato-passo0-strumentazione` |
+| ~~1~~ | ~~Test di controllo single-player~~ | ⬇️ **DECLASSATO**: il probe ha già dato la baseline **disconnessa**, e da lì sappiamo che lo stallo esiste disconnesso e i tagli no ⇒ **il test di controllo non discrimina più nulla** | ❌ **cade** |
+| **2** | **B-lite**: togliere `animTime = 0f;` (**`:1754`**) | ✅ **FATTO**. È l'unica causa con **firma misurata e continua** (33-58 riavvii identici per nemico, ~6/s, in frame da 59 fps) e **senza concorrenti**. Indipendente dallo stallo, rischio minimo, **verificabile col probe già in campo** | ✅ **implementato** — `stato-passo2-animtime` · ⏳ **da testare** |
+| **3** | **B-hash**: da `shortNameHash` a `fullPathHash` in `ReadAnimation`/`ApplyAnimation`, e riposizionare davvero | ⬆️ **subito dopo il 2**, per isolare l'effetto. **Ora ha una firma di prova concreta**: le 33-58 ripetizioni identiche per id | ⏳ **prossimo dopo il test del 2** |
+| **4** | **Diagnostica dietro flag**: `LogAnimationChanges`/`LogDiagnosticSnapshot` off di default, `RESCAN_INTERVAL` a 2-3 s | ↕️ **giustificato da §1e(c)** (gli **84.5 ms** di `RegisterEnemies` e l'allocazione ~0.4-0.65 MB/s), **NON dagli FPS** | ⏳ |
+| ~~5~~ | ~~Solo se `Animator.name != "Body"`~~ | ❌ **CADE**: il nome è `Body` su entrambe le macchine, 4+4 volte | ❌ **cade** |
+| **6** | **Falò A1**: pacchetto `PrieDieuRested` → `RespawnDeadEnemies()` sul ricevente, **senza** refill | Indipendente da §1, rischio basso | ⏳ |
+| **7** | **Oggetti distruttibili**: 4 helper (`PersistentBreakableObject`, `SlashReceiver`, `BreakableObject`, `TriggerBasedTrap`) | Meccanico e isolato, ma **dopo** aver identificato l'oggetto in gioco (`Broke wall: 0`, `Used Lever: 0` anche nell'ultimo test) | ⏳ |
+| **8** | **Prestazioni**: `ProcessQueue` senza allocazioni + `IdOf` con dizionario inverso | ⬇️ **DECLASSATO**: **allocazione sì, stallo no**. Da fare **dopo** 2-3-4 | ⏳ |
 | **9** | **Isteresi sul target dei boss**: `targetTime` minimo su `EnemyBehaviour` | La boss fight funziona: qualunque regressione qui costa caro. Ultimo dei lavori "di gioco" | ⏳ |
 | **10** | **Modalità spettatore** (§5a) | Idea a bassa priorità, tocca il ciclo di morte del giocatore | ⏳ |
 
@@ -345,15 +449,18 @@ passo 0, poi il **Penitente** (5) solo con la prova, poi i **due difetti funzion
 
 | # | Domanda | Cosa serve | Stato |
 |---|---|---|---|
-| 1 | **`Animator.name` del Penitente** — chiude §1d | il log del passo 0 | ⏳ **il passo 0 lo risponde** |
-| 2 | **Frame rate reale durante il gioco** — assente dai log | FPS + `deltaTime` massimo dal passo 0 | ⏳ **il passo 0 lo risponde** |
-| 3 | **Costo per frame della mod** — e la latenza reale (ignota: `PingManager` non logga) | `Stopwatch` dal passo 0 | ⏳ **il passo 0 lo risponde** |
-| 4 | **Gli `shortNameHash` delle due macchine per lo stesso stato** — chiude §1a | log di `shortNameHash` **e** `fullPathHash` per un nemico, 5 s per macchina, poi diff | ⏳ da aggiungere |
-| 5 | **Identità dell'oggetto di §4** | il tipo reale in gioco: `multiplayer sync dump` prima del colpo, o log del componente colpito | ⏳ |
-| 6 | **Se `targetTime` è davvero `readonly` e non assegnato** (per il passo 9) | verifica in IL dell'assegnazione nel costruttore | ⏳ |
-| 7 | **Perché `[EnemyTick]` è ~1,8/s e non 2/s** | misura diretta | ⏳ |
-| 8 | **`Received duplicated or inferior progress`** (fino a 22 volte per id) e **83 `Couldn't find connected player:`** su G2: esistono, **non è verificato che siano innocui** | test dedicato | ⏳ |
-| 9 | **`BLOCK_UNTIL_FPS_STABLE`** (19 coppie per macchina) **non è** un indicatore di prestazione: è il blocco d'input di `LevelManager` | non usarlo come metrica | ✅ chiarito |
+| 1 | `Animator.name` del Penitente — chiude §1d | il log del passo 0 | ✅ **`Body` su entrambe, 4+4 volte** → §1d **chiusa**. **NUOVA DOMANDA**: perché il Penitente risulta tagliato, se la mod non scrive sul suo Animator? **Candidato non verificato: il ghost**, pilotato per nome e sempre da frame 0 |
+| 2 | Frame rate reale | FPS dal passo 0 | ✅ **43-61 fps**, picchi **124-512 ms** all'avvio/caricamento e **150-177 ms** alla connessione |
+| 3 | Costo per frame della mod | `Stopwatch` dal passo 0 | ✅ **0.02-0.19 ms** medi (`Update`), **2-4 ms** tipici per tutto `OnLateUpdate`, **picco 84.5 ms** in `RegisterEnemies` |
+| 4 | Gli `shortNameHash` delle due macchine per lo stesso stato — chiude §1a | log di `shortNameHash` **e** `fullPathHash` per un nemico, 5 s per macchina | ⏳ **da aggiungere se il passo 2 non basta** |
+| 5 | Identità dell'oggetto di §4 | il tipo reale in gioco | ⏳ `Broke wall: 0`, `Used Lever: 0` **anche nell'ultimo test** |
+| 6 | Se `targetTime` è davvero `readonly` e non assegnato (per il passo 9) | verifica in IL dell'assegnazione nel costruttore | ⏳ |
+| 7 | Perché `[EnemyTick]` è ~1,8/s e non 2/s | — | ✅ **chiarito**: `LogDiagnosticSnapshot` gira a `RESCAN_INTERVAL = 0.5 s`, **una riga per nemico tracciato** |
+| 8 | `Received duplicated or inferior progress` e `Couldn't find connected player:` | test dedicato | ✅ **0 "duplicated"** in questo test; restano **32** `Couldn't find connected player: *` su G2, **tutte al join** (una per voce di progress): rumore di handshake |
+| 9 | `BLOCK_UNTIL_FPS_STABLE` **non è** un indicatore di prestazione | non usarlo come metrica | ✅ chiarito: è `if (1/smoothDeltaTime < 50 && timeWaiting < 3) attendi`, cioè la **conseguenza** |
+| 10 | **Causa del cluster 69-106 ms su G2** | attribuzione esatta: `RegisterEnemies` è il candidato, ma i log non hanno eventi nella finestra | ⏳ non verificata |
+| 11 | **Data/ora assoluta dei picchi** | — | ❌ **impossibile**: i log non hanno timestamp |
+| 12 | **Animazione del Penitente e del ghost** | **nessuna riga di log le misura** | ⏳ da strumentare, se serve |
 
 ---
 
@@ -369,7 +476,8 @@ passo 0, poi il **Penitente** (5) solo con la prova, poi i **due difetti funzion
 | — | `ThawPhysics` | saltava il ripristino | `stato-thaw-fix` |
 | — | Arbitrato sulle distanze | **movimento e posizione sincronizzati** | `stato-sync-movimento-ok` |
 | — | Morte robusta + feedback + boss esclusi | **morte animata per mano dell'altro** | `stato-morte-animata-ok` |
-| **1** | **Passo 0: strumentazione** | implementata e deployata, **da testare**: `Animator.name`, FPS, `Stopwatch`, GC | **`stato-passo0-strumentazione`** |
+| **1** | **Passo 0: strumentazione** | ✅ **testata e conclusiva**: `Animator.name='Body'` (chiude §1d), FPS 43-61 con picchi 124-512 ms, costo mod 0.02-0.19 ms medi / **84.5 ms** il peggiore, `gc0≈0`. Ha **chiuso 2 ipotesi su 3** e **declassato il passo 1** | **`stato-passo0-strumentazione`** |
+| **2** | **Passo 2: `animTime` non più azzerato** + contatori `stalls100`/`animRestart`/`animRepeat` nel probe | ✅ implementato e deployato, **da testare**. Se il taglio era questa riga, `animRepeat` deve **crollare** mentre `stalls100` resta | **`stato-passo2-animtime`** |
 
 ---
 
