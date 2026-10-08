@@ -29,7 +29,7 @@
 | **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | 🟡 **riaperta di fatto** | ⚠️ **il churn NON è migliorato**: `animRepeat` fra 11 e 36 in **17 report su 46**, `avvio=0.00` in **484/499**. **È LOCALE all'host** (tutte le 499 righe `mia=host`), concentrato su **un solo nemico** a `x≈-716` con **386 ripetizioni della stessa transizione** `765711723 → 2081823275`. **"Accettabile" resta una scelta dell'utente, non un risultato tecnico.** Vedi §12 |
 | **2** | **Orientamento che si gira velocissimo** — §1b | 🔴 **in verifica** | ⚠️ **la prima isteresi NON funzionava** (`orientSkip=0` su 46 report, `orientFlip` 34 in 2 s): era in `ApplyOrientation`, cioè sulla scrittura **della mod** a 20 Hz, mentre il tremolio è **del gioco** a 60 Hz. **SPOSTATA nella Prefix su `Entity::SetOrientation`** (`stato-orient-prefix`). **Da testare** |
 | **3** | **Chi si connette dopo non apprende le morti** — §1g | ✅ | **RISOLTO E VERIFICATO**: `[EnemyJoin] annunciate 2`, nessun `ENEMYDEAD` nel progress |
-| **4** | **Falò: respawn e refill solo locali** — §3 | ✅ | **RISOLTO E VERIFICATO**: `_pendingDeaths` azzerata su `RespawnDeadEnemies` |
+| **4** | **Falò: RESPAWN e REFILL solo locali** — §3 | 🟡 **da confermare** | ⚠️ **lo stato ACCESO del falò è GIÀ sincronizzato** (`PrieDieuHelper.cs`, 3 patch). Questa voce riguarda **solo** il respawn dei nemici e il refill delle fiale, che restano **locali**. **Nessuna prova recente del disallineamento**: il test dopo il fix ha visto i nemici tornare su **entrambe**. **Da verificare con un test dedicato.** Vedi §12 |
 | **5** | **Sangue e flash nel feedback del colpo** — §5c | 🟢 | ⏳ **metodi identificati** (`PenitentSword::GetSwordSparks`). **NB: voce re-inglobata, era andata persa** |
 | **6** | **Oggetti distruttibili** non sincronizzati — §4 | 🟡 | ⏳ **prima va identificato l'oggetto in gioco** (`Broke wall: 0`, `Used Lever: 0`) |
 | **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | 🟡 | ⏳ diagnostica dietro flag, `RESCAN_INTERVAL` a 2-3 s |
@@ -1554,3 +1554,46 @@ finora — 386, 33/2s, 484/499 con `avvio=0.00` — dicono **quanto** succede, n
 
 **`tools/verify-deploy.ps1` ora controlla 9 marcatori.** Verifica attuale sulla macchina locale:
 **tutti presenti, protocollo 11 su mod e server.**
+
+---
+
+## [2026-10-08 23:28] Chiarimento sulla voce 4: lo stato del falò è GIÀ sincronizzato, il respawn NO
+
+**Verificato**: `PrieDieuHelper.cs` **esiste ed è già attivo**
+(`ProgressSync/Helpers/PersistentObjects/PrieDieuHelper.cs`), con **tre patch**:
+```
+[HarmonyPatch(typeof(PrieDieu), "OnUse")]                     Postfix -> UsePersistentObject(persistentId)
+[HarmonyPatch(typeof(PrieDieu), "GetCurrentPersistentState")] Prefix  -> Ligthed = true
+[HarmonyPatch(typeof(PrieDieu), "SetCurrentPersistentState")] Prefix  -> salta se già interagito
+```
+⇒ **lo stato ACCESO del falò è già sincronizzato fra le due macchine.** *(coerente con la tabella
+dello stato del progetto, dove "il falò si accende su entrambi" era già ✅.)*
+
+**La voce 4 parla di un'altra cosa**: **il RESPAWN e il REFILL** — che sedersi al falò **fa rinascere
+i nemici** e **ricarica le fiale**, e **quell'azione resta locale**. **Sono due cose distinte che
+nella lista sembravano una sola**, e questo chiarimento evita di re-indagare lo stato del falò, che
+è già risolto.
+
+### Il meccanismo, verificato in IL adesso
+
+```
+RespawnDeadEnemies  chiamato da:
+   PenitencePE02::OnLevelLoaded               <- una penitenza che respawna a ogni caricamento
+   <ActivationLogic>c__Iterator1::MoveNext     <- l'attivazione del falò
+   <ReActivationLogic>c__Iterator2::MoveNext   <- la ri-attivazione
+
+AddConsumedSpawner  chiamato da UN SOLO posto:
+   EnemySpawnPoint::OnEntityDie
+```
+⇒ **RespawnDeadEnemies è il punto in cui il gioco azzera la propria lista dei consumati**, ed è
+**lo stesso metodo** su cui ora c'è il postfix che azzera _pendingDeaths *(fix del falò, §3)*.
+**Quindi i due lati del falò passano ora dallo stesso punto.**
+
+### Stato della voce 4: 🟡 APERTA, ma con una precisazione
+
+**Non c'è prova recente che il disallineamento si presenti ancora** — e va detto: il test dopo il fix
+ha visto **i nemici tornare su ENTRAMBE** le macchine. **Quindi la voce va tenuta aperta ma NON come
+difetto confermato: come comportamento da verificare in un test dedicato.**
+
+**Cosa servirebbe per chiuderla**: un test in cui **UNA SOLA macchina** si siede al falò, e si guarda
+se **l'altra** vede rinascere i nemici. **Se non li vede, la voce è confermata.**
