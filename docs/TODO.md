@@ -27,7 +27,7 @@
 | # | Voce | Priorità | Stato |
 |---|---|---|---|
 | **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | 🟡 **riaperta di fatto** | ⚠️ **il churn NON è migliorato**: `animRepeat` fra 11 e 36 in **17 report su 46**, `avvio=0.00` in **484/499**. **È LOCALE all'host** (tutte le 499 righe `mia=host`), concentrato su **un solo nemico** a `x≈-716` con **386 ripetizioni della stessa transizione** `765711723 → 2081823275`. **"Accettabile" resta una scelta dell'utente, non un risultato tecnico.** Vedi §12 |
-| **2** | **Orientamento che si gira velocissimo** — §1b | 🔴 **in verifica** | ⚠️ **la prima isteresi NON funzionava** (`orientSkip=0` su 46 report, `orientFlip` 34 in 2 s): era in `ApplyOrientation`, cioè sulla scrittura **della mod** a 20 Hz, mentre il tremolio è **del gioco** a 60 Hz. **SPOSTATA nella Prefix su `Entity::SetOrientation`** (`stato-orient-prefix`). **Da testare** |
+| **2** | **Orientamento che si gira velocissimo** — §1b | ✅ **RISOLTO E VERIFICATO** | `orientFlip` **crollato da 85 (MAX 34 in 2 s) a 1 (G1) e 3 (G2), MAX 1**; `orientSkip=0` su entrambe, ora normale perché nessuno scrive più l'orientamento da combattere. **Causa della prima versione**: l'isteresi era in `ApplyOrientation` (scrittura della mod, 20 Hz) invece che sulla Prefix su `Entity::SetOrientation` (dove passa il gioco, 60 Hz). **Confermato stabile dall'utente.** |
 | **3** | **Chi si connette dopo non apprende le morti** — §1g | ✅ | **RISOLTO E VERIFICATO**: `[EnemyJoin] annunciate 2`, nessun `ENEMYDEAD` nel progress |
 | **4** | **Falò: RESPAWN e REFILL solo locali** — §3 | 🟡 **da confermare** | ⚠️ **lo stato ACCESO del falò è GIÀ sincronizzato** (`PrieDieuHelper.cs`, 3 patch). Questa voce riguarda **solo** il respawn dei nemici e il refill delle fiale, che restano **locali**. **Nessuna prova recente del disallineamento**: il test dopo il fix ha visto i nemici tornare su **entrambe**. **Da verificare con un test dedicato.** Vedi §12 |
 | **5** | **Sangue e flash nel feedback del colpo** — §5c | 🟢 | ⏳ **metodi identificati** (`PenitentSword::GetSwordSparks`). **NB: voce re-inglobata, era andata persa** |
@@ -54,7 +54,7 @@
 
 ---
 
-Ultimo aggiornamento: dopo aver **corretto l'isteresi dell'orientamento** (era in `ApplyOrientation`, cioè nel posto sbagliato: ora è nella Prefix su `Entity::SetOrientation`), aver risolto **`IMPRONTA DIVERSA`** (era un falso allarme) e aver aggiunto tre strumenti di misura (`[AnimByEnemy]`, `[AnimName]`, `tools\verify-deploy.ps1`).
+Ultimo aggiornamento: **orientamento RISOLTO e verificato** (`orientFlip` da 85 a 1-3). **In corso**: lo scivolamento del `Fool` — l'utente ipotizza che il client riavvii l'animazione a ogni pacchetto di movimento, **in analisi dall'Esploratore**.
 
 
 ---
