@@ -967,3 +967,64 @@ one-shot**, e passare da shortNameHash a **ullPathHash**.
 > Prima di ogni intervento, l'Esploratore verifica nel **codice del gioco** (IL, Mono.Cecil) che i
 > metodi esistano, siano pubblici e facciano quello che crediamo — e le affermazioni vanno marcate
 > **verificata in IL** / **verificata nei log** / **verificata nel codice della mod** / **non verificata**.
+
+## [2026-10-08 23:15] Strumento di verifica del deploy: tools\verify-deploy.ps1
+
+**Perche' esiste.** Un intero test e' stato buttato via perche' le due macchine eseguivano
+**binari diversi**: G1 aveva ancora la build precedente e le sue righe di log non contenevano i
+marcatori nuovi. Il test sembrava non misurare nulla, mentre stava misurando **il binario vecchio**.
+Questa e' la voce 16 della lista iniziale, e da ora si esegue **prima di ogni sessione di test**,
+**su entrambe le macchine**.
+
+**Uso:**
+```
+pwsh -NoProfile -File .\tools\verify-deploy.ps1
+pwsh -NoProfile -File .\tools\verify-deploy.ps1 -ExpectedHash 9ef0950b...
+```
+Esce con codice **1** se qualcosa non torna, quindi si puo' mettere in uno script.
+
+**Controlla tre cose, e nessuna delle tre basta da sola:**
+
+| Livello | Cosa dice | Perche' serve |
+|---|---|---|
+| **1. HASH** della mod | se il file e' quello atteso | scopre la DLL sbagliata copiata a mano |
+| **2. MARCATORI** nel binario | se il file **contiene davvero** le funzionalita' | scopre un file ricostruito senza una parte |
+| **3. PROTOCOLLO** di Common.dll | se mod e server **parlano la stessa lingua** | scopre Common.dll disallineata |
+
+**Dettaglio scoperto scrivendo lo strumento — e un errore commesso e corretto.**
+
+Common.dll **esiste in DUE copie, e NON sono identiche**:
+
+```
+Modding\data\Blasphemous.Multiplayer.Common.dll    net35     6144 byte   <- la carica il gioco
+SERVER-COOP\Blasphemous.Multiplayer.Common.dll     net8.0    5632 byte   <- la carica il server
+```
+
+**La prima versione dello script confrontava i loro HASH e dichiarava "LE DUE COPIE DIVERGONO"**:
+era un **falso allarme**, perche' **i due progetti compilano per framework diversi** e quindi
+**gli hash sono diversi per costruzione**. **Il confronto giusto e' SEMANTICO**: deve coincidere il
+**contenuto che riguarda il dialogo**, cioe' il **numero di protocollo** e i **valori di NetworkType**.
+
+Verifica attuale sulla macchina locale:
+```
+mod    : protocollo=11  EnemyOwnership=25  valori NetworkType=19
+server : protocollo=11  EnemyOwnership=25  valori NetworkType=19
+i due protocolli COINCIDONO
+```
+*(RefusalType::Protocol = 11 e' dove vive il numero di protocollo.)*
+
+**Marcatori riconosciuti dallo strumento** (stringhe di FORMATO, non nomi di simbolo — cercarli
+come nomi di campo e' un errore gia' commesso una volta):
+
+| Marcatore | Funzionalita' |
+|---|---|
+| `orientSkip=` | isteresi sull'orientamento attiva |
+| `gameOrientBurst=` | contatore delle scritture del GIOCO |
+| `[OrientByEnemy]` | ripartizione per-nemico delle nostre inversioni |
+| `[GameOrientByEnemy]` | ripartizione per-nemico delle inversioni del gioco |
+| `[EnemyJoin]` | fix del join: annuncio delle morti precedenti |
+| `Nemici rinati` | fix del falo': _pendingDeaths azzerata al respawn |
+
+**Nota operativa**: Common.dll **non e' copiata dal deploy automatico** (che copia la mod e il
+server), quindi **va copiata a mano su entrambe le macchine, nelle destinazioni giuste**. Lo script
+lo segnala.
