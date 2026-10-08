@@ -2475,9 +2475,16 @@ namespace Blasphemous.Multiplayer.Client
 
                 // TEMPORARY (PerformanceProbe): counts the repetitions that identify a forced replay.
                 // A legitimate transition happens once; the same pair repeating for the same enemy is
-                // this mod restarting the clip again. Remove with the probe.
+                // this mod restarting the clip again.
+                //
+                // Keyed by POSITION, not by ShortId: ShortId carries the position already but can gain a
+                // suffix when two spawn points share a spot, and the report has to be comparable with the
+                // orientation tallies. A total was not enough to act on - counting the transitions without
+                // distinguishing the enemies made one transition look like one enemy transitioning 386
+                // times, when it may have been several enemies doing it dozens of times each. Remove with
+                // the probe.
                 if (animTime <= 0.01f)
-                    PerformanceProbe.NoteAnimationRestart(ShortId(id), previous, stateHash);
+                    PerformanceProbe.NoteAnimationRestart(LabelOf(enemy), previous, stateHash);
             }
         }
 

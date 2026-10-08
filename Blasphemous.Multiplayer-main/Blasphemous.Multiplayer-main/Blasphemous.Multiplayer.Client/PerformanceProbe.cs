@@ -87,6 +87,10 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, int> _orientTotalByEnemy = new Dictionary<string, int>();
         private static readonly Dictionary<string, int> _gameOrientTotalByEnemy = new Dictionary<string, int>();
 
+        // Animation restarts per enemy, so the churn can be attributed. Sessions totals only: the point is
+        // to name the worst enemy over the whole run, and per-window counts reset before it can be read.
+        private static readonly Dictionary<string, int> _animRestartsByEnemy = new Dictionary<string, int>();
+
         // Orientation writes made by the GAME on enemies this machine does not own. This is the number that
         // matters for the spinning enemy; _orientFlips above only sees this mod's own writes.
         private static int _gameOrientWrites;
@@ -162,6 +166,12 @@ namespace Blasphemous.Multiplayer.Client
             _lastRestartId = id;
             _lastRestartFrom = from;
             _lastRestartTo = to;
+
+            // Per enemy, because a total could not be acted on: 386 repetitions of one transition looked
+            // like a single enemy in a loop, but counting without separating the enemies cannot tell that
+            // apart from several enemies doing it dozens of times each. The label carries the POSITION,
+            // since SPAWN (NN) labels are permuted between runs.
+            Bump(_animRestartsByEnemy, id);
         }
 
         /// <summary>Starts timing EnemySyncManager.Update. Call at the top of that method.</summary>
@@ -238,6 +248,7 @@ namespace Blasphemous.Multiplayer.Client
                 $"connected={Main.Multiplayer.NetworkManager.IsConnected}");
 
             ReportOrientationByEnemy();
+            ReportAnimationsByEnemy();
 
             _frames = 0;
             _worstFrameMs = 0f;
@@ -289,6 +300,18 @@ namespace Blasphemous.Multiplayer.Client
 
             LogTopEnemies("[OrientByEnemy] nostre=", _orientTotalByEnemy);
             LogTopEnemies("[GameOrientByEnemy] gioco=", _gameOrientTotalByEnemy);
+        }
+
+        /// <summary>
+        /// Prints which enemies collect the animation restarts, worst first, once per report.
+        ///
+        /// Written after a total misled: 386 repetitions of a single transition, counted without separating
+        /// the enemies, cannot be told apart from one enemy looping and several enemies each doing it dozens
+        /// of times. The label carries the position, because SPAWN (NN) labels permute between runs.
+        /// </summary>
+        private static void ReportAnimationsByEnemy()
+        {
+            LogTopEnemies("[AnimByEnemy] avvii=", _animRestartsByEnemy);
         }
 
         /// <summary>Prints the busiest entries of a per-enemy tally, worst first.</summary>

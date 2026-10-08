@@ -61,8 +61,10 @@ $markers = [ordered]@{
     'gameOrientBurst='    = 'contatore delle scritture del GIOCO'
     '[OrientByEnemy]'     = 'ripartizione per-nemico delle nostre inversioni'
     '[GameOrientByEnemy]' = 'ripartizione per-nemico delle inversioni del gioco'
+    '[AnimByEnemy]'       = 'ripartizione per-nemico degli avvii di animazione'
     '[EnemyJoin]'         = 'fix del join: annuncio delle morti precedenti'
     'Nemici rinati'       = "fix del falo': _pendingDeaths azzerata al respawn"
+    'IMPRONTA DIVERSA'    = 'rilevatore di divergenza delle liste (con cooldown)'
 }
 
 function Get-Sha256([string] $path)
