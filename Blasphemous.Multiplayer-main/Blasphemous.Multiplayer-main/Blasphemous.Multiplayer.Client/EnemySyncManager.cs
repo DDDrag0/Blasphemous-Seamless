@@ -2428,6 +2428,21 @@ namespace Blasphemous.Multiplayer.Client
         /// face one way logically and the other way on screen. passFlip is false because the game already
         /// handles the flip inside, given the previous orientation was kept in sync.
         /// </summary>
+        /// <summary>
+        /// Applies the facing the owner transmitted.
+        ///
+        /// No hysteresis here any more, and that is deliberate. A band was tried here first and did nothing:
+        /// this method is the mod's own write, twenty per second, while the churn is the GAME's sixty writes
+        /// per second from Ghost's OnUpdate - which never comes through here. The measurement said so
+        /// outright: orientSkip stayed at zero for a whole session while orientFlip hit 34 in one two second
+        /// window. The band now lives in OrientationProbePatch, on Entity.SetOrientation, which every writer
+        /// goes through.
+        ///
+        /// SetOrientation is still the game's own single entry point: it stores the value and flips the
+        /// sprite. Writing the field directly would leave SpriteRenderer.flipX out of step, so the enemy
+        /// would face one way logically and the other on screen. passFlip is true because the game handles
+        /// the flip inside, given the previous orientation was kept in sync.
+        /// </summary>
         private static void ApplyOrientation(Enemy enemy, byte orientation)
         {
             EntityStatus status = enemy.Status;
@@ -2441,93 +2456,11 @@ namespace Blasphemous.Multiplayer.Client
             if (status.Orientation == wanted)
                 return;
 
-            // HYSTERESIS. The owner sends a facing twenty times a second, but the game writes its own every
-            // frame from the enemy's OnUpdate - so without this the two fight, and the enemy visibly
-            // trembles. Measured before this guard: 31 flips in 1.7 seconds on one machine and 106 in 10.4
-            // on the other, with the enemy standing still.
-            //
-            // The enemy is not moved by this: it only declines to turn the enemy around when the two
-            // players are within ORIENT_HYSTERESIS of it on the x axis, which is precisely the window where
-            // the game itself is dithering over a difference of a fraction of a unit. A real turn - a
-            // player crossing from one side to the other - moves the enemy's target by many units and is
-            // applied as before.
-            if (ShouldSkipOrientationFlip(enemy))
-            {
-                PerformanceProbe.NoteOrientationFlipSkipped();
-                return;
-            }
-
-            // TEMPORARY (PerformanceProbe): one applied flip. Nothing else in the log measures
-            // orientation, so without this the spinning-enemy fix could only be judged by eye. Remove
-            // with the probe.
+            // TEMPORARY (PerformanceProbe): one applied flip. Nothing else in the log measures orientation,
+            // so without this the spinning-enemy fix could only be judged by eye. Remove with the probe.
             PerformanceProbe.NoteOrientationFlip(IdOf(enemy));
 
             enemy.SetOrientation(wanted, true, true);
-        }
-
-        /// <summary>
-        /// How close, on the x axis, two positions have to be before an orientation change is treated as
-        /// dithering rather than a real turn. The game's own dead band is one unit - and it is unreachable
-        /// code - so this is deliberately a little wider.
-        /// </summary>
-        private const float ORIENT_HYSTERESIS = 1.5f;
-
-        /// <summary>
-        /// True when the enemy is sitting so close to what it is looking at that its facing is not a real
-        /// decision.
-        ///
-        /// The game decides facing by comparing its sprite x with the target's x and turning whenever the
-        /// sign flips, with no dead band of its own that can actually run. When two players stand near the
-        /// enemy, the x it compares against jitters by a couple of units, so the sign flips every frame.
-        /// Inside this band the mod keeps the facing it already has instead of joining in.
-        /// </summary>
-        private static bool ShouldSkipOrientationFlip(Enemy enemy)
-        {
-            float targetX;
-            if (!TryGetEnemyTargetX(enemy, out targetX))
-                return false;
-
-            float dx = enemy.transform.position.x - targetX;
-            if (dx < 0f)
-                dx = -dx;
-
-            return dx < ORIENT_HYSTERESIS;
-        }
-
-        /// <summary>
-        /// The x the game compares the enemy against, which is whatever that enemy's own facing code reads.
-        ///
-        /// This is not one source, and getting it wrong would make the band measure the wrong decision.
-        /// Ghost is the case that exposed the problem: its OnUpdate compares its sprite against _penitent,
-        /// which is the LOCAL Penitent, and never touches Enemy.Target - so reading Target there would band
-        /// against whoever the game last pointed it at, which in a co-op session can be the other player.
-        /// Measured against the wrong x, the band would simply never open and the dithering would continue.
-        ///
-        /// Everything else falls back to Enemy.Target, and then to the local Penitent, matching
-        /// EnemyBehaviour.GetTarget's own fallback.
-        /// </summary>
-        private static bool TryGetEnemyTargetX(Enemy enemy, out float targetX)
-        {
-            targetX = 0f;
-
-            if (enemy == null)
-                return false;
-
-            Penitent local = Core.Logic != null ? Core.Logic.Penitent : null;
-
-            // Ghost faces whoever is playing THIS machine, so that is what has to be measured against.
-            if (!(enemy is Gameplay.GameControllers.Enemies.Ghost.Ghost) &&
-                enemy.Target != null)
-            {
-                targetX = enemy.Target.transform.position.x;
-                return true;
-            }
-
-            if (local == null)
-                return false;
-
-            targetX = local.transform.position.x;
-            return true;
         }
 
         private static void ReadAnimation(Enemy enemy, out int stateHash, out float normalizedTime)
