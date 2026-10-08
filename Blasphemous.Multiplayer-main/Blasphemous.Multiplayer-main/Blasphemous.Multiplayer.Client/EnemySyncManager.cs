@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using Gameplay.GameControllers.Entities;
@@ -865,6 +866,8 @@ namespace Blasphemous.Multiplayer.Client
             PerformanceProbe.ResetForScene();
             _killLogged.Clear();
 
+            RemoveJunkDeathFlags();
+
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
@@ -927,6 +930,76 @@ namespace Blasphemous.Multiplayer.Client
 
             ModLog.Info($"[EnemySync] Post-spawn: {_enemies.Count} enemies / {_spawnPoints.Count} spawn points / {_ids.Count} ids");
         }
+
+        /// <summary>
+        /// Cleans up the game flags an earlier build of this mod wrote by mistake.
+        ///
+        /// The first attempt at the join fix carried a death record as a progress entry with
+        /// ProgressType.Flag. The game does not tolerate unknown flag names: EventManager.SetFlag CREATES
+        /// a FlagObject for a name it has never seen, and every flag is serialised into the savegame. So
+        /// each announced death became a permanent flag called "ENEMYDEAD|...", which the server then kept
+        /// echoing to whoever joined next.
+        ///
+        /// Those flags cannot be removed through the game: SetFlag only ever creates or updates, and there
+        /// is no delete. GetFlag CREATES the flag if it is missing, so asking about one is worse than
+        /// useless. The only way is to take them out of the manager's own dictionary, which is what this
+        /// does - read once, filtered, and only touched when something actually matches.
+        ///
+        /// Nothing reads those names, so removing them cannot break a save; leaving them only adds junk.
+        /// </summary>
+        private static void RemoveJunkDeathFlags()
+        {
+            if (_junkFlagsCleaned)
+                return;
+
+            EventManager events = Core.Events;
+            if (events == null)
+                return;
+
+            _junkFlagsCleaned = true;
+
+            try
+            {
+                FieldInfo field = typeof(EventManager).GetField(
+                    "flags", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+                if (field == null)
+                    return;
+
+                IDictionary flags = field.GetValue(events) as IDictionary;
+                if (flags == null || flags.Count == 0)
+                    return;
+
+                List<string> junk = null;
+                foreach (object key in flags.Keys)
+                {
+                    string name = key as string;
+                    if (name != null && name.StartsWith(DeathFlagPrefix, StringComparison.Ordinal))
+                        (junk ?? (junk = new List<string>())).Add(name);
+                }
+
+                if (junk == null)
+                    return;
+
+                for (int i = 0; i < junk.Count; i++)
+                    flags.Remove(junk[i]);
+
+                ModLog.Info($"[EnemyJoin] rimossi {junk.Count} flag spazzatura scritti da una build precedente");
+            }
+            catch (Exception e)
+            {
+                ModLog.Error("[EnemyJoin] pulizia dei flag fallita: " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// Prefix of the junk flags the first join fix wrote. Kept only so the cleanup can recognise them;
+        /// nothing writes flags any more - deaths travel on the EnemyDeathGlobal channel.
+        /// </summary>
+        private const string DeathFlagPrefix = "ENEMYDEAD|";
+
+        /// <summary>True once the junk-flag sweep has run, so it happens once per session.</summary>
+        private static bool _junkFlagsCleaned;
 
         /// <summary>
         /// The game has just brought the dead enemies back - a bonfire, or the penitence that respawns on
