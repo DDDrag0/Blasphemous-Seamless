@@ -297,6 +297,12 @@ namespace Blasphemous.Multiplayer.Client
         private static int _damageApplied;
         private static int _killsSent;
         private static int _registrations;
+
+        /// <summary>
+        /// Enemies skipped because they are scenery, not enemies: created by the spawn pipeline but never
+        /// activated by the game, so they have run no code. See IsInertScenery.
+        /// </summary>
+        private static int _inertSkipped;
         private static int _duplicateIds;
         private static int _listFingerprint;
         private static int _fingerprintMismatchReported;
@@ -335,6 +341,12 @@ namespace Blasphemous.Multiplayer.Client
                 _damageApplied,
                 _killsSent,
                 warning);
+
+            // Scenery skipped this scene, reported separately so it never again looks like enemies that
+            // fail to move. See IsInertScenery.
+            if (_inertSkipped > 0)
+                ModLog.Info($"[EnemyInert] {_inertSkipped} entita' di scena ignorate " +
+                            $"(create dal gioco ma mai attive: nessun codice eseguito, quindi immobili per costruzione)");
         }
 
         /// <summary>
@@ -1011,6 +1023,15 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             }
 
+            // Scenery is not synchronised. See IsInertScenery: an Enemy that has never been active has
+            // run no code at all, so it neither moves nor animates - and that immobility was mistaken for
+            // a synchronisation failure for several rounds. Reporting it once is enough.
+            if (IsInertScenery(enemy))
+            {
+                _inertSkipped++;
+                return;
+            }
+
             _enemyIds[enemy] = id;
             _enemies.Add(id, enemy);
             _ids.Add(id);
@@ -1441,7 +1462,41 @@ namespace Blasphemous.Multiplayer.Client
             return state.IsName("Idle") ? "Idle" : state.shortNameHash.ToString();
         }
 
-        /// <summary>Short, readable form of an id for logs: the spawn point name and position.</summary>
+        /// <summary>
+        /// True when an enemy is scenery rather than something to synchronise: it has never run any code.
+        ///
+        /// The game creates an Enemy for EVERY spawn point, whatever the scene author intended, and a
+        /// spawn point with SpawnEnabledEnemy false is switched off immediately by
+        /// EnemySpawnPoint.CreateEnemy. Nothing switches it back on - SetEnemyActive(true) is reachable
+        /// only from SpawnEnemyOnArena, which is called by PontiffHuskiesCombatTrigger.CombatSequence and
+        /// Tools.Playmaker.Action.EnableStandByEnemies - so it is never active, Awake never runs, and it
+        /// has no EnemyBehaviour, no Animator state and no entry in Entity.livingEntities.
+        ///
+        /// The test room has two of these (at about -697.1,12.8 and -689.1,11.8). This mod sees them
+        /// because it is the only thing that looks with GetComponentsInChildren<Enemy>(true) and so
+        /// includes inactive objects; the game's own FindObjectsOfType does not. They sat still in every
+        /// single test - anim=0, life=60, one position - and for a long time that was read as enemies
+        /// failing to synchronise. It was never a symptom: an object that never runs cannot move or
+        /// animate, so a single position is guaranteed by construction and measures nothing.
+        ///
+        /// They are still counted where the GAME counts them - the consumed spawn points the room uses to
+        /// decide whether it is cleared - because that bookkeeping is the game's, not ours. They are only
+        /// kept out of the tracking that drives synchronisation and the diagnostics.
+        /// </summary>
+        private static bool IsInertScenery(Enemy enemy)
+        {
+            if (enemy == null || enemy.gameObject == null)
+                return true;
+
+            // Active means the game is running it; that is enough to treat it as real.
+            if (enemy.gameObject.activeInHierarchy)
+                return false;
+
+            // Inactive with a behaviour is a stand-by enemy waiting for its arena trigger: it has run
+            // Awake, it has a behaviour, and the game will switch it on. Keep it.
+            return enemy.EnemyBehaviour == null;
+        }
+
         private static string ShortId(string id)
         {
             string[] parts = id.Split('|');
