@@ -360,7 +360,24 @@ namespace Blasphemous.Multiplayer.Client
         private static int _deathsAppliedFromPeers;
         private static int _duplicateIds;
         private static int _listFingerprint;
-        private static int _fingerprintMismatchReported;
+        /// <summary>
+        /// When the divergence was last reported, so it is reported again after a cooldown instead of only
+        /// once. Zero means never.
+        /// </summary>
+        private static float _fingerprintMismatchReported;
+
+        /// <summary>How often a divergence may be reported. Long enough not to flood, short enough to see.</summary>
+        private const float FINGERPRINT_REPORT_COOLDOWN = 15f;
+
+        /// <summary>Total times a divergence was reported, so a recurring one is visible at a glance.</summary>
+        private static int _fingerprintMismatches;
+
+        /// <summary>
+        /// Set whenever the id list is appended to or pruned, so the fingerprint can be recomputed once at
+        /// the end of the pass instead of on every enemy. Without this the published fingerprint described
+        /// a list that had already changed, and the divergence check reported enemies that were not there.
+        /// </summary>
+        private static bool _idsDirty;
         private static readonly HashSet<string> _countedDuplicates = new HashSet<string>();
 
         /// <summary>
@@ -931,7 +948,9 @@ namespace Blasphemous.Multiplayer.Client
             _registrations = 0;
             _duplicateIds = 0;
             _listFingerprint = 0;
-            _fingerprintMismatchReported = 0;
+            _fingerprintMismatchReported = 0f;
+            _fingerprintMismatches = 0;
+            _idsDirty = false;
             _countedDuplicates.Clear();
 
             ModLog.Info($"[EnemySync] Scene {scene}: level loaded (IsHost: {IsHost})");
@@ -942,6 +961,14 @@ namespace Blasphemous.Multiplayer.Client
         /// the index into this list is the wire handle: if the lists differ, updates get applied to the
         /// wrong enemy. The host sends it with every update so a divergence is reported instead of
         /// silently corrupting the scene.
+        ///
+        /// It has to be recomputed whenever the list it describes changes, and the first version only
+        /// recomputed it when the whole table was rebuilt. The list is also appended to and pruned
+        /// afterwards, so the published fingerprint described a list that no longer existed - and a check
+        /// comparing a stale value against an honest one reports a divergence that is not there. That is
+        /// what "IMPRONTA DIVERSA" turned out to be: the two machines agreed on the enemies, while the
+        /// numbers disagreed about a list that had since changed. A false alarm is worse than no alarm,
+        /// because it hides the real one.
         /// </summary>
         private static int ComputeFingerprint()
         {
@@ -955,6 +982,24 @@ namespace Blasphemous.Multiplayer.Client
                 }
                 return hash;
             }
+        }
+
+        /// <summary>
+        /// Brings the published fingerprint back in line with the id list, if anything changed it.
+        ///
+        /// Also re-arms the divergence report, because the first version fired it only once per level load -
+        /// so a mismatch caught while the list was mid-change would both be wrong and silence every later,
+        /// real one. Re-arming is rate limited in ReceiveEnemyUpdate rather than here, so a genuine
+        /// divergence keeps being reported without flooding the log on every scan.
+        /// </summary>
+        private static void RefreshFingerprintIfDirty()
+        {
+            if (!_idsDirty)
+                return;
+
+            _idsDirty = false;
+            _listFingerprint = ComputeFingerprint();
+            _fingerprintMismatchReported = 0f;
         }
 
         /// <summary>
@@ -977,6 +1022,7 @@ namespace Blasphemous.Multiplayer.Client
 
             _ids.Sort(string.CompareOrdinal);
             _listFingerprint = ComputeFingerprint();
+            _idsDirty = false;
             _spawnFinalized = true;
 
             ModLog.Info($"[EnemySync] Post-spawn: {_enemies.Count} enemies / {_spawnPoints.Count} spawn points / {_ids.Count} ids");
@@ -1191,6 +1237,10 @@ namespace Blasphemous.Multiplayer.Client
             _ids.Add(id);
             _registered.Add(enemy);
             _registrations++;
+
+            // The list just changed, so the fingerprint published from now on has to describe the new one.
+            // Recomputing once per scan rather than once per enemy keeps this off the hot path.
+            _idsDirty = true;
 
             // A death announced while this machine was elsewhere, or before this enemy existed. The spawn
             // point was already marked consumed by the announcement, so the game should not have created
@@ -1919,12 +1969,21 @@ namespace Blasphemous.Multiplayer.Client
                     // Only append later discoveries, and only on the host: the peer must not invent ids
                     // the host does not have, or the indices would stop meaning the same thing.
                     RegisterEnemies(_scene);
+
+                    // The scan above may have appended ids. Refresh the fingerprint now, so everything sent
+                    // until the next scan describes the list that actually exists.
+                    RefreshFingerprintIfDirty();
                 }
 
                 // Snapshot on BOTH machines, so the two logs can be lined up: same enemy, same moment,
                 // what does each side think the aggro, ownership, animation and life are.
                 LogDiagnosticSnapshot();
             }
+
+            // Anything that changed the id list since the last pass - the host's scan above, or a pruned
+            // enemy on either machine - has to be reflected before the next update goes out, or the
+            // fingerprint sent would describe a list that no longer exists.
+            RefreshFingerprintIfDirty();
 
             // Follow the remote snapshots smoothly. Runs before the send gate below, because that gate
             // returns early on most frames and the easing has to happen every frame to look smooth.
@@ -2145,6 +2204,11 @@ namespace Blasphemous.Multiplayer.Client
             _lastSent.Remove(id);
             _remoteTargets.Remove(id);
 
+            // Pruning shifts every index after the one removed, and the index IS the wire handle - so this
+            // is not a tidy-up, it invalidates handles the peer may still be using. The fingerprint is
+            // refreshed so the divergence is at least reported instead of staying hidden.
+            _idsDirty = true;
+
             if (enemy != null)
             {
                 _registered.Remove(enemy);
@@ -2164,14 +2228,21 @@ namespace Blasphemous.Multiplayer.Client
 
             // Detect the one failure that would otherwise corrupt things silently: if the two machines
             // built different id lists, every index means something different and updates land on the
-            // wrong enemy. Report it once, with enough detail to diagnose it.
-            if (fingerprint != _listFingerprint && _fingerprintMismatchReported == 0)
+            // wrong enemy. Report it, with enough detail to diagnose it.
+            //
+            // Reported again after the cooldown rather than once per level load. The once-only rule looked
+            // safe but was not: a mismatch seen while the id list was still being built would be wrong AND
+            // would silence every real mismatch for the rest of the scene, which is the opposite of what a
+            // detector is for. The cooldown keeps a genuine divergence visible without flooding the log.
+            if (fingerprint != _listFingerprint && Time.time - _fingerprintMismatchReported > FINGERPRINT_REPORT_COOLDOWN)
             {
-                _fingerprintMismatchReported = 1;
+                _fingerprintMismatchReported = Time.time;
+                _fingerprintMismatches++;
                 ModLog.Error($"[EnemySync] IMPRONTA DIVERSA: host={fingerprint} locale={_listFingerprint} " +
                              $"- le due macchine hanno liste di nemici diverse, gli aggiornamenti finiranno " +
                              $"sul nemico sbagliato. Confronta 'multiplayer sync dump' sui due PC " +
-                             $"(spawn point locali: {_spawnPoints.Count}, id locali: {_ids.Count}).");
+                             $"(spawn point locali: {_spawnPoints.Count}, id locali: {_ids.Count}, " +
+                             $"segnalazioni: {_fingerprintMismatches}).");
             }
 
             Enemy enemy = ResolveByHandle(handle);
