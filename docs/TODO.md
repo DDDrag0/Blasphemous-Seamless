@@ -96,22 +96,101 @@ che riavvia il clip.
 `ApplyAnimation` **:2109-2129**, `ReadAnimation` **:2095**, `IdOf` **:1032**, `LogAnimationChanges`
 **:2017**, `RegisterEnemies` **:917**, `LogDiagnosticSnapshot` **:1210**.
 
-### 1b. Il nemico si gira a destra e sinistra velocissimo
+### 1b. 🔴 Il nemico si gira a destra e a sinistra velocissimo — meccanismo CORRETTO
 
-**Causa trovata.** La mod scrive l'orientamento 20 volte al secondo, **il gioco lo riscrive ogni
-frame**:
+> **La versione precedente di questa sezione era SBAGLIATA su un punto decisivo.** Riscritta dopo
+> verifica in IL. **Due correzioni sostanziali**: il writer per-frame è `Ghost::OnUpdate` (non
+> `EnemyBehaviour::LookAtTarget`), e **la "protezione" del gioco è CODICE MORTO**.
 
-- `Ghost::OnUpdate` — confronta la x dello sprite con quella del giocatore e chiama `SetOrientation`
-  **ogni frame**, senza banda morta, senza soglia temporale, senza ricordare l'orientamento attuale.
-- `TrinityMinionBehaviour::LookAtTarget` — **override che elimina la soglia temporale**, conserva solo
-  la banda ±1; il target è selezionabile con `SetTarget(Transform)`. **È il caso "più target".**
+**Il writer per-frame è `Ghost::OnUpdate`** — `Gameplay.GameControllers.Enemies.Ghost.Ghost`
+(`: Enemy <- Entity <- MonoBehaviour`), `protected virtual void OnUpdate()` **[verificato in IL]**:
 
-**E la protezione del gioco non funziona**: in `EnemyBehaviour::LookAtTarget` il campo `targetTime` è
-`private readonly float` e **il costruttore non lo assegna** → vale `0f` → `DeltaTargetTime < targetTime`
-è **sempre falso** → resta solo la banda `|dx| <= 1` → inversione ogni frame.
+```
+IL_007e  ldfld Ghost::ghostSpriteRenderer → get_transform → get_position   → V1
+IL_0085  ldfld Ghost::_penitent           → get_transform → get_position   → V2
+IL_009d  blt.un  → IL_00b0
+IL_00a6  callvirt Entity::SetOrientation(Left,  true, false)
+IL_00ea  callvirt Entity::SetOrientation(Right, true, false)
+```
 
-**Soluzioni**: non scrivere l'orientamento dove il gioco lo fa ogni frame; oppure **Harmony** (Postfix
-su `Entity::SetOrientation`) — rischio medio.
+**Nessuna banda morta, nessuna soglia temporale, nessuna memoria dell'orientamento corrente, nessun
+gate di distanza.** È un **confronto nudo di due float**. `_penitent` è il **Penitente LOCALE**
+(assegnato una volta in `Ghost::OnStart` da `Core.Logic.Penitent`), **non** un target di rete.
+`Ghost::EnablePhysics(bool)` → **`throw new NotImplementedException()`**: nessun altro writer di
+orientamento per questo tipo. `Ghost` **non assegna `EnemyBehaviour`** (coerente con §7j).
+
+**E la protezione del gioco NON esiste — in un senso più forte di quanto scritto prima:**
+
+`EnemyBehaviour::LookAtTarget(Vector3)` **[verificato in IL]**:
+```
+IL_0016  DeltaTargetTime += Time.deltaTime
+IL_0028  ldfld DeltaTargetTime ; IL_002f ldfld targetTime ; IL_0034 blt.un → IL_0110: ret
+...      (banda ±1 + SetOrientation)   ← TUTTO QUESTO È IRRAGGIUNGIBILE
+```
+`EnemyBehaviour.targetTime` è **`Private, InitOnly` (readonly)** e **nessun `stfld …targetTime`
+esiste in tutta `Assembly-CSharp.dll`** (verificate tutte le istruzioni che nominano
+`targetTime`/`DeltaTargetTime`: gli unici `stfld` sono su
+`IsidoraBehaviour/WaitUntilAnticipationPeriod::targetTime`, **altra classe**).
+⇒ vale **`0f`** ⇒ `DeltaTargetTime < 0` è **sempre falso** ⇒ `blt.un` non salta mai ⇒
+**tutto il corpo è codice morto**. **Le 71 sottoclassi di `EnemyBehaviour` (contate: 71) non girano
+mai il nemico.**
+
+**Chi gira davvero, tipo per tipo:**
+
+| Writer | Esito |
+|---|---|
+| `EnemyBehaviour::LookAtTarget` | ❌ **CODICE MORTO** (gate `targetTime=0` non superabile, 0 assegnazioni in tutta l'assembly). **71/71 sottoclassi escluse** |
+| `TrinityMinionBehaviour::LookAtTarget` | ✅ **override che elimina davvero il gate temporale** (nessun `ldfld targetTime`: `IL_0000` Dead → `IL_0027` banda ±1 → `IL_006c` `SetOrientation`). **Confermato, ma è UN SOLO tipo** |
+| `EnemyAI::FixedUpdate` | ⚠️ chiama `reverseOrientation` (`@IL_02a7`, `@IL_02e3`) → `SetOrientation` con banda ±1 e nessun gate temporale, ma **`EnemyAI` non ha NESSUNA sottoclasse (0/0)** e nessun `Update`/`OnFixedUpdate` pubblico. **Probabile codice morto — NON VERIFICATO** (potrebbe esistere un'istanza in un prefab) |
+| `Ghost::OnUpdate` | ✅ **il writer per-frame verificato** |
+
+**Firma nei log — quantificata, per POSIZIONE.** Nemico libero `D01Z01S01@SPAWN` a
+**(-715.1, 10.0)**, vita 12: **è il nemico #1** (all'inizio il più vicino a G1, `dist_io=14.0`
+contro 32.0-48.9, ed è l'unico che G1 aggrada per primo).
+
+| | righe | `dALT` | inversioni |
+|---|---|---|---|
+| **esplosione G1** | **G1:590-636** (~1,7 s) | 3.8 → 2.2 | **31**, di cui **24** = `765711723→460696939` (**≈18/s**) |
+| **esplosione G2** | **G2:837-1020** (~10,4 s) | 3.6-4.1 | **106**, di cui **99** = `765711723→2081823275` (**≈10/s**) |
+| **allontanamento** | G2:1044-1164 | 5.1 → **27.6** | **0** — *"si è stabilito"* |
+
+- `animRestart`/`animRepeat` = **31-33 per finestra**, **tutte con `avvio=0.00`**.
+- **Frame sanissimi**: `fps 58.4-59.3`, `frameMs_max 26.6-32.2`, `stalls100=0` ⇒ **non è prestazioni**.
+- **Il nemico resta FERMO mentre si gira**: 0.8 unità in 1,7 s con **24 inversioni**.
+- **|x_nemico − x_target| resta sotto 1 unità ma il segno si inverte.**
+
+**Perché serve il caso "due giocatori vicini" — ed è il giocatore a jitterare, non il nemico.**
+Il fantasma insegue il Penitente locale con un'oscillazione idle di ~±1 unità; **ma il target si
+muove di rete**: `MainPlayerManager.Update` (`positionCutoff = 0.03f`) invia una posizione **a ogni
+frame** (lo spostamento per frame supera 0.03), e il ricevente la scrive **GREZZA** in
+`_remotePositions` (`OtherPlayerManager.cs:329`), mentre **solo il nemico** passa dal lerp
+`FOLLOW_LERP = 0.25`. ⇒ **il target del fantasma è la posizione di rete non filtrata, che jittera di
+2-6 unità**, e il confronto nudo la insegue.
+
+**Aggravante non verificata**: `PauseEnemy` ferma il behavior tree NodeCanvas e la fisica, **non**
+`MonoBehaviour.Update` ⇒ `Ghost::OnUpdate` gira **anche sul non-proprietario**, insieme ad
+`ApplyOrientation`, che scrive a **20 Hz contro i 60 Hz del gioco**.
+
+**Soluzione: una Prefix con isteresi su `Entity::SetOrientation`, più la stessa isteresi in
+`ApplyOrientation`.**
+
+`Gameplay.GameControllers.Entities.Entity::SetOrientation(EntityOrientation, Boolean, Boolean)` —
+`attrs = Public, Virtual, HideBySig, VtableLayoutMask` **[verificato in IL]**. La Prefix **scarta**
+una richiesta di inversione quando `|x_nemico − x_target| < ~1.5-2.0` unità.
+
+| Strada | Verdetto |
+|---|---|
+| ✅ **Prefix con isteresi su `Entity::SetOrientation`** | **La più semplice e robusta.** **Una sola armonica copre TUTTI i writer per-frame** (nessuno si può dimenticare), **non tocca il game loop** (è un filtro su una setter), e **non cede né forza** l'orientamento ⇒ **non può produrre ping-pong fra le macchine**. `Entity::SetOrientation` è **virtuale** e **override-ata** da `Amanecidas`, `Isidora` e dal `Penitent` **[IL]** ⇒ **i boss e il giocatore NON passano di lì e restano intatti** |
+| ⚠️ **Non scrivere l'orientamento dove il gioco lo fa ogni frame** | **Giusto come principio** e va fatto, **ma da solo NON risolve**: il gioco riscrive subito dopo (60 Hz contro 20 Hz) |
+| ❌ **Postfix** che riporta l'orientamento del proprietario | **Peggiore**: se il proprietario **jittera**, la Postfix **replica il jitter** a 60 Hz. **Serve la Prefix.** *(la versione precedente di §1b diceva "Postfix": corretto qui)* |
+| ❌ **Assegnare `targetTime`** | **Non si può** (`Private, InitOnly` **[IL]**) e **non servirebbe** (`LookAtTarget` è codice morto e `Ghost::OnUpdate` non lo legge mai). **⇒ il passo 9 non ha più un meccanismo su cui agire: è assorbito nel 7** |
+| ❌ **"Non applicare l'orientamento quando entrambi sono vicini"** | Il caso peggiore è reale **ma non è la causa**: l'inversione avviene **anche con un solo giocatore vicino** (G1:590-636, il fantasma è a 5.7 unità dal target che insegue) |
+
+**Rischio: medio. Costo: basso.** Da verificare per primo: che un'inversione **reale** (giocatore che
+passa davanti a 5+ unità) avvenga **comunque una volta sola**.
+
+**Gravità: 🔴 alta come disturbo visivo, non bloccante, auto-limitante.** Puramente **cosmetico**:
+posizione, vita e morte non ne sono toccati.
 
 ### 1c. La morte parte e viene skippata
 
@@ -215,42 +294,114 @@ sommarsi**, ma nei log **non si presentano mai insieme**.
 **Nota**: `BLOCK_UNTIL_FPS_STABLE` è la logica `if (1/smoothDeltaTime < 50 && timeWaiting < 3) attendi`
 [IL]: è la **conseguenza** dello stallo, non la causa, e **non è una metrica**.
 
-### 1g. 🟡 Chi si connette DOPO non apprende le morti già avvenute
+### 1g. 🔴 PRIORITÀ ALZATA — chi si connette DOPO non apprende le morti già avvenute
 
-**Firma nei log.** G2 (la macchina che si è connessa dopo) ha giocato **~120 s da solo** come host di
-sé, poi si è connesso a G1. Le sue uccisioni: **#1** `D01Z01S01@SPAWN` (-715.1,10.0) e **#2** `(11)`
-(-697.1,11.0) **PRIMA** della connessione; **#3** `(13)` dopo. Stato dopo il join:
-- **G1** (host): traccia **6 id su 7 spawn point**, con `SPAWN(-715)` **VIVO a `life=2`**;
-- **G2** (client): traccia `{12,13,14,15,16}`.
-- **Entrambe** loggano `IMPRONTA DIVERSA` (impronte **speculari**: `host=716697266 locale=-908937816`
-  e viceversa).
+> **Era 🟡 e "da non affrontare ora". L'utente ha chiesto di alzarla: NON più rimandato.**
 
-⇒ **Il nemico #1 di G2 era vivo su G1** (copia indipendente a 2 HP, che G1 poi uccide per conto suo) =
-esattamente ciò che l'utente ha visto. Il **#2** su G1 **non esiste** (tabella 7→6 id all'ingresso in
-stanza, unico evento di morte nel mezzo): **fuori visuale "assente" e "morto" sono
-indistinguibili**.
+**Firma nei log — per POSIZIONE** (le etichette `SPAWN (NN)` **si permutano**, §1h/§7i).
+
+**Chi è host**: `[EnemySync] Host role: True` compare **solo** su **G2** (riga 672);
+`Host role: False` solo su G1 (riga 275). G1 si connette a `localhost`, G2 a `213.167.233.85`.
+
+| # | Evento | Dove |
+|---|---|---|
+| 1 | Entrambi in `D01Z01S01`, **disconnessi**, ognuno simula per conto suo (`Post-spawn: 5/7/5`) | G1:250, G2:301 |
+| 2 | **G2 uccide OFFLINE** il nemico a **(-698.9, 11.0)** (`vita 60→10→0`, anim `1080829965→646380074`) | **G2:494-501** (`mia=host`) |
+| 3 | **G2 si connette** (`Host role: True`) | G2:670-672 |
+| 4 | G1 (già connesso) riceve `Notification: G2 has joined` + **32 `Received new game progress:`** — **solo progress** | **G1:277-342** |
+| 5 | **G1 vede il nemico VIVO**: `(15) … life=60 posNemico=(-697.1,11.0)` | **G1:738**, poi 742-884 |
+| 6 | G1 lo uccide **per conto suo, a un'altra x**: `(15) … pos=(-696.7,11.0)` | **G1:900-901** |
+
+**DUE FATTI NUOVI che il fix deve rispettare:**
+
+1. **Le due macchine hanno ucciso lo STESSO nemico a posizioni DIVERSE** — G2 a **x=−698.9**, G1 a
+   **x=−696.7** (**2.2 unità**), mentre lo **spawn point** è a **(−697.1, 11.0)**.
+   ⇒ **va scambiata la posizione dello SPAWN POINT, non quella dell'uccisione.**
+2. **Il progress arriva SOLO al joiner**: `Server.sendPlayerTeam` (`Server.cs:382-398`) spedisce il team
+   **solo a chi entra**; **chi è già dentro non riceve nulla di nuovo**.
+   ⇒ la riconciliazione va **RI-ANNUNCIATA DAL VIVO a ogni join**, non "mandata al joiner".
 
 **Meccanismo (verificato nel codice, ed è strutturale):**
 
-- La morte esiste **solo come evento live**: `SendEnemyKill` + `SendEnemyDeathGlobal` sono dentro
-  `UpdateCore`, che **esce subito se `!IsConnected`** → una morte avvenuta **da disconnessi non viene
-  accodata né ritrasmessa**; subito dopo l'id viene droppato (`ForgetEnemy`) quindi **non torna più**.
+- La morte esiste **solo come evento live**: `SendEnemyKill` (`:1714`) + `SendEnemyDeathGlobal`
+  (`:1717`) stanno dentro `UpdateCore`, che **esce subito se `!IsConnected`** → una morte avvenuta
+  **da disconnessi non viene accodata né ritrasmessa**; subito dopo l'id viene droppato
+  (`ForgetEnemy`) quindi **non torna più**.
 - **Chi entra dopo non riceve lo stato dei consumati**: `_pendingDeaths` è scritto **solo** da
   `ReceiveEnemyDeathGlobal` (pacchetto **live**); `MarkSpawnPointConsumed` e `DumpConsumedSpawnPoints`
   sono **locali**. Alla connessione viaggia **solo il progress**.
-- La via "morte come conseguenza della vita" è **gated `!IsHost`**: solo il client uccide su una vita
-  0 ricevuta; l'host fa solo `SetHealth(0)`.
-- **`ApplyPersistentDeath` non esiste** in questo codice (0 occorrenze): il meccanismo reale è
-  `ReceiveEnemyDeathGlobal` → `_pendingDeaths` + `MarkSpawnPointConsumed` → `RegisterEnemy`.
+- La via "morte come conseguenza della vita" è **gated `!IsHost`** (`:1965`).
+- **`ApplyPersistentDeath` non esiste** (0 occorrenze).
 
-**Gravità: 🟡** — difetto **visibile**, **non bloccante**, **auto-limitante** (uscire e rientrare
-nella stanza ricostruisce la tabella locale). **L'utente l'ha dichiarato irrilevante: NON affrontarlo
-ora.**
+**✅ E il ricevente È GIÀ SCRITTO.** `ReceiveEnemyDeathGlobal` fa già **tutto**:
+`_pendingDeaths.Add` + `MarkSpawnPointConsumed` + `DestroyDeadEnemy` sulle copie vive. E `RegisterEnemy`
+ripete mark+destroy se il nemico nasce **dopo** l'annuncio ⇒ **la race joiner/annuncio è già coperta**.
+**Manca solo chi lo chiama al join.**
 
-**Fix, se e quando**: un pacchetto di "stato morte" nel join, sullo stesso canale del progress —
-l'host manda gli id/posizioni consumati e il joiner applica `MarkSpawnPointConsumed`. ~40-60 righe,
-ma richiede **una decisione di design**: **unione** delle due storie, o **autoritativo dell'host** (le
-due storie solo-player differiscono **per costruzione**).
+**La strada giusta è la POSIZIONE, non l'id** **[verificato in IL]** — `EnemySpawner`:
+```
+private readonly List<Vector3> consumedSpawns                    (InitOnly)
+AddConsumedSpawner(sp)  → consumedSpawns.Contains(sp.transform.position) ? return : Add
+IsSpawnerConsumed(sp)   → consumedSpawns.Contains(sp.transform.position)
+RespawnDeadEnemies()    → consumedSpawns.Clear() ; CreateEnemy() su tutti
+EnemySpawnPoint::CreateEnemy @IL_0018 → callvirt IsSpawnerConsumed(EnemySpawnPoint)
+```
+`List<Vector3>.Contains` = **uguaglianza esatta per componente** ⇒ **bastano le POSIZIONI.**
+
+**✅ E IL SERVER NON VA TOCCATO.** `Server.receiveEnemyDeathGlobal` (`Server.cs:784-796`) **inoltra già
+a TUTTI i giocatori** senza filtro di scena. **Nessuna modifica al protocollo, nessun `NetworkType`
+nuovo** (aggiungerne uno obbligherebbe a ricompilare e ricopiare **anche server e `Common.dll`**, §7d).
+
+**Fix proposto — A1, sul canale Progress che ESISTE GIÀ:**
+
+| File | Metodo / simbolo | Cosa |
+|---|---|---|
+| `EnemySyncManager.cs` | nuovo `ConsumedPositions()` accanto a `DumpConsumedSpawnPoints()` | legge `EnemySpawner.consumedSpawns` (privato → `AccessTools.FieldRefAccess`) e restituisce le posizioni **arrotondate a 2 decimali** |
+| `EnemySyncManager.cs` | `ReceiveEnemyDeathGlobal` — **riusare, non riscrivere** | è già tutto il lato ricevente |
+| `EnemySyncManager.cs` | nuovo `AnnounceDeathStateToPeers()` | manda lo stato per ogni posizione consumata |
+| `NetworkManager.cs` | `ReceiveConnection`, ramo `connected == true` (`:335`) | quando un giocatore **entra**, chiama `AnnounceDeathStateToPeers()` |
+| `ProgressManager.cs` | `ReceiveProgress` | instrada gli id con prefisso `ENEMYDEAD\|` a `EnemySyncManager`, **prima** della queue (il joiner è in `MainMenu`: la queue si applicherebbe troppo tardi o mai) |
+| `StatHelper.cs` | `ApplyProgress` / `GetProgressNotification` | **guardia sul prefisso**, altrimenti `Error: Unknown stat` + **notifica spam** |
+
+**Formato dell'id**, sul canale `ProgressType.PlayerStat` che esiste già:
+```
+ENEMYDEAD|<scene>|<x:F2>|<y:F2>
+```
+
+**⚠️ Due trappole da evitare**: (a) **non** chiamare `SendProgress` dal **thread di rete** (mutazione
+concorrente della `sendingQueue`) — dispatchare al thread principale; (b) la **guardia sul prefisso** è
+**obbligatoria**.
+
+*Alternativa A2* — nuova `NetworkType.EnemyDeathState`: concettualmente più pulita, **ma obbliga a
+ricompilare e ridistribuire `Common.dll` e il server** (§7d). Da preferire solo per un pacchetto batch.
+*Alternativa A3* — "riapplica al load del joiner": **non funziona**, il joiner non ha **nessuna**
+informazione e nessuno gliele manda.
+
+**DESIGN — unione o vince l'host?** Con A1 **vince l'UNIONE, e non è una scelta: è imposto
+dall'architettura.** Il server **è già** l'unione per team (`TeamInfo.progressSets`) e ogni macchina ha
+già spedito il proprio stato consumato. Non esiste una "storia dell'host" da cui escludere quella del peer.
+
+- **Unione (A1)**: il joiner impara i consumati dell'altro → i nemici uccisi dall'altro vengono marcati
+  e distrutti anche nella sua copia. Le due stanze diventano **identiche**, al costo di **morti che il
+  giocatore non ha causato ma accetta come fatto di mondo** — **esattamente come già accade per gate,
+  leve e porte**.
+- **"Vince l'host"**: l'host imporrebbe la propria lista e **cancellerebbe** le uccisioni del peer ⇒ il
+  nemico che G1 aveva ucciso **ricompare vivo davanti a G1**: **si sostituisce il difetto attuale con
+  uno peggiore.**
+- ⚠️ **Interazione con §3**: la lista consumata è **la stessa** che il falò azzera, e il reset è
+  **locale**. L'unione è quindi **auto-limitante** (si riallinea al primo falò), ma fino a lì le due
+  liste restano diverse: **è §3, non un difetto nuovo.**
+
+**Gravità: 🔴 ALZATA DALL'UTENTE.** Difetto **GARANTITO** (dipende solo da *chi ha ucciso cosa prima
+della connessione*), **frequente** all'ingresso in una stanza già giocata, **auto-limitante**,
+**non bloccante**. **Costo ~60-80 righe, tutte nel client. Rischio: basso.**
+
+**Come verificarlo**: G2 uccide i due nemici in `D01Z01S01` **da solo**, *poi* G1 si connette.
+**Atteso**: su G1 `Post-spawn: N enemies / 7 spawn points` con **N ridotto di 2**, e il nemico **non
+compare mai vivo** dove G2 l'ha ucciso. **Controprova anti-regressione**: G1 cammina fino ai punti —
+nessun nemico; **poi entrambi al falò** → i nemici **devono tornare su entrambe**. **Test negativo
+indispensabile**: uccidere un nemico **prima** che l'altro entri nella stanza ma **dopo** la
+connessione (funziona già oggi via `EnemyDeathGlobal`) e **confrontare: nessuna differenza**.
 
 ### 1h. ⚠️ LA STANZA DI TEST NON È PULITA — e il sospetto "nemici fermi" va SCARTATO
 
@@ -506,13 +657,13 @@ precedente se peggiora.
 | **0** | **Strumentazione**: `Animator.name` del Penitente, FPS, `Stopwatch` su `Update` e `OnLateUpdate`, GC. **Nessun cambio di comportamento** | Decide fra **§1d** e **§1e** *prima* di toccare il codice | ✅ **TESTATA e conclusiva**: nome=`Body` (→ §1d chiusa), FPS 43-61 con picchi 124-512 ms, costo mod **0.02-0.19 ms** medi, `gc0≈0` → `stato-passo0-strumentazione` |
 | ~~1~~ | ~~Test di controllo single-player~~ | ⬇️ **DECLASSATO**: il probe ha già dato la baseline **disconnessa**, e da lì sappiamo che lo stallo esiste disconnesso e i tagli no ⇒ **il test di controllo non discrimina più nulla** | ❌ **cade** |
 | **2** | **B-lite**: togliere `animTime = 0f;` (**`:1754`**) | ✅ **VERIFICATO IN GIOCO**. `animRepeat` è passato da **33-58 per nemico a ZERO** su entrambe le macchine, `animRestart=0`, `stalls100=0`, `fps≈60`, `syncMs` invariato (0.02-0.18 ms): **la cura non è costata nulla altrove**. L'utente riferisce animazioni **fluide** | ✅ **CHIUSO** — `stato-passo2-animtime` |
-| **3** | **B-hash**: da `shortNameHash` a `fullPathHash` in `ReadAnimation`/`ApplyAnimation`, e riposizionare davvero | ⬆️ **subito dopo il 2**, per isolare l'effetto. **Ora ha una firma di prova concreta**: le 33-58 ripetizioni identiche per id | ⏳ **prossimo dopo il test del 2** |
-| **4** | **Diagnostica dietro flag**: `LogAnimationChanges`/`LogDiagnosticSnapshot` off di default, `RESCAN_INTERVAL` a 2-3 s | ↕️ **giustificato da §1e(c)** (gli **84.5 ms** di `RegisterEnemies` e l'allocazione ~0.4-0.65 MB/s), **NON dagli FPS** | ⏳ |
+| **3** | **Desync al join (§1g)** — pacchetto "stato morte" sul canale Progress + **ri-annuncio a ogni join** | ⬆️ **PROMOSSO da richiesta esplicita dell'utente.** Indipendente da §1, **riusa `ReceiveEnemyDeathGlobal` che è GIÀ scritto e collaudato**, **nessuna modifica al server**, nessun bump di protocollo. È il difetto **funzionale** più visibile rimasto | ⏳ **PROSSIMO** |
+| **4** | **Diagnostica dietro flag** + `RESCAN_INTERVAL` a 2-3 s + **contatore `orientFlip` per nemico** | ↕️ giustificato da §1e(c) (gli **84.5 ms** e l'allocazione), **NON dagli FPS**. Il `orientFlip` è **necessario per rendere MISURABILE il fix dell'orientamento** | ⏳ |
 | ~~5~~ | ~~Solo se `Animator.name != "Body"`~~ | ❌ **CADE**: il nome è `Body` su entrambe le macchine, 4+4 volte | ❌ **cade** |
 | **6** | **Falò A1**: pacchetto `PrieDieuRested` → `RespawnDeadEnemies()` sul ricevente, **senza** refill | Indipendente da §1, rischio basso | ⏳ |
 | **7** | **Oggetti distruttibili**: 4 helper (`PersistentBreakableObject`, `SlashReceiver`, `BreakableObject`, `TriggerBasedTrap`) | Meccanico e isolato, ma **dopo** aver identificato l'oggetto in gioco (`Broke wall: 0`, `Used Lever: 0` anche nell'ultimo test) | ⏳ |
 | **8** | **Prestazioni**: `ProcessQueue` senza allocazioni + `IdOf` con dizionario inverso | ⬇️ **DECLASSATO**: **allocazione sì, stallo no**. Da fare **dopo** 2-3-4 | ⏳ |
-| **9** | **Isteresi sul target dei boss**: `targetTime` minimo su `EnemyBehaviour` | La boss fight funziona: qualunque regressione qui costa caro. Ultimo dei lavori "di gioco" | ⏳ |
+| **9** | **Orientamento (§1b, RISCRITTO)**: **Prefix con isteresi** su `Entity::SetOrientation` + stessa isteresi in `ApplyOrientation` | ⬆️ **HA ORA UN MECCANISMO VERIFICATO IN IL** (`Ghost::OnUpdate`, `TrinityMinionBehaviour`). **Una sola armonica copre TUTTI i writer per-frame**; non tocca il game loop; **gli override dei boss e del Penitente non passano di lì** (verificato in IL) | ⏳ dopo il falò |
 | **10** | **Modalità spettatore** (§5a) | Idea a bassa priorità, tocca il ciclo di morte del giocatore | ⏳ |
 
 **Motivo dell'ordine**: prima **misurare** (0-1), poi i fix a **rischio crescente e verificabilità
@@ -531,13 +682,16 @@ passo 0, poi il **Penitente** (5) solo con la prova, poi i **due difetti funzion
 | 3 | Costo per frame della mod | `Stopwatch` dal passo 0 | ✅ **0.02-0.19 ms** medi (`Update`), **2-4 ms** tipici per tutto `OnLateUpdate`, **picco 84.5 ms** in `RegisterEnemies` |
 | 4 | Gli `shortNameHash` delle due macchine per lo stesso stato — chiude §1a | log di `shortNameHash` **e** `fullPathHash` per un nemico, 5 s per macchina | ⏳ **da aggiungere se il passo 2 non basta** |
 | 5 | Identità dell'oggetto di §4 | il tipo reale in gioco | ⏳ `Broke wall: 0`, `Used Lever: 0` **anche nell'ultimo test** |
-| 6 | Se `targetTime` è davvero `readonly` e non assegnato (per il passo 9) | verifica in IL dell'assegnazione nel costruttore | ⏳ |
+| 6 | Se `targetTime` è davvero `readonly` e non assegnato | verifica in IL | ✅ **RISOLTA**: `EnemyBehaviour::targetTime` e `EnemyAI::targetTime` sono **`Private, InitOnly`** e **nessun `stfld` li assegna in tutta l'assembly** ⇒ valgono `0f` ⇒ **`LookAtTarget` è CODICE MORTO su 71/71 sottoclassi**. Il vecchio passo 9 **cade ed è assorbito** nel nuovo
 | 7 | Perché `[EnemyTick]` è ~1,8/s e non 2/s | — | ✅ **chiarito**: `LogDiagnosticSnapshot` gira a `RESCAN_INTERVAL = 0.5 s`, **una riga per nemico tracciato** |
 | 8 | `Received duplicated or inferior progress` e `Couldn't find connected player:` | test dedicato | ✅ **0 "duplicated"** in questo test; restano **32** `Couldn't find connected player: *` su G2, **tutte al join** (una per voce di progress): rumore di handshake |
 | 9 | `BLOCK_UNTIL_FPS_STABLE` **non è** un indicatore di prestazione | non usarlo come metrica | ✅ chiarito: è `if (1/smoothDeltaTime < 50 && timeWaiting < 3) attendi`, cioè la **conseguenza** |
 | 10 | **Causa del cluster 69-106 ms su G2** | attribuzione esatta: `RegisterEnemies` è il candidato, ma i log non hanno eventi nella finestra | ⏳ non verificata |
 | 11 | **Data/ora assoluta dei picchi** | — | ❌ **impossibile**: i log non hanno timestamp |
 | 12 | **Animazione del Penitente e del ghost** | **nessuna riga di log le misura** | ⏳ da strumentare, se serve |
+| 13 | **Numero di inversioni di orientamento per nemico** | **nessuna riga di log lo misura** | ⏳ da strumentare (**orientFlip**, passo 4) — **indispensabile per PROVARE il fix di §1b** |
+| 14 | **Che EnemyAI giri davvero** (FixedUpdate chiama everseOrientation) | 0 sottoclassi: potrebbe essere codice morto **o** un'istanza in un prefab | ⏳ **non verificata** |
+| 15 | **Il fantasma è congelato dalla mod?** PauseEnemy ferma il behavior tree NodeCanvas e la fisica, **non** MonoBehaviour.Update ⇒ Ghost::OnUpdate gira anche sul **non-proprietario** | test: loggare l'orientamento mentre l'altra macchina possiede il nemico | ⏳ **non verificata** |
 
 ---
 
