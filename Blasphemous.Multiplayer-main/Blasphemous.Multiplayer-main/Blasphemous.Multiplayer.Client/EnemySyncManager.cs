@@ -2584,6 +2584,48 @@ namespace Blasphemous.Multiplayer.Client
             normalizedTime = state.normalizedTime;
         }
 
+        /// <summary>
+        /// The two locomotion states, as the game hashes them, and the parameter that drives them.
+        ///
+        /// The hashes are written as literals on purpose: they were read from the running game
+        /// ([AnimName]) and resolved to names by inverting the game's own hash, and reproducing them by
+        /// calling a hash function here would be a second implementation that could disagree with the
+        /// first. The literal cannot.
+        /// </summary>
+        private const int ANIM_STATE_WALK = 765711723;   // "Walk"
+        private const int ANIM_STATE_IDLE = 2081823275;  // "Idle"
+
+        /// <summary>
+        /// The bool the controller actually uses to choose between walking and standing still.
+        ///
+        /// Walk and Idle are NOT selected by playing a state: the controller selects them from this
+        /// parameter, which the enemy's own behaviour sets (FoolAnimatorInyector.Walk calls
+        /// SetBool("WALK", true), and FoolBehaviour.Chase is its only caller). On this machine the
+        /// behaviour tree is paused, so nothing ever sets it - which is the whole problem below.
+        /// </summary>
+        private static readonly int WALK_PARAM = Animator.StringToHash("WALK");
+
+        /// <summary>
+        /// Applies the owner's animation state to an enemy this machine does not simulate.
+        ///
+        /// LOCOMOTION GOES THROUGH THE PARAMETER, NOT THROUGH Play. This is the fix for the enemy that
+        /// "slides": its legs restart while its body advances.
+        ///
+        /// Play("Walk") sets the state for one frame, but the controller CHOOSES the state from the WALK
+        /// bool on every frame - and WALK is false here, because the only thing that raises it is
+        /// FoolBehaviour.Chase inside the behaviour tree that PauseEnemy has stopped. So the controller
+        /// pulled the enemy back to Idle on the very next frame, the next packet forced Walk again from
+        /// zero, and the two fought at twenty against sixty hertz. Measured: 250 forced Walk->Idle against
+        /// 2 the other way in one session, with the same pair repeated up to 31 times in two seconds.
+        ///
+        /// Setting the bool is what the game itself does, so the controller performs an ordinary
+        /// transition - and an ordinary transition PRESERVES THE CLIP PHASE, which is exactly what was
+        /// being lost. It is the same idea as the position handling: give the simulation a goal and let it
+        /// get there, rather than imposing a state it will immediately undo.
+        ///
+        /// One-shot states (attack, death, turn) keep using Play, because they are not driven by a bool and
+        /// nothing will undo them.
+        /// </summary>
         private static void ApplyAnimation(Enemy enemy, int stateHash, float normalizedTime)
         {
             if (stateHash == 0)
@@ -2600,10 +2642,21 @@ namespace Blasphemous.Multiplayer.Client
             // what turned one transition into hundreds of them in the peer's log.
             _appliedAnim[IdOf(enemy)] = stateHash;
 
-            if (normalizedTime > 0f && normalizedTime < 1f)
-                animator.Play(stateHash, 0, normalizedTime);
-            else
-                animator.Play(stateHash, 0, 0f);
+            if (stateHash == ANIM_STATE_WALK || stateHash == ANIM_STATE_IDLE)
+            {
+                // Locomotion: hand the decision to the controller and let it transition, so the clip keeps
+                // its phase. This is what the game does, and it is why the legs stop restarting.
+                animator.SetBool(WALK_PARAM, stateHash == ANIM_STATE_WALK);
+                return;
+            }
+
+            // A one-shot. The playback position matters here, so it is passed on - but wrapped into [0,1)
+            // first: on a looping clip normalizedTime grows past 1, and the old test for "between 0 and 1"
+            // sent every later frame to Play(hash, 0, 0), restarting the clip from the beginning. That was
+            // the second half of the sliding, and it hit states that were otherwise being applied
+            // correctly.
+            float time = normalizedTime - Mathf.Floor(normalizedTime);
+            animator.Play(stateHash, 0, time);
         }
 
         private static Animator AnimatorOf(Enemy enemy)
