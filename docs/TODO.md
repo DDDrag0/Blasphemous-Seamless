@@ -39,7 +39,7 @@
 | **11** | **Il gioco disfa la pausa sul non-proprietario**: `<Enemy>::OnUpdate` chiama `EnablePhysics(true)` e `StartBehaviour()` su **8 tipi** | 🟡 **reale** | ⏳ il nemico del non-proprietario può "scivolare" o animarsi da solo |
 | **12** | **Camminata troncata** | ⏸️ | ⏳ richiede di ripensare il protocollo animazione (**loop vs one-shot**). **NB: voce re-inglobata** |
 | **13** | **La migrazione host non riarbitra** (`SetHost` non azzera lo stato del token) | 🟡 **reale** | ⏳ **già avvenuta in un test** |
-| **14** | **`IMPRONTA DIVERSA`** (controllo prima del popolamento) | 🔴 **da indagare** | ⚠️ **non è più cosmetico**: **1 occorrenza in ENTRAMBI i log**, ed è *"le due macchine hanno liste di nemici diverse, gli aggiornamenti finiranno sul nemico sbagliato"* — **la premessa di tutto il sync nemici**. Vedi §12 |
+| **14** | **`IMPRONTA DIVERSA`** | ✅ **RISOLTO** | **ERA UN FALSO ALLARME**: `_listFingerprint` era calcolata solo in `OnEnemiesSpawned`, ma `_ids` viene **appesa** ogni 0.5 s e **rimossa** in `ForgetEnemy` ⇒ la fingerprint descriveva una lista che non esisteva più. **Peggio**: la segnalazione era **una-tantum**, quindi un falso allarme **zittiva ogni divergenza reale**. Ora `_idsDirty` + `RefreshFingerprintIfDirty()` + cooldown 15 s. Vedi §12 |
 | **15** | **Il protocollo di rete**: `Common.dll` va copiato insieme a mod e server | 🟢 documentato | ⏳ |
 | **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | 🔴 **procedura** | ✅ **RISOLTO con uno strumento**: `tools\verify-deploy.ps1` — hash + marcatori + protocollo, esce con codice 1. Vedi §12 |
 | **17** | **I nemici che restano fermi (`pos_distinte=1`)** | 🟢 **non è un bug** | ✅ nemici **senza IA di movimento** |
@@ -790,7 +790,8 @@ passo 0, poi il **Penitente** (5) solo con la prova, poi i **due difetti funzion
 | 11 | **Data/ora assoluta dei picchi** | — | ❌ **impossibile**: i log non hanno timestamp |
 | 12 | **Animazione del Penitente e del ghost** | **nessuna riga di log le misura** | ⏳ da strumentare, se serve |
 | 13 | **Numero di inversioni di orientamento per nemico** | **nessuna riga di log lo misura** | ⏳ da strumentare (**orientFlip**, passo 4) — **indispensabile per PROVARE il fix di §1b** |
-| 14 | **Che EnemyAI giri davvero** (FixedUpdate chiama everseOrientation) | 0 sottoclassi: potrebbe essere codice morto **o** un'istanza in un prefab | ⏳ **non verificata** |
+| 14 | **Che EnemyAI giri davvero** (FixedUpdate chiama 
+everseOrientation) | 0 sottoclassi: potrebbe essere codice morto **o** un'istanza in un prefab | ⏳ **non verificata** |
 | 15 | **Il fantasma è congelato dalla mod?** PauseEnemy ferma il behavior tree NodeCanvas e la fisica, **non** MonoBehaviour.Update ⇒ Ghost::OnUpdate gira anche sul **non-proprietario** | test: loggare l'orientamento mentre l'altra macchina possiede il nemico | ⏳ **non verificata** |
 
 ---
@@ -1205,7 +1206,8 @@ direzione in cui il target si trova, **e dentro la banda**, viene scartata.
 
 **Verificato in IL**: LookAtTarget **è chiamato da ~130 siti** negli OnStateEnter/OnStateExit/
 Update di decine di *AttackBehaviour / *IdleState / *TurnAroundBehaviour. **Il corpo è
-raggiunto.** Ma con DeltaTargetTime < 0 sempre falso **esce subito dal et**:
+raggiunto.** Ma con DeltaTargetTime < 0 sempre falso **esce subito dal 
+et**:
 **ciò che è morto è il GATE, non il metodo.** La conclusione pratica (*non gira il nemico*) regge,
 **il ragionamento era sbagliato**.
 
@@ -1269,3 +1271,71 @@ Ghost::OnUpdate che confronta due float senza banda.**
 **Rischio: medio.** I behaviour leggono Target per decidere lo stato ⇒ un bersaglio "congelato"
 per 1 s può far scegliere lo stato sbagliato (es. CanSeePenitent). **Costo: ~40-60 righe + il file
 di patch.** **Serve un contatore 	argetChanges= nel probe**: **senza, non è misurabile.**
+
+---
+
+## [2026-10-08 23:21] ✅ `IMPRONTA DIVERSA` ERA UN FALSO ALLARME — causa accertata e corretta
+
+**Voce 14 della lista iniziale.** Era classificata 🟢 cosmetico, poi 🔴 *"la premessa di tutto il
+sync nemici"*. **La verità è nel mezzo, ed è la più insidiosa delle due: non era una divergenza,
+era un rilevatore rotto.**
+
+### Come è stato smascherato
+
+**Dai log**, tre indizi che insieme non lasciavano alternative:
+
+1. **L'errore compare su ENTRAMBE le macchine con i valori SCAMBIATI**:
+   `
+   G1:  host=-1418051589  locale=-997076802
+   G2:  host=-997076802   locale=-1418051589
+   `
+2. **Il messaggio si contraddice da solo**: dichiara `id locali: 3` **mentre il valore locale non
+   corrisponde a una lista di 3 elementi**.
+3. **Nella stessa sessione `Post-spawn` riporta 3, poi 5, poi 3 nemici**: la lista viene
+   **ricostruita e appesa più volte**.
+
+### La causa
+
+```
+_listFingerprint calcolata SOLO in:
+  OnEnemiesSpawned   -> _ids.Clear + RegisterEnemies + Sort + ComputeFingerprint
+  LevelLoaded        -> _listFingerprint = 0
+
+Ma _ids viene mutata ANCHE altrove:
+  _ids.Add(id)      in RegisterEnemies   <- l'HOST la chiama OGNI 0.5 s
+  _ids.Remove(id)   in ForgetEnemy
+```
+⇒ **la fingerprint pubblicata descriveva una lista che non esisteva più.** Il confronto metteva
+quel valore **stantio** contro uno **onesto**, e segnalava nemici che non c'erano.
+
+### E c'era un secondo difetto, peggiore del primo
+
+La segnalazione scattava **UNA VOLTA per livello** (`_fingerprintMismatchReported == 0`):
+**un falso allarme precoce non solo era sbagliato, ma ZITTIVA ogni divergenza reale per il resto
+della scena.**
+
+> **Un rilevatore che si spegne dopo il primo falso positivo è peggio di nessun rilevatore.**
+
+### Il fix
+
+| Pezzo | Cosa fa |
+|---|---|
+| `_idsDirty` | alzato **dove la lista cambia** (append e prune) |
+| `RefreshFingerprintIfDirty()` | consuma il flag, ricalcola e **ri-arma la segnalazione**; chiamata da `UpdateCore` **una volta per passata** *(fuori dal blocco di rescan: un ricalcolo per scansione, non per nemico)* |
+| **Cooldown 15 s** | la segnalazione **non è più una-tantum**: una divergenza **reale** resta visibile **senza inondare il log** |
+| `_fingerprintMismatches` | contatore **nel messaggio**, per vedere a colpo d'occhio una divergenza ricorrente |
+| `_fingerprintMismatchReported` | da `int` a **`float`**: ora contiene **un istante**, non un flag |
+
+### Nota importante sul `prune`
+
+**`_ids.Remove(id)` in `ForgetEnemy` è rischioso in sé**: togliere un elemento **sposta ogni
+indice successivo**, e **l'indice È l'handle sul filo**. Ora **almeno la divergenza viene segnalata**
+invece di restare nascosta.
+
+**Tag**: `stato-fingerprint-fix` · **Rollback**: `stato-orient-prefix`
+
+### Cosa aspettarsi dal prossimo test
+```
+IMPRONTA DIVERSA → deve SPARIRE
+Se ricompare → è una divergenza VERA (non più mascherata), e il contatore dice quante volte
+```
