@@ -86,6 +86,12 @@ G2 (client): (12) 460696939 -> 2081823275 avvio=0.00    × 58 volte
 riavvii osservabili**. Una transizione **legittima avviene una volta**; 33-58 volte è **questo mod**
 che riavvia il clip.
 
+> ### ✅ RISOLTO E VERIFICATO (passo 2)
+> Rimossa la riga che azzerava `animTime`, i contatori sono passati **da 33-58 a ZERO** su entrambe le
+> macchine: `animRestart=0`, `animRepeat=0`, `stalls100=0`, `fps≈60`, e **`syncMs` invariato**
+> (0.02-0.18 ms) → **la cura non è costata nulla altrove**. L'utente riferisce animazioni **fluide**.
+> **Il capitolo §1a è CHIUSO.** Restano aperti §1b (orientamento) e §1g (join).
+
 **Riferimenti di riga corretti** (quelli vecchi si erano spostati): `animTime = 0f` **:1754**,
 `ApplyAnimation` **:2109-2129**, `ReadAnimation` **:2095**, `IdOf` **:1032**, `LogAnimationChanges`
 **:2017**, `RegisterEnemies` **:917**, `LogDiagnosticSnapshot` **:1210**.
@@ -499,7 +505,7 @@ precedente se peggiora.
 |---|---|---|---|
 | **0** | **Strumentazione**: `Animator.name` del Penitente, FPS, `Stopwatch` su `Update` e `OnLateUpdate`, GC. **Nessun cambio di comportamento** | Decide fra **§1d** e **§1e** *prima* di toccare il codice | ✅ **TESTATA e conclusiva**: nome=`Body` (→ §1d chiusa), FPS 43-61 con picchi 124-512 ms, costo mod **0.02-0.19 ms** medi, `gc0≈0` → `stato-passo0-strumentazione` |
 | ~~1~~ | ~~Test di controllo single-player~~ | ⬇️ **DECLASSATO**: il probe ha già dato la baseline **disconnessa**, e da lì sappiamo che lo stallo esiste disconnesso e i tagli no ⇒ **il test di controllo non discrimina più nulla** | ❌ **cade** |
-| **2** | **B-lite**: togliere `animTime = 0f;` (**`:1754`**) | ✅ **FATTO**. È l'unica causa con **firma misurata e continua** (33-58 riavvii identici per nemico, ~6/s, in frame da 59 fps) e **senza concorrenti**. Indipendente dallo stallo, rischio minimo, **verificabile col probe già in campo** | ✅ **implementato** — `stato-passo2-animtime` · ⏳ **da testare** |
+| **2** | **B-lite**: togliere `animTime = 0f;` (**`:1754`**) | ✅ **VERIFICATO IN GIOCO**. `animRepeat` è passato da **33-58 per nemico a ZERO** su entrambe le macchine, `animRestart=0`, `stalls100=0`, `fps≈60`, `syncMs` invariato (0.02-0.18 ms): **la cura non è costata nulla altrove**. L'utente riferisce animazioni **fluide** | ✅ **CHIUSO** — `stato-passo2-animtime` |
 | **3** | **B-hash**: da `shortNameHash` a `fullPathHash` in `ReadAnimation`/`ApplyAnimation`, e riposizionare davvero | ⬆️ **subito dopo il 2**, per isolare l'effetto. **Ora ha una firma di prova concreta**: le 33-58 ripetizioni identiche per id | ⏳ **prossimo dopo il test del 2** |
 | **4** | **Diagnostica dietro flag**: `LogAnimationChanges`/`LogDiagnosticSnapshot` off di default, `RESCAN_INTERVAL` a 2-3 s | ↕️ **giustificato da §1e(c)** (gli **84.5 ms** di `RegisterEnemies` e l'allocazione ~0.4-0.65 MB/s), **NON dagli FPS** | ⏳ |
 | ~~5~~ | ~~Solo se `Animator.name != "Body"`~~ | ❌ **CADE**: il nome è `Body` su entrambe le macchine, 4+4 volte | ❌ **cade** |
