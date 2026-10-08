@@ -276,15 +276,44 @@ frame time contiene almeno un picco da tutorial. **Marker nei log**:
 a `SPAWN (NN)`** — le etichette **si permutano**. **Agganciarsi alla POSIZIONE.** Alcuni confronti
 fatti in precedenza con quel metodo **non sono affidabili** e vanno rifatti se servono.
 
-#### Requisiti di una stanza "pulita" per i test
+#### Requisiti di una stanza "pulita" per i test — checklist VERIFICATA sui log
 
-| Requisito | Come verificarlo |
-|---|---|
-| **Nessun `Execution`/trigger di tutorial** (mette in pausa) | assenza di `[TRACE][INPUT] … TUTORIAL … has been enabled` |
-| **≥2 nemici fra le 13 classi con IA in `OnAwake`** | `[EnemyWorld]`/`[EnemySpawn]` **senza** alcuna riga `behaviour=null`, e con `attivo=True` |
-| **Nessuna entità inerte** | `[EnemyInert]` **assente** nel report (dal commit `b026f2e`) |
-| **Almeno 2 id che si spostano davvero** | da `[EnemyTick]`: almeno 2 id con `pos_distinte ≥ 3` **e** `anim != 0` |
-| **Nessun boss** | — |
+| # | Criterio | Come si legge |
+|---|---|---|
+| 1 | **Conteggio RISOLTO**: `[EnemySync] Post-spawn: N enemies / M spawn points` **dopo** `OnLevelLoaded`, con **`N = M > 0`** | ⚠️ **È QUESTO che rende significativa l'assenza di `[EnemyInert]`** — non l'assenza in sé. `N ≠ M` ⇒ assenza **inconclusiva**; `0/0` ⇒ assenza **priva di valore** (la stanza è **vuota**, non "pulita") |
+| 2 | **Nessun blocker di famiglia tutorial** | nessuna riga `input blocker <color=green>TUTORIAL</color>`, né `tutorial_block`, né `POP_UP` nella finestra della stanza |
+| 3 | **Nessuna cutscene** | nessuna riga `[TRACE][CUTSCENE]`, `CINEMATIC`, `pontiff_block` |
+| 4 | **Frame sani** | tutte le `[Probe]` con `stalls100=0` e `frameMs_max < ~60 ms`. ⚠️ valori **>300 ms** sono **caricamento**, non sync |
+| 5 | **Almeno 2 nemici che si muovono** | ≥2 label `[EnemyTick]` con **più di una** `posNemico` distinta **e** `anim != 0` |
+| 6 | ⚠️ **`anim=0` va SEMPRE letto con `life`** | `anim=0` **con `life=0`** = **cadavere** ✅ ammesso. `anim=0` **con `life>0`** = **entità mai attivata** → scarta la stanza. **Nei dati `anim=0` significa CADAVERE, non "oggetto mai attivo": l'ipotesi iniziale era sbagliata** |
+| 7 | **`connected=True`** nelle probe | **senza questo il test non verifica alcuna sincronizzazione** |
+
+#### Le quattro stanze provate in single-player — classifica verificata
+
+| # | Stanza | Verdetto |
+|---|---|---|
+| **1** | **`D01Z01S01`** ⭐ **consigliata** | **zero blocker tutorial, nessuna cutscene, `stalls100=0`**, picco 41-43 ms, **5/5 nemici mobili** (attività **23.9%**, la più alta) e **2 morti** utili per la sync delle uccisioni. ⚠️ Caveat: **5 nemici / 7 spawn point** ⇒ qui l'assenza di `[EnemyInert]` **non è dimostrabile** |
+| **2** | **`D01Z01S02`** | **9/9 nemici mobili** e **conteggio RISOLTO 9/9** → **l'unica, con S03, dove "nessuna entità inerte" è DIMOSTRABILE**. Nessun `TUTORIAL`. ⚠️ Un `POP_UP` da **ritiro del collezionabile** congela il mondo per ~110 righe: **evitabile non raccogliendolo** |
+| 3 | `D01Z01S03` | 23 nemici, ma **`TUTORIAL` intrinseco** + **cutscene `PontiffEvent1`** di ~250 righe col mondo congelato + **10 entità mai mobili**: **peggior rapporto segnale/rumore** |
+| 4 | `D01Z01S07` | **0 nemici / 0 spawn point**: **inutilizzabile**. E contiene le **uniche 2 stall** della sessione (`12607 ms`!) |
+| — | `D01Z02S01` | **0 nemici + `TUTORIAL`** → l'esclusione dell'utente è **confermata dai dati** ✅ |
+
+**Nessun boss in nessuna delle quattro** (l'unica stringa "boss" è il caricamento di `BossRushData.config`).
+
+**Dettaglio importante**: **in tutte le stanze i nemici restano dormienti finché il player non si avvicina**. In S01 la prima visita ha **0%** di attività (player fermo a x≈−726.8), la seconda **23.9%** (il movimento parte solo quando il player avanza verso x≈−670). **Bisogna avvicinarsi, altrimenti si misurano nemici fermi PER PROGETTO.**
+
+#### ⚠️ Terzo caso scoperto: nemici veri DORMIENTI
+
+In `D01Z01S03` ci sono **10 entità ferme** che **non** hanno `anim=0` e **non** hanno `Idle`:
+
+```
+anim=1809480452   life=10   una sola posizione   y = −3 e −1   (sotto il piano di gioco)
+```
+
+**Quello stesso `anim` è usato anche dai membri MOBILI della stessa famiglia** (che ciclano fra `−1427642350` / `1809480452` / `801321347`). Quindi **sono nemici veri, con behaviour attiva, dormienti e mai spostati** — **non** oggetti mai attivati.
+
+> **La dicotomia `anim=0` vs `Idle` NON copre i dati**: esiste un **terzo caso**.
+> **Regola corretta**: `anim=0` + `life=0` = **cadavere**; `anim=0` + `life>0` = **mai attivato**; `anim≠0` + fermo = **dormiente**.
 
 ---
 
