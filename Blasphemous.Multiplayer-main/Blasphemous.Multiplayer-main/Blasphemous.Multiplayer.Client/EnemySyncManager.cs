@@ -320,6 +320,31 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, int> _appliedAnim = new Dictionary<string, int>();
 
         /// <summary>
+        /// TEMPORARY (PerformanceProbe): the state the Animator showed at the moment we imposed a state, so
+        /// the log can tell a transition we CAUSED from one the game made. Keyed by id, like _appliedAnim.
+        ///
+        /// _appliedAnim alone cannot do this: it is written during the frame that imposes the state, while
+        /// the Animator keeps reporting the old state until the controller evaluates - one frame later.
+        /// Recording the pair instead closes that gap. Remove with the probe.
+        /// </summary>
+        private static readonly Dictionary<string, int> _appliedAnimPrev = new Dictionary<string, int>();
+
+        /// <summary>
+        /// TEMPORARY (PerformanceProbe): the playback position last seen for each enemy, so the position the
+        /// LEAVING state had reached can be reported. That number is what says whether a one-shot was cut
+        /// short or simply finished. Remove with the probe.
+        /// </summary>
+        private static readonly Dictionary<string, float> _lastAnimSample = new Dictionary<string, float>();
+
+        /// <summary>
+        /// TEMPORARY (PerformanceProbe): when the current state began, on the transitions the game made.
+        /// Echoes never reset it, or our own forcing would report a long-lived state as freshly started.
+        /// Remove with the probe.
+        /// </summary>
+        private static readonly Dictionary<string, float> _lastAnimChangeAt = new Dictionary<string, float>();
+
+
+        /// <summary>
         /// The gravity scale each frozen enemy had before this machine stopped its controller, keyed by
         /// instance id, so it can be given back exactly what it had.
         ///
@@ -963,6 +988,9 @@ namespace Blasphemous.Multiplayer.Client
             _remoteTargets.Clear();
             _lastAnim.Clear(); // animation state belongs to the scene being unloaded
             _appliedAnim.Clear();
+            _appliedAnimPrev.Clear();    // ditto: keyed by id, and ids do not survive a scene change
+            _lastAnimSample.Clear();     // ditto
+            _lastAnimChangeAt.Clear();   // ditto: the clock belongs to the scene being unloaded
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
@@ -2364,12 +2392,18 @@ namespace Blasphemous.Multiplayer.Client
             // record and the packet disagreed permanently about who was simulating it.
             if (ownedRemotely)
             {
-                if (claimState != null)
-                {
-                    claimState.OwnedByLocal = false;
-                    claimState.OwnerSince = Time.time;
-                }
-
+                // NOTE: the record is deliberately NOT written here.
+                //
+                // An update packet is asymmetric: only the owner transmits, and it always declares
+                // ownedRemotely = true. So this flag does not describe the other machine, it repeats "I am
+                // the owner" from the sender. Writing OwnedByLocal = false on the strength of it made the
+                // HOST mark itself as not owning an enemy it was simulating - and since the send loop skips
+                // anything not owned locally, the host then stopped transmitting and stopped interpolating
+                // for a frame or two, until the peer's ownership token put it back. PauseEnemy and
+                // ResumeEnemy twenty times a second, each one cutting an animation.
+                //
+                // The else branch below is where the record belongs: it is the only place where the packet
+                // carries information this machine does not already have.
                 PauseEnemy(enemy);
 
                 // The state is still applied on the non-owner. PauseBehaviour leaves the Animator running,
@@ -2391,6 +2425,7 @@ namespace Blasphemous.Multiplayer.Client
                 // Setting OwnedByLocal is the other half of the fix above, and it is not optional: without
                 // it an enemy the host hands BACK would stay marked as not ours, and the send loop skips
                 // anything that is not owned locally - so this machine would never simulate it again.
+                // This is the ONLY place the packet tells this machine something it did not already know.
                 if (claimState != null)
                 {
                     claimState.OwnedByLocal = true;
@@ -2565,23 +2600,58 @@ namespace Blasphemous.Multiplayer.Client
                 int previous;
                 bool known = _lastAnim.TryGetValue(id, out previous);
 
+                // Was the transition about to be reported OUR doing?
+                //
+                // The check below compares _appliedAnim - what we last imposed - against the state being read
+                // now, and it is not enough on its own: ApplyAnimation writes _appliedAnim during the frame
+                // that imposes the state, while the Animator still reports the OLD state until the controller
+                // evaluates, one frame later. So on the frame of the imposition the comparison fails, a line
+                // is written that describes our own forcing, and _lastAnim is overwritten with the wrong
+                // value - which is what produced repeated "phantom" transitions in the log, including the
+                // same pair printed many times in a row, which the guard below makes impossible otherwise.
+                //
+                // _appliedAnimPrev closes that gap without waiting a frame: it records the pair
+                // (state the Animator showed, state we imposed), so the echo is recognised by its ORIGIN.
+                int appliedPrev;
+                bool isEcho = _appliedAnimPrev.TryGetValue(id, out appliedPrev) && appliedPrev == previous;
+
                 // A state we applied ourselves is not a local change: reporting it would describe our own
                 // forcing as if the game had animated something, and that is what produced hundreds of
                 // transitions for a single event.
                 int applied;
-                if (_appliedAnim.TryGetValue(id, out applied) && applied == stateHash)
+                if ((_appliedAnim.TryGetValue(id, out applied) && applied == stateHash) || isEcho)
                 {
                     _lastAnim[id] = stateHash;
+                    _lastAnimSample[id] = animTime;
                     continue;
                 }
 
+                // How long the state we are leaving actually lasted, and how far into its clip it got.
+                //
+                // Only transitions the game made count towards this: a timer reset by our own echo would
+                // report a long-lived state as if it had just started. And "uscita" - the playback position
+                // the leaving state had reached - is the measurement that settles the question the counts
+                // could not: a one-shot interrupted near zero was cut, one that reached the end simply ended.
+                // It is read before the sample is overwritten, and it is local to this machine, so the two
+                // logs can be compared without aligning anything.
+                float lastSample;
+                _lastAnimSample.TryGetValue(id, out lastSample);
+
+                float changedAt;
+                bool hadChangedAt = _lastAnimChangeAt.TryGetValue(id, out changedAt);
+                float durata = hadChangedAt ? Time.time - changedAt : 0f;
+
                 _lastAnim[id] = stateHash;
+                _lastAnimSample[id] = animTime;
+                _lastAnimChangeAt[id] = Time.time;
+
                 if (known && previous == stateHash)
                     continue;
 
                 Vector3 p = enemy.transform.position;
                 ModLog.Info($"[EnemyAnim] {ShortId(id)} {previous} -> {stateHash} " +
-                            $"avvio={animTime:F2} vita={enemy.CurrentLife:F0} " +
+                            $"avvio={animTime:F2} uscita={lastSample:F2} durata={durata:F2} appl=gioco " +
+                            $"vita={enemy.CurrentLife:F0} " +
                             $"pos=({p.x:F1},{p.y:F1}) " +
                             $"mia={(IsHost ? "host" : "client")}");
 
@@ -2753,6 +2823,12 @@ namespace Blasphemous.Multiplayer.Client
             // Remembered so the animation log does not mistake our own forcing for a local change, which is
             // what turned one transition into hundreds of them in the peer's log.
             _appliedAnim[IdOf(enemy)] = stateHash;
+
+            // The pair (state the Animator showed BEFORE this call, state we are imposing). Read before the
+            // Animator can evaluate, so it describes the transition we caused - see the echo check in
+            // LogAnimationChanges, which cannot rely on _appliedAnim alone because the Animator reports the
+            // old state for one more frame. Remove with the probe.
+            _appliedAnimPrev[IdOf(enemy)] = animator.GetCurrentAnimatorStateInfo(0).shortNameHash;
 
             if (stateHash == ANIM_STATE_WALK || stateHash == ANIM_STATE_IDLE)
             {
