@@ -54,6 +54,37 @@ namespace Blasphemous.Multiplayer.Client
 
         private static int _animatorMissing;
 
+        // Stall and animation-restart counters, so the next test separates the two candidate causes in
+        // its own log instead of needing another round.
+        //
+        // stalls: frames slower than a tenth of a second. If a cut animation never lands in one of these
+        // frames, the stall is innocent and the cause is the replay mechanism.
+        // restarts: reports where the playback position arrived as 0, i.e. the receiver was told to start
+        // the clip over. repeats: the same enemy repeating the same hash pair back to back, which is the
+        // real signature of a forced replay - a legitimate transition happens once.
+        private static int _stalls;
+        private static int _restarts;
+        private static int _repeats;
+        private static string _lastRestartId;
+        private static int _lastRestartFrom;
+        private static int _lastRestartTo;
+
+        /// <summary>
+        /// Called by LogAnimationChanges when a state change is about to be reported with a playback
+        /// position of zero, i.e. when this machine is about to restart a clip.
+        /// </summary>
+        internal static void NoteAnimationRestart(string id, int from, int to)
+        {
+            _restarts++;
+
+            if (id == _lastRestartId && from == _lastRestartFrom && to == _lastRestartTo)
+                _repeats++;
+
+            _lastRestartId = id;
+            _lastRestartFrom = from;
+            _lastRestartTo = to;
+        }
+
         /// <summary>Starts timing EnemySyncManager.Update. Call at the top of that method.</summary>
         internal static void BeginSync()
         {
@@ -99,6 +130,8 @@ namespace Blasphemous.Multiplayer.Client
             float frameMs = Time.unscaledDeltaTime * 1000f;
             if (frameMs > _worstFrameMs)
                 _worstFrameMs = frameMs;
+            if (frameMs > 100f)
+                _stalls++;
 
             ReportNamesOnce();
 
@@ -117,9 +150,10 @@ namespace Blasphemous.Multiplayer.Client
             long managedBytes = System.GC.GetTotalMemory(false);
 
             ModLog.Info(
-                $"[Probe] fps={fps:F1} frameMs_max={_worstFrameMs:F1} " +
+                $"[Probe] fps={fps:F1} frameMs_max={_worstFrameMs:F1} stalls100={_stalls} " +
                 $"syncMs_avg={_syncTicks / 10000.0 / _frames:F2} syncMs_max={_worstSyncMs:F1} " +
                 $"lateMs_max={_worstLateMs:F1} gc0={collectionsSince} managedMB={managedBytes / 1048576.0:F1} " +
+                $"animRestart={_restarts} animRepeat={_repeats} " +
                 $"connected={Main.Multiplayer.NetworkManager.IsConnected}");
 
             _frames = 0;
@@ -127,6 +161,9 @@ namespace Blasphemous.Multiplayer.Client
             _worstSyncMs = 0f;
             _worstLateMs = 0f;
             _syncTicks = 0;
+            _stalls = 0;
+            _restarts = 0;
+            _repeats = 0;
         }
 
         /// <summary>

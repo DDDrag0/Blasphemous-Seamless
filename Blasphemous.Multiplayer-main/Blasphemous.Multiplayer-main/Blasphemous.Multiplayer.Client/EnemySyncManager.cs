@@ -1750,8 +1750,19 @@ namespace Blasphemous.Multiplayer.Client
                         continue;
                 }
 
-                if (!hasPrevious || previous.AnimState != animState)
-                    animTime = 0f; // Only pass a playback position when the state actually changes.
+                // The playback position is passed on as it was read, INCLUDING when the state changes.
+                //
+                // This line used to force animTime = 0f on every state change, on the reasoning that a
+                // playback position only matters at a transition. It is the exact opposite: a transition
+                // is the only moment the receiver needs it. Sending zero there made ApplyAnimation call
+                // Animator.Play(hash, 0, 0) - so every transition restarted the clip from the beginning.
+                // On a one-shot (an attack, a death animation) that shows as the animation starting and
+                // being cut off after a few milliseconds; on a loop it restarts the walk.
+                //
+                // Measured before removing it: the same transition, for the same enemy, repeated 33 and
+                // 58 times in one session at about 6 restarts per second, in healthy frames at 59 FPS.
+                // That repetition - not a frame stall, which happens 0/3 and 1/11 of the time alongside a
+                // cut - is the signature of this line.
 
                 previous.Position = position;
                 previous.Life = life;
@@ -2055,6 +2066,12 @@ namespace Blasphemous.Multiplayer.Client
                             $"avvio={animTime:F2} vita={enemy.CurrentLife:F0} " +
                             $"pos=({p.x:F1},{p.y:F1}) " +
                             $"mia={(IsHost ? "host" : "client")}");
+
+                // TEMPORARY (PerformanceProbe): counts the repetitions that identify a forced replay.
+                // A legitimate transition happens once; the same pair repeating for the same enemy is
+                // this mod restarting the clip again. Remove with the probe.
+                if (animTime <= 0.01f)
+                    PerformanceProbe.NoteAnimationRestart(ShortId(id), previous, stateHash);
             }
         }
 
