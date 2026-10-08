@@ -75,10 +75,43 @@ namespace Blasphemous.Multiplayer.Client
         // standing still.
         private static int _orientFlips;
 
+        // Orientation writes made by the GAME on enemies this machine does not own. This is the number that
+        // matters for the spinning enemy; _orientFlips above only sees this mod's own writes.
+        private static int _gameOrientWrites;
+        private static int _gameOrientWindowWrites;
+        private static int _gameOrientBurst;
+
         /// <summary>Counts one orientation change applied to an enemy. Called from ApplyOrientation.</summary>
         internal static void NoteOrientationFlip()
         {
             _orientFlips++;
+        }
+
+        /// <summary>
+        /// Counts one orientation write made by the GAME while this machine does not own the enemy.
+        ///
+        /// The counter above only sees this mod's own writes, at 20 Hz - and the spinning that was reported
+        /// comes from the game writing orientation every frame, which that counter cannot see at all. So
+        /// this one is fed from a Harmony prefix on Entity.SetOrientation, the single setter every
+        /// orientation write in the game goes through.
+        ///
+        /// The prefix measures and does nothing else: it never blocks a write, so behaviour is unchanged.
+        /// If the spinning turns out to be real, turning this into a filter is a matter of returning false
+        /// when the two orientations disagree by less than a dead band.
+        /// </summary>
+        internal static void NoteGameOrientationWrite(bool ownedByLocal)
+        {
+            // Only writes on enemies that this machine is NOT simulating are interesting: those are the
+            // ones that fight with the owner's orientation and produce the visible oscillation.
+            if (ownedByLocal)
+                return;
+
+            _gameOrientWrites++;
+
+            // Track the busiest report window, so the log says both "how many in total" and "how bad it got".
+            _gameOrientWindowWrites++;
+            if (_gameOrientWindowWrites > _gameOrientBurst)
+                _gameOrientBurst = _gameOrientWindowWrites;
         }
 
         /// <summary>
@@ -166,6 +199,7 @@ namespace Blasphemous.Multiplayer.Client
                 $"syncMs_avg={_syncTicks / 10000.0 / _frames:F2} syncMs_max={_worstSyncMs:F1} " +
                 $"lateMs_max={_worstLateMs:F1} gc0={collectionsSince} managedMB={managedBytes / 1048576.0:F1} " +
                 $"animRestart={_restarts} animRepeat={_repeats} orientFlip={_orientFlips} " +
+                $"gameOrient={_gameOrientWrites} gameOrientBurst={_gameOrientBurst} " +
                 $"connected={Main.Multiplayer.NetworkManager.IsConnected}");
 
             _frames = 0;
@@ -177,6 +211,9 @@ namespace Blasphemous.Multiplayer.Client
             _restarts = 0;
             _repeats = 0;
             _orientFlips = 0;
+            _gameOrientWrites = 0;
+            _gameOrientWindowWrites = 0;
+            _gameOrientBurst = 0;
         }
 
         /// <summary>

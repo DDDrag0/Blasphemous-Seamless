@@ -161,6 +161,24 @@ namespace Blasphemous.Multiplayer.Client
         private const float DEATH_GRACE_SECONDS = 1.5f;
 
         /// <summary>
+        /// The enemies this machine is NOT simulating, as a set of instances.
+        ///
+        /// Needed by the orientation probe: the Harmony prefix on Entity.SetOrientation runs on every
+        /// orientation write in the game, many times per frame, so it cannot afford to work out ownership
+        /// from the id table each time. This keeps the answer one hash-set lookup away.
+        ///
+        /// It is maintained exactly where ownership changes - PauseEnemy and ResumeEnemy - rather than
+        /// recomputed, so it cannot drift from what those two do.
+        /// </summary>
+        private static readonly HashSet<Enemy> _puppetEnemies = new HashSet<Enemy>();
+
+        /// <summary>True when this machine is not the one simulating the enemy. Used by the orientation probe.</summary>
+        public static bool IsPuppet(Enemy enemy)
+        {
+            return enemy != null && _puppetEnemies.Contains(enemy);
+        }
+
+        /// <summary>
         /// Enemy ids that belong to a BOSS, so their health is deliberately left alone.
         ///
         /// Bosses derive from Enemy like anything else, so they are tracked, positioned and animated by the
@@ -707,6 +725,7 @@ namespace Blasphemous.Multiplayer.Client
         private static void PauseEnemy(Enemy enemy)
         {
             FreezePhysics(enemy);
+            _puppetEnemies.Add(enemy);
 
             // PauseBehaviour is called UNCONDITIONALLY, and that is deliberate.
             //
@@ -784,6 +803,7 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void ResumeEnemy(Enemy enemy)
         {
+            _puppetEnemies.Remove(enemy);
             ThawPhysics(enemy);
 
             var behaviour = enemy.EnemyBehaviour;
@@ -860,6 +880,7 @@ namespace Blasphemous.Multiplayer.Client
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
+            _puppetEnemies.Clear();      // the instances of the scene being unloaded
 
             // TEMPORARY (PerformanceProbe): re-read the Animator names for the new scene. Remove with
             // the probe.
