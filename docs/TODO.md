@@ -3,8 +3,7 @@
 > **Documento vivo.** Va aggiornato a ogni passo: cosa è stato fatto, cosa ha misurato, cosa resta.
 > L'ultima sezione (`Diario dei passi`) è il registro cronologico.
 
-Ultimo aggiornamento: **dopo il passo 2** (implementato, **da testare**). Il passo 0 è stato **testato
-e ha chiuso due ipotesi su tre**.
+Ultimo aggiornamento: dopo aver **chiuso il capitolo delle "entità Tutorial"** (erano oggetti di scena) e dopo il **passo 2** (implementato, **da testare**).
 
 ---
 
@@ -41,6 +40,7 @@ che riguardano i nemici, le morti **e il Penitente**.
 | **`stato-morte-animata-ok`** | **morte animata anche per mano dell'altro giocatore** |
 | **`stato-passo0-strumentazione`** | **passo 0: solo misure, nessun cambio di comportamento** |
 | **`stato-passo2-animtime`** | **passo 2: la posizione di riproduzione non viene più azzerata (+ contatori nel probe)** |
+| **`stato-inert-scenery`** | **le entità di scena non vengono più tracciate come nemici (`IsInertScenery`)** |
 
 ---
 
@@ -246,6 +246,46 @@ l'host manda gli id/posizioni consumati e il joiner applica `MarkSpawnPointConsu
 ma richiede **una decisione di design**: **unione** delle due storie, o **autoritativo dell'host** (le
 due storie solo-player differiscono **per costruzione**).
 
+### 1h. ⚠️ LA STANZA DI TEST NON È PULITA — e il sospetto "nemici fermi" va SCARTATO
+
+`D01Z01S01` contiene un `Tools.Level.Interactables.Execution` (con campo pubblico `TutorialID`) che in
+`OnStart` fa `Invoke("ShowTutorial", 0.6f)`. La catena, **verificata in IL**:
+
+```
+Execution::ShowTutorial  →  Penitent::ShowTutorial  →  TutorialManager::ShowTutorial
+    Input.SetBlocker("TUTORIAL", true)
+    LogicManager.PauseGame()                    ← METTE IN PAUSA IL GIOCO
+    istanzia Tutorial.prefab sotto UIController.GetTutorialRoot()   ← è UI
+    TutorialWidget.ShowInGame()  →  ResumeGame()
+```
+
+**Conseguenza misurata**: nel log single-player, **al blocker `TUTORIAL` il frame è
+`frameMs_max=53.6 ms` contro 18-28 ms dei frame adiacenti**. Non è colpa della mod e non è uno stallo
+di §1f: **è il gioco che si mette in pausa.**
+
+**Da fare**: i test di §1a/§1e/§1f **non vanno più fatti in questa stanza**, altrimenti ogni misura di
+frame time contiene almeno un picco da tutorial. **Marker nei log**:
+`[TRACE][INPUT] The input blocker TUTORIAL has been enabled.`
+
+> ### **Il sospetto "i nemici fermi non si sincronizzano" VA SCARTATO.**
+> Le entità che restavano ferme in `D01Z01S01` **non eseguono codice** (§7i): `pos_distinte=1` è
+> **garantito per costruzione** e **non misura nulla**. Il capitolo va riaperto **solo** su nemici che
+> **animano e traslano**.
+
+**Conseguenza sul metodo**: **non trarre conclusioni per-nemico confrontando run diversi agganciandosi
+a `SPAWN (NN)`** — le etichette **si permutano**. **Agganciarsi alla POSIZIONE.** Alcuni confronti
+fatti in precedenza con quel metodo **non sono affidabili** e vanno rifatti se servono.
+
+#### Requisiti di una stanza "pulita" per i test
+
+| Requisito | Come verificarlo |
+|---|---|
+| **Nessun `Execution`/trigger di tutorial** (mette in pausa) | assenza di `[TRACE][INPUT] … TUTORIAL … has been enabled` |
+| **≥2 nemici fra le 13 classi con IA in `OnAwake`** | `[EnemyWorld]`/`[EnemySpawn]` **senza** alcuna riga `behaviour=null`, e con `attivo=True` |
+| **Nessuna entità inerte** | `[EnemyInert]` **assente** nel report (dal commit `b026f2e`) |
+| **Almeno 2 id che si spostano davvero** | da `[EnemyTick]`: almeno 2 id con `pos_distinte ≥ 3` **e** `anim != 0` |
+| **Nessun boss** | — |
+
 ---
 
 ## 2. BOSS — meccanismo chiarito (era frainteso)
@@ -409,13 +449,15 @@ alla stessa incognita di §1d**.
 | # | Cosa |
 |---|---|
 | 7a | **`Entity.Dead` è CALCOLATO** (`!(Life.Current > 0)`), **`EntityStatus.Dead` è l'interruttore vero** che `KillInstanteneously()` accende. È la chiave di tutto il capitolo morte: una guardia su `Entity.Dead` si "disarma" da sola appena la vita tocca zero |
-| 7b | I nemici `Tutorial` hanno `behaviour=null` e `anim=0` sempre: **non si muovono e non animano nel gioco stesso**. Non è un difetto della mod |
-| 7c | Molti nemici hanno `pos_distinte=1` perché **non hanno IA di movimento**: non è un sintomo |
+| 7b | **Non esiste una classe `Tutorial` nemica**: *"Tutorial"* è solo la stringa `EnemySpawnPoint.EntityName` (o `gameObject.name`, riscritto da `SetEntityName` come `EntityName + GetHashCode()`). Verificato in IL: gli unici tipi col nome sono `Framework.FrameworkCore.Tutorial` (**ScriptableObject**), `TutorialManager`, `TutorialWidget`, `TutorialsCommand`, `TutorialsEnabled` (PlayMaker), `TutorialIdAttribute` — **nessuno deriva da `Enemy`**. Il popup del tutorial è **UI**: `TutorialManager.ShowTutorial` mette il blocker `TUTORIAL` + `PauseGame()`, istanzia `Tutorial.prefab` sotto `UIController.GetTutorialRoot()` e alla fine disattiva la **UI root** — **nessun `Enemy` coinvolto** |
+| 7c | **`pos_distinte=1` ha DUE cause diverse, da separare**: (a) `anim=Idle` e fermo → coerente con "nessuna IA di pattugliamento"; (b) **`anim=0`** e fermo → l'oggetto **non ha mai eseguito codice** (§7i), e la posizione unica **non dice nulla**. Nella stanza di test l'unico id che si sposta davvero è quello **senza spawn point** (`D01Z01S01@SPAWN`, 15-16 posizioni distinte). **Regola: prima di dire "non ha IA di movimento", guardare `anim`** |
 | 7d | **Il protocollo di rete è 11**: mod, server **e `Common.dll`** vanno copiati insieme |
 | 7e | **Build = deploy**: il `.csproj` copia sempre in `D:\SteamLibrary\...\Modding\`, quindi anche buildare da una copia di prova sovrascrive la mod installata |
 | 7f | **I log non hanno timestamp** (una sola riga datata): niente sequenze temporali fra le macchine e niente frame rate. La durata si ricava dal log del server (in questo test: **1740 s** + 55 s) |
 | 7g | **Nessun indicatore di prestazione esiste nei log**: `PingManager` calcola la latenza ma **non la logga mai**. Il passo 0 lo risolve |
 | 7h | `RespawnDeadEnemies` non è chiamato dal salvataggio, ma dal **falò** (3 chiamanti in tutto l'assembly) |
+| 7i | **Le entità inerti della stanza di test.** In `D01Z01S01` due `Enemy` a **(−697.1, 12.8)** e **(−689.1, 11.8)** risultano `anim=0`, vita 60, `pos_distinte=1` in **tutte** le run. Nel dataset a 2 giocatori erano etichettate `SPAWN (11)`/`(13)`; nel log single-player dell'08/10 le stesse **posizioni** erano etichettate `SPAWN (15)`/`(16)` → **le etichette `SPAWN (NN)` SI PERMUTANO fra run: agganciarsi alla POSIZIONE, non al nome.** Causa in IL: `EnemySpawnPoint.CreateEnemy` fa `SetActive(false)` quando `SpawnEnabledEnemy=false`, e nient'altro le riattiva (`SetEnemyActive(true)` è raggiungibile solo da `SpawnEnemyOnArena`, chiamato solo da `PontiffHuskiesCombatTrigger.CombatSequence` e `Tools.Playmaker.Action.EnableStandByEnemies`). Oggetto mai attivo ⇒ `Awake` mai eseguito ⇒ `EnemyBehaviour` nullo, `Entity.Animator` mai assegnato, nessuna entry in `Entity.livingEntities`. **Non sono nemici da sincronizzare: sono oggetti di scena.** Dal commit `b026f2e` la mod li **esclude** (`IsInertScenery`: inattivo **e** senza `EnemyBehaviour`) e li conta in `[EnemyInert]` |
+| 7j | **Chi assegna `EnemyBehaviour`**: solo `Enemy::set_EnemyBehaviour`, chiamato da **17 classi su 78** derivate da `Enemy` (Acolyte, AxeRoller, BellCarrier, Bishop, ExplodingEnemy, Flagellant, GhostKnight, HeadThrower, HomingTurret, Jumper, Menina, Roller, WallEnemy, BejeweledSaintHead, HomingBonfire, PietyMonster, TresAngustiasMaster). `EnemySpawnPoint.CreateEnemy` **non lo assegna mai** (scrive solo `EnableBehaviourOnLoad`). Quindi `behaviour=null` **non è di per sé un'anomalia**: `DummyEnemy`, `ContactAreaDummyEnemy`, `Tools.Gameplay.CombatDummy` e `Ghost` non lo assegnano **per progetto** |
 
 ---
 
