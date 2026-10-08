@@ -1028,3 +1028,92 @@ come nomi di campo e' un errore gia' commesso una volta):
 **Nota operativa**: Common.dll **non e' copiata dal deploy automatico** (che copia la mod e il
 server), quindi **va copiata a mano su entrambe le macchine, nelle destinazioni giuste**. Lo script
 lo segnala.
+
+## [2026-10-08 23:15] Orientamento: cosa e' stato implementato, e come si legge il test
+
+**Stato**: implementato in stato-orient-isteresi e deployato. **Non ancora verificato in gioco.**
+
+### I tre pezzi
+
+| Pezzo | Dove | Cosa fa |
+|---|---|---|
+| **Prefix solo-misura** | OrientationProbePatch.cs | conta le scritture di orientamento del **GIOCO** su nemici **non posseduti** |
+| **Isteresi** | EnemySyncManager.ApplyOrientation | **scarta** un'inversione quando |x_nemico − x_target| < 1.5 |
+| **Contatori per-nemico** | PerformanceProbe | [OrientByEnemy] e [GameOrientByEnemy], con la **POSIZIONE** |
+
+### La Prefix e' una PREFIX, non una Postfix — e il motivo conta
+
+Una **Postfix** che "riporta l'orientamento del proprietario" **replicherebbe il jitter a 60 Hz**:
+e' l'esatto contrario di quello che serve. La Prefix **decide prima**, e **non blocca nulla**
+(restituisce oid): per ora **misura soltanto**, come previsto dal metodo di lavoro.
+
+### Perche' il contatore vecchio era cieco (errore commesso e corretto)
+
+orientFlip e' chiamato **solo** dentro ApplyOrientation, cioe' vede **le scritture della mod**
+(20 Hz). **Le inversioni che si vedono sono quelle del GIOCO, ogni frame.** Nella sessione di
+conferma orientFlip valeva **0 su 111 report e su entrambe le macchine** — **ma il fix non era
+implementato**, quindi non poteva essere risolto. **Il contatore misurava se stesso, non il fenomeno.**
+Da qui la Prefix, che vede **tutti** i writer.
+
+### Il punto di aggancio, verificato in IL
+
+`
+Entity::SetOrientation   virtual=True  newSlot=True  Public, Virtual, HideBySig
+OVERRIDE di SetOrientation: solo 3 → Amanecidas (boss), Isidora (boss), Penitent (giocatore)
+chiamate: 181 callvirt (passano dalla base, la Prefix le vede)  ·  15 call (non virtuali)
+`
+**I tre override NON passano dalla base ⇒ boss e giocatore restano intatti**, che e' il voluto.
+
+### EnemyBehaviour::GetTarget() — IL completo, e perche' e' il posto giusto
+
+`
+if (Entity == null) Entity = GetComponentInParent<Enemy>();
+if (Entity.get_Target() != null) return Entity.get_Target().transform;
+if (Core.Logic.get_Penitent() == null) Debug.LogError(...);
+Entity.set_Target(Core.Logic.get_Penitent().gameObject);   <-- UNICO punto di riassegnazione
+return Entity.get_Target().transform;
+`
+**Un solo punto di riassegnazione, ed e' GetTarget().** E **Core.Logic.get_Penitent() e' il
+Penitente LOCALE**: **su ogni macchina il fallback punta al giocatore di QUELLA macchina** ⇒ i due PC
+sceglierebbero automaticamente giocatori diversi. **E' il nodo della proposta "quanto di tempo"
+sul cambio bersaglio** (voce 8).
+
+**Campi di tempo gia' presenti in EnemyBehaviour:**
+`
+DeltaTargetTime   Single   (Family)              <- accessibile
+targetTime        Single   (Private, InitOnly)   <- READONLY, non assegnabile
+LookAtTarget      public virtual void (Vector3)  <- ma e' CODICE MORTO
+`
+⇒ il "quanto di tempo" **non puo' riusare 	argetTime**: va costruito.
+
+### Correzione trovata verificando in IL, che avrebbe bocciato il fix in silenzio
+
+La prima versione misurava la banda contro **Enemy.Target per tutti**. **Sbagliato**:
+- Enemy.Target e' un **GameObject** assegnato da **molti** tipi (trappole, boss, FoolBehaviour,
+  FirethrowerBehaviour, Piety*, AcolyteBehaviour, AshChargerBehaviour, WaxCrawlerBehaviour,
+  Processioner, Familiar, ...);
+- **Ghost NON lo usa**: il suo OnUpdate confronta lo sprite con **_penitent** (i campi di Ghost
+  sono _penitent, ghostSpriteRenderer, ghostFlight, ghostPath, ...).
+
+Misurando contro il target sbagliato — **che in co-op puo' essere l'ALTRO giocatore** — **la banda non
+si sarebbe mai aperta**, il tremolio sarebbe continuato, e **lo strumento sarebbe sembrato funzionare**.
+**Ora Ghost misura contro il Penitente locale**, tutto il resto usa Target con fallback al
+Penitente locale, come fa GetTarget.
+
+### Come si legge il test
+
+| Nei log | Significato |
+|---|---|
+| gameOrient alto + orientSkip alto | il gioco combatteva **e l'isteresi l'ha assorbito** ✅ |
+| gameOrient=0 | **il fenomeno non si e' presentato**: serve un altro test |
+| orientFlip alto **nonostante** orientSkip | **la banda e' troppo stretta**, e **di quanto** lo dice il valore per-nemico |
+| [OrientByEnemy] (x,y)=N | **quale** nemico trema, per **POSIZIONE** (le etichette SPAWN (NN) si permutano) |
+
+### Rischio, e perche' e' basso
+
+**Il gioco puo' solo rallentare o fermare questa isteresi, non peggiorarla**: se il target non e'
+trovabile, TryGetEnemyTargetX restituisce alse e **l'inversione viene applicata come prima**.
+**La mod puo' al massimo non girare il nemico per un istante.** Un'inversione **vera** (un giocatore
+che attraversa da un lato all'altro) sposta il target di **molti metri** e **viene applicata come prima**.
+
+**Da verificare per primo**: che un'inversione reale avvenga **comunque una volta sola**.
