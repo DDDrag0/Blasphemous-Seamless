@@ -840,6 +840,10 @@ namespace Blasphemous.Multiplayer.Client
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
+
+            // TEMPORARY (PerformanceProbe): re-read the Animator names for the new scene. Remove with
+            // the probe.
+            PerformanceProbe.ResetForScene();
             _killLogged.Clear();
 
             _sendTimer = 0f;
@@ -1541,6 +1545,25 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>Called from Multiplayer.OnLateUpdate, on every machine.</summary>
         public static void Update()
         {
+            // TEMPORARY (PerformanceProbe): times this method and counts the frame. The probe changes
+            // no behaviour. The finally matters: this method returns from several places, and a
+            // Stopwatch left running would poison the average.
+            PerformanceProbe.BeginSync();
+            try
+            {
+                UpdateCore();
+            }
+            finally
+            {
+                PerformanceProbe.EndSync();
+            }
+        }
+
+        private static void UpdateCore()
+        {
+            // TEMPORARY (PerformanceProbe): one frame accounted for, and the Animator names read on the
+            // first frame of each scene. Remove with the probe.
+            PerformanceProbe.Frame();
             // Building the id table is needed on BOTH machines: the host sends indices into it and the
             // peer resolves indices against it. It used to live inside the host-only guard below, so a
             // peer never finalised its table and every incoming index was rejected as out of range

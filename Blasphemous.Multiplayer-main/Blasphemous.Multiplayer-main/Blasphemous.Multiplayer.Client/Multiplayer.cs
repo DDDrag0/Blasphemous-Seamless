@@ -136,20 +136,31 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnLateUpdate()
     {
-        NetworkManager.ProcessQueue();
-
-        MapManager.Update();
-        NotificationManager.Update();
-        PingManager.OnUpdate();
-        if (CurrentlyInLevel)
+        // TEMPORARY (PerformanceProbe): the whole late-update pass is timed, because it holds the
+        // packet processing, the player managers and the enemy sync together - that total is what the
+        // frame actually pays. Remove with the probe.
+        PerformanceProbe.BeginLate();
+        try
         {
-            MainPlayerManager.Update();
-            OtherPlayerManager.Update();
-            ProgressManager.Update();
-            EnemySyncManager.Update();
-        }
+            NetworkManager.ProcessQueue();
 
-        NetworkManager.SendQueue();
+            MapManager.Update();
+            NotificationManager.Update();
+            PingManager.OnUpdate();
+            if (CurrentlyInLevel)
+            {
+                MainPlayerManager.Update();
+                OtherPlayerManager.Update();
+                ProgressManager.Update();
+                EnemySyncManager.Update();
+            }
+
+            NetworkManager.SendQueue();
+        }
+        finally
+        {
+            PerformanceProbe.EndLate();
+        }
     }
 
     // Enemy sync network helpers
