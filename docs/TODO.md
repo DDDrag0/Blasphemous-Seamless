@@ -54,8 +54,8 @@
 
 ---
 
-Ultimo aggiornamento: dopo la **verifica in gioco di §1g e §3** (join e falò: confermati coi marcatori)
-e l'**implementazione dell'isteresi sull'orientamento** (`stato-orient-isteresi`).
+Ultimo aggiornamento: dopo aver **corretto l'isteresi dell'orientamento** (era in `ApplyOrientation`, cioè nel posto sbagliato: ora è nella Prefix su `Entity::SetOrientation`), aver risolto **`IMPRONTA DIVERSA`** (era un falso allarme) e aver aggiunto tre strumenti di misura (`[AnimByEnemy]`, `[AnimName]`, `tools\verify-deploy.ps1`).
+
 
 ---
 
