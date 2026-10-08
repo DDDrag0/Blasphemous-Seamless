@@ -27,7 +27,7 @@
 | # | Voce | Priorità | Stato |
 |---|---|---|---|
 | **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | ⏸️ **accettabili, parcheggiata** | ✅ **misurato**: `animRepeat` da 33-58 a **0**. **Non totalmente fluide** ma accettate. **Sotto la modalità spettatore** |
-| **2** | **Orientamento che si gira velocissimo** — §1b | 🟡 **in verifica** | 🔬 **isteresi implementata** (banda 1.5 su `ApplyOrientation`) + contatori per-nemico. **Test in corso** |
+| **2** | **Orientamento che si gira velocissimo** — §1b | 🔴 **in verifica** | ⚠️ **la prima isteresi NON funzionava** (`orientSkip=0` su 46 report, `orientFlip` 34 in 2 s): era in `ApplyOrientation`, cioè sulla scrittura **della mod** a 20 Hz, mentre il tremolio è **del gioco** a 60 Hz. **SPOSTATA nella Prefix su `Entity::SetOrientation`** (`stato-orient-prefix`). **Da testare** |
 | **3** | **Chi si connette dopo non apprende le morti** — §1g | ✅ | **RISOLTO E VERIFICATO**: `[EnemyJoin] annunciate 2`, nessun `ENEMYDEAD` nel progress |
 | **4** | **Falò: respawn e refill solo locali** — §3 | ✅ | **RISOLTO E VERIFICATO**: `_pendingDeaths` azzerata su `RespawnDeadEnemies` |
 | **5** | **Sangue e flash nel feedback del colpo** — §5c | 🟢 | ⏳ **metodi identificati** (`PenitentSword::GetSwordSparks`). **NB: voce re-inglobata, era andata persa** |
@@ -39,7 +39,7 @@
 | **11** | **Il gioco disfa la pausa sul non-proprietario**: `<Enemy>::OnUpdate` chiama `EnablePhysics(true)` e `StartBehaviour()` su **8 tipi** | 🟡 **reale** | ⏳ il nemico del non-proprietario può "scivolare" o animarsi da solo |
 | **12** | **Camminata troncata** | ⏸️ | ⏳ richiede di ripensare il protocollo animazione (**loop vs one-shot**). **NB: voce re-inglobata** |
 | **13** | **La migrazione host non riarbitra** (`SetHost` non azzera lo stato del token) | 🟡 **reale** | ⏳ **già avvenuta in un test** |
-| **14** | **Il falso `IMPRONTA DIVERSA`** (controllo prima del popolamento) | 🟢 cosmetico | ⏳ 2 occorrenze, fuorviante |
+| **14** | **`IMPRONTA DIVERSA`** (controllo prima del popolamento) | 🔴 **da indagare** | ⚠️ **non è più cosmetico**: **1 occorrenza in ENTRAMBI i log**, ed è *"le due macchine hanno liste di nemici diverse, gli aggiornamenti finiranno sul nemico sbagliato"* — **la premessa di tutto il sync nemici**. Vedi §12 |
 | **15** | **Il protocollo di rete**: `Common.dll` va copiato insieme a mod e server | 🟢 documentato | ⏳ |
 | **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | 🔴 **procedura** | ✅ **RISOLTO con uno strumento**: `tools\verify-deploy.ps1` — hash + marcatori + protocollo, esce con codice 1. Vedi §12 |
 | **17** | **I nemici che restano fermi (`pos_distinte=1`)** | 🟢 **non è un bug** | ✅ nemici **senza IA di movimento** |
@@ -1117,3 +1117,155 @@ trovabile, TryGetEnemyTargetX restituisce alse e **l'inversione viene applicata
 che attraversa da un lato all'altro) sposta il target di **molti metri** e **viene applicata come prima**.
 
 **Da verificare per primo**: che un'inversione reale avvenga **comunque una volta sola**.
+
+---
+
+## [2026-10-08 23:18] ⚠️ L'isteresi era nel posto SBAGLIATO — diagnosi e correzione
+
+**Questa entry corregge la precedente sull'orientamento.** L'isteresi era stata messa in
+ApplyOrientation: **non ha mai funzionato**, e la misura lo dimostra senza ambiguità.
+
+### Il test che l'utente credeva valido NON ha misurato l'isteresi
+
+**Fatto accertato**: i due log del test *"molto molto meglio"* sono **privi di TUTTI i marcatori
+nuovi** — orientSkip=, gameOrient=, gameOrientBurst=, [OrientByEnemy], [GameOrientByEnemy]:
+**0 occorrenze su 111 probe**. Tutte col formato **vecchio**.
+
+| Evento | Ora |
+|---|---|
+| **log catturati** | **22:31:11** |
+| commit del probe (stato-orient-probe) | 22:35:49 |
+| commit dell'isteresi (stato-orient-isteresi) | 22:41:53 |
+
+⇒ **entrambe le macchine eseguivano la build PRECEDENTE all'isteresi.** **Non è il caso "G1 col
+binario vecchio" di prima: era il binario vecchio su TUTTE E DUE.** **L'isteresi non è mai girata.**
+
+**Numero di protocollo e marcatori vanno verificati PRIMA di ogni test, su ogni macchina**:
+	ools\verify-deploy.ps1. Questa è la seconda volta che un test viene sprecato così.
+
+### Il dato vero, dal log vivo post-fix
+
+BepInEx\LogOutput.log (mtime 22:53:09), **46 probe col formato nuovo**, Host role: True:
+
+| Metrica | Valore | Lettura |
+|---|---|---|
+| **orientSkip** | **0** — somma 0 su 46 report | **l'isteresi non ha scartato UNA SOLA inversione** |
+| **orientFlip** | **85** totali, **MAX 34 in una finestra da 2 s** | **~35 inversioni/giro ancora in corso** |
+| **gameOrient** | **5** totali, non-zero in **2/46** report (max 4) | il gioco scrive **pochissimo** |
+| gameOrientBurst | max **4** | nessun burst |
+
+**Il nemico che gira**: sp|D01Z01S01|SPAWN|-715.00|13.00 → posizione **(−715.1, 10.0)**.
+**È esattamente il nemico di §1b**: l'@SPAWN senza spawn point.
+
+**[GameOrientByEnemy] nomina SOLO oggetti di scena**:
+`
+(-697.1,12.8)=2   (-689.1,11.8)=1   (-715.1,10.8)=1     <- le entità inerti di §7i
+`
+I conteggi **non crescono mai**: sono scritture di **inizializzazione**. **Nessun nemico mobile ha
+mai una voce in gameOrient.**
+
+### La causa dell'insuccesso
+
+L'isteresi stava in **ApplyOrientation**, cioè sulla **scrittura DELLA MOD** (**20 Hz**).
+**Il tremolio lo produce il GIOCO a 60 Hz**, con Ghost::OnUpdate che chiama
+Entity::SetOrientation **direttamente**:
+
+`
+Ghost::OnUpdate  IL_007e  sprite.x  vs  IL_0085 _penitent.x  ->  blt.un  ->  SetOrientation
+`
+**confronto nudo, nessuna banda.** **La guardia filtrava la mod, non il gioco: non ha mai visto il
+nemico che girava.**
+
+### La correzione
+
+**La banda è stata SPOSTATA nella Prefix su Entity::SetOrientation** — **l'unico punto dove passa
+Ghost::OnUpdate** e ogni altro writer. La Prefix ora **ritorna Boolean** e **restituisce alse**
+quando la scrittura è un tremolio.
+
+`
+Prefix ritorna Boolean · 3 ritorni false (blocca) · 7 true (passa)
+Blocca SOLO su nemici NON posseduti: l'orientamento del proprietario è quello autorevole
+Il Penitente non è un Enemy -> cade fuori · i 2 boss con override non passano dalla base
+ShouldSkipOrientationFlip e TryGetEnemyTargetX RIMOSSI da EnemySyncManager (non servono più)
+`
+
+**La misura confronta la x del PENITENTE LOCALE**, che è **quello che Ghost::OnUpdate legge
+davvero** — **non Enemy.Target**. Solo una scrittura che girerebbe il nemico **contro** la
+direzione in cui il target si trova, **e dentro la banda**, viene scartata.
+
+**Tag**: stato-orient-prefix · **Rollback**: stato-orient-isteresi
+
+---
+
+## [2026-10-08 23:18] ⚠️ CORREZIONI a cose scritte prima in questo file
+
+### Correzione 1 — EnemyBehaviour::LookAtTarget NON è codice morto
+
+**Scritto prima**: *"tutto il corpo è irraggiungibile, 71/71 sottoclassi escluse"*. **Impreciso.**
+
+**Verificato in IL**: LookAtTarget **è chiamato da ~130 siti** negli OnStateEnter/OnStateExit/
+Update di decine di *AttackBehaviour / *IdleState / *TurnAroundBehaviour. **Il corpo è
+raggiunto.** Ma con DeltaTargetTime < 0 sempre falso **esce subito dal et**:
+**ciò che è morto è il GATE, non il metodo.** La conclusione pratica (*non gira il nemico*) regge,
+**il ragionamento era sbagliato**.
+
+### Correzione 2 — EnemyBehaviour::GetTarget NON riassegna il bersaglio per frame
+
+**Verificato in IL**: riscrive Target **solo quando è NULLO**:
+`
+IL_0022 get_Target  →  IL_002c brfalse IL_0042   (solo se nullo)
+IL_007a set_Target(Core.Logic.Penitent.gameObject)   <-- Penitente LOCALE
+`
+**I veri riassegnatori per-frame sono gli OnUpdate/OnStart di ~40 tipi Enemy** (Acolyte,
+BellCarrier, Bishop, ChimeRinger, CrossCrawler, Flagellant, Fool, GhostKnight, HeadThrower,
+Menina, Nun, PontiffHuskMelee/Ranged, Runner, ShieldMaiden, Swimmer, ViciousDasher, WaxCrawler,
+WheelCarrier, ...). **Tutti assegnano il Penitente LOCALE.**
+
+### Correzione 3 — le animazioni NON sono al livello dichiarato in §1a
+
+**Nella run post-fix**: nimRestart=33 animRepeat=33 per finestra da 2 s, **per 18 finestre
+consecutive (~36 s)** — **identico al vecchio**. **Il churn animazioni è allo stesso livello.**
+§1a va riletta come **"accettabile"**, **non come "risolto in modo misurabile"**.
+
+---
+
+## [2026-10-08 23:18] La proposta "quanto di tempo" sul cambio bersaglio — verdetto
+
+**Risposta secca**: **tecnicamente fattibile, ma NON risolve il tremolio** — è **un problema diverso**.
+
+### È fattibile, con un vincolo preciso
+
+**Strada più semplice e robusta**: **Prefix Harmony su Enemy::set_Target** — **un solo punto copre
+~40 siti**; l'istanza la dà __instance; **nessun 	argetTime da forzare**.
+
+| Strada | Verdetto |
+|---|---|
+| **Prefix su Enemy::set_Target** | ✅ **la più semplice**: un punto copre ~40 siti |
+| Postfix su GetTarget | ❌ **non serve**: GetTarget scrive **solo se nullo**, non è la sorgente |
+| Assegnare Target dalla mod e impedire le riassegnazioni | ❌ richiede di bloccare **tutti** i ~40 siti ⇒ è la Prefix fatta peggio |
+| Scrivere 	argetTime | ❌ Private, InitOnly **e irrilevante**: Ghost::OnUpdate non lo legge mai |
+
+**⚠️ IL VINCOLO CO-OP CHE DECIDE TUTTO**: EnemySyncManager replica dal proprietario **posizione +
+animazione + vita** — **NON il bersaglio**.
+
+> **Se ogni macchina scegliesse "il più vicino" localmente, le due sceglierebbero giocatori diversi**,
+> **e il puppet verrebbe comunque corretto dalla posizione dell'arbitro** ⇒ **l'effetto è invisibile
+> o è un tug-of-war.**
+
+**⇒ La proposta è fattibile SENZA toccare il protocollo**, purché la Prefix sia **attiva solo sul
+PROPRIETARIO** (EnemySyncManager.IsPuppet esiste già). **Se si volesse il bersaglio REPLICATO,
+servirebbe un campo nuovo ⇒ bump di protocollo (mod + server + Common.dll, §7d).**
+
+### ❌ Ma NON ferma il tremolio
+
+| | Livello | Effetto sul tremolio |
+|---|---|---|
+| Isteresi (era nel posto sbagliato) | sintomo visivo | **nullo** — il gioco riscrive ogni frame |
+| **"Quanto di tempo" sul bersaglio** | **scelta del bersaglio** | **nullo** — Ghost::OnUpdate **non legge Enemy.Target**, legge _penitent |
+
+**Non sono la stessa cosa a due velocità: sono DUE problemi diversi, e la causa comune è
+Ghost::OnUpdate che confronta due float senza banda.**
+
+**Rischio: medio.** I behaviour leggono Target per decidere lo stato ⇒ un bersaglio "congelato"
+per 1 s può far scegliere lo stato sbagliato (es. CanSeePenitent). **Costo: ~40-60 righe + il file
+di patch.** **Serve un contatore 	argetChanges= nel probe**: **senza, non è misurabile.**
