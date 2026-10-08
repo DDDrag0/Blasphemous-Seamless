@@ -833,7 +833,7 @@ namespace Blasphemous.Multiplayer.Client
         /// so the controller would stop - but so would everything else, including the ability to apply the
         /// position received: switching the GameObject off is the wrong way round.
         /// </summary>
-        private static void PauseEnemy(Enemy enemy)
+        private static void PauseEnemy(Enemy enemy, string reason = null)
         {
             FreezePhysics(enemy);
             _puppetEnemies.Add(enemy);
@@ -858,6 +858,8 @@ namespace Blasphemous.Multiplayer.Client
             var behaviour = enemy.EnemyBehaviour;
             if (behaviour == null)
                 return;
+
+            LogTreeState(enemy, behaviour, "pause:" + (reason ?? "?"));
 
             behaviour.PauseBehaviour();
             behaviour.enabled = false;
@@ -912,18 +914,73 @@ namespace Blasphemous.Multiplayer.Client
         /// and deaths then come from the game's own per-enemy *AnimatorInyector code instead of being
         /// forced from outside.
         /// </summary>
-        private static void ResumeEnemy(Enemy enemy)
+        private static void ResumeEnemy(Enemy enemy, string reason = null)
         {
             _puppetEnemies.Remove(enemy);
             ThawPhysics(enemy);
 
             var behaviour = enemy.EnemyBehaviour;
-            if (behaviour == null || behaviour.enabled)
+            if (behaviour == null)
+            {
+                LogTreeState(enemy, null, "resume:no-behaviour");
                 return;
+            }
+
+            // TEMPORARY (diagnostics): record whether this call actually restarted the tree.
+            //
+            // The asymmetry below is the suspect: PauseEnemy always calls PauseBehaviour, while this method
+            // returns early when the component is already enabled - and with the component disabled
+            // EnemyBehaviour.Update does not run, so the only thing that can call StartBehaviour is this
+            // method. If "earlyReturn" shows up while an enemy stands still next to a player, the pause is
+            // permanent and this is why. Logged only when the outcome changes, because this runs 20 times a
+            // second. Remove once the question is answered.
+            if (behaviour.enabled)
+            {
+                LogTreeState(enemy, behaviour, "resume:earlyReturn");
+                return;
+            }
 
             behaviour.enabled = true;
             behaviour.StartBehaviour();
+            LogTreeState(enemy, behaviour, "resume:StartBehaviour");
         }
+
+        /// <summary>
+        /// TEMPORARY (diagnostics): reports the state of an enemy's behaviour tree, but only when it changes,
+        /// so a method called twenty times a second costs a handful of lines per session instead of thousands.
+        ///
+        /// It exists to settle one question the logs cannot answer today: whether a frozen enemy is frozen
+        /// because its tree is stopped, or because the game itself is holding it still. Remove with the rest
+        /// of the probe.
+        /// </summary>
+        private static void LogTreeState(Enemy enemy, EnemyBehaviour behaviour, string esito)
+        {
+            string id = IdOf(enemy);
+            if (string.IsNullOrEmpty(id))
+                return;
+
+            bool enabled = behaviour != null && behaviour.enabled;
+
+            bool running = false;
+            if (behaviour != null && behaviour.BehaviourTree != null)
+                running = behaviour.BehaviourTree.isRunning;
+
+            string key = enabled + "|" + running + "|" + esito;
+
+            string previous;
+            if (_treeStateLogged.TryGetValue(id, out previous) && previous == key)
+                return;
+
+            _treeStateLogged[id] = key;
+
+            Vector3 p = enemy.transform.position;
+            ModLog.Info($"[EnemyTree] {ShortId(id)} enabled={enabled} isRunning={running} esito={esito} " +
+                        $"pos=({p.x:F1},{p.y:F1}) vita={enemy.CurrentLife:F0} " +
+                        $"mia={(IsHost ? "host" : "client")}");
+        }
+
+        /// <summary>Last logged tree state per enemy, so only changes are reported. Diagnostics only.</summary>
+        private static readonly Dictionary<string, string> _treeStateLogged = new Dictionary<string, string>();
 
         /// <summary>
         /// Gives the enemy its own physics back, mirroring FreezePhysics.
@@ -991,6 +1048,7 @@ namespace Blasphemous.Multiplayer.Client
             _appliedAnimPrev.Clear();    // ditto: keyed by id, and ids do not survive a scene change
             _lastAnimSample.Clear();     // ditto
             _lastAnimChangeAt.Clear();   // ditto: the clock belongs to the scene being unloaded
+            _treeStateLogged.Clear();    // diagnostics: keyed by id, meaningless in the next scene
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
@@ -2392,19 +2450,26 @@ namespace Blasphemous.Multiplayer.Client
             // record and the packet disagreed permanently about who was simulating it.
             if (ownedRemotely)
             {
-                // NOTE: the record is deliberately NOT written here.
+                // The record IS written here, and it is not a redundancy.
                 //
                 // An update packet is asymmetric: only the owner transmits, and it always declares
-                // ownedRemotely = true. So this flag does not describe the other machine, it repeats "I am
-                // the owner" from the sender. Writing OwnedByLocal = false on the strength of it made the
-                // HOST mark itself as not owning an enemy it was simulating - and since the send loop skips
-                // anything not owned locally, the host then stopped transmitting and stopped interpolating
-                // for a frame or two, until the peer's ownership token put it back. PauseEnemy and
-                // ResumeEnemy twenty times a second, each one cutting an animation.
+                // ownedRemotely = true. So this flag carries no NEW INFORMATION. That is true, and it is why
+                // the write was removed once, reasoning that it could not matter. It mattered. This is not an
+                // information channel, it is an ACTUATOR: it decides who loses the send gate
+                // ("if (!previous.OwnedByLocal) continue;"), who the send loop ends up pausing, and which
+                // side the ownership token starts from.
                 //
-                // The else branch below is where the record belongs: it is the only place where the packet
-                // carries information this machine does not already have.
-                PauseEnemy(enemy);
+                // With the write in place, ownership changes measured 0.04 per second; without it, 0.17 -
+                // four times as much churn. And the windows where an enemy stood still next to a player went
+                // from 22% of the engaged time to 59-61%. Removing a write because it "carries no
+                // information" ignores that its effect was on control flow.
+                if (claimState != null)
+                {
+                    claimState.OwnedByLocal = false;
+                    claimState.OwnerSince = Time.time;
+                }
+
+                PauseEnemy(enemy, "remote owns");
 
                 // The state is still applied on the non-owner. PauseBehaviour leaves the Animator running,
                 // so idle/walk animate locally anyway, but anything the behaviour tree would have triggered
