@@ -41,7 +41,7 @@
 | **13** | **La migrazione host non riarbitra** (`SetHost` non azzera lo stato del token) | 🟡 **reale** | ⏳ **già avvenuta in un test** |
 | **14** | **Il falso `IMPRONTA DIVERSA`** (controllo prima del popolamento) | 🟢 cosmetico | ⏳ 2 occorrenze, fuorviante |
 | **15** | **Il protocollo di rete**: `Common.dll` va copiato insieme a mod e server | 🟢 documentato | ⏳ |
-| **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | 🔴 **procedura** | ❌ **già fallito una volta**: G1 eseguiva il binario vecchio e il test non ha misurato nulla |
+| **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | 🔴 **procedura** | ✅ **RISOLTO con uno strumento**: `tools\verify-deploy.ps1` — hash + marcatori + protocollo, esce con codice 1. Vedi §12 |
 | **17** | **I nemici che restano fermi (`pos_distinte=1`)** | 🟢 **non è un bug** | ✅ nemici **senza IA di movimento** |
 | **18** | **Boss: test boss per boss** | 🟡 | ⏳ l'unica cosa non prevedibile |
 | **19** | **`Entity.Dead` calcolato vs `EntityStatus.Dead`** — §7 | 🟢 nota tecnica | ✅ documentato |
