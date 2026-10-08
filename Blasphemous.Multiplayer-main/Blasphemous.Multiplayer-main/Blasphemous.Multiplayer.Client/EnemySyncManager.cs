@@ -259,6 +259,13 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, Vector2> _remotePositions = new Dictionary<string, Vector2>();
 
         /// <summary>
+        /// When each remote player's position arrived, so a sample can be judged too old to arbitrate on.
+        /// Keyed by player name, exactly like _remotePositions.
+        /// </summary>
+        private static readonly Dictionary<string, float> _remotePositionsAt = new Dictionary<string, float>();
+
+
+        /// <summary>
         /// Where a non-owned enemy is heading, from the last snapshot received.
         ///
         /// State arrives about 20 times a second, and assigning it straight to transform.position made the
@@ -728,6 +735,18 @@ namespace Blasphemous.Multiplayer.Client
                     behaviour.enabled = true;
                     behaviour.StartBehaviour();
                 }
+
+                // The hold timer restarts from now: inherited from the previous host it would already be
+                // expired, and OWNER_HOLD_SECONDS is what keeps a contested enemy from changing hands on the
+                // first comparison.
+                for (int i = 0; i < _ids.Count; i++)
+                {
+                    EnemyState state;
+                    if (!_lastSent.TryGetValue(_ids[i], out state))
+                        continue;
+
+                    state.OwnerSince = Time.time;
+                }
             }
             else if (!isHost && wasHost)
             {
@@ -741,6 +760,27 @@ namespace Blasphemous.Multiplayer.Client
 
                     PauseEnemy(enemy);
                 }
+
+                // And stop BELIEVING it owns them. PauseEnemy stops the simulation but leaves the record
+                // saying "mine", and a demoted machine reads that record to decide whether to send - and
+                // ReceiveEnemyOwnership returns early while the belief matches, so the first token from the
+                // new host would be a no-op. OwnershipKnown is therefore cleared too: this machine has to be
+                // willing to be told again.
+                for (int i = 0; i < _ids.Count; i++)
+                {
+                    EnemyState state;
+                    if (!_lastSent.TryGetValue(_ids[i], out state))
+                        continue;
+
+                    state.OwnedByLocal = false;
+                    state.OwnershipKnown = false;
+                    state.OwnerSince = 0f;
+                    state.OwnedByRemote = false;
+                }
+
+                // Positions reported by the previous host are not evidence about who is closer now.
+                _remotePositions.Clear();
+                _remotePositionsAt.Clear();
             }
         }
 
@@ -1361,16 +1401,20 @@ namespace Blasphemous.Multiplayer.Client
             float localDistance = Vector2.Distance(enemyPos, local.transform.position);
 
             float nearestRemote = float.MaxValue;
-            foreach (Vector2 remote in _remotePositions.Values)
+            foreach (KeyValuePair<string, Vector2> entry in _remotePositions)
             {
-                float d = Vector2.Distance(enemyPos, remote);
+                if (!IsRemotePositionFresh(entry.Key))
+                    continue;
+
+                float d = Vector2.Distance(enemyPos, entry.Value);
                 if (d < nearestRemote)
                     nearestRemote = d;
             }
 
             // No remote position known yet (still connecting, or the other player is in another scene, in
-            // which case their packet never arrives): nobody can be closer, so keep the enemy here rather
-            // than handing it to a player we cannot even locate.
+            // which case their packet never arrives), or the only one we have is too old to trust: nobody
+            // can be shown to be closer, so keep the enemy here rather than handing it to a player we
+            // cannot locate.
             if (nearestRemote == float.MaxValue)
                 return true;
 
@@ -1409,20 +1453,35 @@ namespace Blasphemous.Multiplayer.Client
             float localDistance = Vector2.Distance(enemyPos, local.transform.position);
 
             float nearestRemote = float.MaxValue;
-            foreach (Vector2 remote in _remotePositions.Values)
+            foreach (KeyValuePair<string, Vector2> entry in _remotePositions)
             {
-                float d = Vector2.Distance(enemyPos, remote);
+                if (!IsRemotePositionFresh(entry.Key))
+                    continue;
+
+                float d = Vector2.Distance(enemyPos, entry.Value);
                 if (d < nearestRemote)
                     nearestRemote = d;
             }
 
-            // No remote position known: the other player is not in this scene, or has not reported yet.
-            // Their packet never arrives in that case, and an enemy cannot be handed to a player who
-            // cannot be located.
+            // No remote position known, or the one we have is too old to trust: the other player cannot be
+            // shown to be closer, so do not hand the enemy over on the strength of a stale sample.
             if (nearestRemote == float.MaxValue)
                 return false;
 
             return nearestRemote + OWNER_DISTANCE_MARGIN < localDistance;
+        }
+
+        /// <summary>
+        /// True while the remote position is recent enough to arbitrate on. A missing timestamp counts as
+        /// stale: if we do not know when it arrived we cannot claim it is current.
+        /// </summary>
+        private static bool IsRemotePositionFresh(string playerName)
+        {
+            float at;
+            if (!_remotePositionsAt.TryGetValue(playerName, out at))
+                return false;
+
+            return Time.time - at <= REMOTE_POSITION_MAX_AGE;
         }
 
         /// <summary>
@@ -1532,7 +1591,31 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             _remotePositions[playerName] = position;
+
+            // When it arrived, so the arbitration can refuse to decide on a stale sample. See
+            // REMOTE_POSITION_MAX_AGE: a remote position that has aged by more than that is not evidence
+            // about who is closer right now, and using it anyway is what handed a contested enemy to the
+            // wrong machine.
+            _remotePositionsAt[playerName] = Time.time;
         }
+
+        /// <summary>
+        /// How old a remote player's position may be before the ownership rule stops trusting it.
+        ///
+        /// The rule compares two distances, and only one of them is measured on this machine. The remote
+        /// one arrives about twenty times a second and is stored EXACTLY as it came - the lerp in
+        /// InterpolateRemoteEnemies smooths enemies, never the other player. Measured in the logs: the
+        /// remote position had drifted 5 to 8 units behind, and sat unchanged for thirty consecutive
+        /// snapshots, while OWNER_DISTANCE_MARGIN is 2.5. The margin cannot absorb an error twice its size,
+        /// so the same rule applied to the two machines gave opposite answers and the same enemy was
+        /// contested for about a second.
+        ///
+        /// Past this age the sample is discarded rather than compared: the rule falls back to "keep it
+        /// here", which is the same conservative behaviour it already had for a player it cannot locate at
+        /// all. Better to leave an enemy with the machine that has it than to hand it to one that may not
+        /// be there.
+        /// </summary>
+        private const float REMOTE_POSITION_MAX_AGE = 0.3f;
 
         /// <summary>
         /// Eases every enemy this machine does NOT own towards its last received snapshot.
@@ -2252,9 +2335,15 @@ namespace Blasphemous.Multiplayer.Client
             // Record the sender's claim. This is the input the arbitrating host was missing: without it
             // the host never learned that the peer was simulating an enemy, so it kept simulating too and
             // the two positions fought each other.
+            //
+            // The state is fetched out here rather than inside the branch because the ownership decision
+            // below has to write to the same record the send loop reads. When the id cannot be resolved the
+            // decision is skipped: an update that cannot be attributed to a known enemy must not change who
+            // owns anything.
+            EnemyState claimState = null;
             if (FindIdOfHandle(handle, out string claimedId))
             {
-                EnemyState claimState = GetOrCreateState(claimedId);
+                claimState = GetOrCreateState(claimedId);
                 claimState.OwnedByRemote = ownedRemotely;
                 if (ownedRemotely)
                     claimState.RemoteEverClaimed = true;
@@ -2266,8 +2355,21 @@ namespace Blasphemous.Multiplayer.Client
             // PauseBehaviour stops only the behaviour tree, never the Animator, so idle and walking keep
             // animating locally and hit reactions still show through the synced health. What a paused enemy
             // cannot do is decide to attack - which is why the owner runs the real AI.
+            //
+            // THE PAUSE IS NEVER UNDONE HERE ON THE STRENGTH OF WHAT THIS MACHINE BELIEVED. The record is
+            // set from what the SENDER declared, in both directions. It used to be left alone, and this
+            // method reads ownedRemotely from the packet while reading OwnedByLocal from a record it never
+            // updated - so a machine that considered itself the owner paused the enemy and resumed it again
+            // inside the same packet, twenty times a second, on both machines, on the same enemy. The
+            // record and the packet disagreed permanently about who was simulating it.
             if (ownedRemotely)
             {
+                if (claimState != null)
+                {
+                    claimState.OwnedByLocal = false;
+                    claimState.OwnerSince = Time.time;
+                }
+
                 PauseEnemy(enemy);
 
                 // The state is still applied on the non-owner. PauseBehaviour leaves the Animator running,
@@ -2285,6 +2387,16 @@ namespace Blasphemous.Multiplayer.Client
             {
                 // The sender says this machine owns the enemy: let its own AI drive it, so animations come
                 // from the game's per-enemy code instead of being forced from outside.
+                //
+                // Setting OwnedByLocal is the other half of the fix above, and it is not optional: without
+                // it an enemy the host hands BACK would stay marked as not ours, and the send loop skips
+                // anything that is not owned locally - so this machine would never simulate it again.
+                if (claimState != null)
+                {
+                    claimState.OwnedByLocal = true;
+                    claimState.OwnerSince = Time.time;
+                }
+
                 ResumeEnemy(enemy);
             }
 
