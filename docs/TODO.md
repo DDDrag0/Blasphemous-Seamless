@@ -1339,3 +1339,80 @@ invece di restare nascosta.
 IMPRONTA DIVERSA → deve SPARIRE
 Se ricompare → è una divergenza VERA (non più mascherata), e il contatore dice quante volte
 ```
+
+---
+
+## [2026-10-08 23:22] ⚠️ §1a NON È CHIUSA — la firma è ancora presente, e ora è localizzata
+
+**L'Esploratore aveva ragione**: nimRestart/animRepeat sono **ancora alti** nella run post-fix.
+**Ma la firma è molto più precisa di prima**, e questo restringe il campo.
+
+### I numeri
+
+Dal log **post-fix** (LogOutput.log, 46 report col formato nuovo, Host role: True):
+
+| Metrica | Valore |
+|---|---|
+| report con nimRepeat > 0 | **17 su 46** |
+| nimRepeat | fra **11 e 36**, **MAX 36** in una finestra da 2 s |
+| righe [EnemyAnim] | **499**, **TUTTE con mia=host** |
+| vvio=0.00 | **484 su 499** |
+
+**Le transizioni, contate senza la posizione** *(le posizioni variano, quindi contare per posizione
+frammenta la stessa transizione)*:
+`
+386x  765711723 -> 2081823275     <- UNA transizione, 386 volte
+ 79x  765711723 -> 460696939
+ 10x  2081823275 -> 765711723
+ 10x  460696939 -> 2081823275
+  8x  460696939 -> 765711723
+`
+
+**Tutte su un nemico vicino a x ≈ -716, y = 10.0** — **che è il nemico di §1b**
+(-715.1, 10.0, l'@SPAWN senza spawn point, quello che si gira).
+
+**Circa 390 inversioni in ~90 secondi ⇒ ~4,3 al secondo, su un nemico che il log chiama Idle.**
+
+### ✅ Una buona notizia: il guardiano funziona, quindi NON è un ping-pong
+
+**Tutte le 499 righe sono su UNA macchina** (mia=host). **Il motivo è nel codice**: LogAnimationChanges
+salta la registrazione quando lo stato letto è quello che **noi** abbiamo applicato:
+```
+if (_appliedAnim.TryGetValue(id, out applied) && applied == stateHash)
+{
+    _lastAnim[id] = stateHash;
+    continue;                                   // una nostra forzatura non è un cambio locale
+}
+```
+⇒ **il churn è LOCALE all'host, non è la mod che rimbalza fra le due macchine.** **Questo esclude
+una famiglia di cause e ne conferma un'altra.**
+
+### Cosa è già escluso
+
+| Ipotesi | Stato |
+|---|---|
+| La riga nimTime = 0f (passo 2) | ❌ **esclusa**: la riga **non c'è più** nel sorgente (resta solo il commento che la spiega) |
+| Ping-pong fra le due macchine | ❌ **escluso**: il guardiano _appliedAnim sopprime le auto-indotte, e infatti tutte le righe sono su una macchina |
+| La mod che scrive l'animazione localmente | ⏳ **da verificare**: ApplyAnimation è chiamata **solo** sul non-proprietario? **Se sì, il proprietario non riceve mai una ApplyAnimation, e la causa sarebbe del tutto nel gioco** |
+| Stalli di frame | ❌ **esclusi** in precedenza (0/3 e 1/11 di coincidenza) |
+
+### La domanda aperta
+
+**765711723 e 2081823275 sono hash di stato di Animator** (Animator.StringToHash, FNV-1a a
+32 bit sul nome). **Il controller è un asset, non sta nell'assembly**, quindi **vanno invertiti**.
+**Sapere quale stato è un LOOP e quale un ONE-SHOT cambia tutto**: se 2081823275 è un attacco,
+**386 ingressi = 386 attacchi**; se è un idle, **qualcosa ce lo rimette continuamente**.
+
+**E vvio=0.00**: la mod legge NormalizedTime **dopo** la transizione, quindi 0.00 può essere
+fisiologico — **ma la mod lo TRASMETTE, e il peer chiama Animator.Play(hash, 0, 0f) facendo
+ripartire il clip da capo.** **Da chiarire se la mod peggiora la situazione del peer.**
+
+**All'Esploratore è stato chiesto**: invertire i tre hash, identificare il tipo concreto del nemico
+a x ≈ -716 in D01Z01S01 (vincolo: life massima **12**), trovare chi riporta lo stato a
+765711723, e dire se la mod tocca il percorso del proprietario.
+
+### Conseguenza sulla lista
+
+**La voce 1 va riletta**: era ⏸️ *"accettabili, parcheggiata"*. **Il dato dice che il churn è allo
+stesso livello di prima**, quindi *"accettabile"* resta una **scelta dell'utente**, non un risultato
+tecnico. **La voce 12 (Camminata troncata) è la stessa cosa vista dall'altro lato.**
