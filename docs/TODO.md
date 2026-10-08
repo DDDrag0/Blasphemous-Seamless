@@ -1416,3 +1416,47 @@ a x ≈ -716 in D01Z01S01 (vincolo: life massima **12**), trovare chi riporta lo
 **La voce 1 va riletta**: era ⏸️ *"accettabili, parcheggiata"*. **Il dato dice che il churn è allo
 stesso livello di prima**, quindi *"accettabile"* resta una **scelta dell'utente**, non un risultato
 tecnico. **La voce 12 (Camminata troncata) è la stessa cosa vista dall'altro lato.**
+
+---
+
+## [2026-10-08 23:23] ✅ ESCLUSA la mod come causa del churn: `ApplyAnimation` tocca solo il NON-proprietario
+
+**Domanda**: la mod forza l'animazione anche sul **proprietario** (l'host, dove il churn è tutto
+concentrato)? **Risposta, verificata nel codice**: **no.**
+
+```
+EnemySyncManager.cs:2269   if (ownedRemotely)
+                           {
+                               PauseEnemy(enemy);
+:2277                          ApplyAnimation(enemy, animState, animTime);   <- dentro il ramo NON-proprietario
+                               ApplyOrientation(enemy, orientation);
+                           }
+                           else { ... }
+```
+
+**ApplyAnimation ha UNA SOLA chiamata in tutto il progetto** *(verificato: grep su tutte le .cs
+del client)*, **ed è dentro if (ownedRemotely)**. ⇒ **sul proprietario la mod non scrive mai
+l'animazione.**
+
+**E le 499 righe del churn sono TUTTE mia=host.** ⇒ **il churn è il gioco che anima il proprio
+nemico.**
+
+### Le ipotesi escluse, ora tutte con una prova
+
+| Ipotesi | Verdetto | Prova |
+|---|---|---|
+| **La mod forza l'animazione sul proprietario** | ❌ **ESCLUSA** | ApplyAnimation è dentro if (ownedRemotely) |
+| **Ping-pong fra le due macchine** | ❌ **ESCLUSA** | tutte le 499 righe sono mia=host |
+| **La riga nimTime = 0f (passo 2)** | ❌ **ESCLUSA** | la riga non è più nel sorgente |
+| **Stalli di frame** | ❌ **ESCLUSI** | coincidenza 0/3 e 1/11 |
+| **Il carico della mod** | ❌ **ESCLUSO** | syncMs_avg 0,01-0,69 |
+
+⇒ **Resta UNA sola domanda**, ed è quella girata all'Esploratore:
+**765711723 → 2081823275 è un LOOP o un ONE-SHOT?**
+
+- **se 2081823275 è un attacco** ⇒ **386 ingressi = 386 attacchi** ⇒ **non è un difetto**;
+- **se è un idle** ⇒ **qualcosa ce lo rimette continuamente** ⇒ **è un difetto, e del gioco**.
+
+**Nota di metodo**: questo è il tipo di esclusione che vale più di una diagnosi. **Non sappiamo
+ancora qual è la causa, ma sappiamo con certezza dove NON è** — e **quattro famiglie di cause sono
+state eliminate con una prova, non con un ragionamento.**
