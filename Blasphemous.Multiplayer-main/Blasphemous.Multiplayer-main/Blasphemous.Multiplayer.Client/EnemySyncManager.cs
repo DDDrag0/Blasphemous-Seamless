@@ -2473,6 +2473,13 @@ namespace Blasphemous.Multiplayer.Client
                             $"pos=({p.x:F1},{p.y:F1}) " +
                             $"mia={(IsHost ? "host" : "client")}");
 
+                // TEMPORARY (PerformanceProbe): resolve the two hashes to names, once each per session.
+                // The hashes cannot be reversed from a file - they are FNV-1a of names that live inside the
+                // packed AnimatorController - so the running Animator has to be asked. Knowing whether the
+                // state entered hundreds of times is an attack or an idle is what decides whether this is a
+                // defect at all. Remove with the probe.
+                NameStateIfNew(animator, stateHash, LabelOf(enemy));
+
                 // TEMPORARY (PerformanceProbe): counts the repetitions that identify a forced replay.
                 // A legitimate transition happens once; the same pair repeating for the same enemy is
                 // this mod restarting the clip again.
@@ -2539,6 +2546,28 @@ namespace Blasphemous.Multiplayer.Client
             PerformanceProbe.NoteOrientationFlip(IdOf(enemy));
 
             enemy.SetOrientation(wanted, true, true);
+        }
+
+        /// <summary>
+        /// Reports the clip name behind a state hash, once per hash per session.
+        ///
+        /// TEMPORARY (PerformanceProbe): the hash cannot be reversed from outside the game. It is FNV-1a of
+        /// the state name, but those names live in the AnimatorController, which is a packed Unity asset:
+        /// hashing every string in Assembly-CSharp produced no match for any of the three hashes seen in the
+        /// churn. Asking the Animator for the clip it is playing sidesteps the whole problem, and the answer
+        /// decides whether hundreds of entries into one state are hundreds of attacks (nothing wrong) or an
+        /// idle being re-entered (something wrong). Remove with the probe.
+        /// </summary>
+        private static void NameStateIfNew(Animator animator, int stateHash, string enemyLabel)
+        {
+            if (animator == null || stateHash == 0)
+                return;
+
+            AnimatorClipInfo[] clips = animator.GetCurrentAnimatorClipInfo(0);
+            if (clips == null || clips.Length == 0 || clips[0].clip == null)
+                return;
+
+            PerformanceProbe.NameAnimationState(stateHash, clips[0].clip.name, enemyLabel);
         }
 
         private static void ReadAnimation(Enemy enemy, out int stateHash, out float normalizedTime)

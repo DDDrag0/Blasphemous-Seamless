@@ -91,11 +91,40 @@ namespace Blasphemous.Multiplayer.Client
         // to name the worst enemy over the whole run, and per-window counts reset before it can be read.
         private static readonly Dictionary<string, int> _animRestartsByEnemy = new Dictionary<string, int>();
 
+        // State hashes already named in the log, so each one is resolved once per session.
+        private static readonly HashSet<int> _namedStates = new HashSet<int>();
+
         // Orientation writes made by the GAME on enemies this machine does not own. This is the number that
         // matters for the spinning enemy; _orientFlips above only sees this mod's own writes.
         private static int _gameOrientWrites;
         private static int _gameOrientWindowWrites;
         private static int _gameOrientBurst;
+
+        /// <summary>
+        /// Names an animation state hash the first time it is seen, by asking the Animator for the clip
+        /// currently playing.
+        ///
+        /// Written because the hash cannot be reversed from the outside. Animator state hashes are FNV-1a
+        /// of the state name, but those names live in the AnimatorController, which is a packed Unity asset
+        /// - not in Assembly-CSharp, and not in any file small enough to read. Hashing every string in the
+        /// assembly produced no match for 765711723, 2081823275 or 460696939, so the name has to come from
+        /// the running game instead of from a file.
+        ///
+        /// Once per hash, so it costs a handful of lines in the whole session and cannot flood. The name
+        /// settles the question the numbers could not: whether the state that is entered so often is an
+        /// attack, in which case hundreds of entries are hundreds of attacks and nothing is wrong, or an
+        /// idle, in which case something is putting the enemy back into it.
+        /// </summary>
+        internal static void NameAnimationState(int stateHash, string clipName, string enemyLabel)
+        {
+            if (stateHash == 0 || string.IsNullOrEmpty(clipName))
+                return;
+
+            if (!_namedStates.Add(stateHash))
+                return;
+
+            ModLog.Info($"[AnimName] stato={stateHash} clip='{clipName}' primo-avvistamento={enemyLabel}");
+        }
 
         /// <summary>Counts one orientation change applied to an enemy, per enemy.</summary>
         internal static void NoteOrientationFlip(string enemyId)

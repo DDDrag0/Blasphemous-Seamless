@@ -62,6 +62,7 @@ $markers = [ordered]@{
     '[OrientByEnemy]'     = 'ripartizione per-nemico delle nostre inversioni'
     '[GameOrientByEnemy]' = 'ripartizione per-nemico delle inversioni del gioco'
     '[AnimByEnemy]'       = 'ripartizione per-nemico degli avvii di animazione'
+    '[AnimName]'          = 'nomi veri degli stati di animazione (una volta per hash)'
     '[EnemyJoin]'         = 'fix del join: annuncio delle morti precedenti'
     'Nemici rinati'       = "fix del falo': _pendingDeaths azzerata al respawn"
     'IMPRONTA DIVERSA'    = 'rilevatore di divergenza delle liste (con cooldown)'
