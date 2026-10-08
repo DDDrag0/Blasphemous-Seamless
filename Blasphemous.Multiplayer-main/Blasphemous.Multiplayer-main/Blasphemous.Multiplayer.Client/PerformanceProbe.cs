@@ -69,6 +69,18 @@ namespace Blasphemous.Multiplayer.Client
         private static int _lastRestartFrom;
         private static int _lastRestartTo;
 
+        // Orientation changes applied per report. Nothing in the log measures orientation today, so the
+        // fix for the spinning enemy would otherwise have to be judged by eye: the measured before-state
+        // was 31 changes in 1.7 s on one machine and 106 in 10.4 s on the other, all with the enemy
+        // standing still.
+        private static int _orientFlips;
+
+        /// <summary>Counts one orientation change applied to an enemy. Called from ApplyOrientation.</summary>
+        internal static void NoteOrientationFlip()
+        {
+            _orientFlips++;
+        }
+
         /// <summary>
         /// Called by LogAnimationChanges when a state change is about to be reported with a playback
         /// position of zero, i.e. when this machine is about to restart a clip.
@@ -153,7 +165,7 @@ namespace Blasphemous.Multiplayer.Client
                 $"[Probe] fps={fps:F1} frameMs_max={_worstFrameMs:F1} stalls100={_stalls} " +
                 $"syncMs_avg={_syncTicks / 10000.0 / _frames:F2} syncMs_max={_worstSyncMs:F1} " +
                 $"lateMs_max={_worstLateMs:F1} gc0={collectionsSince} managedMB={managedBytes / 1048576.0:F1} " +
-                $"animRestart={_restarts} animRepeat={_repeats} " +
+                $"animRestart={_restarts} animRepeat={_repeats} orientFlip={_orientFlips} " +
                 $"connected={Main.Multiplayer.NetworkManager.IsConnected}");
 
             _frames = 0;
@@ -164,6 +176,7 @@ namespace Blasphemous.Multiplayer.Client
             _stalls = 0;
             _restarts = 0;
             _repeats = 0;
+            _orientFlips = 0;
         }
 
         /// <summary>

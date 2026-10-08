@@ -333,6 +333,12 @@ namespace Blasphemous.Multiplayer.Client.Network
             {
                 // Add this player to the list of connected players
                 Main.Multiplayer.OtherPlayerManager.AddConnectedPlayer(playerName);
+
+                // A death is normally a live event, so a player who joins later cannot learn about kills
+                // that already happened: the enemy it never saw die stays alive on its screen. Re-announcing
+                // our defeated spawn points here closes that gap. This runs on the main thread (the packet
+                // queue is drained from OnLateUpdate), so queueing messages from here is safe.
+                EnemySyncManager.AnnounceDeathStateToPeers();
             }
             else
             {
@@ -410,6 +416,18 @@ namespace Blasphemous.Multiplayer.Client.Network
             string progressId = Encoding.UTF8.GetString(data, startIdx + 2, data.Length - startIdx - 2);
 
             ProgressUpdate progress = new ProgressUpdate(progressId, progressType, progressValue);
+
+            // Enemy-death records travel on this channel but are not stats: they are handled here and go
+            // no further. Two reasons. The queue is applied only once a level is loaded, and the joiner is
+            // still in the menu when these arrive, so queueing would apply them far too late or never. And
+            // no stat helper knows this id, so passing it on would log an error and raise a notification
+            // for every defeated enemy.
+            if (progressId != null && progressId.StartsWith(EnemySyncManager.DeathProgressPrefix))
+            {
+                EnemySyncManager.ReceiveDeathProgress(progressId, progressValue);
+                return;
+            }
+
             Main.Multiplayer.ProgressManager.ReceiveProgress(progress);
             Main.Multiplayer.ProcessRecievedStat(playerName, progress);
 
