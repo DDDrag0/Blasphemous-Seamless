@@ -26,7 +26,7 @@
 
 | # | Voce | Priorità | Stato |
 |---|---|---|---|
-| **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | ⏸️ **accettabili, parcheggiata** | ✅ **misurato**: `animRepeat` da 33-58 a **0**. **Non totalmente fluide** ma accettate. **Sotto la modalità spettatore** |
+| **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | 🟡 **riaperta di fatto** | ⚠️ **il churn NON è migliorato**: `animRepeat` fra 11 e 36 in **17 report su 46**, `avvio=0.00` in **484/499**. **È LOCALE all'host** (tutte le 499 righe `mia=host`), concentrato su **un solo nemico** a `x≈-716` con **386 ripetizioni della stessa transizione** `765711723 → 2081823275`. **"Accettabile" resta una scelta dell'utente, non un risultato tecnico.** Vedi §12 |
 | **2** | **Orientamento che si gira velocissimo** — §1b | 🔴 **in verifica** | ⚠️ **la prima isteresi NON funzionava** (`orientSkip=0` su 46 report, `orientFlip` 34 in 2 s): era in `ApplyOrientation`, cioè sulla scrittura **della mod** a 20 Hz, mentre il tremolio è **del gioco** a 60 Hz. **SPOSTATA nella Prefix su `Entity::SetOrientation`** (`stato-orient-prefix`). **Da testare** |
 | **3** | **Chi si connette dopo non apprende le morti** — §1g | ✅ | **RISOLTO E VERIFICATO**: `[EnemyJoin] annunciate 2`, nessun `ENEMYDEAD` nel progress |
 | **4** | **Falò: respawn e refill solo locali** — §3 | ✅ | **RISOLTO E VERIFICATO**: `_pendingDeaths` azzerata su `RespawnDeadEnemies` |
