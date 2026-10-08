@@ -3,25 +3,79 @@
 > **Documento vivo.** Va aggiornato a ogni passo: cosa è stato fatto, cosa ha misurato, cosa resta.
 > L'ultima sezione (`Diario dei passi`) è il registro cronologico.
 
-Ultimo aggiornamento: dopo aver **chiuso il capitolo delle "entità Tutorial"** (erano oggetti di scena) e dopo il **passo 2** (implementato, **da testare**).
+---
+
+## ⚠️ REGOLE DI MANUTENZIONE DI QUESTO FILE — vincolanti
+
+1. **Questo file NON si riscrive e NON si compatta.** La storia non si perde.
+2. Gli **aggiornamenti approfonditi** (parametri scoperti, funzioni e metodi da usare, scoperte
+   dell'Esploratore) si aggiungono **SOLO IN FONDO**, come nuove entry **con l'orario di aggiunta**.
+3. **L'unica parte che si modifica è la LISTA INIZIALE** qui sotto: si **aggiungono** entry e si
+   aggiornano **stato e priorità** di quelle esistenti. Nient'altro.
+4. **Nessuna sezione esistente si cancella o si accorcia.** Al massimo si annota che è superata,
+   indicando dove sta l'informazione aggiornata.
+5. **Motivo**: nelle revisioni precedenti alcune voci sono andate perse (fra cui *Sangue e flash nel
+   feedback* e *Camminata troncata*). Da ora la lista iniziale è il **punto unico di verità sullo
+   stato**, e il corpo del file è **l'archivio che cresce**.
+
+---
+
+## 📋 LISTA INIZIALE — tutte le voci aperte, con priorità
+
+**Legenda**: 🔴 urgente · 🟡 da fare · 🟢 bassa · ✅ fatto · ⏳ in corso · ❌ caduta · ⏸️ parcheggiata
+
+| # | Voce | Priorità | Stato |
+|---|---|---|---|
+| **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | ⏸️ **accettabili, parcheggiata** | ✅ **misurato**: `animRepeat` da 33-58 a **0**. **Non totalmente fluide** ma accettate. **Sotto la modalità spettatore** |
+| **2** | **Orientamento che si gira velocissimo** — §1b | 🟡 **in verifica** | 🔬 **isteresi implementata** (banda 1.5 su `ApplyOrientation`) + contatori per-nemico. **Test in corso** |
+| **3** | **Chi si connette dopo non apprende le morti** — §1g | ✅ | **RISOLTO E VERIFICATO**: `[EnemyJoin] annunciate 2`, nessun `ENEMYDEAD` nel progress |
+| **4** | **Falò: respawn e refill solo locali** — §3 | ✅ | **RISOLTO E VERIFICATO**: `_pendingDeaths` azzerata su `RespawnDeadEnemies` |
+| **5** | **Sangue e flash nel feedback del colpo** — §5c | 🟢 | ⏳ **metodi identificati** (`PenitentSword::GetSwordSparks`). **NB: voce re-inglobata, era andata persa** |
+| **6** | **Oggetti distruttibili** non sincronizzati — §4 | 🟡 | ⏳ **prima va identificato l'oggetto in gioco** (`Broke wall: 0`, `Used Lever: 0`) |
+| **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | 🟡 | ⏳ diagnostica dietro flag, `RESCAN_INTERVAL` a 2-3 s |
+| **8** | **Boss impazziscono coi target** — §2b | 🟡 | ⏳ **ultimo dei lavori "di gioco"**. **Proposta utente: quanto di tempo sul cambio bersaglio** |
+| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ idea a bassa priorità, metodi già identificati |
+| **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | 🟢 | ⏳ **declassato**: allocazione sì, stallo no |
+| **11** | **Il gioco disfa la pausa sul non-proprietario**: `<Enemy>::OnUpdate` chiama `EnablePhysics(true)` e `StartBehaviour()` su **8 tipi** | 🟡 **reale** | ⏳ il nemico del non-proprietario può "scivolare" o animarsi da solo |
+| **12** | **Camminata troncata** | ⏸️ | ⏳ richiede di ripensare il protocollo animazione (**loop vs one-shot**). **NB: voce re-inglobata** |
+| **13** | **La migrazione host non riarbitra** (`SetHost` non azzera lo stato del token) | 🟡 **reale** | ⏳ **già avvenuta in un test** |
+| **14** | **Il falso `IMPRONTA DIVERSA`** (controllo prima del popolamento) | 🟢 cosmetico | ⏳ 2 occorrenze, fuorviante |
+| **15** | **Il protocollo di rete**: `Common.dll` va copiato insieme a mod e server | 🟢 documentato | ⏳ |
+| **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | 🔴 **procedura** | ❌ **già fallito una volta**: G1 eseguiva il binario vecchio e il test non ha misurato nulla |
+| **17** | **I nemici che restano fermi (`pos_distinte=1`)** | 🟢 **non è un bug** | ✅ nemici **senza IA di movimento** |
+| **18** | **Boss: test boss per boss** | 🟡 | ⏳ l'unica cosa non prevedibile |
+| **19** | **`Entity.Dead` calcolato vs `EntityStatus.Dead`** — §7 | 🟢 nota tecnica | ✅ documentato |
+| ~~20~~ | ~~Passo 5: le 130 patch sul Penitente~~ | — | ❌ **cade**: `Animator.name == "Body"` su entrambe |
+| ~~21~~ | ~~Passo 1: test di controllo single-player~~ | — | ❌ **cade**: la baseline disconnessa c'è già |
+| ~~22~~ | ~~Isteresi via `targetTime` su `EnemyBehaviour`~~ | — | ❌ **cade**: `targetTime` è `Private, InitOnly` e **mai assegnato** ⇒ `LookAtTarget` è **codice morto** |
+
+**Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
+`## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
+
+---
+
+Ultimo aggiornamento: dopo la **verifica in gioco di §1g e §3** (join e falò: confermati coi marcatori)
+e l'**implementazione dell'isteresi sull'orientamento** (`stato-orient-isteresi`).
 
 ---
 
 ## STATO DEL PROGETTO
 
-**Il grosso è concluso e verificato.** Il problema rimasto è **uno solo**: le **animazioni tagliate**,
-che riguardano i nemici, le morti **e il Penitente**.
+**Il grosso è concluso e verificato.** Restano lavori mirati: l'**orientamento** (in verifica), il
+**feedback del colpo**, gli **oggetti distruttibili**, la **diagnostica**, i **boss** e lo **spettatore**.
 
 | Cosa | Esito |
 |---|---|
 | Movimento e posizione dei nemici | ✅ funziona |
 | Morte animata per mano dell'altro giocatore | ✅ funziona |
-| **Fantasmi** | ✅ **risolti** — l'animazione di morte parte; a volte è **troncata**, non assente |
-| **Boss fight** | ✅ **un boss condiviso con barra e morte sincronizzata** (meccanismo chiarito, vedi §2) |
-| Cutscene e dialoghi | ✅ nessun problema (era un tasto sbagliato: serve SPAZIO, non ESC) |
-| Falò: il falò si accende su entrambi | ✅ |
-| **Animazioni (nemici, morti, Penitente)** | 🔴 **troncate a pochissimi frame** |
-| **Falò: respawn e refill** | 🔴 solo locali: le due macchine si disallineano |
+| **Fantasmi** | ✅ **risolti** |
+| **Boss fight** | ✅ **un boss condiviso con barra e morte sincronizzata** (vedi §2) |
+| Cutscene e dialoghi | ✅ nessun problema (serve SPAZIO, non ESC) |
+| **Chi si connette dopo** | ✅ **apprende le morti precedenti** (§1g, verificato) |
+| **Falò** | ✅ **respawn allineato** (§3, verificato) |
+| **Animazioni (nemici, morti, Penitente)** | 🟡 **accettabili** — `animRepeat` a 0, ma non totalmente fluide |
+| **Orientamento** | 🔬 **isteresi implementata, misura in corso** |
+| **Sangue e flash** | ⏳ metodi identificati |
 
 ### Punti di ritorno
 
@@ -39,8 +93,14 @@ che riguardano i nemici, le morti **e il Penitente**.
 | `stato-morte-feedback` | morte robusta, feedback del colpo, boss esclusi |
 | **`stato-morte-animata-ok`** | **morte animata anche per mano dell'altro giocatore** |
 | **`stato-passo0-strumentazione`** | **passo 0: solo misure, nessun cambio di comportamento** |
-| **`stato-passo2-animtime`** | **passo 2: la posizione di riproduzione non viene più azzerata (+ contatori nel probe)** |
-| **`stato-inert-scenery`** | **le entità di scena non vengono più tracciate come nemici (`IsInertScenery`)** |
+| **`stato-passo2-animtime`** | **passo 2: la posizione di riproduzione non viene più azzerata** |
+| **`stato-inert-scenery`** | **le entità di scena non vengono più tracciate come nemici** |
+| **`stato-join-fix`** | **primo tentativo del fix del join (SBAGLIATO: usava `ProgressType.Flag`)** |
+| **`stato-join-fix-2`** | **join riscritto sul canale `EnemyDeathGlobal` + fix `_pendingDeaths` al falò** |
+| **`stato-join-fix-3`** | **+ pulizia del flag spazzatura nel salvataggio** |
+| **`stato-orient-probe`** | **Prefix solo-misura su `Entity::SetOrientation`** |
+| **`stato-orient-isteresi`** | **isteresi in `ApplyOrientation` + contatori per-nemico** |
+
 
 ---
 
@@ -768,3 +828,142 @@ tu          → testi, e rollback immediato se peggiora
 - **Verifica nel binario compilato** (leggendo le chiamate dentro la DLL), non solo nel sorgente: è
   così che si è scoperto che `PlaceEnemy` non muoveva nulla.
 - **Rollback immediato** al tag precedente se un test peggiora, senza tentare di salvarlo.
+
+---
+
+# 12. ARCHIVIO DELLE AGGIUNTE
+
+> **Da qui in poi il file cresce e non si riscrive.** Ogni entry porta l'**orario di aggiunta**, e le
+> voci della LISTA INIZIALE puntano qui per il dettaglio. Le entry **non si modificano**: se una cosa
+> cambia, si aggiunge una entry nuova che la supersede.
+
+## [2026-10-08 23:12] Re-inglobate voci andate perse nelle revisioni precedenti
+
+Durante la triangolazione delle versioni passate della todo sono emerse **voci che erano sparite**.
+Sono ricostruite qui dalla memoria dell'utente, che è l'unica fonte rimasta per il testo originale.
+
+### 12.1 — Sangue e flash nel feedback del colpo (🟢, metodi identificati)
+
+**Cosa manca**: quando un colpo va a segno, **l'effetto di sangue e lo "spark"** della lama **non sono
+sincronizzati** fra le due macchine: chi non è il proprietario del nemico **non vede** (o vede in modo
+diverso) il feedback del colpo.
+
+**Metodi già identificati (dalla revisione IL precedente)**:
+- PenitentSword::GetSwordSparks — le scintille dell'impatto;
+- il **doppio danno** sospetto va verificato con i contatori dmgSent / dmgApplied.
+
+**Perché è 🟢**: è **cosmetico** — vita, morte e posizione **non ne sono toccati**.
+
+**Come verificarlo**: colpire lo stesso nemico da entrambe le macchine e **confrontare i due schermi**
+nel momento dell'impatto.
+
+### 12.2 — Camminata troncata (⏸️ parcheggiata)
+
+**Voce distinta dall'orientamento**: riguarda il fatto che la **camminata** possa essere **troncata**
+non per un riavvio del clip ma per il **protocollo animazione**, che non distingue **animazioni in loop**
+da **animazioni one-shot**.
+
+**Stato**: **parcheggiata insieme alle animazioni** (decisione dell'utente: accettabili per il momento,
+priorità **sotto la modalità spettatore**).
+
+**Strada indicata in precedenza**: Animator.GetCurrentAnimatorClipInfo per **distinguere loop da
+one-shot**, e passare da shortNameHash a **ullPathHash**.
+
+**NB**: questa voce **era andata persa** ed è stata re-inglobata.
+
+### 12.3 — Le altre voci re-inglobate (dalla lista "altre todo")
+
+| Voce | Gravità | Nota |
+|---|---|---|
+| **Il gioco disfa la pausa sul non-proprietario** — <Enemy>::OnUpdate chiama EnablePhysics(true) e StartBehaviour() su **8 tipi** | 🟡 **reale** | il nemico del non-proprietario può **"scivolare"** o **animarsi da solo** |
+| **Migrazione host**: SetHost non azzera lo stato del token, **non riarbitra** | 🟡 **reale** | **già avvenuta in un test** |
+| **Il falso IMPRONTA DIVERSA** — controllo eseguito **prima** del popolamento | 🟢 cosmetico | **2 occorrenze**, fuorviante |
+| **Il protocollo di rete**: Common.dll va copiato **insieme a mod e server** | 🟢 documentato | **verificare i binari su ENTRAMBE le macchine** |
+| **I nemici che restano fermi** (pos_distinte=1) | 🟢 **non è un bug** | nemici **senza IA di movimento** |
+
+---
+
+# 13. STORICO DELLE REVISIONI
+
+> **Perché esiste**: nelle revisioni precedenti la todo è stata **riscritta più volte**, e alcune voci
+> sono andate perse. Queste sono le **strutture delle versioni passate**, conservate perché **la storia
+> non si perde** e perché ognuna contiene voci che le successive potrebbero aver omesso.
+
+## Revisione A — dopo il test esteso (8 sezioni)
+
+| Sezione | Contenuto |
+|---|---|
+| 0. Esito del test esteso | la tabella nuova: cosa funziona, cosa no |
+| 1. Animazioni 🔴 | 1a camminata troncata · 1b orientamento oscillante · 1c la morte parte e viene skippata → fantasmi CHIUSI · 1d riguarda anche il Penitente |
+| 2. Vita dei boss | l'esclusione e le regole per testarli |
+| 3. Falò 🔴 | 3a i tre punti da indagare |
+| 3b. Aggressività dei boss | il cambio bersaglio continuo, la proposta dell'utente |
+| 3c. Da chiarire | perché la boss fight funziona nonostante l'esclusione |
+| 4. Irrobustimenti | 5 voci note |
+| 5. Feedback del colpo | **sangue e flash** |
+| 6. Note non urgenti | — |
+| 7. Idee a bassa priorità | 7a spettatore alla morte · 7b oggetti distruttibili |
+| 8. Verificato e NON è un bug | dialoghi, fantasmi, boss fight |
+
+## Revisione B — dopo la revisione IL (12 sezioni)
+
+| Sezione | Contenuto |
+|---|---|
+| Stato del progetto | tabella esito + tutti i 12 tag come punti di ritorno |
+| 1. Animazioni | il meccanismo, il difetto nuovo di shortNameHash, il thrashing documentato, l'ipotesi delle 130 patch con la tabella di cosa salterebbero, e le 6 ipotesi di carico |
+| 2. Boss | il meccanismo chiarito: barra in polling, coincidenza non sincronizzazione, "giusta ma fragile" |
+| 3. Falò | causa accertata: i 3 chiamanti, e il SAVEGAME che nasce dentro il refill |
+| 4. Oggetti distruttibili | Lever non è IDamageable → i 4 tipi scoperti, e manca solo il mittente |
+| 5. Idee a bassa priorità | spettatore con i metodi esatti e i loro unici chiamanti |
+| 6. Verificato e NON è un bug | dialogo, fantasmi, boss |
+| 7. Note tecniche | 8 voci, fra cui Entity.Dead calcolato vs EntityStatus.Dead |
+| 8. Piano in 10 passi | ognuno con il motivo dell'ordine e lo stato |
+| 9. Domande aperte | 9 voci, con cosa serve per chiuderle |
+| 10. Diario dei passi | registro cronologico con esito e tag |
+| 11. Come lavoriamo | il flusso tu → esploratore → io → tu |
+
+## Revisione C — la lista "cosa resta" (7 voci, con gravità)
+
+| # | Cosa resta | Gravità |
+|---|---|---|
+| 1 | Il gioco disfa la pausa sul non-proprietario: <Enemy>::OnUpdate chiama EnablePhysics(true) e StartBehaviour() su 8 tipi di nemico | 🟡 reale — il nemico del non-proprietario può "scivolare" o animarsi da solo |
+| 2 | I nemici che restano fermi (pos_distinte=1) | 🟢 non è un bug: sono nemici senza IA di movimento |
+| 3 | Le animazioni non sono ancora confrontabili — [EnemyAnim] c'è, ma non le abbiamo mai misurate con il movimento funzionante | 🟡 |
+| 4 | Il falso IMPRONTA DIVERSA (controllo prima del popolamento) | 🟢 cosmetico, 2 occorrenze, fuorviante |
+| 5 | La migrazione host non riarbitra (SetHost non azzera lo stato del token) | 🟡 reale — già avvenuta in un test |
+| 6 | Prestazioni: RegisterEnemies ogni 0,5 s alloca 2 array (FindObjectsOfType), LogAnimationChanges gira ogni frame | 🟡 |
+| 7 | Il protocollo di rete: Common.dll va copiato insieme a mod e server | 🟢 documentato |
+
+## Revisione D — la lista per rischio
+
+| Voce | Rischio |
+|---|---|
+| Orientamento | 🟡 richiede Harmony (un Postfix su SetOrientation) o rinunciarci — medio, ma isolato |
+| Camminata troncata | 🟡 richiede di ripensare il protocollo animazione (loop vs one-shot) — medio |
+| Falò | 🟢 decisione di design, poi piccola — basso |
+| Boss | 🟡 test boss per boss — l'unica cosa non prevedibile |
+| Flash/sangue | 🟢 metodi già identificati — basso |
+
+## Revisione E — il piano in 10 passi (versione originale, per rischio)
+
+| # | Intervento | Rischio |
+|---|---|---|
+| 0 | 🔬 STRUMENTAZIONE — nessun cambio di comportamento | 🟢 |
+| 1 | 🧪 Test di controllo: single-player disconnesso | — |
+| 2 | Togliere nimTime = 0f | 🟢 |
+| 3 | Da shortNameHash a ullPathHash | 🟡 |
+| 4 | Diagnostica dietro flag + RESCAN_INTERVAL a 2-3 s | 🟢 |
+| 5 | Solo se il passo 0 prova il nome sbagliato: sistemare le 130 patch | 🟡 |
+| 6 | Falò (pacchetto + RespawnDeadEnemies) | 🟢 |
+| 7 | Oggetti distruttibili (4 helper) | 🟢 |
+| 8 | ProcessQueue senza allocazioni + IdOf O(N²) | 🟢 |
+| 9 | Isteresi sul target dei boss (	argetTime) | 🟡 |
+| 10 | Modalità spettatore | 🟡 |
+
+---
+
+> **Nota di metodo, da non perdere** (su richiesta dell'utente, perché è il punto di svolta del progetto):
+> **le tre regressioni più costose sono nate da assunzioni non verificate, non da errori di scrittura.**
+> Prima di ogni intervento, l'Esploratore verifica nel **codice del gioco** (IL, Mono.Cecil) che i
+> metodi esistano, siano pubblici e facciano quello che crediamo — e le affermazioni vanno marcate
+> **verificata in IL** / **verificata nei log** / **verificata nel codice della mod** / **non verificata**.
