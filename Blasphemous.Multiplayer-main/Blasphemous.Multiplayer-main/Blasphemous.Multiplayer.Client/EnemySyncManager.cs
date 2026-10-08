@@ -179,6 +179,35 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// A short label naming an enemy by POSITION, for the orientation probe.
+        ///
+        /// The SPAWN (NN) labels permute between runs, so they cannot be compared across sessions; the
+        /// position is the only stable handle. Building the string costs an allocation, and the probe calls
+        /// this on every orientation write - many times per frame - so the result is cached per instance and
+        /// only built once.
+        /// </summary>
+        public static string LabelOf(Enemy enemy)
+        {
+            if (enemy == null)
+                return null;
+
+            int key = enemy.GetInstanceID();
+
+            string cached;
+            if (_orientationLabels.TryGetValue(key, out cached))
+                return cached;
+
+            Vector3 p = enemy.transform.position;
+            cached = $"({p.x:F1},{p.y:F1})";
+            _orientationLabels[key] = cached;
+
+            return cached;
+        }
+
+        /// <summary>Position labels, keyed by instance id. Cleared with the scene the instances belong to.</summary>
+        private static readonly Dictionary<int, string> _orientationLabels = new Dictionary<int, string>();
+
+        /// <summary>
         /// Enemy ids that belong to a BOSS, so their health is deliberately left alone.
         ///
         /// Bosses derive from Enemy like anything else, so they are tracked, positioned and animated by the
@@ -881,6 +910,7 @@ namespace Blasphemous.Multiplayer.Client
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _puppetEnemies.Clear();      // the instances of the scene being unloaded
+            _orientationLabels.Clear();  // ditto: keyed by instance id
 
             // TEMPORARY (PerformanceProbe): re-read the Animator names for the new scene. Remove with
             // the probe.
@@ -2411,12 +2441,93 @@ namespace Blasphemous.Multiplayer.Client
             if (status.Orientation == wanted)
                 return;
 
+            // HYSTERESIS. The owner sends a facing twenty times a second, but the game writes its own every
+            // frame from the enemy's OnUpdate - so without this the two fight, and the enemy visibly
+            // trembles. Measured before this guard: 31 flips in 1.7 seconds on one machine and 106 in 10.4
+            // on the other, with the enemy standing still.
+            //
+            // The enemy is not moved by this: it only declines to turn the enemy around when the two
+            // players are within ORIENT_HYSTERESIS of it on the x axis, which is precisely the window where
+            // the game itself is dithering over a difference of a fraction of a unit. A real turn - a
+            // player crossing from one side to the other - moves the enemy's target by many units and is
+            // applied as before.
+            if (ShouldSkipOrientationFlip(enemy))
+            {
+                PerformanceProbe.NoteOrientationFlipSkipped();
+                return;
+            }
+
             // TEMPORARY (PerformanceProbe): one applied flip. Nothing else in the log measures
             // orientation, so without this the spinning-enemy fix could only be judged by eye. Remove
             // with the probe.
-            PerformanceProbe.NoteOrientationFlip();
+            PerformanceProbe.NoteOrientationFlip(IdOf(enemy));
 
             enemy.SetOrientation(wanted, true, true);
+        }
+
+        /// <summary>
+        /// How close, on the x axis, two positions have to be before an orientation change is treated as
+        /// dithering rather than a real turn. The game's own dead band is one unit - and it is unreachable
+        /// code - so this is deliberately a little wider.
+        /// </summary>
+        private const float ORIENT_HYSTERESIS = 1.5f;
+
+        /// <summary>
+        /// True when the enemy is sitting so close to what it is looking at that its facing is not a real
+        /// decision.
+        ///
+        /// The game decides facing by comparing its sprite x with the target's x and turning whenever the
+        /// sign flips, with no dead band of its own that can actually run. When two players stand near the
+        /// enemy, the x it compares against jitters by a couple of units, so the sign flips every frame.
+        /// Inside this band the mod keeps the facing it already has instead of joining in.
+        /// </summary>
+        private static bool ShouldSkipOrientationFlip(Enemy enemy)
+        {
+            float targetX;
+            if (!TryGetEnemyTargetX(enemy, out targetX))
+                return false;
+
+            float dx = enemy.transform.position.x - targetX;
+            if (dx < 0f)
+                dx = -dx;
+
+            return dx < ORIENT_HYSTERESIS;
+        }
+
+        /// <summary>
+        /// The x the game compares the enemy against, which is whatever that enemy's own facing code reads.
+        ///
+        /// This is not one source, and getting it wrong would make the band measure the wrong decision.
+        /// Ghost is the case that exposed the problem: its OnUpdate compares its sprite against _penitent,
+        /// which is the LOCAL Penitent, and never touches Enemy.Target - so reading Target there would band
+        /// against whoever the game last pointed it at, which in a co-op session can be the other player.
+        /// Measured against the wrong x, the band would simply never open and the dithering would continue.
+        ///
+        /// Everything else falls back to Enemy.Target, and then to the local Penitent, matching
+        /// EnemyBehaviour.GetTarget's own fallback.
+        /// </summary>
+        private static bool TryGetEnemyTargetX(Enemy enemy, out float targetX)
+        {
+            targetX = 0f;
+
+            if (enemy == null)
+                return false;
+
+            Penitent local = Core.Logic != null ? Core.Logic.Penitent : null;
+
+            // Ghost faces whoever is playing THIS machine, so that is what has to be measured against.
+            if (!(enemy is Gameplay.GameControllers.Enemies.Ghost.Ghost) &&
+                enemy.Target != null)
+            {
+                targetX = enemy.Target.transform.position.x;
+                return true;
+            }
+
+            if (local == null)
+                return false;
+
+            targetX = local.transform.position.x;
+            return true;
         }
 
         private static void ReadAnimation(Enemy enemy, out int stateHash, out float normalizedTime)

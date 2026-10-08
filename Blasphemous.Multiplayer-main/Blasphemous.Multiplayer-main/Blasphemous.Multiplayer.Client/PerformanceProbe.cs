@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 using Blasphemous.ModdingAPI;
 using Framework.Managers;
@@ -69,11 +71,21 @@ namespace Blasphemous.Multiplayer.Client
         private static int _lastRestartFrom;
         private static int _lastRestartTo;
 
-        // Orientation changes applied per report. Nothing in the log measures orientation today, so the
-        // fix for the spinning enemy would otherwise have to be judged by eye: the measured before-state
-        // was 31 changes in 1.7 s on one machine and 106 in 10.4 s on the other, all with the enemy
-        // standing still.
+        // Orientation changes applied per report, and how many the hysteresis declined to apply. Nothing in
+        // the log measured orientation before, so the fix for the spinning enemy would otherwise have to be
+        // judged by eye: the measured before-state was 31 changes in 1.7 s on one machine and 106 in 10.4 s
+        // on the other, all with the enemy standing still.
         private static int _orientFlips;
+        private static int _orientFlipsSkipped;
+
+        // Per enemy, keyed by a label carrying the position, because SPAWN (NN) labels are permuted between
+        // runs and a total would not say WHICH enemy dithers - which is the thing needed to judge the band.
+        private static readonly Dictionary<string, int> _orientByEnemy = new Dictionary<string, int>();
+        private static readonly Dictionary<string, int> _gameOrientByEnemy = new Dictionary<string, int>();
+
+        // Session totals, so the worst enemy is still reported after its busiest window has passed.
+        private static readonly Dictionary<string, int> _orientTotalByEnemy = new Dictionary<string, int>();
+        private static readonly Dictionary<string, int> _gameOrientTotalByEnemy = new Dictionary<string, int>();
 
         // Orientation writes made by the GAME on enemies this machine does not own. This is the number that
         // matters for the spinning enemy; _orientFlips above only sees this mod's own writes.
@@ -81,10 +93,31 @@ namespace Blasphemous.Multiplayer.Client
         private static int _gameOrientWindowWrites;
         private static int _gameOrientBurst;
 
-        /// <summary>Counts one orientation change applied to an enemy. Called from ApplyOrientation.</summary>
-        internal static void NoteOrientationFlip()
+        /// <summary>Counts one orientation change applied to an enemy, per enemy.</summary>
+        internal static void NoteOrientationFlip(string enemyId)
         {
             _orientFlips++;
+            Bump(_orientByEnemy, enemyId);
+        }
+
+        /// <summary>
+        /// Counts one orientation change the hysteresis declined to apply. Together with the counter above
+        /// this says how much of the dithering the guard absorbed.
+        /// </summary>
+        internal static void NoteOrientationFlipSkipped()
+        {
+            _orientFlipsSkipped++;
+        }
+
+        /// <summary>Increments a per-enemy counter, always, so the worst case is never lost by sampling.</summary>
+        private static void Bump(Dictionary<string, int> counts, string enemyId)
+        {
+            if (string.IsNullOrEmpty(enemyId))
+                return;
+
+            int current;
+            counts.TryGetValue(enemyId, out current);
+            counts[enemyId] = current + 1;
         }
 
         /// <summary>
@@ -99,7 +132,7 @@ namespace Blasphemous.Multiplayer.Client
         /// If the spinning turns out to be real, turning this into a filter is a matter of returning false
         /// when the two orientations disagree by less than a dead band.
         /// </summary>
-        internal static void NoteGameOrientationWrite(bool ownedByLocal)
+        internal static void NoteGameOrientationWrite(bool ownedByLocal, string enemyId)
         {
             // Only writes on enemies that this machine is NOT simulating are interesting: those are the
             // ones that fight with the owner's orientation and produce the visible oscillation.
@@ -107,6 +140,7 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             _gameOrientWrites++;
+            Bump(_gameOrientByEnemy, enemyId);
 
             // Track the busiest report window, so the log says both "how many in total" and "how bad it got".
             _gameOrientWindowWrites++;
@@ -199,8 +233,11 @@ namespace Blasphemous.Multiplayer.Client
                 $"syncMs_avg={_syncTicks / 10000.0 / _frames:F2} syncMs_max={_worstSyncMs:F1} " +
                 $"lateMs_max={_worstLateMs:F1} gc0={collectionsSince} managedMB={managedBytes / 1048576.0:F1} " +
                 $"animRestart={_restarts} animRepeat={_repeats} orientFlip={_orientFlips} " +
-                $"gameOrient={_gameOrientWrites} gameOrientBurst={_gameOrientBurst} " +
+                $"orientSkip={_orientFlipsSkipped} gameOrient={_gameOrientWrites} " +
+                $"gameOrientBurst={_gameOrientBurst} " +
                 $"connected={Main.Multiplayer.NetworkManager.IsConnected}");
+
+            ReportOrientationByEnemy();
 
             _frames = 0;
             _worstFrameMs = 0f;
@@ -211,10 +248,75 @@ namespace Blasphemous.Multiplayer.Client
             _restarts = 0;
             _repeats = 0;
             _orientFlips = 0;
+            _orientFlipsSkipped = 0;
             _gameOrientWrites = 0;
             _gameOrientWindowWrites = 0;
             _gameOrientBurst = 0;
         }
+
+        /// <summary>
+        /// Names the enemies whose orientation is churning, and how it was paid for.
+        ///
+        /// Worth its own line because a total cannot say WHICH enemy dithers, and the SPAWN (NN) labels
+        /// permute between runs - so the label carries the position instead. It says how many writes the
+        /// game made and how many of ours the hysteresis declined, which is the pair that shows whether the
+        /// guard is absorbing real dithering or nothing at all.
+        ///
+        /// The per-enemy tallies are kept for the whole session and only the worst few are printed, so the
+        /// output stays readable without losing the peak.
+        /// </summary>
+        private static void ReportOrientationByEnemy()
+        {
+            if (_orientByEnemy.Count == 0 && _gameOrientByEnemy.Count == 0)
+                return;
+
+            foreach (KeyValuePair<string, int> entry in _orientByEnemy)
+            {
+                int current;
+                _orientTotalByEnemy.TryGetValue(entry.Key, out current);
+                _orientTotalByEnemy[entry.Key] = current + entry.Value;
+            }
+
+            foreach (KeyValuePair<string, int> entry in _gameOrientByEnemy)
+            {
+                int current;
+                _gameOrientTotalByEnemy.TryGetValue(entry.Key, out current);
+                _gameOrientTotalByEnemy[entry.Key] = current + entry.Value;
+            }
+
+            _orientByEnemy.Clear();
+            _gameOrientByEnemy.Clear();
+
+            LogTopEnemies("[OrientByEnemy] nostre=", _orientTotalByEnemy);
+            LogTopEnemies("[GameOrientByEnemy] gioco=", _gameOrientTotalByEnemy);
+        }
+
+        /// <summary>Prints the busiest entries of a per-enemy tally, worst first.</summary>
+        private static void LogTopEnemies(string prefix, Dictionary<string, int> totals)
+        {
+            if (totals.Count == 0)
+                return;
+
+            List<KeyValuePair<string, int>> sorted = new List<KeyValuePair<string, int>>(totals);
+            sorted.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+            StringBuilder line = new StringBuilder(prefix);
+            int shown = sorted.Count < TOP_ENEMIES_REPORTED ? sorted.Count : TOP_ENEMIES_REPORTED;
+            for (int i = 0; i < shown; i++)
+            {
+                if (i > 0)
+                    line.Append("  ");
+                line.Append(sorted[i].Key).Append('=').Append(sorted[i].Value);
+            }
+
+            if (sorted.Count > shown)
+                line.Append("  (+").Append(sorted.Count - shown).Append(" altri)");
+
+            ModLog.Info(line.ToString());
+        }
+
+        /// <summary>How many enemies a per-enemy tally line names before summarising the rest.</summary>
+        private const int TOP_ENEMIES_REPORTED = 4;
 
         /// <summary>
         /// Writes the Animator names once per scene. This is the decisive measurement: see the class

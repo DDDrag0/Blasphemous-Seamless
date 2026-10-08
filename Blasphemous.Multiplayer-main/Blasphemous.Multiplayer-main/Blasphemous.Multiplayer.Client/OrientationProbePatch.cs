@@ -35,7 +35,9 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null)
                 return;
 
-            PerformanceProbe.NoteGameOrientationWrite(EnemySyncManager.IsPuppet(enemy));
+            PerformanceProbe.NoteGameOrientationWrite(
+                EnemySyncManager.IsPuppet(enemy),
+                EnemySyncManager.LabelOf(enemy));
         }
     }
 }
