@@ -1505,3 +1505,52 @@ ci ha evitato tre regressioni.
    -> se è distribuito su tutti, è un comportamento generale della stanza
 ```
 **E `tools/verify-deploy.ps1` ora controlla 8 marcatori**, fra cui i due nuovi.
+
+---
+
+## [2026-10-08 23:28] `[AnimName]`: i nomi degli stati di animazione risolti IN GIOCO (l'inversione statica fallisce)
+
+### Il tentativo statico, e perché fallisce — vale la pena saperlo
+
+**I tre hash del churn sono `765711723`, `2081823275`, `460696939`.** In Unity
+`AnimatorStateInfo.shortNameHash` è **FNV-1a a 32 bit** sul nome dello stato.
+
+**L'algoritmo è corretto**, verificato contro i nomi di stato che l'assembly usa davvero:
+```
+Fnv("Idle")  = 1168775091        Fnv("Death") = -1851835411
+Fnv("Parry") =  917381717        Fnv("Hurt")  =  -487962152
+```
+*(i nomi raccolti dalle chiamate `Animator::Play`/`CrossFade` nell'assembly)*
+
+**Ma i tre valori del churn NON corrispondono a NESSUNA stringa di `Assembly-CSharp`**
+*(verificato: hash di tutte le `ldstr` più tutti i nomi di tipi, campi, metodi e proprietà)*.
+
+> **Sono nomi di stato di un `AnimatorController`, che è un asset Unity IMPACCHETTATO**
+> (`data.unity3d` 173 MB, più `sharedassets*.resource`). **Leggerli richiede un estrattore Unity.**
+
+**⇒ L'inversione statica è un vicolo cieco ragionevole, e va lasciata.**
+
+### La soluzione: chiedere il nome al gioco
+
+**La mod legge il clip che l'Animator sta suonando** (`GetCurrentAnimatorClipInfo`) **e lo scrive
+UNA VOLTA PER HASH**:
+```
+[AnimName] stato=2081823275 clip='...' primo-avvistamento=(-716.1,10.0)
+```
+**Costo: una manciata di righe in tutta la sessione**, senza possibilità di inondare il log
+*(un `HashSet<int>` di hash già risolti)*.
+
+### Perché è LA domanda che chiude il capitolo
+
+| Se lo stato in cui si entra centinaia di volte è… | Allora |
+|---|---|
+| **un ATTACCO** | **sono centinaia di attacchi reali** ⇒ **NON c'è alcun difetto** ✅ |
+| **un IDLE** | **qualcosa ce lo rimette dentro** ⇒ **è un difetto** ⚠️ |
+
+**È l'unica informazione che mancava per decidere se toccare qualcosa.** *Tutti i numeri raccolti
+finora — 386, 33/2s, 484/499 con `avvio=0.00` — dicono **quanto** succede, non **cosa**.*
+
+**Tag**: `stato-anim-nomi` · **Rollback**: `stato-anim-tally`
+
+**`tools/verify-deploy.ps1` ora controlla 9 marcatori.** Verifica attuale sulla macchina locale:
+**tutti presenti, protocollo 11 su mod e server.**
