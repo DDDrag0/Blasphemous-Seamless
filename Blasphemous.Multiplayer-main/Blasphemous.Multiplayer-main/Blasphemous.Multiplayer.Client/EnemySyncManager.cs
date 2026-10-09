@@ -787,17 +787,68 @@ namespace Blasphemous.Multiplayer.Client
                 // The hold timer restarts from now: inherited from the previous host it would already be
                 // expired, and OWNER_HOLD_SECONDS is what keeps a contested enemy from changing hands on the
                 // first comparison.
+                //
+                // Ownership is claimed here too, not just the timer. Before this, a promoted machine owned
+                // NOTHING: the records still said "not mine", and taking them back was left to
+                // DecideOwnership - which needs a live connection, a stale remote position (0.3 s) and then
+                // the 0.5 s hold. So for roughly half a second to a second after a handover NOBODY simulated
+                // the enemies, and the log showed it as "four of five owned by nobody" before it healed
+                // itself. This machine is the host now, so by definition it simulates: say so immediately.
                 for (int i = 0; i < _ids.Count; i++)
                 {
                     EnemyState state;
                     if (!_lastSent.TryGetValue(_ids[i], out state))
                         continue;
 
+                    state.OwnedByLocal = true;
+                    state.OwnedByRemote = false;
+                    state.OwnershipKnown = true;
                     state.OwnerSince = Time.time;
                 }
             }
             else if (!isHost && wasHost)
             {
+                // OFFLINE: the demotion is not a demotion at all, and pausing here freezes the session.
+                //
+                // This is the branch that produced the worst defect measured so far. When the host's
+                // connection drops, Multiplayer.OnDisconnect calls SetHost(false), so this branch runs - but
+                // IsHost is `_isHost || !IsConnected`, which means the machine is STILL the host as far as
+                // everything else is concerned, and there is no other player left to hand the enemies to.
+                // Pausing them there, and clearing their ownership, left five of five enemies suspended
+                // mid-stride: the log showed 70 identical samples over 35 seconds with the walk animation
+                // playing and no movement, while the player walked through them.
+                //
+                // Nothing could undo it either: DecideOwnership has a single caller and it sits behind
+                // `if (!IsConnected) return;`, so with no connection the arbitrating loop never runs, and
+                // ResumeEnemy is only reachable from paths that need a peer. Single-player is exactly the
+                // state the mod already defines for IsHost while offline, so the fix is to stop simulating
+                // nothing and keep simulating everything.
+                if (!Main.Multiplayer.NetworkManager.IsConnected)
+                {
+                    for (int i = 0; i < _ids.Count; i++)
+                    {
+                        EnemyState state;
+                        if (_lastSent.TryGetValue(_ids[i], out state))
+                        {
+                            state.OwnedByLocal = true;
+                            state.OwnedByRemote = false;
+                            state.OwnershipKnown = true;
+                            state.OwnerSince = Time.time;
+                        }
+
+                        // ResumeEnemy gives back both the behaviour tree AND the PlatformCharacterController.
+                        // Pausing only the tree would leave the body unable to move.
+                        Enemy enemy = ResolveEnemy(_ids[i]);
+                        if (enemy != null)
+                            ResumeEnemy(enemy);
+                    }
+
+                    // The previous host's positions say nothing about a session that no longer exists.
+                    _remotePositions.Clear();
+                    _remotePositionsAt.Clear();
+                    return;
+                }
+
                 // Demoted: stop simulating, otherwise the AI keeps running locally and fights the state
                 // the real host is broadcasting.
                 for (int i = 0; i < _ids.Count; i++)
