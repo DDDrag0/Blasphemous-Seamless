@@ -48,13 +48,19 @@
 | ~~20~~ | ~~Passo 5: le 130 patch sul Penitente~~ | — | ❌ **cade**: `Animator.name == "Body"` su entrambe |
 | ~~21~~ | ~~Passo 1: test di controllo single-player~~ | — | ❌ **cade**: la baseline disconnessa c'è già |
 | ~~22~~ | ~~Isteresi via `targetTime` su `EnemyBehaviour`~~ | — | ❌ **cade**: `targetTime` è `Private, InitOnly` e **mai assegnato** ⇒ `LookAtTarget` è **codice morto** |
+| **23** | **Il desync grave della sessione di test** (eccezione nel ciclo di invio) | ✅ **RISOLTO** | **era una REGRESSIONE NOSTRA** introdotta in `b2c9cdd`: la diagnostica `[EnemyTree]` leggeva `BehaviourTree` con **chiamata diretta**, ma il getter è **protected a runtime** (publicized a compile-time) ⇒ **479 e 666 eccezioni** da `UpdateCore → ResumeEnemy`, che **interrompevano il ciclo di invio a metà** ⇒ `SendEnemyUpdate` non partiva mai. Corretto in `9b1ea87` (reflection + try/catch), **verificato con `exceptions=0` su 384 report in 4 sessioni**. Vedi §12 |
+| **24** | **Il gioco azzera `consumedSpawns` in DUE metodi**, non uno | ✅ **RISOLTO** | **`EnemySpawner.Reset`** (morte del giocatore, load di un salvataggio, reset dal menu — **nessuno è un caricamento di livello**) oltre a `RespawnDeadEnemies`. **Scoperto durante il fix della voce 25**: svuotare solo al falò lasciava un annuncio **stantio** ⇒ il nuovo entrato uccideva nemici che l'annunciatore vedeva **vivi**. **Errore speculare, introdotto dal fix stesso.** Vedi §12 |
+| **25** | **Le morti non vengono annunciate se chi le ha viste non è più nella stanza** | ✅ **RISOLTO** | `AnnounceDeathStateToPeers` ricavava gli id da `FindObjectsOfType<EnemySpawnPoint>()`, cioè **solo la scena corrente dell'annunciatore**: altrove la lista era **vuota e usciva in silenzio** ⇒ **i nemici riapparivano VIVI**. Fix: memoria lato mod degli id annunciati + unione deduplicata + **una riga di log quando l'annuncio è vuoto** (il caso era invisibile). Vedi §12 |
+| **26** | **La pausa NON esisteva per 60 tipi di nemico su 77** | ✅ **RISOLTO** | `Enemy.EnemyBehaviour` è **null** per 60 sottotipi (fra cui **Fool e WheelCarrier**, tutti i nemici della stanza di test, e quasi tutti i boss): salvano il behaviour in una **proprietà propria**. `PauseEnemy` **usciva lì**, prima di `PauseBehaviour`/`enabled=false` ⇒ sul non-proprietario **AI, Animator e orientamento continuavano** (misurato: **437 scritture di orientamento e 54 riavvii di animazione** su un solo Fool non posseduto = **"cammina sul posto"**). Fix: `FindBehaviour` con fallback su `GetComponent`. **E lo stesso difetto era nel ramo di promozione di `SetHost`.** Vedi §12 |
+| **27** | **Il nemico che resta fermo con un giocatore addosso** — §1h | 🟢 **priorità bassa** | ⏳ **NON è provato che sia un difetto della mod**: `posNemico` ferma con un giocatore a **1-4 unità** può essere il **gioco** (vision cone, `DistanceToTarget`, limiti di pendenza — tutta attrezzatura che **esiste in IL**). **⚠️ PRIMA di toccare il codice serve il test in SINGOLO SENZA mod nello stesso punto**: se resta immobile anche lì, **la voce si chiude da sola**. **Due cause distinte da non confondere**: *(a)* nessuno possiede il nemico perché il padrone è in un'altra stanza *(→ non serve la pendenza)*; *(b)* nemico immobile con il padrone presente. **La spiegazione "pendenza" dell'utente è compatibile per 2 casi su 3** (i giocatori sono 0,9-1 unità sopra) ma **NON** per il Fool a `(-717.7,10)`: **fermo 37 campioni (18,5 s) con il giocatore a 1,1 unità e `dy=+0,1`**. Vedi §12 |
+| **28** | **Il respawn del falò e il reset del gioco vanno verificati dopo il fix della voce 24** | 🟢 **verifica** | ⏳ **da testare**: la voce 24 ha aggiunto un hook su `EnemySpawner.Reset`. **Se il gancio fosse troppo aggressivo**, si perderebbe la memoria delle morti al momento sbagliato. **Non è mai stato eseguito in gioco.** Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
 
 ---
 
-Ultimo aggiornamento: **orientamento RISOLTO e verificato** (`orientFlip` da 85 a 1-3). **In corso**: lo scivolamento del `Fool` — l'utente ipotizza che il client riavvii l'animazione a ogni pacchetto di movimento, **in analisi dall'Esploratore**.
+Ultimo aggiornamento: **desync CHIUSO e verificato** (`exceptions=0` su 384 report in 4 sessioni) · **tre fix dopo il test**: la pausa per i 60 tipi (voce 26), l'annuncio delle morti fuori stanza (voce 25), il secondo azzeramento del gioco (voce 24). **In corso**: niente — **in attesa del test**.
 
 
 ---
@@ -1597,3 +1603,177 @@ difetto confermato: come comportamento da verificare in un test dedicato.**
 
 **Cosa servirebbe per chiuderla**: un test in cui **UNA SOLA macchina** si siede al falò, e si guarda
 se **l'altra** vede rinascere i nemici. **Se non li vede, la voce è confermata.**
+
+
+## [2026-10-10 03:10] Sessione di test: il desync e' CHIUSO, e tre fix nuovi (voci 24, 25, 26)
+
+### Il verdetto sul desync: CHIUSO, con una prova forte
+
+La sessione precedente era andata in **desync grave**. La causa era **una regressione nostra**,
+introdotta in `b2c9cdd` con la strumentazione `[EnemyTree]`: la riga leggeva
+`behaviour.BehaviourTree.isRunning` con una **chiamata diretta**, ma quel getter e'' **protected a
+runtime** (la mod compila contro `Blasphemous.GameLibs`, un reference **publicized**, dove risulta
+pubblico). Il compilatore accettava, **Mono rifiutava**: **479 eccezioni in un log e 666
+nell''altro**, tutte da `UpdateCore -> ResumeEnemy`, che e'' il **percorso caldo**. L''eccezione
+**interrompeva il ciclo di invio a metà**, quindi `SendEnemyUpdate` **non partiva mai**: il canale
+restava vivo per i giocatori e morto per i nemici, e il sintomo sembrava un bug di desync da
+tutt''altra parte.
+
+**Non era preesistente**: `git show f854576:...EnemySyncManager.cs` non contiene `LogTreeState`.
+
+**Corretto in `9b1ea87`** (reflection + try/catch + `_treeRunningUnavailable`), poi irrobustito:
+ - `15eaadd`: tre blindature, fra cui un **`try/catch` DENTRO il ciclo di invio** (un nemico non
+   puo'' piu'' fermare l''intera passata) e **`exceptions=` nella riga `[Probe]`**;
+ - `86fd1dc`: corretta una blindatura **sbagliata** scritta in `15eaadd` (la doppia diagnosi in
+   `PauseEnemy` **uccideva la deduplica** -> decine di righe di log al secondo).
+
+**Prova che e'' chiuso**: nei quattro log del test, **`exceptions=0` su 384 report**, **zero stack
+trace**, zero `IMPRONTA DIVERSA`, zero `CACHE DIVERGE`, **zero `ModLog.Error`**. Il binario
+installato coincide con il sorgente di HEAD (verificato per hash).
+
+**Lezione di metodo, e va ricordata**: nell''IL avevo **visto** che quel getter non era pubblico, e
+ho tirato dritto **perche'' il progetto compilava**. **Compilare non e'' funzionare**: in Mono
+l''accessibilita'' a runtime e'' un controllo separato da quello del compilatore. La classe di
+rischio e'' **armata** per ogni riga futura che tocchi un membro del gioco.
+
+### Voce 26 — la pausa non esisteva per 60 tipi di nemico su 77 (fix da 1 riga)
+
+`Enemy.EnemyBehaviour` **non e'' la risposta generale**: solo **17 delle 77** sottoclassi di `Enemy`
+chiamano mai `Enemy::set_EnemyBehaviour`. Le altre **60** - fra cui **Fool e WheelCarrier**, cioe''
+**tutti i nemici della stanza di test**, e quasi tutti i boss - tengono il componente in una
+**proprieta'' propria** (`Fool.Behaviour`, `WheelCarrier.Behaviour`, pubbliche, assegnate in
+`OnStart`/`OnAwake`).
+
+Conseguenza: `PauseEnemy` leggeva la proprieta'' di base, la trovava null, e **usciva alla riga del
+controllo**, PRIMA di `PauseBehaviour()` e `enabled = false`. Per il **78% dei tipi** la pausa
+**non avveniva**: sul non-proprietario restavano attivi **l''albero NodeCanvas, l''Animator e
+l''orientamento**, mentre il corpo stava fermo. Misurato su **un solo Fool non posseduto**: **437
+scritture di orientamento** e **54 riavvii di animazione**, con la posizione che si sposta di **0.1**.
+Cioe'' **il "cammina sul posto"**, ed e'' la spiegazione piu'' plausibile dei residui di animazioni
+tagliate.
+
+**Fix** (`ea9a9f6`, tag `stato-behaviour-fallback`): `FindBehaviour(enemy)` = la proprieta'' di base,
+e se e'' null `GetComponent<EnemyBehaviour>()` poi `GetComponentInChildren<EnemyBehaviour>()`.
+**E il difetto era in TRE punti, non due**: oltre a `PauseEnemy` e `ResumeEnemy`, anche il **ramo di
+PROMOZIONE di `SetHost`** saltava quei nemici, quindi **promuovere a host non faceva ripartire
+l''AI** per quegli stessi 60 tipi.
+**NON toccato di proposito**: `IsInertScenery`, che usa `enemy.EnemyBehaviour == null` per
+**classificare** uno stand-by. Li'' un fallback **cambierebbe la classificazione**, e non e''
+verificato che sia un miglioramento: da rivedere a parte.
+
+### Voce 25 — le morti non venivano annunciate fuori dalla stanza delle uccisioni
+
+`AnnounceDeathStateToPeers` ricavava gli id da `ConsumedSpawnPointIds()`, che usa
+`FindObjectsOfType<EnemySpawnPoint>()`: **solo la scena corrente dell''annunciatore**. Se al momento
+della riconnessione l''annunciatore era altrove, la lista era **vuota e il metodo usciva IN
+SILENZIO**, e **i nemici gia'' uccisi riapparivano VIVI** a chi entrava.
+
+**La prova nei log e'' una riga**: `"G2 has joined the server!"` **senza** nessun
+`[EnemyJoin] annunciate` prima, mentre l''annunciatore era in una stanza **senza spawn point**;
+contro **quattro join precedenti** - con l''annunciatore nella stanza delle uccisioni - che
+annunciavano **2, 3, 5 e 5**. **Il fattore decisivo e'' la stanza dell''ANNUNCIATORE, non di chi si
+riconnette.**
+
+**Fix** (`5693b86`, tag `stato-riconnessione`):
+ 1. `_announcedDeaths`: ogni morte annunciata viene **ricordata**. **NON si svuota in `LevelLoaded`,
+    di proposito**: attraversare una stanza e'' esattamente il caso per cui esiste.
+ 2. L''annuncio invia **l''unione deduplicata** fra gli id della scena corrente e quelli ricordati.
+    Un id di spawn point e'' costruito da **scena, nome e posizione** - dati di scena - quindi la
+    stessa stringa esce su entrambe le macchine e l''unione **non raddoppia**.
+ 3. **Una riga di log quando l''annuncio e'' VUOTO.** Il caso era invisibile, ed e'' **l''unico
+    motivo per cui il difetto e'' stato scoperto per caso** invece che leggendo un log.
+
+### Voce 24 — il gioco azzera `consumedSpawns` in DUE metodi, e il mio piano ne copriva uno
+
+**Correzione trovata dall''Esploratore, e vale piu'' del fix stesso.**
+`EnemySpawner.Reset` - oltre a `RespawnDeadEnemies` - azzera la lista dei consumati. I suoi **tre
+chiamanti** sono **morte del giocatore, caricamento di un salvataggio, reset dal menu**: **nessuno
+e'' un caricamento di livello normale** (verificato in IL).
+
+Svuotare la memoria **solo al falo''** lasciava quindi un ricordo **stantio**: il nuovo entrato
+veniva mandato a **uccidere nemici che l''annunciatore vedeva in piedi**. Cioe'': **il fix della
+voce 25 introduceva l''errore OPPOSTO.** Da qui il secondo hook, `EnemySpawnResetPatch` su
+`EnemySpawner.Reset`, e `OnDeathStateReset()`.
+
+**Piano originale vs realta''**: avevo scritto *"~10 righe, nessun cambio di protocollo"* e
+*"si svuota dove si svuota `_pendingDeaths`"*. **Erano due assunzioni sbagliate**, entrambe
+scoperte prima di scrivere il codice:
+ - **`SendEnemyDeathGlobal` NON viene chiamato a ogni morte**: `UpdateCore` esce prima se non
+   connesso. Quindi la memoria registra **solo le morti avvenute da connessi** - che e'' anche
+   corretto, perche'' e'' l''unica cosa che il peer puo'' sapere;
+ - **il gioco azzera in due posti, non uno** (sopra).
+
+### Il blocco (voce 27) — e una correzione a una mia affermazione
+
+**17 run** con `posNemico` ferma per >=3 campioni e un giocatore a <5 unita'' (ricalcolato dalle
+**posizioni grezze**). Il peggiore: **`WheelCarrier` a `(-697.1,11)` fermo 134 campioni, ~67 s**.
+**Due cause distinte**: *(a)* nel test "stanza diversa" **nessuno lo simula** (il padrone e'' in
+un''altra stanza -> nessun token di proprieta''); *(b)* con entrambi in stanza, il nemico resta
+`Idle` a **1-4,5 unita''**.
+
+**La spiegazione dell''utente (una pendenza) e'' compatibile per 2 casi su 3** - i giocatori sono
+0,9-1 unita'' **sopra** il nemico - ma **NON** per il Fool a `(-717.7,10)`: **fermo 37 campioni
+(18,5 s) con il giocatore a 1,1 unita'' e `dy = +0,1`**. E in IL il gioco ha **tutta**
+l''attrezzatura per un limite del genere: `VisionCone` (presente sia su `Fool` sia su
+`WheelCarrier`), `EnemyBehaviour.VisualSensor`, `EnemyAI.maxRangeGroundDetection`, `GroundLayerMask`.
+
+**⚠️ Quindi NON si tocca il codice**: prima serve il **test in singolo SENZA mod nello stesso
+punto**. **Se resta immobile anche li'', non e'' un difetto della mod e la voce si chiude da sola.**
+
+**E una mia affermazione va RITIRATA**: avevo scritto in piu'' occasioni che **`dist_io` e''
+incoerente con le posizioni nella stessa riga**. **NON e'' riproducibile**: lo scarto massimo e''
+**0.13**, cioe'' l''arrotondamento a 0.1 su oltre 2200 righe. **La trappola vera e'' un''altra**:
+**`posAltro` e'' la PRIMA entry di `_remotePositions`** - puo'' essere **stantia, o di un''altra
+stanza** - mentre **`dist_altro` e'' il minimo su TUTTE**. Chi legge i log lo sappia.
+
+### Il fantasma: NON e'' comparso, e il test lo ha coperto
+
+Confronto per id fra i due log principali: **nessun id resta vivo/immobile su una macchina mentre
+e'' morto sull''altra**. Il percorso "uccisione mentre l''altro era altrove" **e'' stato
+esercitato** e **ha tenuto**. Le tre righe di morte mancanti hanno una spiegazione **benigna**,
+verificata nel codice: chi riceve la morte **distrugge la copia locale** prima che lo snapshot (2 Hz)
+possa vederla morta.
+
+**E una correzione a un mio allarme**: temevo che il `try/catch` del ciclo di invio potesse produrre
+un **fantasma permanente** (l''id finisce in `dead`, `ForgetEnemy` lo toglie da `_ids`, e il peer
+non riceve mai la morte). **Il meccanismo non e'' raggiungibile per quella via**: le send sono
+**pura memoria** (`QueueMesssage` fa solo `sendingQueue.AddRange`, **nessun I/O**); la scrittura
+sulla socket sta in `SendQueue()`, che ha gia'' il suo `catch (IOException)`.
+**Il fantasma che PUO'' accadere** - se la scrittura fallisce o il relay perde il pacchetto - **il
+riordino delle righe non lo coprirebbe comunque**. E **"per sempre" e'' falso**: sparisce a **cambio
+scena, riconnessione, falo'', o un colpo del peer** (`SettleStuckDeaths` gira su entrambe).
+
+### Stato dei tag
+
+| Tag | Cosa | Rollback |
+|---|---|---|
+| `stato-misura-uscita` | prima del ripristino | — |
+| `stato-proprieta-ripristino` | ripristino + `[EnemyTree]` | `stato-misura-uscita` |
+| `stato-tree-noreflection` | fix della regressione (reflection) | `stato-proprieta-ripristino` |
+| `stato-blindature` | tre blindature | `stato-tree-noreflection` |
+| `stato-blindature-2` | correzione della blindatura sbagliata | `stato-blindature` |
+| `stato-behaviour-fallback` | voce 26 (`FindBehaviour`) | `stato-blindature-2` |
+| `stato-riconnessione` | voci 24 e 25 | `stato-behaviour-fallback` |
+
+### Cosa NON e'' stato fatto, ed e'' voluto
+
+ - **Non toccare `LevelLoaded`** per svuotare la memoria: **romperebbe** la voce 25.
+ - **Non toccare** `ConsumedSpawnPointIds` / `ConsumedSpawnPositions`, `MarkSpawnPointConsumed`,
+   `ReceiveEnemyDeathGlobal`, il protocollo.
+ - **Non toccare l''ordine `ThawPhysics` / controllo `behaviour`** in `ResumeEnemy`: e'' corretto
+   (congelare e scongelare sono due metodi opposti, non oscillano).
+ - **Non aprire un cantiere sul blocco** (voce 27) prima del test in singolo senza mod.
+ - **Non aggiungere altra diagnostica al ciclo di invio**: il dedup e il `try/catch` per-nemico
+   funzionano (`exceptions=0` su 384 report).
+ - **Residuo noto e non coperto**: le uccisioni fatte con la mod **NON connessa** (single-player puro)
+   non passano da `UpdateCore` e **non entrano in memoria**. E'' coerente con cio'' che il peer puo''
+   sapere, ma e'' un limite da conoscere.
+
+### Verifiche ancora mancanti (per dichiarare chiuso con piena fiducia)
+
+ 1. una sessione con **`multiplayer sync` lanciato su ENTRAMBE** le macchine in momenti allineati,
+    per confrontare `sent=` / `recv=` / `fingerprint` - **che la riga `[Probe]` NON porta**, e senza
+    i quali "nessun pacchetto perso" e'' dedotto dall''effetto e non misurato;
+ 2. un caso con un **boss** (nemico stand-by che si attiva dopo) e un **falo''**
+    (`RespawnDeadEnemies`) - **e ora anche `EnemySpawner.Reset`** (voce 28), che **non e'' mai stato
+    eseguito in gioco**.
