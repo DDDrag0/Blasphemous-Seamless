@@ -167,7 +167,14 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     public void SendEnemyUpdate(uint enemyHandle, Vector2 position, float currentLife, int animState, float animTime, int fingerprint, bool ownedBySender, byte orientation) => NetworkManager.SendEnemyUpdate(enemyHandle, position, currentLife, animState, animTime, fingerprint, ownedBySender, orientation);
     // Used for both directions: a peer asks the host to apply a hit, and the host broadcasts one it
     // already applied. The server routes by sender, so a single packet type covers both.
-    public void SendEnemyDamageRequest(uint enemyHandle, float damageAmount) => NetworkManager.SendEnemyDamageRequest(enemyHandle, damageAmount);
+    //
+    // The three extra bytes carry the damage type, the element and the boolean flags: without them the
+    // receiving machine rebuilds the Hit as "Normal" and the reaction is wrong there - the hurt sound picks
+    // the light variant for a heavy blow, and the enemy types that read the damage type choose the wrong
+    // response. See NetworkManager.SendEnemyDamageRequest for why this needs no protocol change.
+    public void SendEnemyDamageRequest(uint enemyHandle, float damageAmount, byte damageType,
+                                       byte damageElement, byte flags)
+        => NetworkManager.SendEnemyDamageRequest(enemyHandle, damageAmount, damageType, damageElement, flags);
     public void SendEnemyKill(uint enemyHandle) => NetworkManager.SendEnemyKill(enemyHandle);
     // Ownership token: only the host sends these, and the peer obeys them.
     public void SendEnemyOwnership(uint enemyHandle, bool ownedByReceiver) => NetworkManager.SendEnemyOwnership(enemyHandle, ownedByReceiver);

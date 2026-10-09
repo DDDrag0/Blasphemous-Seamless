@@ -4,6 +4,7 @@ using UnityEngine;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
 using Gameplay.GameControllers.Penitent;
+using Gameplay.GameControllers.Penitent.Attack;
 using Gameplay.GameControllers.Enemies.Framework.IA;
 using Tools.Level.Layout;
 using Framework.Managers;
@@ -16,6 +17,7 @@ using Framework.Managers;
 using System;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace Blasphemous.Multiplayer.Client
 {
@@ -2872,7 +2874,12 @@ namespace Blasphemous.Multiplayer.Client
                 // Through the game's own damage entry point, so the hurt flash, the sound and - for the
                 // many enemy types that set their DEATH trigger there - the death animation all follow the
                 // normal flow instead of being skipped.
-                ApplyDamage(enemy, enemy.CurrentLife + 1f);
+                //
+                // Normal/Normal and no flags: this is the killing blow this mod applies to settle an enemy
+                // whose death was agreed, not a blow somebody struck. Giving it a real damage type would be
+                // inventing information, so it keeps the neutral one.
+                ApplyDamage(enemy, enemy.CurrentLife + 1f, (byte)DamageArea.DamageType.Normal,
+                            (byte)DamageArea.DamageElement.Normal, 0);
             }
 
             if (enemy.Dead || enemy.CurrentLife <= 0f)
@@ -3180,7 +3187,8 @@ namespace Blasphemous.Multiplayer.Client
         /// (either it is the host, or it is the peer that is then echoed by the server to the others),
         /// so this only ever runs on machines that did not swing.
         /// </summary>
-        public static void ReceiveEnemyDamage(uint handle, float damageAmount)
+        public static void ReceiveEnemyDamage(uint handle, float damageAmount, byte damageType,
+                                              byte damageElement, byte flags)
         {
             Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
@@ -3200,7 +3208,7 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             _damageApplied++;
-            ApplyDamage(enemy, damageAmount);
+            ApplyDamage(enemy, damageAmount, damageType, damageElement, flags);
         }
 
         /// <summary>Called by the damage patch when a local hit is forwarded instead of applied.</summary>
@@ -3208,6 +3216,43 @@ namespace Blasphemous.Multiplayer.Client
         {
             _damageSent++;
         }
+
+        /// <summary>
+        /// Packs the three booleans of a Hit that change how the receiving machine reacts to it.
+        ///
+        /// Only the ones that actually alter the outcome travel: DontSpawnBlood suppresses the blood spray,
+        /// and the parry/block flags decide whether the enemy treats the blow as guarded. Everything else in
+        /// the struct is either recomputed locally or irrelevant on the machine that is not swinging.
+        ///
+        /// NoInlining is deliberate: the method takes a Hit by VALUE, and without it the JIT is free to
+        /// inline the call and then touch a value type belonging to a game assembly at a moment this mod does
+        /// not control. Keeping a real call frame is the cheap way to stay out of trouble.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static byte HitFlagsFrom(Hit hit)
+        {
+            byte flags = 0;
+
+            if (hit.DontSpawnBlood)
+                flags |= 1;
+
+            if (hit.Unparriable)
+                flags |= 2;
+
+            if (hit.Unblockable)
+                flags |= 4;
+
+            return flags;
+        }
+
+        /// <summary>Bit 0 of the damage flags: the hit must not produce blood.</summary>
+        private const byte HIT_FLAG_DONT_SPAWN_BLOOD = 1;
+
+        /// <summary>Bit 1 of the damage flags: the hit cannot be parried.</summary>
+        private const byte HIT_FLAG_UNPARRIABLE = 2;
+
+        /// <summary>Bit 2 of the damage flags: the hit cannot be blocked.</summary>
+        private const byte HIT_FLAG_UNBLOCKABLE = 4;
 
         /// <summary>
         /// Called by the damage patch on the host, once per hit it applies itself, so the diagnostic
@@ -3374,7 +3419,9 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy.Status.Dead)
                 return;
 
-            ApplyDamage(enemy, enemy.CurrentLife + 1f);
+            // Neutral damage: this is the mod settling an agreed death, not a blow somebody struck.
+            ApplyDamage(enemy, enemy.CurrentLife + 1f, (byte)DamageArea.DamageType.Normal,
+                        (byte)DamageArea.DamageElement.Normal, 0);
         }
 
         private static Enemy ResolveEnemy(string id)
@@ -3404,7 +3451,8 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         // Applies a hit through the native damage area so hurt animations, sounds and death all run.
-        private static void ApplyDamage(Enemy enemy, float damageAmount)
+        private static void ApplyDamage(Enemy enemy, float damageAmount, byte damageType,
+                                        byte damageElement, byte flags)
         {
             if (enemy.EntityDamageArea == null)
                 return;
@@ -3412,10 +3460,37 @@ namespace Blasphemous.Multiplayer.Client
             Hit hit = new Hit
             {
                 DamageAmount = damageAmount,
-                DamageType = DamageArea.DamageType.Normal,
-                DamageElement = DamageArea.DamageElement.Normal,
+
+                // The damage type and the element come from the hit that actually landed, so the receiving
+                // machine picks the same reaction the attacker's machine did. They used to be hard-coded to
+                // Normal, which is why every relayed blow sounded light and why the enemy types that branch on
+                // the damage type always took the wrong branch.
+                DamageType = (DamageArea.DamageType)damageType,
+                DamageElement = (DamageArea.DamageElement)damageElement,
+                DontSpawnBlood = (flags & HIT_FLAG_DONT_SPAWN_BLOOD) != 0,
+                Unparriable = (flags & HIT_FLAG_UNPARRIABLE) != 0,
+                Unblockable = (flags & HIT_FLAG_UNBLOCKABLE) != 0,
+
                 AttackingEntity = Core.Logic.Penitent != null ? Core.Logic.Penitent.gameObject : null
             };
+
+            // SPARKS AND BLOOD ARE THE ATTACKER'S, AND NOBODY REPLAYS THEM OTHERWISE.
+            //
+            // The hurt flash, the sound and (for many enemy types) the death trigger all live inside
+            // <EnemyType>::Damage(Hit), which the call below already reaches - that is why the sound is heard
+            // on both machines today. Sparks and blood are different: they are spawned by
+            // PenitentSword.Attack, which calls Weapon.GetDamageableEntities() to find what the LOCAL sword
+            // overlapped, then GetSwordSparks, and only afterwards applies the damage. On the machine that is
+            // not swinging, the sword never overlapped anything, so that whole path never runs and the hit
+            // lands silently from the eye's point of view.
+            //
+            // The replay happens HERE, on the relay path, and that placement is what keeps it from doubling:
+            // this method only ever runs for damage that arrived from the network, and the sender is excluded
+            // by the server, so the machine that swung never reaches this code for its own blow.
+            //
+            // The position is not transmitted: the receiver holds the same enemy instance, so the impact point
+            // is the same collider bounds centre the vanilla code would have used.
+            ReplayHitEffects(enemy, hit);
 
             // Through the game's own damage entry point, not through the hurtbox.
             //
@@ -3442,6 +3517,64 @@ namespace Blasphemous.Multiplayer.Client
                 IsApplyingRemoteDamage = false;
             }
         }
+
+        /// <summary>
+        /// Spawns the sparks and the blood a hit would have produced, on a machine that did not swing.
+        ///
+        /// Mirrors what PenitentSword.GetSwordSparks does for each entity it overlapped: take the collider's
+        /// bounds centre, then ask the ENEMY whether this kind of impact sparks and bleeds. Those two answers
+        /// are per-prefab fields (sparksOnImpact / bleedOnImpact), which is exactly why "some enemies never
+        /// show sparks" is correct behaviour rather than a bug.
+        ///
+        /// It deliberately does NOT call PenitentSword.GetSwordSparks(list, hit), which would be less code.
+        /// That method needs the attacker's own entity list and would re-derive the same decisions; going
+        /// straight to SpawnSparks/SpawnBlood with the enemy checked here keeps the number of game members
+        /// this mod reaches through to the minimum, and every one of these was verified public in IL.
+        ///
+        /// Everything is guarded. A mod-visible exception inside the damage path is worse than a missing
+        /// spark: it is exactly how the send loop lost a session earlier in this project.
+        /// </summary>
+        private static void ReplayHitEffects(Enemy enemy, Hit hit)
+        {
+            try
+            {
+                Penitent penitent = Core.Logic.Penitent;
+                if (penitent == null)
+                    return; // dying, in a menu, or between levels: nothing to attach the effect to
+
+                // Same source the vanilla code uses for the impact point.
+                Collider2D collider = enemy.GetComponentInChildren<Collider2D>();
+                if (collider == null)
+                    return;
+
+                Vector3 position = collider.bounds.center;
+
+                if (enemy.SparkOnImpact() && penitent.SwordSparkSpawner != null)
+                    penitent.SwordSparkSpawner.GetSwordSpark(position);
+
+                if (hit.DontSpawnBlood || !enemy.BleedOnImpact() || enemy.IsHitGuarded(hit))
+                    return;
+
+                PenitentSword sword = penitent.PenitentAttack != null
+                    ? penitent.PenitentAttack.CurrentPenitentWeapon as PenitentSword
+                    : null;
+
+                // The sword owns the blood pool, so without one there is nothing to reuse. Skipping is the
+                // right answer: creating a second source of blood effects would be a new problem, not a fix.
+                if (sword != null)
+                    sword.SpawnBlood(position, hit);
+            }
+            catch (Exception e)
+            {
+                _hitEffectErrors++;
+                if (_hitEffectErrors <= 5)
+                    ModLog.Error("[EnemyFX] replay degli effetti fallito (" + e.GetType().Name + "): " +
+                                 e.Message + " - il danno e' stato applicato comunque");
+            }
+        }
+
+        /// <summary>Failed effect replays. Diagnostics only: the damage itself is unaffected by them.</summary>
+        private static int _hitEffectErrors;
 
         /// <summary>
         /// How many times the send loop had to skip an enemy because of an exception.

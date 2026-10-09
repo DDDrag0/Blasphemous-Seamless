@@ -52,17 +52,25 @@ namespace Blasphemous.Multiplayer.Client
             // machine ends up with the same health.
             float amount = (float)(int)hit.DamageAmount;
 
+            // The hit's own description travels with it. The receiving machine rebuilds this Hit from
+            // scratch, and a rebuilt Hit that says "Normal" makes every blow sound like a light one and makes
+            // the enemy types that branch on the damage type react wrongly. The flags carry the booleans that
+            // change the reaction (see EnemySyncManager.HitFlagsFrom).
+            byte damageType = (byte)hit.DamageType;
+            byte damageElement = (byte)hit.DamageElement;
+            byte flags = EnemySyncManager.HitFlagsFrom(hit);
+
             if (EnemySyncManager.IsHost)
             {
                 // The damage already landed here; the server relays this to the peers in the scene so
                 // they can show it too.
                 EnemySyncManager.RecordDamageApplied();
-                Main.Multiplayer.SendEnemyDamageRequest(handle, amount);
+                Main.Multiplayer.SendEnemyDamageRequest(handle, amount, damageType, damageElement, flags);
             }
             else
             {
                 EnemySyncManager.RecordDamageSent();
-                Main.Multiplayer.SendEnemyDamageRequest(handle, amount);
+                Main.Multiplayer.SendEnemyDamageRequest(handle, amount, damageType, damageElement, flags);
             }
         }
 

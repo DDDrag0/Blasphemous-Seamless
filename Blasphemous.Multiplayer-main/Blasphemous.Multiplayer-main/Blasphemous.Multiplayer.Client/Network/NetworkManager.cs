@@ -4,6 +4,7 @@ using Blasphemous.Multiplayer.Client.ProgressSync;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Blasphemous.Multiplayer.Common.Enums;
 using Framework.Managers;
+using Gameplay.GameControllers.Entities;
 using SimpleTCP;
 using System;
 using System.Collections.Generic;
@@ -528,11 +529,32 @@ namespace Blasphemous.Multiplayer.Client.Network
             EnemySyncManager.ReceiveEnemyUpdate(handle, new Vector2(xpos, ypos), currentLife, animState, animTime, fingerprint, ownedBySender, orientation);
         }
 
-        public void SendEnemyDamageRequest(uint handle, float damageAmount)
+        /// <summary>
+        /// Forwards one sword hit to the machine that is not swinging.
+        ///
+        /// The payload carries THREE bytes more than the handle and the amount, and the reason is that the
+        /// hit itself cannot be reconstructed without them. The original 8 bytes produced a Hit with
+        /// DamageType fixed at Normal, so on the machine that was only watching every blow sounded like a
+        /// light one, and the enemy types that read the damage type to pick their reaction always picked the
+        /// wrong one.
+        ///
+        /// DamageType and DamageElement are one byte each; the third byte is a flag field for the booleans
+        /// the receiving side needs (see EnemySyncManager.HitFlagsFrom). The position is deliberately NOT
+        /// sent: the receiver holds the same enemy instance, so it derives the impact point from the same
+        /// collider the game would have used.
+        ///
+        /// This does NOT require a protocol change. The server relays the payload verbatim without parsing
+        /// it, and a receiver built before this change reads the first eight bytes and ignores the rest.
+        /// </summary>
+        public void SendEnemyDamageRequest(uint handle, float damageAmount, byte damageType,
+                                           byte damageElement, byte flags)
         {
             List<byte> bytes = new();
             bytes.AddRange(BitConverter.GetBytes(handle));
             bytes.AddRange(BitConverter.GetBytes(damageAmount));
+            bytes.Add(damageType);
+            bytes.Add(damageElement);
+            bytes.Add(flags);
             QueueMesssage(bytes.ToArray(), NetworkType.EnemyDamageRequest);
         }
 
@@ -541,7 +563,13 @@ namespace Blasphemous.Multiplayer.Client.Network
             uint handle = BitConverter.ToUInt32(data, 0);
             float damageAmount = BitConverter.ToSingle(data, 4);
 
-            EnemySyncManager.ReceiveEnemyDamage(handle, damageAmount);
+            // Tolerated by design: an older sender stops at eight bytes, and the hit is then applied with the
+            // neutral values the mod used before. Never read past the end.
+            byte damageType = data.Length > 8 ? data[8] : (byte)DamageArea.DamageType.Normal;
+            byte damageElement = data.Length > 9 ? data[9] : (byte)DamageArea.DamageElement.Normal;
+            byte flags = data.Length > 10 ? data[10] : (byte)0;
+
+            EnemySyncManager.ReceiveEnemyDamage(handle, damageAmount, damageType, damageElement, flags);
         }
 
         public void SendEnemyKill(uint handle)
