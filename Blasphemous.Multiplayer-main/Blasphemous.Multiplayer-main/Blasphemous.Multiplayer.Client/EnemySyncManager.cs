@@ -285,6 +285,27 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly HashSet<string> _pendingDeaths = new HashSet<string>();
 
         /// <summary>
+        /// Every death this machine has announced, so a joiner can be told about them even when the
+        /// announcer is no longer in the room where they happened.
+        ///
+        /// The announcer used to derive the ids from the spawn points of its CURRENT scene, so if it had
+        /// walked away before someone reconnected the announcement was empty and the joiner saw enemies it
+        /// had already killed - proven in the logs by a join line with no "[EnemyJoin] annunciate" before it,
+        /// while the announcer stood in a room with no spawn points. Remembering the ids removes the
+        /// dependency on where the announcer happens to be standing.
+        ///
+        /// NOT cleared on a level load, deliberately: crossing a level is exactly the case this exists for.
+        /// It is cleared wherever the GAME forgets its own consumed list - the bonfire respawn, and the
+        /// reset that follows a player death or a save load - because at that point the enemies really are
+        /// alive again for both machines.
+        ///
+        /// Only deaths that happened while connected are recorded, because the hot send path lives inside
+        /// UpdateCore, which returns early when there is no connection. A kill made in pure single-player
+        /// never becomes an announcement, which matches what the peer can know about.
+        /// </summary>
+        private static readonly HashSet<string> _announcedDeaths = new HashSet<string>();
+
+        /// <summary>
         /// Enemies already reported as dead by the diagnostic snapshot, so each death is logged once.
         ///
         /// The kill detection used to live only inside the send loop, which returns early when there is no
@@ -1378,12 +1399,43 @@ namespace Blasphemous.Multiplayer.Client
         public static void OnEnemiesRespawned()
         {
             int pending = _pendingDeaths.Count;
+            int announced = _announcedDeaths.Count;
 
             _pendingDeaths.Clear();
             _killLogged.Clear();
+            _announcedDeaths.Clear();
 
-            if (pending > 0)
-                ModLog.Info($"[EnemySync] Nemici rinati: dimenticate {pending} morti annunciate in precedenza");
+            if (pending > 0 || announced > 0)
+                ModLog.Info($"[EnemySync] Nemici rinati: dimenticate {pending} morti ricevute e " +
+                            $"{announced} annunciate in precedenza");
+        }
+
+        /// <summary>
+        /// The game has dropped its own consumed list and brought nothing back through the bonfire route:
+        /// a player death, a save being loaded, or a reset from the menu - the three callers of
+        /// EnemySpawner.Reset, none of which is an ordinary level load (verified in IL).
+        ///
+        /// This hook exists because forgetting the announced deaths ONLY at the bonfire left a stale memory:
+        /// after the enemies came back alive for the local player, this machine still remembered announcing
+        /// them, so the next joiner was told about kills that no longer existed and killed enemies the
+        /// announcer could see standing. The first version of this fix introduced that error in the opposite
+        /// direction, and it is the reason the reset is hooked rather than assumed.
+        ///
+        /// EnemySpawner.Reset does not run on level changes, so this cannot drop the memory that the
+        /// cross-room announcement depends on.
+        /// </summary>
+        public static void OnDeathStateReset()
+        {
+            int announced = _announcedDeaths.Count;
+            int pending = _pendingDeaths.Count;
+
+            _announcedDeaths.Clear();
+            _pendingDeaths.Clear();
+            _killLogged.Clear();
+
+            if (announced > 0 || pending > 0)
+                ModLog.Info($"[EnemySync] consumedSpawns azzerato dal gioco: dimenticate {announced} morti " +
+                            $"annunciate e {pending} ricevute");
         }
 
         /// <summary>
@@ -2048,17 +2100,40 @@ namespace Blasphemous.Multiplayer.Client
             // permanently, and the server kept echoing it to every later joiner. The death channel already
             // does exactly this job and reaches everyone except the sender.
             //
-            // The ids are comparable after all: a spawn-point id is built from scene, name and position, all
-            // of which are authored scene data, so both machines produce the same string for the same spawn
-            // point. The earlier note claiming otherwise was wrong.
-            List<string> ids = ConsumedSpawnPointIds();
+            // The ids from the current scene are the precise ones: they carry a position the game itself has
+            // marked consumed. The remembered ones cover the rooms this machine has since walked out of, and
+            // a spawn-point id is built from scene, name and position - authored data - so the same spawn
+            // point yields the same string on both machines and the union deduplicates instead of doubling.
+            List<string> sceneIds = ConsumedSpawnPointIds();
+
+            // Reported even when empty, because an empty announcement used to be silent, and that silence is
+            // the only reason this defect was found by accident rather than by reading a log.
+            if (sceneIds.Count == 0)
+            {
+                ModLog.Info($"[EnemyJoin] annuncio vuoto per la scena {_scene} (nessuno spawn point consumato " +
+                            $"visibile): uso solo le {_announcedDeaths.Count} morti in memoria");
+            }
+
+            List<string> ids = new List<string>(sceneIds);
+            HashSet<string> seen = new HashSet<string>(sceneIds);
+
+            foreach (string remembered in _announcedDeaths)
+            {
+                if (seen.Add(remembered))
+                    ids.Add(remembered);
+            }
+
             if (ids.Count == 0)
+            {
+                ModLog.Info("[EnemyJoin] nessuna morte da annunciare (memoria vuota, scena senza consumati)");
                 return;
+            }
 
             for (int i = 0; i < ids.Count; i++)
                 Main.Multiplayer.SendEnemyDeathGlobal(ids[i]);
 
-            ModLog.Info($"[EnemyJoin] annunciate {ids.Count} morti precedenti al nuovo giocatore");
+            ModLog.Info($"[EnemyJoin] annunciate {ids.Count} morti precedenti al nuovo giocatore " +
+                        $"({sceneIds.Count} dalla scena, {ids.Count - sceneIds.Count} dalla memoria)");
         }
 
         /// <summary>
@@ -2375,6 +2450,11 @@ namespace Blasphemous.Multiplayer.Client
                         // Also announce it scene-independently: the other player may be in another room and
                         // would otherwise never learn about this death.
                         Main.Multiplayer.SendEnemyDeathGlobal(id);
+
+                        // Remembered as well as announced: if someone reconnects later, this machine may no
+                        // longer be in the room where the kill happened, and the announcement must not depend
+                        // on that. Only reached while connected, because UpdateCore returns early otherwise.
+                        _announcedDeaths.Add(id);
                         continue;
                     }
 

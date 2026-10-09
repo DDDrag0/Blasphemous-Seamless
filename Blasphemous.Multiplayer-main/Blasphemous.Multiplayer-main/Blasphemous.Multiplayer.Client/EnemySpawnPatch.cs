@@ -60,6 +60,28 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
+    /// <summary>
+    /// The game has dropped its consumed-spawn list without bringing the enemies back through the bonfire.
+    ///
+    /// EnemySpawner.Reset is the second place the game forgets which spawn points it has consumed -
+    /// RespawnDeadEnemies is the first. Its three callers are a player death, a save being loaded, and a
+    /// reset from the menu; none of them is an ordinary level load (verified in IL), which is what makes
+    /// hooking it safe: it cannot drop the memory the cross-room announcement depends on.
+    ///
+    /// Without this hook the mod remembered having announced deaths the game no longer considered dead, so
+    /// the next joiner was told to kill enemies that were visibly standing. That is the mirror image of the
+    /// bug this fix addresses, and it appeared the moment the memory was introduced.
+    /// </summary>
+    [HarmonyPatch(typeof(EnemySpawner), nameof(EnemySpawner.Reset))]
+    public class EnemySpawnResetPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            EnemySyncManager.OnDeathStateReset();
+        }
+    }
+
     public static class EnemyDiagnostics
     {
         /// <summary>
