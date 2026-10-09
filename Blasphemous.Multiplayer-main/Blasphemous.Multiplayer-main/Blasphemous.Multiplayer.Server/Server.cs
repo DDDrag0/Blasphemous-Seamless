@@ -148,7 +148,21 @@ public class Server
             if (_hostIp != null)
             {
                 Logger.Info($"Host reassigned to: {connectedPlayers[_hostIp].name} ({_hostIp})");
-                sendHostAssign(_hostIp);
+
+                // Sent to EVERY remaining client, not only to the new host.
+                //
+                // The single send was one-shot and never retried, so a lost HostAssign was permanent: with
+                // three players, when the host left, the promotion of the next player was announced to that
+                // player alone - and the third one was told nothing at all. Its log shows no "Host role: True"
+                // and not even the departure of the player before it, so it kept believing the enemies belonged
+                // to somebody who had already gone, and its AI stayed frozen for the rest of the session.
+                //
+                // Broadcasting makes the assignment idempotent, which is what it should have been: every
+                // client is told the current truth each time it changes. sendHostAssign already decides per
+                // recipient (isHost = playerIp == _hostIp), and a client that is not the host and never was
+                // receives SetHost(false), which changes nothing at all.
+                foreach (string ip in connectedPlayers.Keys)
+                    sendHostAssign(ip);
             }
             else
                 Logger.Info("Host disconnected, no other players connected.");
