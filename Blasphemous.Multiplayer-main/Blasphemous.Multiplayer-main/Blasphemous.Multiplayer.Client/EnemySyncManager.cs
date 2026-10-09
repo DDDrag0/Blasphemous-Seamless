@@ -1054,7 +1054,19 @@ namespace Blasphemous.Multiplayer.Client
             // direct call did. A measurement is never worth breaking the thing being measured.
             string running = ReadTreeRunning(behaviour);
 
-            string key = enabled + "|" + running + "|" + esito;
+            // THE REASON IS NOT PART OF THE STATE, and putting it in the key is a defect I have now made
+            // twice. Deduplication has to answer "is this enemy in a different state than when I last
+            // reported it", and the answer cannot depend on WHO asked.
+            //
+            // Two call sites pause the same enemy - the send loop every tick and the packet path as each
+            // update arrives - and they pass different reasons. With the reason in the key the value
+            // alternated "?|remote owns|?|remote owns" forever, so every call looked like a change and the
+            // dedup was dead: measured in a real session, 1140 lines of [EnemyTree] out of 2137 total, with
+            // enabled and isRunning IDENTICAL on both halves of every pair. The state never changed at all.
+            //
+            // Now only the state decides, and the reason is reported as what it is: context for the change
+            // that was actually observed.
+            string key = enabled + "|" + running;
 
             string previous;
             if (_treeStateLogged.TryGetValue(id, out previous) && previous == key)
