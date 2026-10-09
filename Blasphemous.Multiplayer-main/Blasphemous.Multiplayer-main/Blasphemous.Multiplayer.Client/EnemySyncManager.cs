@@ -753,7 +753,7 @@ namespace Blasphemous.Multiplayer.Client
                     if (enemy == null)
                         continue;
 
-                    var behaviour = enemy.EnemyBehaviour;
+                    var behaviour = FindBehaviour(enemy);
                     if (behaviour == null || behaviour.enabled)
                         continue;
 
@@ -833,6 +833,44 @@ namespace Blasphemous.Multiplayer.Client
         /// so the controller would stop - but so would everything else, including the ability to apply the
         /// position received: switching the GameObject off is the wrong way round.
         /// </summary>
+        /// <summary>
+        /// The behaviour tree component of an enemy, however that type chooses to expose it.
+        ///
+        /// `Enemy.EnemyBehaviour` is NOT the general answer, and assuming it was cost the sync a real
+        /// behaviour: only 17 of the 77 Enemy subclasses ever call Enemy::set_EnemyBehaviour (verified in IL).
+        /// The other 60 - including Fool and WheelCarrier, every enemy in the test room, and most bosses -
+        /// keep the component in a property of their own (Fool.Behaviour, WheelCarrier.Behaviour; both public,
+        /// assigned in OnStart/OnAwake) and never touch the base one.
+        ///
+        /// Reading only the base property made PauseEnemy return before PauseBehaviour and enabled = false, so
+        /// for 78% of enemy types the pause simply did not happen: on the non-owner the NodeCanvas tree, the
+        /// Animator and the orientation kept running while the body stood still. Measured on a single unowned
+        /// Fool: 437 orientation writes and 54 animation restarts, with its position moving by 0.1.
+        ///
+        /// The component is on the enemy itself, since EnemySpawnPoint.CreateEnemy parents the new enemy to
+        /// the level, not to the spawn point - the same reason the code elsewhere had to stop using
+        /// GetComponentInParent<EnemySpawnPoint>. The lookup is not cached here on purpose: it runs on the
+        /// owned/non-owned transition rather than per frame, and GetComponent on a live object is cheap
+        /// compared with being wrong about whether the enemy is paused.
+        /// </summary>
+        private static EnemyBehaviour FindBehaviour(Enemy enemy)
+        {
+            if (enemy == null)
+                return null;
+
+            EnemyBehaviour behaviour = enemy.EnemyBehaviour;
+            if (behaviour != null)
+                return behaviour;
+
+            // GetComponentInChildren as well, because a behaviour living on a child would otherwise still be
+            // missed - the failure mode being fixed here is precisely "assumed it was somewhere it was not".
+            behaviour = enemy.GetComponent<EnemyBehaviour>();
+            if (behaviour != null)
+                return behaviour;
+
+            return enemy.GetComponentInChildren<EnemyBehaviour>();
+        }
+
         private static void PauseEnemy(Enemy enemy, string reason = null)
         {
             FreezePhysics(enemy);
@@ -855,7 +893,7 @@ namespace Blasphemous.Multiplayer.Client
             // tree, the pause was never re-applied, because the component was already disabled and this
             // method returned early. Calling PauseBehaviour every time costs nothing - it is idempotent
             // (it guards on BehaviourTree.isRunning) - and it closes the gap.
-            var behaviour = enemy.EnemyBehaviour;
+            var behaviour = FindBehaviour(enemy);
             if (behaviour == null)
                 return;
 
@@ -933,7 +971,7 @@ namespace Blasphemous.Multiplayer.Client
             _puppetEnemies.Remove(enemy);
             ThawPhysics(enemy);
 
-            var behaviour = enemy.EnemyBehaviour;
+            var behaviour = FindBehaviour(enemy);
             if (behaviour == null)
             {
                 LogTreeState(enemy, null, "resume:no-behaviour");
