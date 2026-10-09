@@ -274,6 +274,7 @@ namespace Blasphemous.Multiplayer.Client
                 $"animRestart={_restarts} animRepeat={_repeats} orientFlip={_orientFlips} " +
                 $"orientSkip={_orientFlipsSkipped} gameOrient={_gameOrientWrites} " +
                 $"gameOrientBurst={_gameOrientBurst} " +
+                $"exceptions={EnemySyncManager.SyncLoopExceptions} " +
                 $"connected={Main.Multiplayer.NetworkManager.IsConnected}");
 
             ReportOrientationByEnemy();

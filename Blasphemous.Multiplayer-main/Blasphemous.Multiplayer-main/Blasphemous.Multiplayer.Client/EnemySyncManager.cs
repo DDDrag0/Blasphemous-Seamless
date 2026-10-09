@@ -859,10 +859,15 @@ namespace Blasphemous.Multiplayer.Client
             if (behaviour == null)
                 return;
 
-            LogTreeState(enemy, behaviour, "pause:" + (reason ?? "?"));
+            // The report runs BEFORE and AFTER, and the order matters: it used to run only before, so when
+            // it threw, PauseBehaviour and enabled = false never executed - the diagnostic cancelled the action
+            // it existed to observe. Both calls are harmless now: ReadTreeRunning swallows everything.
+            LogTreeState(enemy, behaviour, (reason ?? "?") + ":prima");
 
             behaviour.PauseBehaviour();
             behaviour.enabled = false;
+
+            LogTreeState(enemy, behaviour, (reason ?? "?") + ":dopo");
         }
 
         /// <summary>
@@ -2266,151 +2271,175 @@ namespace Blasphemous.Multiplayer.Client
                 if (enemy == null || enemy.gameObject == null)
                     continue; // not spawned yet, or already gone
 
-                // DEATH IS CHECKED FIRST, BEFORE the activity check, and that order is the whole point.
+                // ONE ENEMY MUST NOT BE ABLE TO STOP THE WHOLE PASS.
                 //
-                // The game deactivates enemies that are off camera (Enemy.DisableBehaviourWhenInvisible,
-                // Enemy.ActivationRange), so a dead enemy outside the view has activeInHierarchy == false.
-                // With the activity check first, the loop skipped it and the death was never announced: the
-                // other player kept a live enemy - the "ghost" - until someone walked close enough to
-                // reactivate it, which is exactly when it disappeared. A dead enemy is dead regardless of
-                // whether it is currently being drawn.
-                if (enemy.Dead || enemy.CurrentLife <= 0f)
+                // This body used to be unprotected, and that cost a whole session its synchronisation:
+                // a diagnostic inside it threw, the exception aborted the iteration, and everything after
+                // it never ran - the update for that enemy AND for every enemy following it, the death
+                // sweep, and on the host the ownership decision and its token. The send never completed,
+                // the peer kept a frozen copy of every enemy, and the symptom looked like a desync bug
+                // somewhere else entirely.
+                //
+                // A synchronisation loop has to be able to lose one enemy and carry on with the rest.
+                try
                 {
-                    (dead ??= new List<string>()).Add(id);
 
-                    // Recorded here, before the enemy is dropped from _ids. The snapshot runs only twice a
-                    // second and looked for deaths among the tracked enemies, so by the time it ran the dead
-                    // one had already been removed and no death was ever logged.
-                    if (_killLogged.Add(id))
+                    // DEATH IS CHECKED FIRST, BEFORE the activity check, and that order is the whole point.
+                    //
+                    // The game deactivates enemies that are off camera (Enemy.DisableBehaviourWhenInvisible,
+                    // Enemy.ActivationRange), so a dead enemy outside the view has activeInHierarchy == false.
+                    // With the activity check first, the loop skipped it and the death was never announced: the
+                    // other player kept a live enemy - the "ghost" - until someone walked close enough to
+                    // reactivate it, which is exactly when it disappeared. A dead enemy is dead regardless of
+                    // whether it is currently being drawn.
+                    if (enemy.Dead || enemy.CurrentLife <= 0f)
                     {
-                        ModLog.Info($"[EnemyKill] {ShortId(id)} MORTO Dead={enemy.Dead} " +
-                                    $"vita={enemy.CurrentLife:F1} attivo={enemy.gameObject.activeInHierarchy} " +
-                                    $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
-                    }
-                    _killsSent++;
-                    Main.Multiplayer.SendEnemyKill(handle);
-                    // Also announce it scene-independently: the other player may be in another room and
-                    // would otherwise never learn about this death.
-                    Main.Multiplayer.SendEnemyDeathGlobal(id);
-                    continue;
-                }
+                        (dead ??= new List<string>()).Add(id);
 
-                Vector2 position = enemy.transform.position;
-                float life = enemy.CurrentLife;
-                byte orientation = ReadOrientation(enemy);
-                int animState;
-                float animTime;
-                ReadAnimation(enemy, out animState, out animTime);
-
-                // Skip unchanged enemies to save bandwidth; the periodic full sweep above guarantees
-                // that everything is still resent regularly. TryGetValue, never an indexer: a freshly
-                // registered enemy has no previous record yet.
-                EnemyState previous;
-                bool hasPrevious = _lastSent.TryGetValue(id, out previous);
-
-                if (!hasPrevious)
-                {
-                    previous = new EnemyState();
-                    _lastSent[id] = previous;
-                }
-
-                // OWNERSHIP IS THE HOST'S, AND ONLY THE HOST'S.
-                //
-                // Previously each machine decided for itself from the distance it measured locally. Those
-                // measurements cannot agree - the two players hold slightly different positions, worst on
-                // slopes - so both machines could decide the closest player was theirs, simulate the same
-                // enemy, and publish two conflicting positions. The result in game was one enemy standing in
-                // two places, with aggro on both players at once.
-                //
-                // Now the host arbitrates and the peer obeys: the peer's OwnedByLocal is set only by the
-                // EnemyOwnership packet, never recalculated here.
-                if (IsHost)
-                {
-                    DecideOwnership(enemy, previous, true);
-
-                    if (!previous.OwnershipKnown || previous.LastPublishedOwnerIsMe != previous.OwnedByLocal)
-                    {
-                        previous.OwnershipKnown = true;
-                        previous.LastPublishedOwnerIsMe = previous.OwnedByLocal;
-
-                        // The wire carries "the owner is YOU, the receiver", which is the opposite of
-                        // OwnedByLocal, where true means "I simulate it". The receiving side assigns the
-                        // payload straight to its own OwnedByLocal:
-                        //
-                        //   ReceiveEnemyOwnership(ownedByMe) -> state.OwnedByLocal = ownedByMe
-                        //
-                        // and the parameter is named ownedByReceiver in NetworkManager and Multiplayer. So
-                        // sending OwnedByLocal sent "you own it" precisely for the enemies the HOST owns: the
-                        // peer then resumed the AI, transmitted, and skipped applying the received position -
-                        // two owners on every contested enemy, the diverging positions seen in the logs. The
-                        // negation is the whole fix.
-                        Main.Multiplayer.SendEnemyOwnership(handle, !previous.OwnedByLocal);
-                    }
-                }
-
-                // "Owned here" means this machine runs the game's own AI for this enemy, which is what
-                // produces real attacks and deaths. The other machine freezes it and applies state.
-                if (previous.OwnedByLocal)
-                    ResumeEnemy(enemy);
-                else
-                    PauseEnemy(enemy);
-
-                // The peer obeys the host, so it transmits exactly the enemies the host granted it.
-                if (!previous.OwnedByLocal)
-                    continue;
-
-                // Position and life are transmitted only for an enemy that is actually in play.
-                //
-                // The token above is published for EVERY tracked enemy, including one that is currently
-                // deactivated, and that order is deliberate. The game never deactivates an enemy for being
-                // off camera (verified: every SetActive(false) on an enemy belongs to a death, an execution
-                // or a dispose), so this gate only catches enemies that are not in play yet - a boss waiting
-                // for its cutscene, or one spawned with SpawnEnabledEnemy false. Publishing the token first
-                // means the peer still learns who owns each enemy, instead of being left without an owner
-                // and freezing that enemy for the rest of the scene.
-                if (!enemy.gameObject.activeInHierarchy)
-                    continue;
-
-                if (!fullSweep && hasPrevious)
-                {
-                    bool changed = Mathf.Abs(previous.Position.x - position.x) > POSITION_EPSILON ||
-                                   Mathf.Abs(previous.Position.y - position.y) > POSITION_EPSILON ||
-                                   Mathf.Abs(previous.Life - life) > LIFE_EPSILON ||
-                                   previous.AnimState != animState;
-
-                    if (!changed)
+                        // Recorded here, before the enemy is dropped from _ids. The snapshot runs only twice a
+                        // second and looked for deaths among the tracked enemies, so by the time it ran the dead
+                        // one had already been removed and no death was ever logged.
+                        if (_killLogged.Add(id))
+                        {
+                            ModLog.Info($"[EnemyKill] {ShortId(id)} MORTO Dead={enemy.Dead} " +
+                                        $"vita={enemy.CurrentLife:F1} attivo={enemy.gameObject.activeInHierarchy} " +
+                                        $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+                        }
+                        _killsSent++;
+                        Main.Multiplayer.SendEnemyKill(handle);
+                        // Also announce it scene-independently: the other player may be in another room and
+                        // would otherwise never learn about this death.
+                        Main.Multiplayer.SendEnemyDeathGlobal(id);
                         continue;
+                    }
+
+                    Vector2 position = enemy.transform.position;
+                    float life = enemy.CurrentLife;
+                    byte orientation = ReadOrientation(enemy);
+                    int animState;
+                    float animTime;
+                    ReadAnimation(enemy, out animState, out animTime);
+
+                    // Skip unchanged enemies to save bandwidth; the periodic full sweep above guarantees
+                    // that everything is still resent regularly. TryGetValue, never an indexer: a freshly
+                    // registered enemy has no previous record yet.
+                    EnemyState previous;
+                    bool hasPrevious = _lastSent.TryGetValue(id, out previous);
+
+                    if (!hasPrevious)
+                    {
+                        previous = new EnemyState();
+                        _lastSent[id] = previous;
+                    }
+
+                    // OWNERSHIP IS THE HOST'S, AND ONLY THE HOST'S.
+                    //
+                    // Previously each machine decided for itself from the distance it measured locally. Those
+                    // measurements cannot agree - the two players hold slightly different positions, worst on
+                    // slopes - so both machines could decide the closest player was theirs, simulate the same
+                    // enemy, and publish two conflicting positions. The result in game was one enemy standing in
+                    // two places, with aggro on both players at once.
+                    //
+                    // Now the host arbitrates and the peer obeys: the peer's OwnedByLocal is set only by the
+                    // EnemyOwnership packet, never recalculated here.
+                    if (IsHost)
+                    {
+                        DecideOwnership(enemy, previous, true);
+
+                        if (!previous.OwnershipKnown || previous.LastPublishedOwnerIsMe != previous.OwnedByLocal)
+                        {
+                            previous.OwnershipKnown = true;
+                            previous.LastPublishedOwnerIsMe = previous.OwnedByLocal;
+
+                            // The wire carries "the owner is YOU, the receiver", which is the opposite of
+                            // OwnedByLocal, where true means "I simulate it". The receiving side assigns the
+                            // payload straight to its own OwnedByLocal:
+                            //
+                            //   ReceiveEnemyOwnership(ownedByMe) -> state.OwnedByLocal = ownedByMe
+                            //
+                            // and the parameter is named ownedByReceiver in NetworkManager and Multiplayer. So
+                            // sending OwnedByLocal sent "you own it" precisely for the enemies the HOST owns: the
+                            // peer then resumed the AI, transmitted, and skipped applying the received position -
+                            // two owners on every contested enemy, the diverging positions seen in the logs. The
+                            // negation is the whole fix.
+                            Main.Multiplayer.SendEnemyOwnership(handle, !previous.OwnedByLocal);
+                        }
+                    }
+
+                    // "Owned here" means this machine runs the game's own AI for this enemy, which is what
+                    // produces real attacks and deaths. The other machine freezes it and applies state.
+                    if (previous.OwnedByLocal)
+                        ResumeEnemy(enemy);
+                    else
+                        PauseEnemy(enemy);
+
+                    // The peer obeys the host, so it transmits exactly the enemies the host granted it.
+                    if (!previous.OwnedByLocal)
+                        continue;
+
+                    // Position and life are transmitted only for an enemy that is actually in play.
+                    //
+                    // The token above is published for EVERY tracked enemy, including one that is currently
+                    // deactivated, and that order is deliberate. The game never deactivates an enemy for being
+                    // off camera (verified: every SetActive(false) on an enemy belongs to a death, an execution
+                    // or a dispose), so this gate only catches enemies that are not in play yet - a boss waiting
+                    // for its cutscene, or one spawned with SpawnEnabledEnemy false. Publishing the token first
+                    // means the peer still learns who owns each enemy, instead of being left without an owner
+                    // and freezing that enemy for the rest of the scene.
+                    if (!enemy.gameObject.activeInHierarchy)
+                        continue;
+
+                    if (!fullSweep && hasPrevious)
+                    {
+                        bool changed = Mathf.Abs(previous.Position.x - position.x) > POSITION_EPSILON ||
+                                       Mathf.Abs(previous.Position.y - position.y) > POSITION_EPSILON ||
+                                       Mathf.Abs(previous.Life - life) > LIFE_EPSILON ||
+                                       previous.AnimState != animState;
+
+                        if (!changed)
+                            continue;
+                    }
+
+                    // The playback position is passed on as it was read, INCLUDING when the state changes.
+                    //
+                    // This line used to force animTime = 0f on every state change, on the reasoning that a
+                    // playback position only matters at a transition. It is the exact opposite: a transition
+                    // is the only moment the receiver needs it. Sending zero there made ApplyAnimation call
+                    // Animator.Play(hash, 0, 0) - so every transition restarted the clip from the beginning.
+                    // On a one-shot (an attack, a death animation) that shows as the animation starting and
+                    // being cut off after a few milliseconds; on a loop it restarts the walk.
+                    //
+                    // Measured before removing it: the same transition, for the same enemy, repeated 33 and
+                    // 58 times in one session at about 6 restarts per second, in healthy frames at 59 FPS.
+                    // That repetition - not a frame stall, which happens 0/3 and 1/11 of the time alongside a
+                    // cut - is the signature of this line.
+
+                    previous.Position = position;
+                    previous.Life = life;
+                    previous.AnimState = animState;
+                    previous.Orientation = orientation;
+                    previous.LastSweep = Time.time;
+
+                    // ONLY THE OWNER TRANSMITS. The host used to broadcast every enemy, including the ones the
+                    // peer was simulating, so both machines published a position for the same enemy and the two
+                    // values fought each other - visible as a small desync whenever the non-owner interacted
+                    // with it. One enemy now has exactly one source of position.
+                    if (!previous.OwnedByLocal)
+                        continue;
+
+                    _updatesSent++;
+                    Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint, previous.OwnedByLocal, orientation);
+                }
+                catch (Exception e)
+                {
+                    _syncLoopExceptions++;
+                    if (_syncLoopExceptions <= 20)
+                        ModLog.Error($"[EnemySync] eccezione sul nemico {ShortId(id)}: {e.GetType().Name} - " +
+                                     $"{e.Message} (nemico saltato, il resto della passata continua)");
+                    goto continueEnemy;
                 }
 
-                // The playback position is passed on as it was read, INCLUDING when the state changes.
-                //
-                // This line used to force animTime = 0f on every state change, on the reasoning that a
-                // playback position only matters at a transition. It is the exact opposite: a transition
-                // is the only moment the receiver needs it. Sending zero there made ApplyAnimation call
-                // Animator.Play(hash, 0, 0) - so every transition restarted the clip from the beginning.
-                // On a one-shot (an attack, a death animation) that shows as the animation starting and
-                // being cut off after a few milliseconds; on a loop it restarts the walk.
-                //
-                // Measured before removing it: the same transition, for the same enemy, repeated 33 and
-                // 58 times in one session at about 6 restarts per second, in healthy frames at 59 FPS.
-                // That repetition - not a frame stall, which happens 0/3 and 1/11 of the time alongside a
-                // cut - is the signature of this line.
-
-                previous.Position = position;
-                previous.Life = life;
-                previous.AnimState = animState;
-                previous.Orientation = orientation;
-                previous.LastSweep = Time.time;
-
-                // ONLY THE OWNER TRANSMITS. The host used to broadcast every enemy, including the ones the
-                // peer was simulating, so both machines published a position for the same enemy and the two
-                // values fought each other - visible as a small desync whenever the non-owner interacted
-                // with it. One enemy now has exactly one source of position.
-                if (!previous.OwnedByLocal)
-                    continue;
-
-                _updatesSent++;
-                Main.Multiplayer.SendEnemyUpdate(handle, position, life, animState, animTime, _listFingerprint, previous.OwnedByLocal, orientation);
+            continueEnemy:;
             }
 
             if (dead != null)
@@ -3256,5 +3285,18 @@ namespace Blasphemous.Multiplayer.Client
                 IsApplyingRemoteDamage = false;
             }
         }
+
+        /// <summary>
+        /// How many times the send loop had to skip an enemy because of an exception.
+        ///
+        /// Reported in the probe line, because the session that exposed this had 666 of them and the logs
+        /// looked clean: the word "Exception" never appeared, and the error marker has two spaces before its
+        /// colon, so a search for "Error:" found nothing. A count that has to be zero, and is visible every two
+        /// seconds, cannot hide like that.
+        /// </summary>
+        private static int _syncLoopExceptions;
+
+        /// <summary>Exceptions skipped by the send loop, for the probe line. Diagnostics only.</summary>
+        public static int SyncLoopExceptions { get { return _syncLoopExceptions; } }
     }
 }
