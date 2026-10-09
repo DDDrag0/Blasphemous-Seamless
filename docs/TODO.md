@@ -51,16 +51,19 @@
 | **23** | **Il desync grave della sessione di test** (eccezione nel ciclo di invio) | ✅ **RISOLTO** | **era una REGRESSIONE NOSTRA** introdotta in `b2c9cdd`: la diagnostica `[EnemyTree]` leggeva `BehaviourTree` con **chiamata diretta**, ma il getter è **protected a runtime** (publicized a compile-time) ⇒ **479 e 666 eccezioni** da `UpdateCore → ResumeEnemy`, che **interrompevano il ciclo di invio a metà** ⇒ `SendEnemyUpdate` non partiva mai. Corretto in `9b1ea87` (reflection + try/catch), **verificato con `exceptions=0` su 384 report in 4 sessioni**. Vedi §12 |
 | **24** | **Il gioco azzera `consumedSpawns` in DUE metodi**, non uno | ✅ **RISOLTO** | **`EnemySpawner.Reset`** (morte del giocatore, load di un salvataggio, reset dal menu — **nessuno è un caricamento di livello**) oltre a `RespawnDeadEnemies`. **Scoperto durante il fix della voce 25**: svuotare solo al falò lasciava un annuncio **stantio** ⇒ il nuovo entrato uccideva nemici che l'annunciatore vedeva **vivi**. **Errore speculare, introdotto dal fix stesso.** Vedi §12 |
 | **25** | **Le morti non vengono annunciate se chi le ha viste non è più nella stanza** | ✅ **RISOLTO** | `AnnounceDeathStateToPeers` ricavava gli id da `FindObjectsOfType<EnemySpawnPoint>()`, cioè **solo la scena corrente dell'annunciatore**: altrove la lista era **vuota e usciva in silenzio** ⇒ **i nemici riapparivano VIVI**. Fix: memoria lato mod degli id annunciati + unione deduplicata + **una riga di log quando l'annuncio è vuoto** (il caso era invisibile). Vedi §12 |
-| **26** | **La pausa NON esisteva per 60 tipi di nemico su 77** | ✅ **RISOLTO** | `Enemy.EnemyBehaviour` è **null** per 60 sottotipi (fra cui **Fool e WheelCarrier**, tutti i nemici della stanza di test, e quasi tutti i boss): salvano il behaviour in una **proprietà propria**. `PauseEnemy` **usciva lì**, prima di `PauseBehaviour`/`enabled=false` ⇒ sul non-proprietario **AI, Animator e orientamento continuavano** (misurato: **437 scritture di orientamento e 54 riavvii di animazione** su un solo Fool non posseduto = **"cammina sul posto"**). Fix: `FindBehaviour` con fallback su `GetComponent`. **E lo stesso difetto era nel ramo di promozione di `SetHost`.** Vedi §12 |
-| **27** | **Il nemico che resta fermo con un giocatore addosso** — §1h | 🟢 **priorità bassa** | ⏳ **NON è provato che sia un difetto della mod**: `posNemico` ferma con un giocatore a **1-4 unità** può essere il **gioco** (vision cone, `DistanceToTarget`, limiti di pendenza — tutta attrezzatura che **esiste in IL**). **⚠️ PRIMA di toccare il codice serve il test in SINGOLO SENZA mod nello stesso punto**: se resta immobile anche lì, **la voce si chiude da sola**. **Due cause distinte da non confondere**: *(a)* nessuno possiede il nemico perché il padrone è in un'altra stanza *(→ non serve la pendenza)*; *(b)* nemico immobile con il padrone presente. **La spiegazione "pendenza" dell'utente è compatibile per 2 casi su 3** (i giocatori sono 0,9-1 unità sopra) ma **NON** per il Fool a `(-717.7,10)`: **fermo 37 campioni (18,5 s) con il giocatore a 1,1 unità e `dy=+0,1`**. Vedi §12 |
-| **28** | **Il respawn del falò e il reset del gioco vanno verificati dopo il fix della voce 24** | 🟢 **verifica** | ⏳ **da testare**: la voce 24 ha aggiunto un hook su `EnemySpawner.Reset`. **Se il gancio fosse troppo aggressivo**, si perderebbe la memoria delle morti al momento sbagliato. **Non è mai stato eseguito in gioco.** Vedi §12 |
+| **26** | **La pausa NON esisteva per 60 tipi di nemico su 77** | ✅ **RISOLTO E VERIFICATO** | `Enemy.EnemyBehaviour` è **null** per 60 sottotipi (fra cui **Fool e WheelCarrier**, tutti i nemici della stanza di test, e quasi tutti i boss): salvano il behaviour in una **proprietà propria**. `PauseEnemy` **usciva lì**, prima di `PauseBehaviour`/`enabled=false` ⇒ sul non-proprietario **AI, Animator e orientamento continuavano** = **"cammina sul posto"**. Fix: `FindBehaviour` con fallback su `GetComponent`. **E lo stesso difetto era nel ramo di promozione di `SetHost`.** **MISURA DOPO IL FIX** (baseline pre-fix ritrovata in modo indipendente in `a7a726ba73…/LogOutput G1.log`, **stessa sessione** del log G2 DUE ⇒ condizioni omogenee): scritture di orientamento **437 → 14 (G1) e 5 (G2)**; riavvii di animazione **54 → 14 (G1) e 21 (G2)**; `orientSkip=0`; `orientFlip` **11 e 1 in totale**. **Riduzione ~10-30×.** ⚠️ Confronto fra sessioni diverse: non è un A/B sullo stesso run. Vedi §12 |
+| **27** | **Il nemico che resta fermo con un giocatore addosso** — §1h | ✅ **CHIUSA — NON è un difetto della mod** | **PROVATO col controllo in singolo, disconnesso** *(la mod attiva ma senza peer ⇒ **il percorso della pausa remota è inerte**)*: il `Fool` a `(-717.7,10)` resta fermo **6 campioni (~12 s)** con distanza grezza **3.07** *(giocatore a `(-721.3,9)`)*, e **in Fase A** *(single-player, nessun peer)* resta fermo **32 campioni**. **`dy = +1.0` COSTANTE per tutto il tratto fermo** → salendo a `y=10.7` *(stesso piano, dist 0.81)* **il nemico parte subito** (`anim=765711723` = camminata). ⇒ **la spiegazione "pendenza" dell'utente è CONFERMATA.** ⚠️ **La mia misura precedente diceva `dy=+0.1`: era il campione di CONTATTO, non il tratto fermo — errore mio, corretto qui.** Nei log a due lo stesso Fool è fermo anche con `dist_io` 0.5-1.4. **NON si tocca.** Vedi §12 |
+| **28** | **`EnemySpawner.Reset`: il logging funziona** | ✅ **CONFERMATO IN GIOCO** | Il hook **scatta** e il conteggio **combacia esattamente**: G1 uccide **2** nemici *(pos `-717.6,10` e `-697.5,11`)* e il log dice **`consumedSpawns azzerato dal gioco: dimenticate 2 morti annunciate e 0 ricevute`**, **dopo la 2ª morte e prima della rinascita**. **Il gancio NON è troppo aggressivo.** ⚠️ **Resta NON testato il ramo `RespawnDeadEnemies`/`OnEnemiesRespawned`** *(il falò vero)*: **mai eseguito** nei log → vedi voce 31. Vedi §12 |
+| **29** | 🔴 **Dopo un `EnemySpawner.Reset` le due liste locali DIVERGONO** | 🟡 **priorità media** | **NUOVA, misurata nel test della voce 28.** Nel log G2 RESET **`IMPRONTA DIVERSA` ×4** *(righe 558, 1043, 1271, 1499)*: tornando in `D01Z01S01` la macchina registra **3 id invece di 5** *(e il suo `Post-spawn` dice `2 enemies` dove l'host ne ha 3)*. **Causa accertata**: `EnemySpawner.Reset` **non trasmette nulla** — rigenera i nemici **solo in locale**, quindi **chi non esegue il reset resta con i suoi consumati**. **È lo stesso meccanismo del falò**: per questo la voce 4 resta gialla. **Il rilevatore ha funzionato: ha segnalato una divergenza VERA.** Vedi §12 |
+| **30** | ⚠️ **La memoria delle morti si azzera SOLO sulla macchina che esegue il reset** | 🟢 **latente** | In IL `RespawnDeadEnemies` **non trasmette nulla**: chiama `EnemySpawnPoint.CreateEnemy()` **in locale** + `OnEnemiesRespawn`; i **tre chiamanti** sono tutti della macchina che si siede. Quindi `_announcedDeaths`/`_pendingDeaths`/`_killLogged` si svuotano **solo dove si siede** *(o dove il giocatore muore)*. **Se G1 si riconnette dopo, G2 potrebbe annunciargli morti che non esistono più.** **NON si è materializzato nei log** *(G2 non ha mai annunciato N>0)*: **reale ma latente.** Vedi §12 |
+| **31** | **Il falò (`RespawnDeadEnemies`) non è mai stato esercitato nei test** | 🟢 **verifica** | Il hook su `EnemySpawner.Reset` è confermato, ma **il ramo del falò non compare in nessuno dei sette log**. Serve **un test dedicato con falò su UNA SOLA macchina**: *(1)* l'altra vede rinascere i nemici? *(2)* la memoria si svuota su chi si siede? *(3)* **su chi NON si siede NON si svuota** ⇒ un `[EnemyJoin]` successivo annuncerebbe `N>0` → **conferma della voce 4**. **È lo stesso test già indicato per la voce 4.** Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
 
 ---
 
-Ultimo aggiornamento: **desync CHIUSO e verificato** (`exceptions=0` su 384 report in 4 sessioni) · **tre fix dopo il test**: la pausa per i 60 tipi (voce 26), l'annuncio delle morti fuori stanza (voce 25), il secondo azzeramento del gioco (voce 24). **In corso**: niente — **in attesa del test**.
+Ultimo aggiornamento: **CAPITOLO CHIUSO** — blocco *chiuso (non è nostro)*, test a due *pulito*, riconnessione *verificata*, reset *verificato*, desync *chiuso* (`exceptions=0` su sette log). **Restano**: il falò (voci 4, 29, 30, 31), i boss, il feedback del colpo, i distruttibili.
 
 
 ---
@@ -1777,3 +1780,144 @@ scena, riconnessione, falo'', o un colpo del peer** (`SettleStuckDeaths` gira su
  2. un caso con un **boss** (nemico stand-by che si attiva dopo) e un **falo''**
     (`RespawnDeadEnemies`) - **e ora anche `EnemySpawner.Reset`** (voce 28), che **non e'' mai stato
     eseguito in gioco**.
+
+
+## [2026-10-10 05:40] CAPITOLO CHIUSO — blocco, test a due, riconnessione, reset
+
+Verdetto dell''Esploratore sui **sette log** del test finale. Binario testato
+`aea02dcf50f28b38abeb0ab743dbb45c09e813aee32705bd69117bc691feb426` (tag `stato-riconnessione`);
+l''unica differenza con `20a6970` e'' **la chiave di deduplicazione di `LogTreeState`**, quindi i log
+restano validi per tutto il resto (diff verificato con `git diff`).
+
+### Il blocco (voce 27): NON e'' un difetto della mod. CHIUSA.
+
+L''utente aveva chiesto il test **in singolo senza mod**; ha fatto di meglio: **in singolo SENZA
+CONNESSIONE**, con la mod attiva. Cosi'' si ha **il logging** *(`[EnemyTick]`)* e **nessuna
+sincronizzazione**: se il nemico e'' fermo, **e'' il gioco**. Il percorso della pausa remota e''
+**inerte** quando `connected=False`.
+
+**Il criterio e'' soddisfatto** — `posNemico` identica per **6 campioni (~12 s)** con distanza grezza
+**3.07** *(giocatore fermo a `(-721.3,9)` per 65 s, nemico a `(-717.7,10)`)* — **ma la causa e'' la
+pendenza**:
+
+```
+nel tratto fermo:  dy = +1.0  COSTANTE   (il giocatore e'' SOTTO il nemico)
+salito a y=10.7 (stesso piano, dist 0.81):  il nemico PARTE SUBITO (anim=765711723 = camminata)
+```
+
+**Controprove indipendenti**: in **Fase A** *(single-player, nessun peer)* lo stesso nemico e'' fermo
+**32 campioni**; e nei log **a due** lo stesso Fool e'' fermo anche con `dist_io` **0.5-1.4**.
+
+⚠️ **E va detto che la voce 27 conteneva una MIA misura sbagliata**: avevo scritto
+`dy = +0.1`. **Era il campione di CONTATTO, non il tratto fermo.** Col siero giusto la spiegazione
+dell''utente *(la pendenza)* regge in pieno. **La voce e'' chiusa e il codice non si tocca.**
+
+*Limite dichiarato*: il test e'' "senza **connessione** con la mod caricata", non "senza mod". Il
+verdetto regge per la Fase A e per l''inerzia del percorso di pausa, non per un test a mod scaricata.
+
+### Il test a due: nessun blocco reale, e il fix della voce 26 e'' CONFERMATO
+
+| | prima | G1 DUE | G2 DUE |
+|---|---|---|---|
+| run con `posNemico` ferma >=3 campioni | **17** | **5** | **5** |
+| peggiore | **134 campioni (~67 s)** | **10 (20 s)** | **9 (18 s)** |
+| scritture orientamento (max per nemico) | **437** | **14** | **5** |
+| riavvii animazione `[AnimByEnemy] avvii=` | **54** | **14** | **21** |
+
+**Il run peggiore ora e'' un nemico fermo PER NATURA a 14 unita''** *(dmin 13.94)*: non e'' un blocco.
+**La riduzione del fix `FindBehaviour` e'' di ~10-30x.** `orientSkip=0`, `orientFlip` **11 e 1** in
+totale su tutta la sessione. **L'"e'' fluidissimo, per me e'' risolto" dell''utente e'' confermato
+dai numeri.**
+
+*Baseline non verificata*: la misura "17 run / 134 campioni" viene da una sessione i cui log non sono
+fra questi sette. Il confronto e'' omogeneo solo perche'' il criterio e'' identico.
+
+### La riconnessione (voci 3 e 25): COMPLETA, conteggi combacianti
+
+```
+G1: [EnemyKill] x5  →  Dead=True vita=0.0  →  5 SpawnPoint consumati
+    posizioni tutte DISTINTE: -715.9,10 · -698.4,11 · -689.3,10 · -685.1,9 · -684.6,9
+G1: [EnemyJoin] annuncio vuoto per la scena D01Z01S07 ... uso solo le 5 morti in memoria
+G1: [EnemyJoin] annunciate 5 (0 dalla scena, 5 dalla memoria)      ← 5 = 5
+G2: ENTITY_DEAD x5  →  Post-spawn: 0 enemies / 7 spawn points / 0 ids
+```
+
+**Zero doppioni** *(la dedup a monte e'' `_killLogged.Add(id)`, e `_announcedDeaths` e'' un
+`HashSet`)*. **Nessuna morte inventata.** E **G2 che non annuncia nulla e'' CORRETTO**: non uccide
+nulla, e l''annuncio e'' un''**unione deduplicata**.
+
+### Il reset (voci 24 e 28): hook esatto — ma il FALO'' resta aperto
+
+`EnemySpawner.Reset` **scatta** e il conteggio **combacia**: G1 uccide **2** nemici e il log dice
+**`dimenticate 2 morti annunciate e 0 ricevute`**, nell''ordine giusto *(dopo la 2ª morte, prima
+della rinascita)*. **Il gancio non e'' troppo aggressivo.**
+
+🔴 **Ma il reset ha rivelato una divergenza vera (voce 29)**: **`IMPRONTA DIVERSA` ×4** nel log di
+G2, con gli id locali che scendono **da 5 a 3** *(`Post-spawn: 2 enemies` su G2 dove G1 ne ha 3)*.
+**Causa**: `EnemySpawner.Reset` **non trasmette nulla** — **e'' un evento LOCALE**. ⇒ **chi non lo
+esegue resta con i suoi consumati.** **Il rilevatore ha funzionato: ha segnalato una divergenza
+reale, non un falso allarme.**
+
+**Ed e'' lo stesso meccanismo del falo''**, che quindi **resta aperto** (voce 4): in IL
+`RespawnDeadEnemies` fa `consumedSpawns.Clear()` + `EnemySpawnPoint.CreateEnemy()` **in locale** +
+`OnEnemiesRespawn.Invoke()`, e **i tre chiamanti sono tutti della macchina che si siede**.
+`OnEnemiesRespawned`/`OnDeathStateReset` svuotano le statiche **solo in locale**: **la macchina che
+non tocca il falo'' non riceve nulla e conserva la sua memoria.**
+
+⚠️ **Quindi**: il fix della voce 24 ha chiuso la causa dell''annuncio **stantio**, **non
+l''asimmetria**. **La strada "falo''" NON risolve** una macchina in un''altra stanza che non lo tocca.
+**E'' il punto su cui l''utente ha intuito bene** *("trovare la soluzione del reset in caso di seduta
+ai falò sarebbe molto utile")*: **e'' utile, ma da solo non basta** — serve **un annuncio di rete**
+quando il respawn avviene, non solo uno svuotamento locale.
+**Nel test non si e'' materializzato** *(G2 non ha mai annunciato N>0)*: **reale ma latente** (voce 30).
+
+**E il ramo del falo'' vero non e'' mai stato eseguito** (voce 31): solo `EnemySpawner.Reset` lo e''.
+**Serve un test con falo'' su UNA SOLA macchina.**
+
+### Il difetto mio trovato NEI log, e gia'' corretto
+
+**1140 righe di `[EnemyTree]` su 2137** in G1 DUE. La chiave di dedup era `enabled|running|esito` e
+**due punti chiamano `PauseEnemy` con motivi diversi** *(il ciclo di invio passa nullo -> `?`, il
+percorso pacchetti passa `remote owns`)*: il motivo **alternava**, ogni chiamata sembrava un
+cambiamento, **la deduplica era morta**. Le combinazioni contate lo dicono senza ambiguita'':
+`234 x (15) enabled=False isRunning=null esito=?` contro `230 x ... esito=remote owns`, **stato
+IDENTICO**.
+
+**E'' lo STESSO difetto che avevo gia'' fatto con `:prima`/`:dopo`.** Corretto in `20a6970`: **la
+chiave e'' `enabled|running`**. **La lezione, perche'' non si ripeta una terza volta**: *la
+deduplicazione deve rispondere a "questo nemico e'' in uno stato diverso da quando l''ho riportato",
+e la risposta non puo'' dipendere da CHI ha fatto la domanda.* Il motivo e'' contesto, non stato.
+
+⚠️ **E mentre applicavo quella correzione ho rotto il metodo TRE volte** modificando per numero di
+riga *(cancellata la scrittura nel dizionario — che **compilava** e avrebbe reintrodotto lo stesso
+difetto; poi la riga `Vector3 p`; poi la chiamata `ModLog.Info`)*. **L''ho riscritto per intero.** La
+lezione: **compilare non e'' funzionare, e "sembra corretto" non e'' una verifica.** Su questo file,
+**niente piu'' sostituzioni per numero di riga**.
+
+### Cosa NON toccare
+
+ - **La voce 27** *(il blocco)* e **il single-player**: chiusi, il codice e'' corretto.
+ - **Il codice della riconnessione**: verificato, conteggi combacianti.
+ - **La chiave di dedup di `LogTreeState`**: corretta in `20a6970`, verificata in IL.
+ - **L''ordine `ThawPhysics` / controllo `behaviour`** in `ResumeEnemy`: e'' corretto.
+
+### Cosa NON e'' stato possibile verificare
+
+ 1. **Il falo'' su ENTRAMBE le macchine**: il ramo `RespawnDeadEnemies`/`OnEnemiesRespawned`
+    **non e'' mai stato eseguito** in nessuno dei sette log.
+ 2. **La baseline "17 run / 134 campioni"**: i log di quella sessione non sono fra questi.
+ 3. **Se durante il blocco il giocatore stesse ATTACCANDO il nemico**: il log non registra
+    input ne'' danno.
+ 4. **Se il gioco crei l''enemy anche su chi ha lo spawn point consumato**: la riga `Post-spawn: N
+    enemies` **non e'' letta dal codice della mod**, quindi "5 enemies" non prova che siano
+    registrabili.
+ 5. **Metodo**: l''Esploratore campiona **l''ultimo `[EnemyTick]` di ogni probe** *(5 per probe)*,
+    quindi se due nemici sono vicini nello stesso probe uno dei due puo'' sfuggire al conteggio.
+
+### Stato dei tag
+
+| Tag | Cosa | Rollback |
+|---|---|---|
+| `stato-behaviour-fallback` | voce 26 (`FindBehaviour`) | `stato-blindature-2` |
+| `stato-riconnessione` | voci 24 e 25 | `stato-behaviour-fallback` |
+| `stato-dedup-fix` | la chiave di `LogTreeState` | `stato-riconnessione` |
