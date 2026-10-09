@@ -859,15 +859,24 @@ namespace Blasphemous.Multiplayer.Client
             if (behaviour == null)
                 return;
 
-            // The report runs BEFORE and AFTER, and the order matters: it used to run only before, so when
-            // it threw, PauseBehaviour and enabled = false never executed - the diagnostic cancelled the action
-            // it existed to observe. Both calls are harmless now: ReadTreeRunning swallows everything.
-            LogTreeState(enemy, behaviour, (reason ?? "?") + ":prima");
-
+            // ONE call, AFTER the action, and both halves of that matter.
+            //
+            // BEFORE was the original defect: if the report threw, PauseBehaviour and enabled = false never
+            // ran, so the diagnostic cancelled the very thing it existed to observe.
+            //
+            // TWICE was worse, not safer. The deduplication key includes the outcome, so alternating
+            // ":prima" and ":dopo" made every comparison fail and killed the dedup outright - and this runs
+            // from PauseEnemy, which the send loop calls twenty times a second per unowned enemy and the
+            // packet path calls again, so the log would have grown by tens of lines per second per enemy.
+            // And it protected nothing: LogTreeState runs the same statements either way, and PauseBehaviour
+            // destroys nothing, so a throw would have happened in ":prima" too - before the action.
+            //
+            // One call afterwards is strictly better on both counts: the pause is guaranteed to have
+            // happened, and the key is stable again so only real changes are reported.
             behaviour.PauseBehaviour();
             behaviour.enabled = false;
 
-            LogTreeState(enemy, behaviour, (reason ?? "?") + ":dopo");
+            LogTreeState(enemy, behaviour, reason ?? "?");
         }
 
         /// <summary>
@@ -1018,40 +1027,58 @@ namespace Blasphemous.Multiplayer.Client
 
             try
             {
-                PropertyInfo property = typeof(EnemyBehaviour).GetProperty(
-                    "BehaviourTree",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                if (property == null)
+                // Resolved once and kept: GetProperty is a lookup by string and this runs from the hot path,
+                // so repeating it twenty times a second per enemy would be paid for nothing. Only the
+                // resolution is cached - a null result means the member genuinely does not exist and the
+                // flag below stops the whole diagnostic.
+                if (_behaviourTreeProperty == null)
                 {
-                    _treeRunningUnavailable = true;
-                    return "unavailable";
+                    _behaviourTreeProperty = typeof(EnemyBehaviour).GetProperty(
+                        "BehaviourTree",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                    if (_behaviourTreeProperty == null)
+                    {
+                        _treeRunningUnavailable = true;
+                        return "unavailable";
+                    }
                 }
 
-                object tree = property.GetValue(behaviour, null);
+                object tree = _behaviourTreeProperty.GetValue(behaviour, null);
                 if (tree == null)
                     return "null";
 
-                PropertyInfo running = tree.GetType().GetProperty("isRunning");
-                if (running == null)
+                if (_isRunningProperty == null)
                 {
-                    _treeRunningUnavailable = true;
-                    return "unavailable";
+                    _isRunningProperty = tree.GetType().GetProperty("isRunning");
+                    if (_isRunningProperty == null)
+                    {
+                        _treeRunningUnavailable = true;
+                        return "unavailable";
+                    }
                 }
 
-                object value = running.GetValue(tree, null);
+                object value = _isRunningProperty.GetValue(tree, null);
                 return value is bool && (bool)value ? "True" : "False";
             }
             catch (Exception e)
             {
+                // Given up on for the rest of the process, and said out loud once. A transient failure that
+                // kept retrying twenty times a second would be its own problem; one that silently switched the
+                // diagnostic off would be worse, so the message stays.
                 _treeRunningUnavailable = true;
-                ModLog.Error("[EnemyTree] isRunning non leggibile: " + e.GetType().Name + " - " + e.Message);
+                ModLog.Error("[EnemyTree] isRunning non leggibile (" + e.GetType().Name + "): " + e.Message +
+                             " - non ritento piu' per questa sessione");
                 return "unavailable";
             }
         }
 
         /// <summary>Set once reflection has failed, so it is not retried on every call.</summary>
         private static bool _treeRunningUnavailable;
+
+        /// <summary>Resolved once and reused: GetProperty is a string lookup and this runs on the hot path.</summary>
+        private static PropertyInfo _behaviourTreeProperty;
+        private static PropertyInfo _isRunningProperty;
 
         /// <summary>Last logged tree state per enemy, so only changes are reported. Diagnostics only.</summary>
         private static readonly Dictionary<string, string> _treeStateLogged = new Dictionary<string, string>();
