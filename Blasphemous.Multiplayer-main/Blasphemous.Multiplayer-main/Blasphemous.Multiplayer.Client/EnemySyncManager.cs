@@ -955,15 +955,31 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void LogTreeState(Enemy enemy, EnemyBehaviour behaviour, string esito)
         {
+            // NOTE: behaviour.BehaviourTree is NOT read here, and must not be.
+            //
+            // Its getter is not public - verified in IL, "prop BehaviourTree: getter pubblico = False" - and
+            // Mono enforces that at RUNTIME, unlike the C# compiler, which accepted the call. So the first
+            // version of this line threw on EVERY call: 479 exceptions in one log and 666 in the other, all
+            // from ResumeEnemy inside UpdateCore, which is the hot path. The exception aborted UpdateCore
+            // mid-way and the two machines went out of sync. A diagnostic that breaks the thing it measures.
+            //
+            // isRunning is what we actually wanted, so it needs reflection (the backing field
+            // "<BehaviourTree>k__BackingField" is private too). Not done yet: measuring it is worth less than
+            // not crashing, and what this line CAN report without touching that property - enabled, and
+            // whether ResumeEnemy took the early return - is already the decisive half of the question.
             string id = IdOf(enemy);
             if (string.IsNullOrEmpty(id))
                 return;
 
             bool enabled = behaviour != null && behaviour.enabled;
 
-            bool running = false;
-            if (behaviour != null && behaviour.BehaviourTree != null)
-                running = behaviour.BehaviourTree.isRunning;
+            // isRunning is read reflectively, and the failure is swallowed on purpose.
+            //
+            // The property cannot be touched directly: its getter is not public, which Mono enforces at
+            // runtime even though the compiler accepted the call. Reflection can still reach it, but if it
+            // throws again the diagnostic must NOT take the sync down with it - that is exactly what the
+            // direct call did. A measurement is never worth breaking the thing being measured.
+            string running = ReadTreeRunning(behaviour);
 
             string key = enabled + "|" + running + "|" + esito;
 
@@ -978,6 +994,59 @@ namespace Blasphemous.Multiplayer.Client
                         $"pos=({p.x:F1},{p.y:F1}) vita={enemy.CurrentLife:F0} " +
                         $"mia={(IsHost ? "host" : "client")}");
         }
+
+        /// <summary>
+        /// Reads BehaviourTree.isRunning reflectively, returning "?" if it cannot be read.
+        ///
+        /// Reflection replaces a direct call that crashed the sync: the getter is not public, and Mono
+        /// refuses the call at runtime even though it compiles. Everything here is wrapped, and the answer is
+        /// cached once it is known to work or to fail - a diagnostic that tries and fails twenty times a
+        /// second is its own problem.
+        /// </summary>
+        private static string ReadTreeRunning(EnemyBehaviour behaviour)
+        {
+            if (behaviour == null)
+                return "none";
+
+            if (_treeRunningUnavailable)
+                return "unavailable";
+
+            try
+            {
+                PropertyInfo property = typeof(EnemyBehaviour).GetProperty(
+                    "BehaviourTree",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                if (property == null)
+                {
+                    _treeRunningUnavailable = true;
+                    return "unavailable";
+                }
+
+                object tree = property.GetValue(behaviour, null);
+                if (tree == null)
+                    return "null";
+
+                PropertyInfo running = tree.GetType().GetProperty("isRunning");
+                if (running == null)
+                {
+                    _treeRunningUnavailable = true;
+                    return "unavailable";
+                }
+
+                object value = running.GetValue(tree, null);
+                return value is bool && (bool)value ? "True" : "False";
+            }
+            catch (Exception e)
+            {
+                _treeRunningUnavailable = true;
+                ModLog.Error("[EnemyTree] isRunning non leggibile: " + e.GetType().Name + " - " + e.Message);
+                return "unavailable";
+            }
+        }
+
+        /// <summary>Set once reflection has failed, so it is not retried on every call.</summary>
+        private static bool _treeRunningUnavailable;
 
         /// <summary>Last logged tree state per enemy, so only changes are reported. Diagnostics only.</summary>
         private static readonly Dictionary<string, string> _treeStateLogged = new Dictionary<string, string>();
