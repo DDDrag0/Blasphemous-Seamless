@@ -64,7 +64,7 @@
 | **37** | 🔴 **L'ECO INFINITA: un'annuncio applicato veniva ri-annunciato** | ✅ **RISOLTA (F4b.3) — ma la LEZIONE va ricordata** | **F4b.2 funzionava ma aveva introdotto qualcosa di peggio del difetto che curava.** **Conteggi incrociati nei log**: `APPLY(G1)=SEND(G2)` e `APPLY(G2)=SEND(G1)-2` ⇒ **ogni annuncio ricevuto veniva riapplicato E re-annunciato, un round-trip per iterazione** ⇒ **187 + 34 SEND su DUE soli vasi**. **Meccanismo, in IL**: `BreakableObject::Damage` fa `ldfld destroyed / brfalse / ret` ⇒ **se l'oggetto è GIÀ rotto esce subito LASCIANDO `destroyed = true`**, e il postfix del mittente faceva `if (!___destroyed) return;` ⇒ **annunciava pur non essendo successo nulla**. **E il percorso nuovo non alzava `reapplying`**. ⚠️ **PERCHÉ NON SI VEDEVA PRIMA: il canale Progress deduplicava, quindi l'eco veniva inghiottita dall'eco stessa.** **LA LEZIONE, e vale per tutto il progetto**: *cambiare canale obbliga a ricontrollare TUTTI i guard che proteggevano il canale vecchio — un guard che sembra ridondante può essere l'unico che teneva su la baracca.* **Fix**: una **Prefix** su `Damage` cattura **se l'oggetto era già rotto PRIMA** *(l'unico momento in cui la domanda ha risposta: dopo, il campo è `true` in entrambi i casi)*, e la Postfix esce subito se lo era. **Più** `ApplyOrRemember` che alza `reapplying` con **salva/ripristina** *(non azzera: un'applicazione può annidarsi)*. **Verificato in IL**: ordine `TryGetValue → CurrentlyUpdatingProgress → IsReapplying → IsConnected → Send`. Vedi §12 |
 | **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | 🟢 **operativa — da avvertire SEMPRE** | **Il percorso dei salvataggi è costruito così** *(IL del gioco)*: `persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamUser.GetSteamID().ToString() : "") + "/"`. ⇒ **avviare il gioco SENZA Steam sposta silenziosamente ogni salvataggio in `Savegames\` invece che in `Savegames\<steamid>\`.** **E con Steam Cloud abilitato le due cartelle DIVERGONO**: una sessione iniziata senza Steam **sembra** aver corrotto o perso i salvataggi — **non erano corrotti: erano da un'altra parte.** **Intermittente e dipendente dalla macchina**, quindi **facile da scambiare per un bug della mod**. ⚠️ **E la struttura "anomala" che aveva allarmato** *(cartelle vuote `savegame_0\`, `savegame_0_backup\`, contenitore `76561199216304572\` vuoto)* **è NORMALE: le crea il GIOCO** *(`PersistentManager.CreateAndGetSaveGameInternalDir` + `BackupSlot`→`FileTools.DirectoryCopy`)* **e convivono coi file anche su un'installazione sana.** **La mod NON c'entra**: scrive **un solo file** *(`savegame_N_modded.save`)* e **il gioco non lo legge mai** *(solo `.save`/`.save_backup`; nessuna `Directory.GetFiles` sulla cartella)*. **RACCOMANDAZIONE OPERATIVA, da ripetere SEMPRE**: *(1)* **avviare SEMPRE Steam prima del gioco**, oppure *(2)* **disattivare Steam Cloud per Blasphemous**, e *(3)* **backup a mano di `Savegames` prima delle sessioni di test.** ✅ **Ora reso VISIBILE**: la mod logga all'avvio `[Path] Steam inizializzato: … · cartella salvataggi in uso: …` e **avverte se Steam manca**. Vedi §12 |
 | **38** | ⚠️ **Il log del SERVER non esisteva su disco** | ✅ **RISOLTA — `ServerOutput.log`** | **`Logger.Print` era solo `Console.WriteLine`** *(`Logger.cs:39`)* **e nella cartella del server NON c'era nessun file di log** ⇒ **il resoconto del server moriva con la finestra**. **È costato DUE indagini di fila**: la dedup della proprietà e la lanterna post-falò sono state diagnosticate dai log dei **client**, perché il log del server non era mai stato conservato — *e le due righe che le avrebbero provate in un colpo solo sono `Server.cs:625` "Received new pers. object from X: Y" e `Server.cs:593` "Received duplicated or inferior progress from X: Y"*. ✅ **Ora il server scrive `ServerOutput.log`** accanto al binario *(`AppContext.BaseDirectory`)*, con intestazione datata e **flush a ogni riga**. **`Print` formatta la riga UNA volta e la manda a entrambe le destinazioni**, così ciò che si è visto e ciò che si è conservato non possono divergere. **Tutte le 33 chiamate del server passano dal `Logger`**, quindi lo specchio le prende tutte. ⚠️ **Due scelte deliberate**: *scrittura sincrona sotto lock* *(un log che perde le ultime righe quando il processo viene fermato — e questo server si ferma con un tasto — è peggio di nessun log, perché viene creduto)*, e **nessun errore può far cadere il server**. **Verificato AVVIANDOLO**, non solo compilato. **Da chiedere per nome: `ServerOutput.log` dell'host.** Vedi §12 |
-| **39** | ⚠️ **La doppia animazione dei vasi all'ingresso in stanza** | 🟡 **FIXATO (F4b.4) MA NON DIMOSTRATO — l'utente non la vede più, i log non lo provano** | **Segnalata dall'utente**: *"G1 e G2 vedono 2 vasi rotti → si siedono al falò → G2 entra e ne rompe 1 → G1 entra e vede l'animazione di ENTRAMBI"*. **Causa: `ReapplyCurrentScene` gira più di una volta per ogni caricamento di livello** *(`LoadSnapShot` viene invocato due volte per load)*, **e ogni passata che trova un oggetto ancora in piedi lo rompe e ne riproduce l'animazione** ⇒ **4 `Use()` per 2 vasi in un ingresso, 2 animazioni per vaso**. **Fix (F4b.4)**: **una guardia in `BreakableObjectReceive_Patch.Prefix`** *(l'unico posto che chiama `Use()`)* — se `___destroyed` è già `true`, **ritorna `false` senza applicare**. **Non tocca rete, `applied`, `pending` né `Forget`.** ⚠️ **MA LA GUARDIA NON È DIMOSTRATA, e va detto**: **il log NON può provarla**, perché `[BreakSync] rottura applicata` è stampato **DOPO** la chiamata e **`ApplyToLoadedObject` ritorna `true` anche quando la guardia sopprime** ⇒ **restano 2 righe per GUID per ingresso, e non si distingue "due applicazioni" da "una applicazione + una soppressa"**. **E il meccanismo che la aggira esiste, nel GIOCO** *(IL)*: `SetCurrentPersistentState` scrive `destroyed` dallo snapshot, poi `IsBroken()` è falso *(il `BreakableManager` non viene ripopolato al load)* ⇒ **IL_0040 `call Restore()`** ⇒ **`Restore()` rimette `destroyed = false`**. **Quindi la premessa del fix** *("la seconda passata trova gli oggetti già rotti")* **vale solo se nessuno li riporta in piedi fra le due passate.** **L'utente conferma che il sintomo è sparito** *("tutto funziona alla grande")*, **ma serve una misura**: una riga di log **quando la guardia sopprime**. ⚠️ **LIMITAZIONE NOTA**: **`pending` NON viene ripulito dal falò** *(il guard `loadingSnapshot` in `Forget` salta solo la parte `pending`; il falò non passa da `LoadSnapShot`)*. **È il PROGETTO della voce 33, ma diventa un'eco** quando il vaso era già rotto in questa vita prima del falò. **Toccarlo è rischioso**: è lo stesso `Forget` che ha causato "l'hook non dipinge". Vedi §12 |
+| **39** | ⚠️ **La doppia animazione dei vasi all'ingresso in stanza** | ✅ **RISOLTA E DIMOSTRATA (F4b.4)** | **Segnalata dall'utente**: *"G1 e G2 vedono 2 vasi rotti → si siedono al falò → G2 entra e ne rompe 1 → G1 entra e vede l'animazione di ENTRAMBI"*. **Causa: `ReapplyCurrentScene` gira più di una volta per ogni caricamento di livello** *(`LoadSnapShot` viene invocato due volte per load)*, **e ogni passata che trova un oggetto ancora in piedi lo rompe e ne riproduce l'animazione** ⇒ **4 `Use()` per 2 vasi in un ingresso, 2 animazioni per vaso**. **Fix (F4b.4)**: **una guardia in `BreakableObjectReceive_Patch.Prefix`** *(l'unico posto che chiama `Use()`)* — se `___destroyed` è già `true`, **ritorna `false` senza applicare**. **Non tocca rete, `applied`, `pending` né `Forget`.** ⚠️ **MA LA GUARDIA NON È DIMOSTRATA, e va detto**: **il log NON può provarla**, perché `[BreakSync] rottura applicata` è stampato **DOPO** la chiamata e **`ApplyToLoadedObject` ritorna `true` anche quando la guardia sopprime** ⇒ **restano 2 righe per GUID per ingresso, e non si distingue "due applicazioni" da "una applicazione + una soppressa"**. **E il meccanismo che la aggira esiste, nel GIOCO** *(IL)*: `SetCurrentPersistentState` scrive `destroyed` dallo snapshot, poi `IsBroken()` è falso *(il `BreakableManager` non viene ripopolato al load)* ⇒ **IL_0040 `call Restore()`** ⇒ **`Restore()` rimette `destroyed = false`**. **Quindi la premessa del fix** *("la seconda passata trova gli oggetti già rotti")* **vale solo se nessuno li riporta in piedi fra le due passate.** **L'utente conferma che il sintomo è sparito** *("tutto funziona alla grande")*, **ma serve una misura**: una riga di log **quando la guardia sopprime**. ⚠️ **LIMITAZIONE NOTA**: **`pending` NON viene ripulito dal falò** *(il guard `loadingSnapshot` in `Forget` salta solo la parte `pending`; il falò non passa da `LoadSnapShot`)*. **È il PROGETTO della voce 33, ma diventa un'eco** quando il vaso era già rotto in questa vita prima del falò. **Toccarlo è rischioso**: è lo stesso `Forget` che ha causato "l'hook non dipinge". **Da affrontare col falò (voce 4).** ⭐ **E ORA LA DIMOSTRAZIONE, con la misura aggiunta apposta**: la guardia **logga quando rifiuta** *(una riga che avevo messo proprio perché `rottura applicata` NON poteva provarla: è stampata dal chiamante DOPO, e riporta successo in entrambi i casi)*. **Nei log compare 3 volte** — *G1 `0d384626` L1115 · G1 `1ba697d8` L1409 · G2 `9edafe04` L1104*, **una per GUID per ingresso** — **e il conteggio `rottura applicata` per GUID per ingresso è sceso a 1**. **La prova più pulita è G2, che non ha mai rotto quei vasi di sua mano.** ⚠️ **CORREZIONE DI ORDINE, dall'analisi in IL**: **il passaggio rifiutato è il PRIMO, non il secondo** *(`L1087 OnLevelLoaded · L1095 APPLICATA · L1098 Loaded level · L1115 SALTATA · L1116 APPLICATA`)* ⇒ **il gioco rimette `destroyed = false` fra l'applicazione del pass A e l'arrivo del pass B.** **E il meccanismo è confermato**: `IsBroken()` legge `BreakableManager.ContainsBreakable` *(non `destroyed`)* ed è falso al load ⇒ **`Restore()`**, **che è l'unica cosa che azzera `destroyed`** ed è chiamato da **soli due metodi** *(`OnUsePrieDieu`, `SetCurrentPersistentState`)*. Vedi §12 |
 | **40** | 🟡 **`ReapplyCurrentScene` gira due volte per caricamento di livello** | 🟢 **nota tecnica — innocua con la guardia** | **Due invocazioni**: *(1)* il postfix di `PersistentManager.LoadSnapShot` *(il fix vero)*; *(2)* **la "seconda possibilità"** `MultiplayerLateUpdate_Patch`, armata da `Multiplayer.OnLevelLoaded` *(⚠️ **era strumentazione temporanea mia, aggiunta per misurare quale delle due dipingesse** — il log ha detto che dipingono **entrambe**)*. **Con la guardia della voce 39 è innocua** *(la seconda passata trova gli oggetti già rotti e non fa nulla)*, **quindi è stata TENUTA di proposito**: rimuoverla sarebbe stato un secondo azzardo nello stesso momento, **e le due non scattano nello stesso istante** *(la prima può girare mentre gli oggetti si stanno ancora costruendo)*. **Se un giorno si vuole semplificare, è un candidato**, con la raccomandazione di farlo **dopo** aver verificato che la prima passata basti da sola. Vedi §12 |
 | **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDEVA la sincronizzazione PER SEMPRE** | ✅ **RISOLTA — con l'eccezione isolata E loggata** | **Era il difetto più pericoloso del progetto.** **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lasciava il flag `true` PER SEMPRE**, e si portava dietro: **(a)** `BreakableObjectHelper` **sopprimeva OGNI futura rottura**, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimevano l'invio di TUTTA la progressione**, **(c)** **la coda non si svuotava e rilanciava ogni frame**. **⇒ il gioco restava vivo ma il co-op smetteva di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log)* **ma i percorsi sono verificati**: `ApplyProgress` fa **`int.Parse`** su un id **che arriva dalla rete** e una lookup che può uscire dalla tabella — **e la difesa era SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` lo dice **esplicitamente**, e **non era mai diventato un fix**. **✅ FIX**: **`try/finally` con `Clear()` E il flag abbassato DENTRO il `finally`** *(il `Clear` deve stare lì: una coda parziale va comunque scartata, o la stessa entry che lancia verrebbe ritentata ogni frame)* **+ `catch` per-elemento in `ApplyProgress`, CON LOG dell'id** *(un `catch` silenzioso nasconderebbe l'unica prova che spiega perché un aggiornamento è sparito)*. **Nessun bump.** Vedi §12 |
 | **42** | **`AddInteractedObject` senza dedup** | ✅ **RISOLTA — `if (!Contains)`** | **`List.Add` senza controllo**, e **il file su disco lo mostrava: 8 voci dove 4 erano distinte**. **Innocuo in effetto** *(quella lista finisce in `savegame_N_modded.save`, che il gioco non legge mai — voce 36)*, **ma è il tipo di innocuo che smette di esserlo il giorno in cui qualcuno conta le voci o confronta due liste per uguaglianza.** ✅ **Fix**: `IsNullOrEmpty` → **`Contains`** → `Add`. Vedi §12 |
@@ -3060,3 +3060,129 @@ quello dei salvataggi proprio quando lo abbiamo risolto"*. **`efcf8b7` e `5ecbc2
 (mattina), `998c561` del 7 ottobre 18:40, e la corruzione dei salvataggi e'' arrivata con
 `mega-fix-1`/F4a nei giorni successivi.** **Non erano collegati** *(lo abbiamo dimostrato: erano le due
 cartelle di Steam — voce 36)*, **ma sono capitati vicini, e in memoria si sono attaccati.** **Normale.**
+
+
+## [2026-10-10 23:00] VOCE 39 DIMOSTRATA — e quattro correzioni ai miei brief
+
+### ✅ LA GUARDIA DI F4b.4 LAVORA, ED E'' DIMOSTRATO
+
+**La riga di misura esiste e compare 3 volte**:
+```
+G1 L1115   0d384626-0c8f-4749-9254-8ed0d2a80f32
+G1 L1409   1ba697d8-bc73-45b9-9bdf-9bc71a08af48
+G2 L1104   9edafe04-8dd2-4d37-bd7e-4694b922f9af
+   => UNA per GUID per ingresso
+```
+**E il conteggio `[BreakSync] rottura applicata` per GUID per ingresso e'' sceso a 1.**
+```
+G1 0d384626:  L769 appl · L978 rimandata · L1095 appl · L1115 SALTATA · L1116 appl
+G1 1ba697d8:  L1263 rimandata · L1393 appl · L1409 SALTATA · L1410 appl
+G2 9edafe04:  L992 rimandata · L1084 appl · L1104 SALTATA · L1105 appl
+```
+**La prova piu'' pulita e'' G2, che non ha mai rotto quei vasi di sua mano**: `9edafe04` ha **2 sole
+righe `applicata`**, in **due ingressi diversi** — non 2 per ingresso.
+⚠️ **Nota di onesta''**: **il baseline "2 per vaso per ingresso" e'' storico** *(dichiarato nella voce 39
+e nei vecchi log)*, **non rimisurabile in questi log**. **Cio'' che questi log provano e'' il valore
+ATTUALE = 1.** **Ed e'' esattamente per questo che avevo aggiunto la riga di misura: `rottura applicata`
+non poteva dimostrare niente, perche'' e'' stampata dal chiamante DOPO la decisione e riporta successo
+in entrambi i casi.**
+
+### ⚠️ CORREZIONE DI ORDINE: il passaggio rifiutato e'' il PRIMO, non il secondo
+
+**Avevo detto** che il gioco rimette `destroyed = false` **"fra due applicazioni"**, e che **il secondo
+passaggio** veniva rifiutato. **FALSO, e il log lo mostra**:
+```
+L1087  OnLevelLoaded
+L1095  APPLICATA
+L1098  [Modding API] Loaded level
+L1115  SALTATA      <- la guardia rifiuta QUI
+L1116  APPLICATA
+```
+⇒ **il gioco rimette `destroyed = false` fra l''applicazione del pass A e l''arrivo del pass B**,
+**non fra due applicazioni.** **Il meccanismo in IL e'' quello giusto; l''ordine A/B era invertito.**
+**E non e'' stato possibile determinare per IL quale dei due passaggi sia A e quale B** *(i due si
+alternano nei tre casi, e l''ordine rispetto ai marcatori di frame non e'' decidibile senza
+strumentare)*. **Dichiarato come non verificato.**
+
+### ✅ E IL MECCANISMO, CONFERMATO IN IL *(con una precisazione)*
+
+```
+get_IsBroken() = Logic.BreakableManager.ContainsBreakable(GetHashId())   <- NON legge `destroyed`
+=> destroyed = true  +  IsBroken() = false  =>  Restore()
+   e Restore() e'' l''UNICA cosa che azzera destroyed
+   (IL: ldfld destroyed / brtrue / stfld destroyed 0)
+Restore() e'' chiamato da ESATTAMENTE DUE metodi in tutto l''assembly:
+   BreakableObject.OnUsePrieDieu        (il falo'')
+   BreakableObject.SetCurrentPersistentState
+E GetCurrentPersistentState NON chiama Use(): solo CreatePersistentData() + stfld broken.
+```
+
+### ✅ E IL PASSO 1, CONFERMATO COI NUMERI
+
+```
+G2 (non host dalla L1678):  owner=io = 99 righe, TUTTE dopo L1678, ZERO prima
+G1 (non host L1434-1528):   owner=io = 88 righe
+D01Z01S01@SPAWN si muove:   11 posizioni distinte (G2), 4 (G1)   <- supera il criterio (>=3)
+```
+**Prima del fix era `owner=nuovo`/`owner=altro` per sempre.** ✅
+**E il fix F4b.2 non ha rotto i nemici**: il ramo `TryParseBreakId` e'' **la PRIMA cosa dopo il
+null-check e fa `return`**, quindi `_pendingDeaths.Add` e `MarkSpawnPointConsumed` **non vengono
+toccati** e **il ciclo dei nemici non cerca mai un GUID**. ✅
+
+### ✅ E LA VOCE 43: codice morto CONFERMATO
+
+```
+DecideOwnership ha UN SOLO chiamante: riga 2558, `DecideOwnership(enemy, previous, true)`,
+   letterale `true`, dentro `if (IsHost)` (2556). Grep su tutto il repo: nessun altro riferimento.
+`localIsHost` compare 4 volte in HEAD: la firma (2298), un commento (2309), la prima assegnazione
+   (2314) e il gate (2319). NESSUN chiamante passa mai `false`.
+ReceiveEnemyOwnership (2350): `if (IsHost) return;` immediato, e APPLICA il token
+   (`state.OwnedByLocal = ownedByMe`).
+=> il peer non raggiunge MAI DecideOwnership, il gate e'' irraggiungibile,
+   e rimuoverlo NON cambia alcun percorso.
+```
+⚠️ **Unica via teorica per farlo tornare vivo**: togliere `if (IsHost)` dal chiamante e passare
+`IsHost` come argomento. **Oggi no.** **Essendo pulizia pura, e col gate che documenta l''intenzione,
+lasciarlo non fa danno** *(voce 43, 🟢 opzionale)*.
+
+### ⚠️ E QUATTRO AFFERMAZIONI DEI MIEI BRIEF CHE ERANO SBAGLIATE
+
+**L''Esploratore ha smentito quattro cose, e vanno registrate perche'' l''errore e'' mio:**
+1. **HEAD non era `69dd6d6`**: era **`9941eb9`** *(`69dd6d6` → `93fc076` → `fc61b7b` → `9941eb9`)*.
+   **Ero indietro di 3 commit.** ✅ **Ma il tag `consolidazione-flag-e-misura` punta a `93fc076`,
+   antenato di HEAD ⇒ la misura era nel binario testato.**
+2. **`esito=resume:StartBehaviour` NON esiste in questi log**: ci sono solo **`resume:earlyReturn`**
+   e **`esito=?`**. **L''avevo indicato come atteso.**
+3. 🔴 **"i nemici non sono stati esercitati: `0 enemies` in tutte le occorrenze" — FALSO.**
+   **G1 L1356 = `3 enemies / 7 spawn points / 3 ids` · G1 L1420 = `4/7/4` · G2 L1687 = `5/7/5`.**
+   **I nemici c''erano.** ⚠️ **Ed e'' la piu'' grave delle quattro**: **avevo preso un dato VERO della
+   verifica precedente** *(dove i nemici erano davvero 0)* **e l''ho trasferito alla sessione nuova
+   senza controllare.** **E'' la stessa malattia della voce 32: un dato vero in un contesto, ripetuto
+   in un altro contesto dove non lo e''.**
+4. **L''ordine dei passaggi** *(sopra)*.
+
+**⇒ LA REGOLA, che si aggiunge a quella della voce 32**: **un dato misurato vale per LA SESSIONE in cui
+e'' stato misurato.** **Ripeterlo in un''altra sessione e'' un''affermazione nuova, e come tale va
+verificata.** **In questa sessione e'' la quinta volta che un''affermazione non verificata produce una
+conclusione sbagliata.**
+
+### ✅ E LA CONSOLIDAZIONE: nessuna regressione, ma una prova mancata
+
+`exceptions=` **tutti 0** *(59/59 righe in G1, 47/47 in G2)* · `NullReference` 0 ·
+`IndexOutOfRange` 0 · `IMPRONTA DIVERSA` 0 · `[Error` 0 · `SAVEERROR` 0.
+⚠️ **Ma `[Progress] apply failed` = 0 e NON e'' una prova positiva**: **non esiste NESSUNA riga
+`[Progress]` in nessuno dei due log** ⇒ **il `catch` nuovo NON ha lavorato in questa sessione.**
+**Assenza di esercizio, non assenza di difetti.** **Dichiarato.**
+⚠️ **`Couldn't find connected player` = 32, SOLO su G2, concentrate L663-725** — **nella finestra di
+join/handoff**, cioe'' **esattamente dove FIX C doveva lavorare**. **La connessione riesce e la sessione
+prosegue** *(c''e'' anche un `Failed to establish connection` seguito da successo)*, **quindi resta
+benigno — ma 32 occorrenze in quella finestra meritano una nota, e non le avevo mai contate.**
+
+### ✅ `[Path]` E SERVER
+
+**`[Path]`**: **G1 = `lambe`** → `…/Savegames/76561198161597473/` · **G2 = `Drago`** →
+`…/Savegames/76561199216304572/`. **Steam inizializzato su entrambe. Cartelle distinte e corrette.**
+**La voce 36 funziona.** ✅
+**Server**: `duplicated or inferior` = **134**, **NESSUNO con GUID di breakable** *(tutti id tabellari
+`~0`/`~1`, Type 5/8/9/10/11/12)*. **`brk|` = 0** ✅. `Received new pers. object` = **4**.
+**2 connessioni, 2 disconnessioni, 1 host reassign** *(G1 → G2)*, **0 errori**.
