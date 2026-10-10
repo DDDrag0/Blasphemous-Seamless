@@ -61,7 +61,8 @@
 | **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | ✅ **RISOLTA — la causa era MIA, in `Forget`** | **Il test F4b.1 era fallito al suo caso centrale**: `0d384626` rotta da G1 in `D17Z01S03`, il server **rimanda** la entry a G2, G2 la **riceve e la ricorda**, entra nella stanza e **la trova in piedi**. **La causa, ricostruita in IL**: `LoadSnapShot` chiama `SetCurrentPersistentState` su ogni oggetto di cui ha dati → per un `BreakableObject` **`IsBroken()` è FALSO** *(il `BreakableManager` non viene ripopolato al load)* → **il gioco chiama `Restore()`** → il mio postfix su `Restore` → **`Forget` cancellava il guid da `pending` E da `applied`**. **E l'hook è un POSTFIX di `LoadSnapShot`, quindi gira DOPO** ⇒ **quando guardava, il pending era già stato cancellato.** **Fix**: un flag `loadingSnapshot` *(Prefix su `LoadSnapShot`, abbassato dopo la ri-applicazione)*: **`Forget` esce subito se il flag è alzato**, e decide la ri-applicazione. **Verificato in IL.** ⚠️ **E il caso "G2 entra dopo" NON è mai stato esercitato nei test**: le 3 entry rimandate restavano `pending=3` fino alla fine **perché la stanza non è più stata rivisitata** ⇒ **serve un test che la rivisiti.** Vedi §12 |
 | **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | ✅ **RISOLTA per i vasi (F4b.2) — e il difetto è STRUTTURALE per tutto il resto** | `TeamInfo.AddTeamProgress` deduplica **per stringa id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`** *(in IL: `cgt` **unsigned**)*: tutti gli oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` è **falso** e un id già visto è **sempre rifiutato** *(`Server.cs:591` esce senza inoltrare)*. **Conseguenza vera: ogni oggetto può essere annunciato UNA VOLTA per sessione del server.** ⚠️ **CORREZIONE a una riga precedente di questa voce**: *"il formato `scena\|guid` aggira il caso cambio stanza"* **era IMPRECISO** — **il GUID è authored e unico per ISTANZA**, quindi **l'id è per-oggetto, non per-visita**: rompere un'ALTRA lanterna altrove dà un id nuovo *(passa)*, ma **rirompere la STESSA lanterna, anche uscendo e rientrando, dà lo STESSO id** *(scartato)*. **Quindi lasciare e rientrare NON rinfresca la chiave.** **✅ RISOLTA per i vasi da F4b.2**: l'annuncio **non usa più il canale Progress**, ma **`EnemyDeathGlobal`** con id `brk\|scena\|guid` — **il canale che il server inoltra senza alcun dizionario** *(e che i nemici già usavano, ed è il motivo per cui i nemici non hanno mai avuto questo problema)*. **Solo client: nessun `NetworkType` nuovo, nessun bump di protocollo, nessuna `Common.dll` da ricopiare.** ⚠️ **RESTA STRUTTURALE per muri, leve e ogni altro oggetto che usa il canale Progress**: se in futuro servisse ri-annunciarli, **il problema è ancora lì**. Vedi §12 |
 | **35** | 🟡 **Se un giocatore muore nella bossroom, il boss spegne l'IA** | 🟡 **nuova, segnalata dall'utente** | **Segnalato in gioco**: *"se uno muore nella bossroom il boss spegne l'IA"*. **Comportamento voluto**: **se ci sono altri giocatori nella bossroom, il boss deve cambiare target con uno di quelli ANCORA VIVI nella stanza** *(e non spegnersi)*. **Questo tocca la voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(il cambio bersaglio dei boss)*: la morte di un giocatore **non è oggi comunicata ai peer**, quindi **probabilmente serve un pacchetto "player death"** *(⚠️ `NetworkType` **non ha** un tipo player-death ⇒ richiederebbe un bump di protocollo)*. **Da analizzare, non da ipotizzare.** Vedi §12 |
-| **35** | 🟡 **Se un giocatore muore nella bossroom, il boss spegne l'IA** | 🟡 **nuova, segnalata dall'utente** | **Segnalato in gioco**: *"se uno muore nella bossroom il boss spegne l'IA"*. **Comportamento voluto**: **se ci sono altri giocatori nella bossroom, il boss deve cambiare target con uno di quelli ANCORA VIVI nella stanza** *(e non spegnersi)*. **Questo tocca la voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(il cambio bersaglio dei boss)*: la morte di un giocatore **non è oggi comunicata ai peer**, quindi **probabilmente serve un pacchetto "player death"** *(⚠️ `NetworkType` **non ha** un tipo player-death ⇒ richiederebbe un bump di protocollo)*. **Da analizzare, non da ipotizzare.** Vedi §12 |
+| **37** | 🔴 **L'ECO INFINITA: un'annuncio applicato veniva ri-annunciato** | ✅ **RISOLTA (F4b.3) — ma la LEZIONE va ricordata** | **F4b.2 funzionava ma aveva introdotto qualcosa di peggio del difetto che curava.** **Conteggi incrociati nei log**: `APPLY(G1)=SEND(G2)` e `APPLY(G2)=SEND(G1)-2` ⇒ **ogni annuncio ricevuto veniva riapplicato E re-annunciato, un round-trip per iterazione** ⇒ **187 + 34 SEND su DUE soli vasi**. **Meccanismo, in IL**: `BreakableObject::Damage` fa `ldfld destroyed / brfalse / ret` ⇒ **se l'oggetto è GIÀ rotto esce subito LASCIANDO `destroyed = true`**, e il postfix del mittente faceva `if (!___destroyed) return;` ⇒ **annunciava pur non essendo successo nulla**. **E il percorso nuovo non alzava `reapplying`**. ⚠️ **PERCHÉ NON SI VEDEVA PRIMA: il canale Progress deduplicava, quindi l'eco veniva inghiottita dall'eco stessa.** **LA LEZIONE, e vale per tutto il progetto**: *cambiare canale obbliga a ricontrollare TUTTI i guard che proteggevano il canale vecchio — un guard che sembra ridondante può essere l'unico che teneva su la baracca.* **Fix**: una **Prefix** su `Damage` cattura **se l'oggetto era già rotto PRIMA** *(l'unico momento in cui la domanda ha risposta: dopo, il campo è `true` in entrambi i casi)*, e la Postfix esce subito se lo era. **Più** `ApplyOrRemember` che alza `reapplying` con **salva/ripristina** *(non azzera: un'applicazione può annidarsi)*. **Verificato in IL**: ordine `TryGetValue → CurrentlyUpdatingProgress → IsReapplying → IsConnected → Send`. Vedi §12 |
+| **38** | ⚠️ **Il log del SERVER non esisteva su disco** | ✅ **RISOLTA — `ServerOutput.log`** | **`Logger.Print` era solo `Console.WriteLine`** *(`Logger.cs:39`)* **e nella cartella del server NON c'era nessun file di log** ⇒ **il resoconto del server moriva con la finestra**. **È costato DUE indagini di fila**: la dedup della proprietà e la lanterna post-falò sono state diagnosticate dai log dei **client**, perché il log del server non era mai stato conservato — *e le due righe che le avrebbero provate in un colpo solo sono `Server.cs:625` "Received new pers. object from X: Y" e `Server.cs:593` "Received duplicated or inferior progress from X: Y"*. ✅ **Ora il server scrive `ServerOutput.log`** accanto al binario *(`AppContext.BaseDirectory`)*, con intestazione datata e **flush a ogni riga**. **`Print` formatta la riga UNA volta e la manda a entrambe le destinazioni**, così ciò che si è visto e ciò che si è conservato non possono divergere. **Tutte le 33 chiamate del server passano dal `Logger`**, quindi lo specchio le prende tutte. ⚠️ **Due scelte deliberate**: *scrittura sincrona sotto lock* *(un log che perde le ultime righe quando il processo viene fermato — e questo server si ferma con un tasto — è peggio di nessun log, perché viene creduto)*, e **nessun errore può far cadere il server**. **Verificato AVVIANDOLO**, non solo compilato. **Da chiedere per nome: `ServerOutput.log` dell'host.** Vedi §12 |
 | **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | 🟢 **operativa — da avvertire SEMPRE** | **Il percorso dei salvataggi è costruito così** *(IL del gioco)*: `persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamUser.GetSteamID().ToString() : "") + "/"`. ⇒ **avviare il gioco SENZA Steam sposta silenziosamente ogni salvataggio in `Savegames\` invece che in `Savegames\<steamid>\`.** **E con Steam Cloud abilitato le due cartelle DIVERGONO**: una sessione iniziata senza Steam **sembra** aver corrotto o perso i salvataggi — **non erano corrotti: erano da un'altra parte.** **Intermittente e dipendente dalla macchina**, quindi **facile da scambiare per un bug della mod**. ⚠️ **E la struttura "anomala" che aveva allarmato** *(cartelle vuote `savegame_0\`, `savegame_0_backup\`, contenitore `76561199216304572\` vuoto)* **è NORMALE: le crea il GIOCO** *(`PersistentManager.CreateAndGetSaveGameInternalDir` + `BackupSlot`→`FileTools.DirectoryCopy`)* **e convivono coi file anche su un'installazione sana.** **La mod NON c'entra**: scrive **un solo file** *(`savegame_N_modded.save`)* e **il gioco non lo legge mai** *(solo `.save`/`.save_backup`; nessuna `Directory.GetFiles` sulla cartella)*. **RACCOMANDAZIONE OPERATIVA, da ripetere SEMPRE**: *(1)* **avviare SEMPRE Steam prima del gioco**, oppure *(2)* **disattivare Steam Cloud per Blasphemous**, e *(3)* **backup a mano di `Savegames` prima delle sessioni di test.** ✅ **Ora reso VISIBILE**: la mod logga all'avvio `[Path] Steam inizializzato: … · cartella salvataggi in uso: …` e **avverte se Steam manca**. Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
@@ -2475,3 +2476,127 @@ obbliga a ricontrollare TUTTI i guard che proteggevano il canale vecchio.**
 conclusioni dipendono dall''offset costante di 20 tick fra le due macchine**, calibrato in entrambi i
 versi. **Non sono secondi assoluti.** **E il log del SERVER non era fra gli allegati**: quando si
 indaga una dedup, **il log del server e'' la prova primaria** e va chiesto subito.
+
+
+## [2026-10-10 18:45] F4b.2 VERIFICATO, e l''eco infinita: la lezione piu'' importante di questa sessione
+
+### ✅ LA PROVA CHE F4b.2 FUNZIONA
+
+**G2 (ricevente), falo'' a L596**: il GUID `0d384626-0c8f-4749-9254-8ed0d2a80f32`, **gia'' applicato
+PRIMA del falo''** *(`L341`-`L462`)*, **viene RIAPPLICATO DOPO** *(`L664`, poi 666, 668…)*.
+**E la memoria era VUOTA in quel momento** *(`applied=0`, hook a `L655`)*.
+⇒ **E'' arrivato PER VIA DI RETE, non dalla memoria.** **Prima del fix era impossibile**: il server
+lo avrebbe scartato. **Su G1 lo stesso**: falo'' `L468` -> riapplicata da `L539`.
+
+**Il percorso "rimandata" funziona**: G2 `L465` e `L493` *(appartiene a `D17Z01S03`)* **poi applicate
+all''ingresso della stanza** *(`L521`-`523`, `L538`-`539`)*.
+
+**Conteggi**: `[BreakSync]` G1 231 = 218 applicata + 13 hook · G2 241 = 222 applicata + 17 hook +
+2 rimandate. `Broke breakable` 221/218.
+
+⚠️ **E la lezione sui falo'': `applied` NON si svuota "al falo'' in se''** — si svuota **quando il gioco
+`Restore`-a davvero l''oggetto** *(`Forget` -> `applied.Remove`)*. **Prova**: G1 `L454 applied=1` ->
+(falo'' `L468`) -> `L519 applied=0`; **MA** falo'' `L925` -> `L987 applied=2` *(i vasi erano in
+un''altra stanza)*. **E `applied=0 pending=0` appare sugli INGRESSI in stanza, non come effetto del
+falo''.** ⇒ **il falo'' sincronizza i vasi solo per chi c''e'', ed e'' coerente con la voce 4.**
+
+### 🔴 E LA REGRESSIONE CHE F4b.2 AVEVA INTRODOTTO — l''eco infinita
+
+**Conteggi incrociati, e sono una prova geometrica**:
+```
+APPLY(G1) = SEND(G2)     e     APPLY(G2) = SEND(G1) - 2
+   => ogni annuncio ricevuto veniva riapplicato E RE-ANNUNCIATO, un round-trip per iterazione
+blocco 1: G1 SEND 56 / APPLY 54 · G2 SEND 54 / APPLY 54
+blocco 2 (post-falo''): G1 SEND 165 / APPLY 164 · G2 SEND 164 / APPLY 163
+   => 187 + 34 SEND su DUE soli vasi
+```
+
+**Il meccanismo** *[IL su `Assembly-CSharp.dll`]*:
+```
+BreakableObject::Damage
+   IL_0012  ldfld destroyed
+   IL_0017  brfalse IL_001D
+   IL_001C  ret          <- esce subito se GIA'' rotto, LASCIANDO destroyed = true
+E il postfix del mittente:  if (!___destroyed) return;
+   => su un oggetto gia'' rotto ANNUNCIAVA, pur non essendo successo nulla
+E il percorso nuovo (ReceiveEnemyDeathGlobal -> ApplyOrRemember -> Apply) gira FUORI da
+ProgressManager.Update e NON alzava `reapplying`: i guard non lo coprivano.
+```
+
+### ⚠️ PERCHE'' NON SI VEDEVA PRIMA, e LA LEZIONE
+
+> **Il canale `Progress` deduplicava, quindi l''eco veniva inghiottita dall''eco stessa.**
+> **Cambiando canale il dedup non c''e'' piu'', e l''eco e'' diventata visibile come un relay vero.**
+
+**LA LEZIONE, e vale per tutto il progetto:**
+> **Cambiare canale obbliga a ricontrollare TUTTI i guard che proteggevano il canale vecchio.**
+> **Un guard che sembra ridondante puo'' essere l''unico che teneva su la baracca.**
+> **E il dedup non era solo un difetto: stava anche NASCONDENDO questo.**
+
+**Ed e'' la seconda volta in questa sessione che un mio fix ha creato un problema nuovo** *(la prima
+e'' stata l''hook che non dipingeva)*. **Il rimedio e'' quello che abbiamo usato: far verificare i log
+da un agente indipendente PRIMA di dichiarare chiuso qualcosa.** **L''Esploratore aveva segnalato
+esattamente questo rischio, e io l''avevo coperto solo a meta''.**
+
+### ✅ IL FIX *(F4b.3, tag `fix-f4b3-anti-eco`)*
+
+**1. ALLA FONTE**: una **Prefix** su `Damage` cattura **se l''oggetto era GIA'' rotto PRIMA della
+chiamata**. **E'' l''unico momento in cui quella domanda ha ancora una risposta**: dopo, il campo e''
+`true` in entrambi i casi *(rottura vera / chiamata su oggetto gia'' rotto)* **e i due sono
+indistinguibili**. La Postfix esce subito se era gia'' rotta.
+**La mappa e'' ripulita dalla Prefix di `LoadSnapShot`**: un livello nuovo sostituisce ogni oggetto
+che potrebbe contenere.
+
+**2. IL PERCORSO NUOVO alza `reapplying`**: `ApplyOrRemember` lo **salva e lo ripristina** *(non lo
+azzera)*, perche'' un''applicazione **puo'' annidarsi** e azzerarlo in un frame interno aprirebbe una
+finestra in cui una rottura viene annunciata indietro.
+
+**Verificato in IL**: ordine delle guardie
+`TryGetValue → CurrentlyUpdatingProgress → IsReapplying → IsConnected → SendEnemyDeathGlobal`.
+
+⚠️ **E una nota**: `[EnemyTick]`/`[EnemyTree]` sono **0 in tutti e quattro i log** e
+`Post-spawn: 0 enemies` sempre ⇒ **il percorso dei nemici NON e'' stato esercitato in questo test.**
+**Il ramo `brk` ritorna PRIMA di `_pendingDeaths`/`MarkSpawnPointConsumed`**, quindi **nessuna
+regressione osservata** — ma **va riverificato in una stanza con nemici.**
+
+### 📁 E IL LOG DEL SERVER NON ESISTEVA SU DISCO *(voce 38)*
+
+`Logger.Print` era **solo `Console.WriteLine`**, e nella cartella del server **non c''era nessun file
+di log** ⇒ **il resoconto del server moriva con la finestra.**
+**E'' costato due indagini di fila.** Ora il server scrive **`ServerOutput.log`** accanto al binario,
+e **tutte le 33 chiamate passano dal `Logger`**, quindi lo specchio le prende tutte — incluse
+`Server.cs:625` *"Received new pers. object from X: Y"* e `Server.cs:593` *"Received duplicated or
+inferior progress from X: Y"*, **le due righe che avrebbero provato la dedup in un colpo solo.**
+
+### 📋 LA RISPOSTA DEFINITIVA SUI LOG *(domanda dell''utente)*
+
+```
+G1:  LogOutput 987 righe  vs  output_log 1878 righe
+     righe della mod: 616 = 616   ·   [BreakSync] 231 = 231   ·   [Probe] 79 = 79
+G2:  LogOutput 1107       vs  output_log 2167
+     righe della mod: 672 = 672   ·   [BreakSync] 241 = 241
+```
+**Motivo in configurazione**: `BepInEx.cfg` ha `[Logging.Console] Enabled = true` e `LogLevels = All`
+⇒ **l''output_log è un SOVRAINSIEME** *(multiset identico delle righe della mod, anche i `Warning`,
+piu'' le righe di gioco)*. **Il `LogOutput` non aggiunge nulla.**
+⚠️ **Motivo per cui BepInEx cattura anche il gioco**: `WriteUnityLog = true` ⇒ **274/320 righe Unity
+con prefisso `[Info : Unity Log]`**, tutte presenti nell''`output_log`.
+
+| Situazione | Cosa chiedere |
+|---|---|
+| **Problemi della MOD** *(nemici, vasi, sync)* | **`output_log.txt` per macchina** — basta da solo |
+| **Problemi del GIOCO** *(salvataggi, scene, crash)* | **`output_log.txt`** — **unico** con `Initialize engine version`, `Unloading`, `Total:`, `(Filename:)`, eccezioni motore |
+| **Problemi di SERVER / dedup / inoltro** | ⭐ **`ServerOutput.log` dell''HOST** *(adesso esiste!)* **+ gli `output_log` dei client** |
+| **ENTRAMBI** | per escludere cause di gioco su un sospetto errore mod; **e se un domani si testasse con due sessioni sulla STESSA macchina** *(li'' l''`output_log` conterrebbe due processi intrecciati)* |
+
+⚠️ **E il controllo che serve per la dedup**: `duplicated or inferior` **è una riga del SERVER** ⇒
+**nei log dei client vale "0 per costruzione", e non e'' una prova.** **Va letto in `ServerOutput.log`.**
+
+### ✅ E NESSUN''ALTRA REGRESSIONE
+
+`[Error` **0** in tutti e quattro i file · `NullReference` **0** · `IndexOutOfRange` **0** ·
+`IMPRONTA DIVERSA` **0** · `exceptions=` **0** in tutte le righe `[Probe]`.
+**Solo**: 2× `[Warning:Modding API] Failed to load missing assembly: Rewired_Windows_Lib.resources` e
+32× `[Warning:Multiplayer] Couldn''t find connected player: *` **in G2 durante la connessione** *(prima
+di ogni rottura: benigno)*. **E nessun intreccio di processi**: `Initialize engine version` = **1 per
+file**, banner BepInEx = 1, e i nomi interni dei giocatori coincidono coi nomi dei file.
