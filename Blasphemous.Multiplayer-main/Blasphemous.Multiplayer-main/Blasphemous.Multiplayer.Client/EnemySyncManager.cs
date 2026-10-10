@@ -288,6 +288,22 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly HashSet<string> _pendingDeaths = new HashSet<string>();
 
         /// <summary>
+        /// True while this machine is replicating a bonfire announced by someone else.
+        ///
+        /// The replication calls the game's own RespawnDeadEnemies, which our own hook watches - so without a
+        /// marker there is no way to tell a replicated bonfire from a player sitting down. Nothing is sent
+        /// back today, but the moment anything is added to that hook the two become an infinite echo, and
+        /// this is the same trap the vase fix already fell into once.
+        ///
+        /// Saved and restored rather than set and cleared: a replication can nest, and clearing the flag in
+        /// an inner frame would open a window in which the outer one is mistaken for a real bonfire.
+        /// </summary>
+        private static bool _replicatingBonfire;
+
+        /// <summary>True when the bonfire being processed was announced by another machine.</summary>
+        public static bool IsReplicatingBonfire { get { return _replicatingBonfire; } }
+
+        /// <summary>
         /// Every death this machine has announced, so a joiner can be told about them even when the
         /// announcer is no longer in the room where they happened.
         ///
@@ -1518,6 +1534,83 @@ namespace Blasphemous.Multiplayer.Client
 
             ModLog.Info($"[Falo''] consumedSpawns azzerati dal gioco: dimenticate {announced} morti " +
                         $"annunciate e {pending} ricevute (scena={scene})");
+        }
+
+        /// <summary>
+        /// Replicates a bonfire used by another player, for the WORLD only.
+        ///
+        /// A bonfire is local in this game: it respawns the dead enemies and brings back the broken scenery
+        /// on the machine that sat down and nowhere else. That was measured, not assumed - after one player's
+        /// bonfire the two machines held 5/7/5 and 3/7/3 enemies in the same room, and the second had entered
+        /// that room after the bonfire and still saw the pre-bonfire world.
+        ///
+        /// WHAT IS REPLICATED, AND WHAT IS NOT. Only the three things a bonfire does to the world:
+        ///   - the enemies come back,
+        ///   - the broken scenery comes back,
+        ///   - the game's own list of broken objects is cleared.
+        /// The sitting player's own benefits are deliberately left out. They live in ShallowActivationLogic,
+        /// which is private, would point ActivePrieDieu at the SENDER's bonfire and force a SaveGame on this
+        /// machine - so a remote player heals nothing, refills nothing and saves nothing. That is the rule
+        /// the project chose: everyone gets the respawn, only the sitter gets the comfort.
+        ///
+        /// HOW THE TWO CASES ARE HANDLED WITH ONE CALL. The game's enemy bookkeeping is a single GLOBAL list
+        /// of consumed spawn positions, and EnemySpawner scans only the scene that is loaded. So calling
+        /// RespawnDeadEnemies here does the right thing on its own in both situations:
+        ///   - standing in the bonfire's room: the list is cleared AND the enemies are recreated;
+        ///   - standing elsewhere: the list is cleared and nothing is recreated, because their spawn points
+        ///     are not in this scene. When they walk back in, CreateEnemy finds the list clean and the
+        ///     enemies return by themselves - which is exactly the requested behaviour, and needs no
+        ///     teleport, no reload and no scene rebuild.
+        ///
+        /// WHY THE FLAG. The call above is watched by our own hook, so without a marker a replicated bonfire
+        /// is indistinguishable from a player sitting down. Nothing is sent back today, and the flag is what
+        /// keeps it that way if anything ever is.
+        /// </summary>
+        private static void ReplicateBonfire(string scene)
+        {
+            string here = Core.LevelManager.currentLevel == null
+                ? "?"
+                : Core.LevelManager.currentLevel.LevelName;
+
+            if (string.IsNullOrEmpty(scene))
+            {
+                ModLog.Error("[Falo''] annuncio ricevuto senza scena: ignorato");
+                return;
+            }
+
+            if (!Main.Multiplayer.NetworkManager.IsConnected)
+                return;
+
+            ModLog.Info($"[Falo''] annuncio RICEVUTO: scena del falo''={scene} · io sono in {here} · " +
+                        $"{(scene == here ? "STESSA stanza, respawn completo" : "altra stanza, azzero la memoria")}");
+
+            bool wasReplicating = _replicatingBonfire;
+            _replicatingBonfire = true;
+            try
+            {
+                if (Core.Logic == null || Core.Logic.EnemySpawner == null)
+                    return;
+
+                Core.Logic.EnemySpawner.RespawnDeadEnemies();
+
+                // The scenery comes back through the game's own event, and the memory of those breaks clears
+                // as a side effect: UsePrieDieu raises OnUsePrieDieu, BreakableObject restores itself, and our
+                // Restore postfix forgets the guid. Tying the cleanup to the LOCAL execution of Restore - which
+                // is what a real bonfire does - is what keeps the two machines from diverging.
+                if (Core.Logic != null)
+                    Core.Logic.UsePrieDieu();
+
+                if (Core.Logic != null && Core.Logic.BreakableManager != null)
+                    Core.Logic.BreakableManager.Reset();
+            }
+            catch (System.Exception e)
+            {
+                ModLog.Error($"[Falo''] replica fallita (scena={scene}): {e.GetType().Name} - {e.Message}");
+            }
+            finally
+            {
+                _replicatingBonfire = wasReplicating;
+            }
         }
 
         /// <summary>
@@ -3399,20 +3492,9 @@ namespace Blasphemous.Multiplayer.Client
             // memory that makes an enemy die. A "falo|" left in it is inert (verified in IL: RegisterEnemy
             // compares exact ids, MarkSpawnPointConsumed requires "sp|", the id loop uses op_Inequality), but
             // it inflates the counters and leaves the fix depending on nobody ever parsing that string.
-            //
-            // THIS IS A MEASUREMENT STEP ONLY. It reports the arrival and does nothing else. The replication
-            // comes next, deliberately separately: with both at once, an arrival that worked and a
-            // replication that did not would look identical in the log.
-            string bonfireScene;
             if (BonfireSync.IsBonfireId(enemyId))
             {
-                bonfireScene = BonfireSync.SceneOf(enemyId);
-                string here = Core.LevelManager.currentLevel == null
-                    ? "?"
-                    : Core.LevelManager.currentLevel.LevelName;
-
-                ModLog.Info($"[Falo''] annuncio RICEVUTO: scena del falo''={bonfireScene} · " +
-                            $"io sono in {here} · {(bonfireScene == here ? "STESSA stanza" : "altra stanza")}");
+                ReplicateBonfire(BonfireSync.SceneOf(enemyId));
                 return;
             }
 
