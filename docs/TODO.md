@@ -59,7 +59,8 @@
 | **31** | **Il falò (`RespawnDeadEnemies`) non è mai stato esercitato nei test** | 🟢 **verifica** | Il hook su `EnemySpawner.Reset` è confermato, ma **il ramo del falò non compare in nessuno dei sette log**. Serve **un test dedicato con falò su UNA SOLA macchina**: *(1)* l'altra vede rinascere i nemici? *(2)* la memoria si svuota su chi si siede? *(3)* **su chi NON si siede NON si svuota** ⇒ un `[EnemyJoin]` successivo annuncerebbe `N>0` → **conferma della voce 4**. **È lo stesso test già indicato per la voce 4.** Vedi §12 |
 | **32** | 🔴 **L'arbitraggio host-only è CIECO fuori dalla scena condivisa** | 🟡 **aperta — decisione di architettura** | **Il token di proprietà NON risolve il problema che dichiarava di risolvere.** La frase che l'ha motivato è **FALSA**: `5ecbc27` dice *"le due misure non possono coincidere"*, ma `bf2f568` **due commit dopo** dice *"**la regola di prossimità era giusta: il dato che le passavo era sbagliato**"* — `GetPosition()` sull'"altro" restituiva la posizione **locale** *(`posMia` e `posAltro` IDENTICHE)*. **Con i dati corretti le due macchine CONCORDANO**: `e2a8ab4` mostra distanze **speculari** e owner **coerenti**. **E l'host-only arbitrato è STRUTTURALE, non aggirabile**: `_ids` è la **scena locale**, `DecideOwnership` ha **un solo chiamante dentro `if (IsHost)`**, e **il server non gli consegnerebbe comunque il token** *(`Server.cs:816` manda solo all'host, `relayToScene` filtra per scena, `PlayerInfo.cs:30`)*. ⇒ **in stanze diverse il peer resta `OwnedByLocal=false` e `PauseEnemy` lo blocca PER SEMPRE** *(misurato: `WheelCarrier` fermo **134 campioni ≈ 67 s**)*. **Il trade-off vero**: il token garantisce **un solo simulatore SEMPRE** ma è **cieco fuori scena**; la **decisione locale simmetrica** *(già fatta e verificata in gioco nel tag `stato-sync-movimento-ok`, con l'isteresi **già a HEAD**: `OWNER_DISTANCE_MARGIN=2.5` + `OWNER_HOLD_SECONDS=0.5`)* garantisce **un solo simulatore TRANNE una finestra** ma **non è mai cieca** — e **la finestra esiste già oggi** *(5 tick `owner=nuovo` su entrambe)*. **PASSO 1 fatto** *(il peer simula i nemici con `OwnershipKnown == false`)*. **PASSO 2 da fare**: togliere `if (!localIsHost) return false;` e chiamare `DecideOwnership` **su entrambe**. ⚠️ **Rischio del passo 2 da decidere, non scoprire**: quando l'host **entra** nella stanza del peer, il peer possiede già quei nemici e l'host può riprenderseli ⇒ `PauseEnemy` + trascinamento → **scatto visibile**. Vedi §12 |
 | **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | ✅ **RISOLTA — la causa era MIA, in `Forget`** | **Il test F4b.1 era fallito al suo caso centrale**: `0d384626` rotta da G1 in `D17Z01S03`, il server **rimanda** la entry a G2, G2 la **riceve e la ricorda**, entra nella stanza e **la trova in piedi**. **La causa, ricostruita in IL**: `LoadSnapShot` chiama `SetCurrentPersistentState` su ogni oggetto di cui ha dati → per un `BreakableObject` **`IsBroken()` è FALSO** *(il `BreakableManager` non viene ripopolato al load)* → **il gioco chiama `Restore()`** → il mio postfix su `Restore` → **`Forget` cancellava il guid da `pending` E da `applied`**. **E l'hook è un POSTFIX di `LoadSnapShot`, quindi gira DOPO** ⇒ **quando guardava, il pending era già stato cancellato.** **Fix**: un flag `loadingSnapshot` *(Prefix su `LoadSnapShot`, abbassato dopo la ri-applicazione)*: **`Forget` esce subito se il flag è alzato**, e decide la ri-applicazione. **Verificato in IL.** ⚠️ **E il caso "G2 entra dopo" NON è mai stato esercitato nei test**: le 3 entry rimandate restavano `pending=3` fino alla fine **perché la stanza non è più stata rivisitata** ⇒ **serve un test che la rivisiti.** Vedi §12 |
-| **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | 🟢 **ridimensionata** | `TeamInfo.AddTeamProgress` deduplica **per stringa id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`**: tutti gli oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` è **falso** e un id già visto viene **sempre rifiutato** *(`Server.cs:591` esce senza inoltrare)*. ⚠️ **Ma è meno grave di quanto sembrasse**: nel test **177 righe `duplicated or inferior`, ma UNA SOLA con un GUID** — tutte le altre sono i **progressi iniziali al join** *(`Type 8/9/10/11/12`, `Value 0`)*. **Quindi**: ogni oggetto può essere annunciato **una volta per sessione**; il formato `scena\|guid` dei vasi **aggira il caso "cambio stanza"** *(la chiave cambia con la scena)* **ma NON il caso "stessa scena annunciata due volte"** *(rirompere lo stesso vaso dopo un falò)*. **Da decidere dopo la voce 33.** Vedi §12 |
+| **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | ✅ **RISOLTA per i vasi (F4b.2) — e il difetto è STRUTTURALE per tutto il resto** | `TeamInfo.AddTeamProgress` deduplica **per stringa id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`** *(in IL: `cgt` **unsigned**)*: tutti gli oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` è **falso** e un id già visto è **sempre rifiutato** *(`Server.cs:591` esce senza inoltrare)*. **Conseguenza vera: ogni oggetto può essere annunciato UNA VOLTA per sessione del server.** ⚠️ **CORREZIONE a una riga precedente di questa voce**: *"il formato `scena\|guid` aggira il caso cambio stanza"* **era IMPRECISO** — **il GUID è authored e unico per ISTANZA**, quindi **l'id è per-oggetto, non per-visita**: rompere un'ALTRA lanterna altrove dà un id nuovo *(passa)*, ma **rirompere la STESSA lanterna, anche uscendo e rientrando, dà lo STESSO id** *(scartato)*. **Quindi lasciare e rientrare NON rinfresca la chiave.** **✅ RISOLTA per i vasi da F4b.2**: l'annuncio **non usa più il canale Progress**, ma **`EnemyDeathGlobal`** con id `brk\|scena\|guid` — **il canale che il server inoltra senza alcun dizionario** *(e che i nemici già usavano, ed è il motivo per cui i nemici non hanno mai avuto questo problema)*. **Solo client: nessun `NetworkType` nuovo, nessun bump di protocollo, nessuna `Common.dll` da ricopiare.** ⚠️ **RESTA STRUTTURALE per muri, leve e ogni altro oggetto che usa il canale Progress**: se in futuro servisse ri-annunciarli, **il problema è ancora lì**. Vedi §12 |
+| **35** | 🟡 **Se un giocatore muore nella bossroom, il boss spegne l'IA** | 🟡 **nuova, segnalata dall'utente** | **Segnalato in gioco**: *"se uno muore nella bossroom il boss spegne l'IA"*. **Comportamento voluto**: **se ci sono altri giocatori nella bossroom, il boss deve cambiare target con uno di quelli ANCORA VIVI nella stanza** *(e non spegnersi)*. **Questo tocca la voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(il cambio bersaglio dei boss)*: la morte di un giocatore **non è oggi comunicata ai peer**, quindi **probabilmente serve un pacchetto "player death"** *(⚠️ `NetworkType` **non ha** un tipo player-death ⇒ richiederebbe un bump di protocollo)*. **Da analizzare, non da ipotizzare.** Vedi §12 |
 | **35** | 🟡 **Se un giocatore muore nella bossroom, il boss spegne l'IA** | 🟡 **nuova, segnalata dall'utente** | **Segnalato in gioco**: *"se uno muore nella bossroom il boss spegne l'IA"*. **Comportamento voluto**: **se ci sono altri giocatori nella bossroom, il boss deve cambiare target con uno di quelli ANCORA VIVI nella stanza** *(e non spegnersi)*. **Questo tocca la voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(il cambio bersaglio dei boss)*: la morte di un giocatore **non è oggi comunicata ai peer**, quindi **probabilmente serve un pacchetto "player death"** *(⚠️ `NetworkType` **non ha** un tipo player-death ⇒ richiederebbe un bump di protocollo)*. **Da analizzare, non da ipotizzare.** Vedi §12 |
 | **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | 🟢 **operativa — da avvertire SEMPRE** | **Il percorso dei salvataggi è costruito così** *(IL del gioco)*: `persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamUser.GetSteamID().ToString() : "") + "/"`. ⇒ **avviare il gioco SENZA Steam sposta silenziosamente ogni salvataggio in `Savegames\` invece che in `Savegames\<steamid>\`.** **E con Steam Cloud abilitato le due cartelle DIVERGONO**: una sessione iniziata senza Steam **sembra** aver corrotto o perso i salvataggi — **non erano corrotti: erano da un'altra parte.** **Intermittente e dipendente dalla macchina**, quindi **facile da scambiare per un bug della mod**. ⚠️ **E la struttura "anomala" che aveva allarmato** *(cartelle vuote `savegame_0\`, `savegame_0_backup\`, contenitore `76561199216304572\` vuoto)* **è NORMALE: le crea il GIOCO** *(`PersistentManager.CreateAndGetSaveGameInternalDir` + `BackupSlot`→`FileTools.DirectoryCopy`)* **e convivono coi file anche su un'installazione sana.** **La mod NON c'entra**: scrive **un solo file** *(`savegame_N_modded.save`)* e **il gioco non lo legge mai** *(solo `.save`/`.save_backup`; nessuna `Directory.GetFiles` sulla cartella)*. **RACCOMANDAZIONE OPERATIVA, da ripetere SEMPRE**: *(1)* **avviare SEMPRE Steam prima del gioco**, oppure *(2)* **disattivare Steam Cloud per Blasphemous**, e *(3)* **backup a mano di `Savegames` prima delle sessioni di test.** ✅ **Ora reso VISIBILE**: la mod logga all'avvio `[Path] Steam inizializzato: … · cartella salvataggi in uso: …` e **avverte se Steam manca**. Vedi §12 |
 
@@ -2353,3 +2354,124 @@ bersaglio con un giocatore ANCORA VIVO nella stanza**.
 dei boss)*. ⚠️ **E la morte di un giocatore NON e'' oggi comunicata ai peer**, quindi **probabilmente
 serve un pacchetto "player death"** — e **`NetworkType` NON ha un tipo player-death** ⇒ **richiederebbe
 un bump di protocollo.** **Da analizzare, non da ipotizzare.**
+
+
+## [2026-10-10 17:30] F4b.2 — IL POST-FALO'': la dedup del server, e perche'' i nemici non ne soffrivano
+
+### IL DIFETTO, come lo ha descritto l''utente
+
+> *"Appena mi siedo su un falo'' con entrambi, tutti i breakable che sono stati rotti ed erano
+> sincronizzati tra i due vengono ripristinati come previsto (**ottimo**), ma **non sono piu''
+> sincronizzati tra i due**, quindi anche se G1 rompe una lanterna davanti a G2, essa non viene rotta."*
+> *"Questo **NON appare per quanto riguarda i NEMICI**, ho anche testato in queste sessioni passate."*
+
+⚠️ **E quella seconda frase e'' stata l''indizio decisivo**: senza di essa avrei cercato nel posto
+sbagliato. **I due canali si comportano diversamente sul server, e la differenza E'' la dedup.**
+
+### 🔴 LA CAUSA, confermata nei log e in IL
+
+**I vasi viaggiavano sul canale `Progress`** *(`ProgressType.PersistentObject`)*.
+**Il server li passa da `TeamInfo.AddTeamProgress`** *[IL: `ContainsKey`→`Add`; poi `get_Item` →
+`IL_0030 cgt` **unsigned** → `set_Item`, altrimenti `return false`]*: **tiene un dizionario di id per
+TUTTA la sessione e inoltra un id solo se il suo valore e'' MAGGIORE di quello che ha gia''.**
+**Tutti gli oggetti persistenti mandano `value = 0`** *(`BreakableObjectHelper`, `new ProgressUpdate(id,
+ProgressType.PersistentObject, 0)`; `ProgressUpdate.Value` e'' un **`byte``**)*.
+⇒ **`0 > 0` e'' falso** ⇒ **`Server.cs:591` esce senza inoltrare.**
+
+```
+Il PRIMO annuncio passa. Il falo'' ripristina i vasi.
+Il giocatore rirompe lo STESSO vaso, con lo STESSO id `scena|guid`...
+   ... e il server lo scarta IN SILENZIO.
+```
+
+**LA PROVA NEI LOG** *[il log del server non era fra gli allegati: la prova sta nei log dei client,
+con orologio condiviso — entrambe le macchine partono nello stesso secondo, e c''e'' un offset costante
+di 20 tick calibrato in entrambi i versi]*:
+```
+G1 rompe 0d384626 a G1-tick 60   -> G2 la riceve a G2-tick 80      (id NUOVO per il server: accettato)
+falo'' simultaneo, stesso PrieDieu 3c6d3c9c in D01Z01S07
+G2 rirompe 0d384626 in D17Z01S03 a G2-tick 133  =  G1-tick 113
+   -> G1 NON lo riceve: nessuna riga "Received new game progress" dopo G1:401
+   -> G1 era CONNESSO: crea oggetti per G2 fino a tick 121, fine sessione tick 127
+```
+**⇒ il server lo conosceva gia'', e dopo il falo'' lo scarta.** **E il verso opposto lo conferma**:
+G2 rompe `9edafe04` a tick 108 *(senza `rottura applicata` a seguire ⇒ rottura vera)* → **accettata**,
+G1 la riceve. **Dopo il falo'' → scartata.**
+
+**E 8 conferme in piu''**, tutte con G1 connesso: `Broke breakable` seguito **subito** da
+`rottura applicata` per lo stesso guid = ri-applicazione di `ReapplyCurrentScene`
+*(nel percorso della coda `CurrentlyUpdatingProgress=true` sopprimerebbe quella riga, quindi
+quell''ordine puo'' venire **solo** da li'')* — **e quel percorso non aveva il guard, quindi ri-annunciava**.
+**G2 6 volte, G1 2 volte: tutte scartate.**
+
+### ✅ PERCHE'' I NEMICI NON NE SOFFRONO — la chiave
+
+```
+I NEMICI viaggiano su EnemyDeathGlobal (NetworkType 24)
+receiveEnemyDeathGlobal (Server.cs:798-810) e'' SOLO:
+      foreach (string ip in connectedPlayers.Keys)
+          if (playerIp != ip) Send(ip, data, NetworkType.EnemyDeathGlobal);
+   -> NESSUN dizionario, NESSUNA dedup, NESSUN filtro di scena
+E AddTeamProgress ha UN SOLO CHIAMANTE in tutto il repo: Server.cs:591.
+```
+⚠️ **E non c''e'' prova da log di questo** *(in quella sessione `Post-spawn: 0 enemies`,
+`EnemyDeathGlobal` = 0 occorrenze, e `receiveEnemyDeathGlobal` **non logga nulla**)*:
+**e'' verificato in codice + IL, non riprodotto in gioco.**
+
+### ✅ IL FIX, in tre parti *(F4b.2, tag `fix-f4b2-canale-nemici`)*
+
+**1. IL MITTENTE cambia canale**: `SendEnemyDeathGlobal("brk|" + scena + "|" + guid)` invece di
+`SendProgress`. **Solo client: nessun `NetworkType` nuovo, nessun bump di protocollo, nessuna
+`Common.dll` da ricopiare** — il 24 esiste gia'' su entrambe.
+**Ed e'' la convenzione che il progetto gia'' usa**: `sp|` per i punti di spawn dei nemici.
+
+⚠️ **CORREZIONE a una mia affermazione**: avevo citato un precedente **`rest|`**.
+**NON ESISTE in nessun file del repo** *(verificato con grep)*. **Il precedente vero e'' `sp|`**:
+`EnemySyncManager.cs:2160-2171` — *"Announced as spawn-point ids and on the `EnemyDeathGlobal` channel,
+NOT as progress entries"* — **con la motivazione MISURATA**: *un record di progresso con id custom
+creo'' flag di gioco, fini'' nel salvataggio, e il server lo ri-eco'' a ogni joiner*.
+**E `:3389`: `if (… || !enemyId.StartsWith("sp|")) return;`** ⇒ **convenzione di prefisso su stringa
+libera, id non riconosciuti ignorati.** **Avevo citato un prefisso inventato, e la lezione e'' che il
+precedente va letto, non ricordato.**
+
+**2. IL RICEVENTE intercetta `brk|`** in `ReceiveEnemyDeathGlobal` **PRIMA di `_pendingDeaths.Add`**.
+**Trattare un break come un id di nemico metterebbe un GUID nella memoria delle morti**, dove
+`MarkSpawnPointConsumed` lo ignora e **il ciclo dei nemici lo cercherebbe per sempre**.
+Il ramo chiama **`ApplyOrRemember`**: **applica se la stanza e'' caricata, ricorda se non lo e''**.
+
+**3. 🔴 L''ECHO E'' SOPPRESSO — e senza questo il fix avrebbe introdotto un desync NUOVO.**
+```
+ReapplyCurrentScene chiama GetCurrentPersistentState("use") FUORI da ProgressManager.Update
+   => CurrentlyUpdatingProgress e'' FALSE mentre lavora
+   => il Postfix di Damage RISPE DISCE l'annuncio
+Era invisibile finche'' il canale Progress scartava i ripetuti.
+Sul canale che NON scarta niente, quell''echo diventa un relay VERO
+   => potrebbe far RIVIVERE sul peer una rottura che il suo falo'' aveva gia'' disfatto.
+```
+**Aggiunto il flag `IsReapplying`** *(`try/finally`)* **e il guard nel mittente.**
+**Piu'' un guard in testa a `ReapplyCurrentScene`**: un `LoadSnapShot` annidato farebbe azzerare il
+flag dal `finally` interno **mentre il passo esterno sta ancora girando**.
+
+**⚠️ E questo era il TERZO difetto della stessa famiglia, non documentato prima**: i due trovati per
+strada erano *(`ProgressManager.Update` senza `try/catch`)* e *(contatore `daApplicare` non filtrato
+per scena)*. **Questo e'' emerso solo perche'' il fix cambiava canale — lezione: cambiare un canale
+obbliga a ricontrollare TUTTI i guard che proteggevano il canale vecchio.**
+
+**VERIFICATO NELL''IL DEL BINARIO DEPLOYATO**: il mittente chiama `SendEnemyDeathGlobal` e **NON**
+`SendProgress`; i due guard presenti; il ricevente chiama `TryParseBreakId` e `ApplyOrRemember`;
+`ReapplyCurrentScene` legge il campo `reapplying` in testa *(`IL_0001 ldsfld` → `brfalse` al corpo →
+`br` a `ret`)*, 2 store, handler di eccezione per il `try/finally`; la stringa `brk|` presente.
+
+### 📌 LO STATO DEI DISTRUTTIBILI
+
+**La voce 33 e'' CHIUSA** *(il cambio stanza funziona, confermato dall''utente: dopo il falo''
+`applied=0 pending=0` su entrambe)*. **E la voce 34 e'' risolta per i vasi.**
+**⇒ I distruttibili sono completi, in attesa della verifica del post-falo''.**
+⚠️ **Ma la voce 34 resta STRUTTURALE per ogni altro oggetto sul canale Progress** *(muri, leve)*.
+
+### ⚠️ E UNA NOTA DI METODO, per il futuro
+
+**Tutti i tick di questa analisi sono il battito del probe** *(≈1 s, finestra di 60 frame)* **e le
+conclusioni dipendono dall''offset costante di 20 tick fra le due macchine**, calibrato in entrambi i
+versi. **Non sono secondi assoluti.** **E il log del SERVER non era fra gli allegati**: quando si
+indaga una dedup, **il log del server e'' la prova primaria** e va chiesto subito.
