@@ -3393,6 +3393,29 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             }
 
+            // A bonfire announcement, and it MUST be recognised here - before the two lines below.
+            //
+            // Everything that is not a "brk|" falls through to _pendingDeaths.Add, and _pendingDeaths is the
+            // memory that makes an enemy die. A "falo|" left in it is inert (verified in IL: RegisterEnemy
+            // compares exact ids, MarkSpawnPointConsumed requires "sp|", the id loop uses op_Inequality), but
+            // it inflates the counters and leaves the fix depending on nobody ever parsing that string.
+            //
+            // THIS IS A MEASUREMENT STEP ONLY. It reports the arrival and does nothing else. The replication
+            // comes next, deliberately separately: with both at once, an arrival that worked and a
+            // replication that did not would look identical in the log.
+            string bonfireScene;
+            if (BonfireSync.IsBonfireId(enemyId))
+            {
+                bonfireScene = BonfireSync.SceneOf(enemyId);
+                string here = Core.LevelManager.currentLevel == null
+                    ? "?"
+                    : Core.LevelManager.currentLevel.LevelName;
+
+                ModLog.Info($"[Falo''] annuncio RICEVUTO: scena del falo''={bonfireScene} · " +
+                            $"io sono in {here} · {(bonfireScene == here ? "STESSA stanza" : "altra stanza")}");
+                return;
+            }
+
             _pendingDeaths.Add(enemyId);
             MarkSpawnPointConsumed(enemyId);
 
