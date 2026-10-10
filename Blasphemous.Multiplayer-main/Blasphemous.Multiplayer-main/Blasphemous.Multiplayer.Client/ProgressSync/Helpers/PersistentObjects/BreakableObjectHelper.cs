@@ -40,14 +40,41 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     class BreakableObjectUse_Patch
     {
         /// <summary>
+        /// Remembers whether the object was ALREADY broken when Damage was entered - read before the game
+        /// can touch the field, and the only moment at which that question still has an answer.
+        ///
+        /// This is what stops an applied break from being announced back. Damage returns early when the
+        /// object is already broken, leaving the destroyed field true, so a postfix alone cannot tell
+        /// "this hit broke it" from "it was already broken and the call did nothing". Read in a prefix, the
+        /// two are distinguishable, and the distinction is the whole fix for the echo.
+        ///
+        /// The consequence of getting it wrong was measured and it was severe: every announcement the peer
+        /// sent was applied here, re-announced as if it were a swing, applied there, re-announced again -
+        /// two lamps produced 187 and 34 announcements on one machine.
+        /// </summary>
+        private static readonly Dictionary<BreakableObject, bool> alreadyBroken =
+            new Dictionary<BreakableObject, bool>();
+
+        [HarmonyPrefix]
+        public static void Prefix(BreakableObject __instance, bool ___destroyed)
+        {
+            alreadyBroken[__instance] = ___destroyed;
+        }
+
+        /// <summary>Called when a level loads: the entries refer to objects that no longer exist.</summary>
+        public static void ForgetTrackedObjects()
+        {
+            alreadyBroken.Clear();
+        }
+
+        /// <summary>
         /// The sender. The guards are load-bearing.
         ///
         /// ___destroyed is Harmony's way of reading a PRIVATE field, and a POSTFIX is the only place it is
         /// meaningful: Damage returns early when the object is already broken, so by the time this runs the
         /// flag is true - but it is ALSO true when the damage arrived from the network and we are the ones
-        /// applying it. CurrentlyUpdatingProgress covers that: it is set while ProgressManager drains its
-        /// queue, which is exactly the window in which a relayed break is applied here. Sending it back would
-        /// be an echo, and the other machine would apply the break it just told us about.
+        /// applying it. The prefix above records which of the two it was; CurrentlyUpdatingProgress covers
+        /// the queued case, and IsReapplying covers the memory's own re-application.
         ///
         /// The scene travels WITH the guid, and it has to: the receiver may be standing in another room, and
         /// a bare GUID does not say which room it belongs to. There is no table to consult - that is the whole
@@ -55,6 +82,13 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         /// </summary>
         public static void Postfix(BreakableObject __instance, bool ___destroyed)
         {
+            bool wasBroken;
+            bool tracked = alreadyBroken.TryGetValue(__instance, out wasBroken);
+            alreadyBroken.Remove(__instance);
+
+            if (tracked && wasBroken)
+                return; // already broken before this call: the game did nothing, so there is nothing to tell
+
             if (!___destroyed)
                 return; // the game refused the hit, so nothing actually broke
 
@@ -191,6 +225,8 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         [HarmonyPrefix]
         public static void Prefix()
         {
+            // A new level replaces every object the map could be holding, so the entries are dead weight.
+            BreakableObjectUse_Patch.ForgetTrackedObjects();
             BreakSyncMemory.BeginSnapshot();
         }
 
@@ -441,6 +477,18 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         /// The remembered case is not an edge case. The announcement arrives for a room this machine may not
         /// be standing in - the server relays it to everyone - and there is nothing to act on until the room
         /// is entered. Dropping it there is what once left a lamp intact for the player who walked in later.
+        ///
+        /// AN APPLICATION MUST NEVER BE ANNOUNCED BACK, and this method is where that has to be enforced.
+        ///
+        /// ReapplyCurrentScene already marks its own work, but this entry point - the one the network uses -
+        /// did not, and the omission was not harmless. BreakableObject.Damage returns early when an object is
+        /// already broken, leaving the destroyed field true, so the sender's postfix saw a break and announced
+        /// it again; the peer applied it and announced it again; and so on. Two lamps produced 187 and 34
+        /// announcements on one machine, every received announcement turning into a sent one.
+        ///
+        /// The old channel hid this behind its own deduplication. The channel used now discards nothing, so
+        /// the echo became a real relay the moment the channel changed - which is the whole reason a change
+        /// of channel obliges a review of every guard that protected the previous one.
         /// </summary>
         public static void ApplyOrRemember(string scene, string guid)
         {
@@ -453,7 +501,18 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                 return;
             }
 
-            Apply(guid);
+            // Saved and restored rather than set and cleared: an application can nest inside this one, and
+            // clearing it in an inner frame would open a window in which a break is announced back.
+            bool wasReapplying = reapplying;
+            reapplying = true;
+            try
+            {
+                Apply(guid);
+            }
+            finally
+            {
+                reapplying = wasReapplying;
+            }
         }
 
         /// <summary>Holds a break until its scene is loaded, because there is nothing to act on yet.</summary>
