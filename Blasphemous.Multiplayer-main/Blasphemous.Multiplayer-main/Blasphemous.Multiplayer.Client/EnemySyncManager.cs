@@ -10,6 +10,7 @@ using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
+using Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects;
 using Gameplay.GameControllers.Enemies.Framework.Persistence;
 using Framework.FrameworkCore;
 using CreativeSpore.SmartColliders;
@@ -3356,6 +3357,25 @@ namespace Blasphemous.Multiplayer.Client
         {
             if (string.IsNullOrEmpty(enemyId))
                 return;
+
+            // A break announcement, not a death - and it has to be recognised BEFORE anything below runs.
+            //
+            // This channel carries free-form strings and the project already uses that: spawn-point deaths
+            // arrive as "sp|...". Breakables arrive as "brk|scene|guid", and treating one as an enemy id
+            // would put a GUID into the death memory, where MarkSpawnPointConsumed would ignore it and the
+            // enemy loop would search for it forever.
+            //
+            // They travel here rather than as progress entries for one measured reason: the progress channel
+            // deduplicates per id for the life of the server session, so after a bonfire restored a lamp the
+            // same player could break it again and the announcement was thrown away in silence - the other
+            // machine never learned about it. This channel keeps no such memory.
+            string breakScene;
+            string breakGuid;
+            if (BreakSyncMemory.TryParseBreakId(enemyId, out breakScene, out breakGuid))
+            {
+                BreakSyncMemory.ApplyOrRemember(breakScene, breakGuid);
+                return;
+            }
 
             _pendingDeaths.Add(enemyId);
             MarkSpawnPointConsumed(enemyId);

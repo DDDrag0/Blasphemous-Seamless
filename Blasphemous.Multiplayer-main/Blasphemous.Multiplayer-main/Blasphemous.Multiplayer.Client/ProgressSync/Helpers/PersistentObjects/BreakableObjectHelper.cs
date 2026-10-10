@@ -61,6 +61,17 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             if (Main.Multiplayer.ProgressManager.CurrentlyUpdatingProgress)
                 return; // this break arrived from the network: do not send it back
 
+            // And the same rule for the memory's own re-application.
+            //
+            // ReapplyCurrentScene calls GetCurrentPersistentState("use") directly, NOT through
+            // ProgressManager.Update, so CurrentlyUpdatingProgress is false while it runs - and without this
+            // guard the break it just applied would be announced straight back. That was invisible while the
+            // progress channel discarded the repeat, but this announcement now travels on a channel that
+            // discards nothing, so an echo would be a real relay: it could revive, on the peer, a break that
+            // its own bonfire had already undone.
+            if (BreakSyncMemory.IsReapplying)
+                return;
+
             if (!Main.Multiplayer.NetworkManager.IsConnected)
                 return; // single player: nobody to tell
 
@@ -71,11 +82,20 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             string scene = Core.LevelManager.currentLevel.LevelName;
             ModLog.Info($"Broke breakable: {persistentId} in {scene} (oggetto={__instance.gameObject.name})");
 
-            // Formatted like the table entries so the wire format stays uniform: "scene<sep>payload".
-            // See BreakSyncMemory.IdSeparator for why the payload must not read as an integer.
-            string id = scene + BreakSyncMemory.IdSeparator + persistentId;
-            ProgressUpdate progress = new ProgressUpdate(id, ProgressType.PersistentObject, 0);
-            Main.Multiplayer.NetworkManager.SendProgress(progress);
+            // ANNOUNCED ON THE ENEMY-DEATH CHANNEL, NOT AS A PROGRESS ENTRY.
+            //
+            // This is what the enemies already do, and the difference is the whole reason the lamps stopped
+            // coming back after a bonfire. The progress channel goes through TeamInfo.AddTeamProgress, which
+            // keeps a dictionary of ids for the life of the server session and forwards an id only if its
+            // value is HIGHER than the one it already has. Every persistent object sends value 0, so
+            // "0 > 0" is false and any repeat is discarded in silence - measured: after a bonfire the same
+            // lamp, broken again by the same player, never reached the other machine.
+            //
+            // EnemyDeathGlobal has no dictionary at all: the server relays it to everyone but the sender,
+            // every time. The scene rides along because the receiver may be in another room, and the
+            // "brk|" prefix keeps it clear of the spawn-point ids ("sp|") that share this channel.
+            string id = BreakSyncMemory.BreakPrefix + scene + BreakSyncMemory.IdSeparator + persistentId;
+            Main.Multiplayer.SendEnemyDeathGlobal(id);
         }
     }
 
@@ -335,6 +355,58 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             loadingSnapshot = false;
         }
 
+        /// <summary>
+        /// True while a break is being applied here, so the sender can tell an application from a swing.
+        ///
+        /// ReapplyCurrentScene runs OUTSIDE ProgressManager.Update, so CurrentlyUpdatingProgress - the guard
+        /// that normally stops an applied break from being announced back - is false while it works. That
+        /// went unnoticed while announcements travelled on the progress channel, because the channel threw
+        /// the repeat away. It is not harmless on the channel used now, which throws nothing away.
+        /// </summary>
+        public static bool IsReapplying { get { return reapplying; } }
+
+        private static bool reapplying;
+
+        /// <summary>
+        /// Marks an announcement as a break rather than a death.
+        ///
+        /// The id travels as a free-form string on the enemy-death channel, whose only other convention is
+        /// the "sp|" prefix for spawn points. A distinct prefix is what keeps the two apart, and anything
+        /// unrecognised is ignored by the receiver - the same convention the project already uses.
+        /// </summary>
+        public const string BreakPrefix = "brk|";
+
+        /// <summary>True when this id is a break announcement rather than a death.</summary>
+        public static bool IsBreakId(string id)
+        {
+            return !string.IsNullOrEmpty(id) && id.StartsWith(BreakPrefix, System.StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Splits a break id into its scene and guid. Returns false for anything malformed, so a rogue or
+        /// future format cannot be misinterpreted as a break.
+        ///
+        /// Note the separator: the SCENE comes first and the GUID second, both separated by '|'. The GUID
+        /// itself never contains one.
+        /// </summary>
+        public static bool TryParseBreakId(string id, out string scene, out string guid)
+        {
+            scene = null;
+            guid = null;
+
+            if (!IsBreakId(id))
+                return false;
+
+            string rest = id.Substring(BreakPrefix.Length);
+            int separator = rest.IndexOf(IdSeparator);
+            if (separator <= 0 || separator + 1 >= rest.Length)
+                return false;
+
+            scene = rest.Substring(0, separator);
+            guid = rest.Substring(separator + 1);
+            return true;
+        }
+
         /// <summary>True when the id belongs to the table format rather than to a breakable.</summary>
         public static bool IsTableId(string id)
         {
@@ -361,6 +433,27 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             {
                 applied.Add(guid);
             }
+        }
+
+        /// <summary>
+        /// Routes an announced break: applied now if its room is loaded, remembered if it is not.
+        ///
+        /// The remembered case is not an edge case. The announcement arrives for a room this machine may not
+        /// be standing in - the server relays it to everyone - and there is nothing to act on until the room
+        /// is entered. Dropping it there is what once left a lamp intact for the player who walked in later.
+        /// </summary>
+        public static void ApplyOrRemember(string scene, string guid)
+        {
+            if (string.IsNullOrEmpty(guid))
+                return;
+
+            if (!string.IsNullOrEmpty(scene) && Core.LevelManager.currentLevel.LevelName != scene)
+            {
+                Remember(scene, guid);
+                return;
+            }
+
+            Apply(guid);
         }
 
         /// <summary>Holds a break until its scene is loaded, because there is nothing to act on yet.</summary>
@@ -424,6 +517,12 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         /// </summary>
         public static void ReapplyCurrentScene()
         {
+            // Nothing to do while an application is already in progress, and re-entering would let the
+            // finally below clear the flag while the outer pass is still running - leaving a window in which
+            // the sender would announce an application as if it were a swing.
+            if (reapplying)
+                return;
+
             string scene = Core.LevelManager.currentLevel.LevelName;
             if (string.IsNullOrEmpty(scene))
                 return;
@@ -455,14 +554,27 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             if (toApply == null)
                 return;
 
-            for (int i = 0; i < toApply.Count; i++)
+            // Applications are marked as such, so the sender can tell them from a swing.
+            //
+            // This method runs outside ProgressManager.Update, so the guard that normally swallows an
+            // applied break is false here and the announcement would go out. See IsReapplying: on the
+            // channel that discards nothing, that echo would be a real relay.
+            reapplying = true;
+            try
             {
-                string guid = toApply[i];
-                if (ApplyToLoadedObject(guid))
+                for (int i = 0; i < toApply.Count; i++)
                 {
-                    applied.Add(guid);
-                    pending.Remove(scene + IdSeparator + guid);
+                    string guid = toApply[i];
+                    if (ApplyToLoadedObject(guid))
+                    {
+                        applied.Add(guid);
+                        pending.Remove(scene + IdSeparator + guid);
+                    }
                 }
+            }
+            finally
+            {
+                reapplying = false;
             }
         }
 
