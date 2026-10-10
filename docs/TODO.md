@@ -66,7 +66,8 @@
 | **38** | ⚠️ **Il log del SERVER non esisteva su disco** | ✅ **RISOLTA — `ServerOutput.log`** | **`Logger.Print` era solo `Console.WriteLine`** *(`Logger.cs:39`)* **e nella cartella del server NON c'era nessun file di log** ⇒ **il resoconto del server moriva con la finestra**. **È costato DUE indagini di fila**: la dedup della proprietà e la lanterna post-falò sono state diagnosticate dai log dei **client**, perché il log del server non era mai stato conservato — *e le due righe che le avrebbero provate in un colpo solo sono `Server.cs:625` "Received new pers. object from X: Y" e `Server.cs:593` "Received duplicated or inferior progress from X: Y"*. ✅ **Ora il server scrive `ServerOutput.log`** accanto al binario *(`AppContext.BaseDirectory`)*, con intestazione datata e **flush a ogni riga**. **`Print` formatta la riga UNA volta e la manda a entrambe le destinazioni**, così ciò che si è visto e ciò che si è conservato non possono divergere. **Tutte le 33 chiamate del server passano dal `Logger`**, quindi lo specchio le prende tutte. ⚠️ **Due scelte deliberate**: *scrittura sincrona sotto lock* *(un log che perde le ultime righe quando il processo viene fermato — e questo server si ferma con un tasto — è peggio di nessun log, perché viene creduto)*, e **nessun errore può far cadere il server**. **Verificato AVVIANDOLO**, non solo compilato. **Da chiedere per nome: `ServerOutput.log` dell'host.** Vedi §12 |
 | **39** | ⚠️ **La doppia animazione dei vasi all'ingresso in stanza** | 🟡 **FIXATO (F4b.4) MA NON DIMOSTRATO — l'utente non la vede più, i log non lo provano** | **Segnalata dall'utente**: *"G1 e G2 vedono 2 vasi rotti → si siedono al falò → G2 entra e ne rompe 1 → G1 entra e vede l'animazione di ENTRAMBI"*. **Causa: `ReapplyCurrentScene` gira più di una volta per ogni caricamento di livello** *(`LoadSnapShot` viene invocato due volte per load)*, **e ogni passata che trova un oggetto ancora in piedi lo rompe e ne riproduce l'animazione** ⇒ **4 `Use()` per 2 vasi in un ingresso, 2 animazioni per vaso**. **Fix (F4b.4)**: **una guardia in `BreakableObjectReceive_Patch.Prefix`** *(l'unico posto che chiama `Use()`)* — se `___destroyed` è già `true`, **ritorna `false` senza applicare**. **Non tocca rete, `applied`, `pending` né `Forget`.** ⚠️ **MA LA GUARDIA NON È DIMOSTRATA, e va detto**: **il log NON può provarla**, perché `[BreakSync] rottura applicata` è stampato **DOPO** la chiamata e **`ApplyToLoadedObject` ritorna `true` anche quando la guardia sopprime** ⇒ **restano 2 righe per GUID per ingresso, e non si distingue "due applicazioni" da "una applicazione + una soppressa"**. **E il meccanismo che la aggira esiste, nel GIOCO** *(IL)*: `SetCurrentPersistentState` scrive `destroyed` dallo snapshot, poi `IsBroken()` è falso *(il `BreakableManager` non viene ripopolato al load)* ⇒ **IL_0040 `call Restore()`** ⇒ **`Restore()` rimette `destroyed = false`**. **Quindi la premessa del fix** *("la seconda passata trova gli oggetti già rotti")* **vale solo se nessuno li riporta in piedi fra le due passate.** **L'utente conferma che il sintomo è sparito** *("tutto funziona alla grande")*, **ma serve una misura**: una riga di log **quando la guardia sopprime**. ⚠️ **LIMITAZIONE NOTA**: **`pending` NON viene ripulito dal falò** *(il guard `loadingSnapshot` in `Forget` salta solo la parte `pending`; il falò non passa da `LoadSnapShot`)*. **È il PROGETTO della voce 33, ma diventa un'eco** quando il vaso era già rotto in questa vita prima del falò. **Toccarlo è rischioso**: è lo stesso `Forget` che ha causato "l'hook non dipinge". Vedi §12 |
 | **40** | 🟡 **`ReapplyCurrentScene` gira due volte per caricamento di livello** | 🟢 **nota tecnica — innocua con la guardia** | **Due invocazioni**: *(1)* il postfix di `PersistentManager.LoadSnapShot` *(il fix vero)*; *(2)* **la "seconda possibilità"** `MultiplayerLateUpdate_Patch`, armata da `Multiplayer.OnLevelLoaded` *(⚠️ **era strumentazione temporanea mia, aggiunta per misurare quale delle due dipingesse** — il log ha detto che dipingono **entrambe**)*. **Con la guardia della voce 39 è innocua** *(la seconda passata trova gli oggetti già rotti e non fa nulla)*, **quindi è stata TENUTA di proposito**: rimuoverla sarebbe stato un secondo azzardo nello stesso momento, **e le due non scattano nello stesso istante** *(la prima può girare mentre gli oggetti si stanno ancora costruendo)*. **Se un giorno si vuole semplificare, è un candidato**, con la raccomandazione di farlo **dopo** aver verificato che la prima passata basti da sola. Vedi §12 |
-| **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDE la sincronizzazione PER SEMPRE** | 🔴 **IL DIFETTO PIÙ PERICOLOSO DEL PROGETTO — priorità massima** | **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lascia il flag `true` PER SEMPRE**, e si porta dietro: **(a)** `BreakableObjectHelper` **sopprime OGNI futura rottura** *(`if (!CurrentlyUpdatingProgress) Send…`)*, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimono l'invio di TUTTA la progressione**, **(c)** **la coda non si svuota e rilancia ogni frame**. **⇒ il gioco resta vivo ma il co-op smette di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log: `exceptions=0` in ogni `[Probe]`)* **ma non nulla**, e i percorsi che la possono causare sono **verificati**: `PersistentObjectHelper.ApplyProgress` fa **`int.Parse(sections[1])`** e **`PersistentStates.getObjectPersistentId`**, **entrambi senza `try/catch`** — **e la difesa attuale è SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` dice esplicitamente che un `IndexOutOfRange` lì dentro **sarebbe fatale** *"perché `ProgressManager.Update` svuota la coda in un solo ciclo senza `try/catch`"* — **e quella consapevolezza non è mai diventata un fix**. **Fix: `try/finally` attorno al corpo di `Update` (2 righe) + `catch` per-elemento in `ApplyProgress`. Nessun bump.** Vedi §12 |
+| **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDEVA la sincronizzazione PER SEMPRE** | ✅ **RISOLTA — con l'eccezione isolata E loggata** | **Era il difetto più pericoloso del progetto.** **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lasciava il flag `true` PER SEMPRE**, e si portava dietro: **(a)** `BreakableObjectHelper` **sopprimeva OGNI futura rottura**, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimevano l'invio di TUTTA la progressione**, **(c)** **la coda non si svuotava e rilanciava ogni frame**. **⇒ il gioco restava vivo ma il co-op smetteva di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log)* **ma i percorsi sono verificati**: `ApplyProgress` fa **`int.Parse`** su un id **che arriva dalla rete** e una lookup che può uscire dalla tabella — **e la difesa era SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` lo dice **esplicitamente**, e **non era mai diventato un fix**. **✅ FIX**: **`try/finally` con `Clear()` E il flag abbassato DENTRO il `finally`** *(il `Clear` deve stare lì: una coda parziale va comunque scartata, o la stessa entry che lancia verrebbe ritentata ogni frame)* **+ `catch` per-elemento in `ApplyProgress`, CON LOG dell'id** *(un `catch` silenzioso nasconderebbe l'unica prova che spiega perché un aggiornamento è sparito)*. **Nessun bump.** Vedi §12 |
+| **42** | **`AddInteractedObject` senza dedup** | ✅ **RISOLTA — `if (!Contains)`** | **`List.Add` senza controllo**, e **il file su disco lo mostrava: 8 voci dove 4 erano distinte**. **Innocuo in effetto** *(quella lista finisce in `savegame_N_modded.save`, che il gioco non legge mai — voce 36)*, **ma è il tipo di innocuo che smette di esserlo il giorno in cui qualcuno conta le voci o confronta due liste per uguaglianza.** ✅ **Fix**: `IsNullOrEmpty` → **`Contains`** → `Add`. Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -2856,3 +2857,107 @@ le costanti + la riga di handshake)*, **piu'' ricopiare `Common.dll` su entrambe
 per ciascuna** *(voce 15: `Modding\data` e'' net35, `SERVER-COOP` e'' net8.0 ⇒ hash diversi, e
 `verify-deploy.ps1` lo controlla)*. **E la voce 9 (spettatore) richiede 3 pezzi interamente da
 scrivere**: **nessun hook `DeadScreenWidget` esiste oggi nel repo** *(0 occorrenze)*.
+
+
+## [2026-10-10 21:00] CONSOLIDAZIONE — il flag, la dedup, e la misura della guardia
+
+**Tre interventi a rischio basso o nullo, fatti ASSIEME prima di costruire il falo''.** *(Il quarto,
+la voce 40, e'' rimasto di proposito: con la guardia e'' innocuo, e rimuoverlo sarebbe stato un
+secondo azzardo nello stesso momento.)*
+
+### 🔴 1. IL FLAG DEVE SCENDERE, QUALUNQUE COSA ACCADA *(voce 41)*
+
+```csharp
+// com''era
+CurrentlyUpdatingProgress = true;
+... i 14 helper di ApplyProgress ...
+CurrentlyUpdatingProgress = false;
+```
+**Nessun `try`, nessun `finally`. E il `try/finally` che c''e'' fuori** *(`Multiplayer.cs:154`)*
+**resetta `PerformanceProbe`, NON questo flag.**
+
+**Una sola eccezione in un helper lasciava il flag `true` PER SEMPRE**, e il danno sarebbe stato
+**silenzioso e totale**:
+- `ApplyProgress` **non avrebbe piu'' preso nulla dalla coda**;
+- **OGNI guard `if (!CurrentlyUpdatingProgress) Send…` avrebbe soppresso l''annuncio** *(~29 punti:
+  `BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)*;
+- **e le rotture dei vasi non sarebbero piu'' partite.**
+⇒ **il gioco vivo, il co-op che smette di sincronizzare. Nessun crash, nessun errore visibile.**
+
+⚠️ **IL PROGETTO LO SAPEVA E NON L''AVEVA MAI FIXATO**: il commento in `BreakSyncMemory.IsTableId`
+dice **esplicitamente** che un `IndexOutOfRange` li'' dentro **sarebbe fatale** *"perche''
+`ProgressManager.Update` svuota la coda in un solo ciclo senza `try/catch`"*. **Quella
+consapevolezza e'' rimasta un commento.**
+
+**E i percorsi che la possono causare sono reali, non teorici**: `ApplyProgress` fa **`int.Parse`**
+sulla parte dopo `~` di un id **che ARRIVA DALLA RETE**, e una lookup che **puo'' uscire dalla
+tabella**. **La difesa attuale era SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un `catch`.**
+
+**FIX** *[verificato in IL]*:
+```
+try { ... il ciclo ... }
+finally {
+    IL_0043  callvirt List`1::Clear()                            <- la coda va scartata COMUNQUE
+    IL_004b  call set_CurrentlyUpdatingProgress(false)           <- il flag scende SEMPRE
+}
+```
+**Il `Clear` sta nel `finally` di proposito**: una coda parziale va comunque scartata, **altrimenti
+la stessa entry che lancia verrebbe ritentata a ogni frame**.
+
+### ✅ 2. `ApplyProgress`: una entry guasta non deve portarsi via la coda
+
+**Ora il flag scende comunque**, quindi questo **non e'' piu'' la differenza fra una sessione viva e
+una morta** — **ma resta la differenza fra perdere UN aggiornamento e perdere TUTTI quelli accodati
+dietro.** **`catch` per-elemento, CON LOG**: l''**id** e il **tipo** finiscono nel messaggio,
+**perche'' e'' cio'' che rende l''errore trovabile dopo**. **Un `catch` silenzioso nasconderebbe
+l''unica prova che spiega perche'' un aggiornamento e'' sparito.**
+```
+[Progress] apply failed for '<id>' (<tipo>): <Eccezione> - <messaggio>
+```
+
+### ✅ 3. `AddInteractedObject`: dedup *(voce 42)*
+
+**`List.Add` senza controllo**, e **il file su disco lo mostrava: 8 voci dove 4 erano distinte.**
+**Innocuo in effetto** *(quella lista finisce in `savegame_N_modded.save`, che il gioco non legge mai
+— voce 36)*, **ma e'' il tipo di innocuo che smette di esserlo il giorno in cui qualcuno conta le
+voci o confronta due liste per uguaglianza.**
+**FIX**: `IsNullOrEmpty` → **`Contains`** → `Add` *[verificato in IL: nell''ordine]*.
+
+### ✅ 4. E LA MISURA DELLA GUARDIA F4b.4 — per non chiudere una voce su una sensazione
+
+**La voce 39 era stata marcata RISOLTA senza prova, e non poteva esserlo**: *"rottura applicata"*
+e'' stampato **dal chiamante DOPO** che la guardia ha deciso, **e il chiamante riporta successo in
+entrambi i casi**. **Quindi le due passate producevano due righe IDENTICHE sia applicando sia
+rifiutando** — **ed e'' esattamente cosi'''' che un fix e'' stato chiamato "fatto" senza evidenza.**
+
+**Ora la guardia logga quando RIFIUTA**:
+```
+[BreakSync] gia'' rotto, applicazione saltata: <GUID>
+```
+**E'' la prova, ed e'' a costo zero**: **scatta solo quando una rottura viene rifiutata**, cioe'' il
+caso che vale la pena contare.
+- **Se la guardia lavora**: un oggetto gia'' rotto **produce questa riga e nessuna animazione**.
+- **Se non compare mai**: **la guardia non viene raggiunta**, e **la doppia animazione ha un''altra
+  causa** — *e a quel punto lo sapremo invece di supporlo.*
+
+### ✅ VERIFICATO NELL''IL DEL BINARIO DEPLOYATO
+
+```
+Update:           1 handler Finally (try@0009, handler@003c), e DENTRO il finally:
+                     IL_0043 callvirt List`1::Clear()
+                     IL_004b call set_CurrentlyUpdatingProgress(false)
+ApplyProgress:    1 handler Catch, con ModLog.Error e l''id nel messaggio
+AddInteractedObject: IsNullOrEmpty -> Contains -> Add
+la guardia:       la stringa "[BreakSync] gia'' rotto, applicazione saltata: "
+```
+**Build: 0 errori.** **Tag: `consolidazione-flag-e-misura`.**
+
+### ⚠️ E UNA NOTA SU UN MIO ERRORE DI VERIFICA, per onesta'' e per il futuro
+
+**Nel primo check di queste tre modifiche ho scritto due "NO" che erano falsi**: cercavo `Clear` come
+`stfld` e come stringa contenente `"Clear"`, **ma `List<T>.Clear()` e'' una `callvirt` il cui operando
+e'' il metodo, non la parola**, **e il flag e'' un `stsfld`** *(campo statico)*, **non `stfld`**.
+**Il codice era giusto; il controllo era sbagliato.** **⇒ quando un check dice "manca", il sospetto
+deve cadere PRIMA sul check.** *E'' la quarta volta in questa sessione che un mio strumento di
+verifica produce un falso negativo — le altre tre sono state `__instance.Destroyed`,
+`Tools.Level.Layout` e `AllActivePlayers`.*
