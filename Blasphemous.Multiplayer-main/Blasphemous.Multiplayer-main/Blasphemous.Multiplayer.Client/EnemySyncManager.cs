@@ -2578,10 +2578,41 @@ namespace Blasphemous.Multiplayer.Client
 
                     // "Owned here" means this machine runs the game's own AI for this enemy, which is what
                     // produces real attacks and deaths. The other machine freezes it and applies state.
+                    //
+                    // BUT A PEER MUST NOT WAIT FOR AN ANSWER THAT CANNOT COME.
+                    //
+                    // The host arbitrates, and it can only arbitrate what it can see: _ids holds the enemies
+                    // of ITS OWN scene. So when the two players are in different rooms, the enemies on this
+                    // side are not in the host's list at all, it never decides on them, and the ownership
+                    // token for them is never sent - and the server would not deliver it anyway, because
+                    // ownership travels through relayToScene and is filtered by scene.
+                    //
+                    // OwnershipKnown is exactly "the host has never said anything about this one", so it is
+                    // the right thing to test. Waiting for a token that cannot arrive left these enemies
+                    // paused for the whole session: FreezePhysics switches off the controller, so they did
+                    // not even get pushed around, and the measured cost was a WheelCarrier standing still for
+                    // 134 samples (~67 s). Two players in different rooms is not an edge case, it is how the
+                    // game is played - and getting it wrong is invisible in every test where both players
+                    // walk in together.
+                    //
+                    // Taking it locally is safe because ownership is exclusive by construction: the moment
+                    // the host does see the enemy it publishes a token, the sibling block above latches it,
+                    // and the role is settled by the host from then on - with OWNER_HOLD_SECONDS absorbing
+                    // the handover. Nothing else claims this enemy in the meantime, because the host has no
+                    // record of it to send.
                     if (previous.OwnedByLocal)
+                    {
                         ResumeEnemy(enemy);
+                    }
+                    else if (!IsHost && !previous.OwnershipKnown)
+                    {
+                        previous.OwnedByLocal = true;
+                        ResumeEnemy(enemy);
+                    }
                     else
+                    {
                         PauseEnemy(enemy);
+                    }
 
                     // The peer obeys the host, so it transmits exactly the enemies the host granted it.
                     if (!previous.OwnedByLocal)
