@@ -161,10 +161,69 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     [HarmonyPatch(typeof(PersistentManager), "LoadSnapShot")]
     class PersistentManagerLoadSnapShot_Patch
     {
+        /// <summary>
+        /// Suspends the erasure of remembered breaks for the duration of the load.
+        ///
+        /// Without this, the game's own restore inside LoadSnapShot deletes each remembered break just
+        /// before the postfix below can act on it - which is exactly why the hook ran, counted something to
+        /// apply, and painted nothing.
+        /// </summary>
+        [HarmonyPrefix]
+        public static void Prefix()
+        {
+            BreakSyncMemory.BeginSnapshot();
+        }
+
         [HarmonyPostfix]
         public static void Postfix()
         {
             BreakSyncMemory.ReapplyCurrentScene();
+            BreakSyncMemory.EndSnapshot();
+        }
+    }
+
+    /// <summary>
+    /// Reports, once per session, WHERE the game is keeping its saves and whether Steam came up.
+    ///
+    /// This is a one-minute instrument that would have saved days of investigation. The save path is built
+    /// as persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamID : "") + "/", so starting
+    /// the game without Steam silently moves every save into a different folder - and with Steam Cloud
+    /// enabled the two locations then disagree, so a session started without Steam looks, from the player's
+    /// side, like the saves were corrupted or lost. They were never corrupted: they were somewhere else.
+    ///
+    /// That is not something the mod can fix. It is something it can make visible, once, in the log.
+    /// </summary>
+    [HarmonyPatch(typeof(Multiplayer), "OnLateUpdate")]
+    class MultiplayerSavePathReport_Patch
+    {
+        private static bool reported;
+
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            if (reported)
+                return;
+
+            reported = true;
+
+            try
+            {
+                ModLog.Info($"[Path] Steam inizializzato: {SteamManager.Initialized} · " +
+                            $"cartella salvataggi in uso: {PersistentManager.GetPathAppSettings("")}");
+
+                if (!SteamManager.Initialized)
+                {
+                    ModLog.Error("[Path] Steam NON e' inizializzato: il gioco scrivera' i salvataggi in una " +
+                                 "cartella DIVERSA da quella usata quando Steam e' attivo. Se Steam Cloud e' " +
+                                 "abilitato per Blasphemous, le due cartelle divergono e la partita sembrera' " +
+                                 "persa o corrotta. Avvia STEAM PRIMA del gioco.");
+                }
+            }
+            catch (System.Exception e)
+            {
+                ModLog.Error("[Path] non ho potuto leggere il percorso dei salvataggi: " +
+                             e.GetType().Name + " - " + e.Message);
+            }
         }
     }
 
@@ -249,6 +308,33 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         /// <summary>Breaks applied here, kept so that leaving and re-entering the room re-applies them.</summary>
         private static readonly HashSet<string> applied = new HashSet<string>();
 
+        /// <summary>
+        /// True while PersistentManager.LoadSnapShot is running.
+        ///
+        /// This exists to stop Forget from destroying the very thing it was keeping. While a snapshot is
+        /// loaded, the game calls SetCurrentPersistentState on every object it has data for; for a breakable
+        /// whose break the mod remembers but which this machine never broke, IsBroken() is false (the
+        /// BreakableManager is not repopulated on load), so it runs Restore() - and the memory of that break
+        /// was cleared a moment before the hook that exists to re-apply it could look.
+        ///
+        /// The result was measured: the hook ran, the counter said there was something to apply, and nothing
+        /// was painted. So the erasure is simply suspended until the snapshot has finished, and the
+        /// re-application decides what to do with the entry afterwards.
+        /// </summary>
+        private static bool loadingSnapshot;
+
+        /// <summary>Called by a prefix on LoadSnapShot. Diagnostics and correctness, both.</summary>
+        public static void BeginSnapshot()
+        {
+            loadingSnapshot = true;
+        }
+
+        /// <summary>Called by a postfix on LoadSnapShot, after the re-application has had its turn.</summary>
+        public static void EndSnapshot()
+        {
+            loadingSnapshot = false;
+        }
+
         /// <summary>True when the id belongs to the table format rather than to a breakable.</summary>
         public static bool IsTableId(string id)
         {
@@ -294,6 +380,19 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                 return;
 
             applied.Remove(guid);
+
+            // NOT while a snapshot is loading, and this is the fix for the case that never painted.
+            //
+            // LoadSnapShot runs SetCurrentPersistentState on every object it holds data for, and for a
+            // breakable that means Restore() - because the BreakableManager is not repopulated on load, so
+            // IsBroken() answers false even for an object the snapshot says was broken. That Restore lands
+            // here, and it used to delete the pending entry a moment before the hook that exists to re-apply
+            // it could read it. The hook then ran, reported there was something to apply, and applied nothing.
+            //
+            // The entry stays. If the object really is whole again and is not in the room being loaded, the
+            // re-application simply will not find it and will leave it alone - which is the correct outcome.
+            if (loadingSnapshot)
+                return;
 
             int separator = guid.IndexOf(IdSeparator);
             string bare = separator < 0 ? guid : guid.Substring(separator + 1);
