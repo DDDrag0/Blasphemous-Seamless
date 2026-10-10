@@ -169,7 +169,21 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                 return true;
 
             if (___destroyed)
-                return false; // already broken: the break is already applied, and applying it again only replays the animation
+            {
+                // MEASUREMENT, and it is the only way to know whether the guard above is doing its job.
+                //
+                // "rottura applicata" cannot answer that question: it is printed by the caller AFTER this
+                // returns, and the caller reports success either way. So the two passes of the
+                // re-application produced two identical lines whether the second one applied the break or
+                // refused it - which is exactly how a fix came to be called done without evidence.
+                //
+                // This line is the evidence, and it is cheap: it fires only when a break is refused, which
+                // is the case worth counting. If the guard works, an object already broken produces this
+                // and no animation; if it never appears, the guard is not being reached and the double
+                // animation has another cause.
+                ModLog.Info($"[BreakSync] gia'' rotto, applicazione saltata: {__instance.GetPersistenID()}");
+                return false;
+            }
 
             __instance.Use();
             return false;
