@@ -64,7 +64,11 @@ $markers = [ordered]@{
     '[AnimByEnemy]'       = 'ripartizione per-nemico degli avvii di animazione'
     '[AnimName]'          = 'nomi veri degli stati di animazione (una volta per hash)'
     '[EnemyJoin]'         = 'fix del join: annuncio delle morti precedenti'
-    'Nemici rinati'       = "fix del falo': _pendingDeaths azzerata al respawn"
+    # Rinominata due volte mentre si costruiva il falo''. Il testo vecchio era "Nemici rinati", ed era
+    # protetto da un "if c'e'' qualcosa da dimenticare" che rendeva la riga INVISIBILE proprio quando il
+    # falo'' non aveva nulla da riferire: e'' il motivo per cui la TODO diceva "il ramo del falo'' non
+    # compare in nessun log". Ora la riga e'' incondizionata e porta la scena, e il marker la segue.
+    "[Falo''] memoria nemici" = "fix del falo': _pendingDeaths azzerata al respawn"
     'IMPRONTA DIVERSA'    = 'rilevatore di divergenza delle liste (con cooldown)'
 }
 
