@@ -5,6 +5,7 @@ using UnityEngine;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Enemies.Framework.IA;
 using Blasphemous.ModdingAPI;
+using Framework.Managers;
 
 namespace Blasphemous.Multiplayer.Client
 {
@@ -53,9 +54,27 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(EnemySpawner), nameof(EnemySpawner.RespawnDeadEnemies))]
     public class EnemyRespawnPatch
     {
+        /// <summary>
+        /// TEMPORARY (measurement). Reports the bonfire's respawn the moment it happens.
+        ///
+        /// Without this the hook was invisible whenever there was nothing to forget: the handler only logged
+        /// when its lists were non-empty, so a bonfire with no remembered deaths produced no line at all.
+        /// That is why the TODO recorded "the bonfire branch never appears in any log" - the log was silent
+        /// by construction, not empty because the branch was never taken. This line is always written, so
+        /// the next test says whether the bonfire reaches this method and in which room.
+        ///
+        /// The scene travels with it because the bonfire only respawns what belongs to the room it is in,
+        /// and that is the piece the propagation will need. Remove with the rest of the bonfire probe.
+        /// </summary>
         [HarmonyPostfix]
         public static void Postfix()
         {
+            string scene = Core.LevelManager.currentLevel == null
+                ? "?"
+                : Core.LevelManager.currentLevel.LevelName;
+
+            ModLog.Info($"[Falo''] RespawnDeadEnemies: scena={scene}");
+
             EnemySyncManager.OnEnemiesRespawned();
         }
     }

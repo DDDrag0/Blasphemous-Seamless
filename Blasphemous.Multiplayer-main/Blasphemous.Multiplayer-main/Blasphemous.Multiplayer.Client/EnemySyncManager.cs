@@ -1471,9 +1471,19 @@ namespace Blasphemous.Multiplayer.Client
             _killLogged.Clear();
             _announcedDeaths.Clear();
 
-            if (pending > 0 || announced > 0)
-                ModLog.Info($"[EnemySync] Nemici rinati: dimenticate {pending} morti ricevute e " +
-                            $"{announced} annunciate in precedenza");
+            // Always logged, not only when something was forgotten.
+            //
+            // The guard that used to be here ("if (pending > 0 || announced > 0)") made this method silent
+            // whenever the lists were already empty, and that is the whole reason the TODO could say the
+            // bonfire branch never appeared in any log: the line was suppressed by the condition, not absent
+            // because the bonfire had not run. A measurement that only speaks when it has something to say
+            // cannot tell "nothing happened" from "it happened and there was nothing to report".
+            string scene = Core.LevelManager.currentLevel == null
+                ? "?"
+                : Core.LevelManager.currentLevel.LevelName;
+
+            ModLog.Info($"[Falo''] memoria nemici: dimenticate {pending} morti ricevute e {announced} " +
+                        $"annunciate (scena={scene})");
         }
 
         /// <summary>
@@ -1499,9 +1509,15 @@ namespace Blasphemous.Multiplayer.Client
             _pendingDeaths.Clear();
             _killLogged.Clear();
 
-            if (announced > 0 || pending > 0)
-                ModLog.Info($"[EnemySync] consumedSpawns azzerato dal gioco: dimenticate {announced} morti " +
-                            $"annunciate e {pending} ricevute");
+            // Always logged, for the same reason as OnEnemiesRespawned: a measurement that stays silent when
+            // there is nothing to forget cannot distinguish "the game did not reset anything" from "it did,
+            // and the lists happened to be empty".
+            string scene = Core.LevelManager.currentLevel == null
+                ? "?"
+                : Core.LevelManager.currentLevel.LevelName;
+
+            ModLog.Info($"[Falo''] consumedSpawns azzerati dal gioco: dimenticate {announced} morti " +
+                        $"annunciate e {pending} ricevute (scena={scene})");
         }
 
         /// <summary>
