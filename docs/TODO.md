@@ -26,25 +26,25 @@
 
 | # | Voce | Priorità | Stato |
 |---|---|---|---|
-| **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | 🟡 **riaperta di fatto** | ⚠️ **il churn NON è migliorato**: `animRepeat` fra 11 e 36 in **17 report su 46**, `avvio=0.00` in **484/499**. **È LOCALE all'host** (tutte le 499 righe `mia=host`), concentrato su **un solo nemico** a `x≈-716` con **386 ripetizioni della stessa transizione** `765711723 → 2081823275`. **"Accettabile" resta una scelta dell'utente, non un risultato tecnico.** Vedi §12 |
+| **1** | **Animazioni tagliate** (nemici, morti, Penitente) — §1a | ✅ **stabile, il residuo è del gioco** | **CHIUSA su decisione dell'utente.** Il residuo (**il `TURN` al cambio bersaglio**) è del **GIOCO**: `TurnAround` → `SetTrigger("TURN")`, ri-triggerato a ogni attraversamento dell'asse x — **`ApplyAnimation` è escluso perché esce quando è già in quello stato e usa `SetBool("WALK")` per la locomozione, che preserva la fase del clip**. La **troncatura NON esiste**: 29 uscite misurate a **0,96-1,00**. E il fix `FindBehaviour` (voce 26) ha ridotto churn e orientamento di **~10-30×**. ⚠️ I numeri vecchi di questa riga *(`animRepeat` 11-36, `avvio=0.00` in 484/499)* **non si vedono più nei test recenti**. Vedi §12 |
 | **2** | **Orientamento che si gira velocissimo** — §1b | ✅ **RISOLTO E VERIFICATO** | `orientFlip` **crollato da 85 (MAX 34 in 2 s) a 1 (G1) e 3 (G2), MAX 1**; `orientSkip=0` su entrambe, ora normale perché nessuno scrive più l'orientamento da combattere. **Causa della prima versione**: l'isteresi era in `ApplyOrientation` (scrittura della mod, 20 Hz) invece che sulla Prefix su `Entity::SetOrientation` (dove passa il gioco, 60 Hz). **Confermato stabile dall'utente.** |
 | **3** | **Chi si connette dopo non apprende le morti** — §1g | ✅ | **RISOLTO E VERIFICATO**: `[EnemyJoin] annunciate 2`, nessun `ENEMYDEAD` nel progress |
-| **4** | **Falò: RESPAWN e REFILL solo locali** — §3 | 🟡 **da confermare** | ⚠️ **lo stato ACCESO del falò è GIÀ sincronizzato** (`PrieDieuHelper.cs`, 3 patch). Questa voce riguarda **solo** il respawn dei nemici e il refill delle fiale, che restano **locali**. **Nessuna prova recente del disallineamento**: il test dopo il fix ha visto i nemici tornare su **entrambe**. **Da verificare con un test dedicato.** Vedi §12 |
-| **5** | **Sangue e flash nel feedback del colpo** — §5c | 🟢 | ⏳ **metodi identificati** (`PenitentSword::GetSwordSparks`). **NB: voce re-inglobata, era andata persa** |
-| **6** | **Oggetti distruttibili** non sincronizzati — §4 | 🟡 | ⏳ **prima va identificato l'oggetto in gioco** (`Broke wall: 0`, `Used Lever: 0`) |
-| **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | 🟡 | ⏳ diagnostica dietro flag, `RESCAN_INTERVAL` a 2-3 s |
+| **4** | **Falò: RESPAWN e REFILL solo locali** — §3 | 🟡 **da confermare — È IL LAVORO PIÙ GRANDE RIMASTO** | ⚠️ **lo stato ACCESO del falò è GIÀ sincronizzato** (`PrieDieuHelper.cs`, 3 patch). Questa voce riguarda **il respawn dei nemici e il refill delle fiale**, che restano **locali**. **Meccanismo accertato in IL**: `EnemySpawner.Reset()` fa **SOLO** `consumedSpawns.Clear()` *(4 istruzioni: **NON fa rinascere nulla**)*; è **`RespawnDeadEnemies()`** che fa `Clear()` @IL_001c → `CreateEnemy()` @IL_002e → `OnEnemiesRespawn`, **e l'ordine giusto è già dentro il metodo**. **Il reload della stanza è da ABOLIRE**: è superfluo *(`SpawnEnemiesOnLoad` rispetta già `consumedSpawns`)* ed è **distruttivo** *(fade, `BLOCK_UNTIL_FPS_STABLE`, teletrasporto del giocatore)*. **La memoria va azzerata su chi si siede:** chi non si siede ricostruisce la stanza dal **proprio save**. **FIALE: NON si propagano** *(decisione dell'utente: toglierebbe al peer la gestione delle sue fiale, è sfruttabile campeggiando, e da solo crea asimmetria)*. **Vedi voci 29/30/31, che sono la STESSA cosa** *(da fondere)*. Vedi §12 |
+| **5** | **Sangue e flash nel feedback del colpo** — §12.1 *(`§5c` NON esiste)* | ✅ **RISOLTO — e la diagnosi iniziale era INVERTITA** | **F3 fatto e verificato dall'utente in gioco.** L'ipotesi di partenza era **SBAGLIATA** (verificato in IL): **sparks e sangue nascono dal LATO ATTACCANTE** *(`PenitentSword.Attack` → `GetDamageableEntities` → `GetSwordSparks`, e **solo dopo** applica il danno)*, mentre **suono, flash, dolore e morte nascono dal LATO DIFENSORE**, dentro `<EnemyType>::Damage(Hit)`, che la mod **già** rieseguiva. **Il confine vero è CHI MENA vs CHI GUARDA**, non proprietario/non-proprietario. **E "alcuni nemici non fanno sparks" è CORRETTO**: `sparksOnImpact`/`bleedOnImpact` sono **campi di prefab**. Fix: **replay degli effetti sul percorso di relay** + **3 byte nuovi** nel payload di `EnemyDamageRequest` *(`DamageType`, `DamageElement`, flag)* che correggono anche il **suono** *(prima sempre "simple" su chi guarda)*. **Nessun bump di protocollo**: il server rilancia il payload verbatim. Vedi §12 |
+| **6** | **Oggetti distruttibili** — §4 | ✅ **QUASI CHIUSO — manca l'ultima verifica** | **Il tipo è `Tools.Level.Actionables.BreakableObject`** *(lanterne, scheletri appesi, simboli attorcigliati: **la scenografia che respawna**)* — **NON i muri**, che sono **fratelli** e non parenti, hanno vita diversa e sono già coperti. **GUID veri, per-istanza, authored di scena** *(7/7 canonici, 0 duplicati)*: `GetPersistenID()` = `GetComponent<UniqueId>().uniqueId`, e `UniqueId.uniqueId` ha **UN SOLO SCRITTORE** *(il costruttore che scrive `Empty`)* ⇒ **nessuna generazione a runtime** ⇒ **identico sulle due macchine**. **L'identità è il GUID, NON `scena~indice`**: la tabella `PersistentStates` *(371 voci, curata a mano)* **contiene ZERO GUID di BreakableObject**, e completarla è **pericoloso** *(gli indici sono posizionali e **finiscono nei salvataggi** come `scene~index`)*. **Tre patch + un ramo**, e il **crash latente** evitato: `BreakableObject.SetCurrentPersistentState` fa `((BreakablePersistenceData)data).broken` **senza null-check**, e `ProgressManager.LevelLoaded` lo chiama con **`null`**. ⚠️ **E il ricevente DEVE usare `Use()`, non `SetCurrentPersistentState(data)`**: quest'ultimo legge la rottura da `BreakableManager.ContainsBreakable`, e `AddBreakable` è chiamato **da un solo posto** *(`Damage`)* ⇒ **con il manager vuoto concluderebbe "non è rotto" e chiamerebbe `Restore()`, CANCELLANDO la rottura in silenzio**. **Test**: passi 1-6 ✅ *(stessa stanza, inversione ruoli, falò)* · **punto 7 ❌** *(chi entra dopo vede il vaso in piedi)* → **F4b.1** ha aggiunto la memoria per scena + il formato `scena\|guid` + gli hook, **ma l'hook non ha dipinto la rottura** e la **strumentazione è deployata per capire perché**. Vedi §12 |
+| **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | 🟢 **ottimizzazione, non un difetto misurato di recente** | ⏳ **il picco da 84,5 ms è reale come misura, ma `stalls100=0` e `fps 55-59` nei test recenti dicono che oggi non si manifesta.** ⚠️ **Attenzione**: `stalls100` conta solo i frame **>100 ms**; il probe **non registra i 50-99 ms**, quindi *"84,5 ms"* **può ancora accadere senza comparire**. **Se si vuole sapere se esiste ancora, si legge `frameMs_max` da un log recente** *(è in ogni riga `[Probe]`)*. **Il lavoro è piccolo**: `FindObjectsOfType` ogni 0,5 s → `RESCAN_INTERVAL` a 2-3 s lo riduce di 4-6×, rischio quasi nullo |
 | **8** | **Boss impazziscono coi target** — §2b | 🟡 | ⏳ **ultimo dei lavori "di gioco"**. **Proposta utente: quanto di tempo sul cambio bersaglio** |
-| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ idea a bassa priorità, metodi già identificati |
-| **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | 🟢 | ⏳ **declassato**: allocazione sì, stallo no |
-| **11** | **Il gioco disfa la pausa sul non-proprietario**: `<Enemy>::OnUpdate` chiama `EnablePhysics(true)` e `StartBehaviour()` su **8 tipi** | 🟡 **reale** | ⏳ il nemico del non-proprietario può "scivolare" o animarsi da solo |
-| **12** | **Camminata troncata** | ⏸️ | ⏳ richiede di ripensare il protocollo animazione (**loop vs one-shot**). **NB: voce re-inglobata** |
-| **13** | **La migrazione host non riarbitra** (`SetHost` non azzera lo stato del token) | 🟡 **reale** | ⏳ **già avvenuta in un test** |
+| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 |
+| **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | 🟢 | ⏳ **declassato**: allocazione sì, stallo no. **Cosa sono**: `ProcessQueue` = il ciclo che svuota la coda dei messaggi in arrivo *(alloca una `List<byte>` per messaggio)*; `IdOf` = costruisce l'id di un nemico *(stringa da scena+nome+posizione, alloca ogni volta)*. **Sono due pezzi VIVI e centrali, non residui**: l'ottimizzazione è di secondo ordine |
+| **11** | **Il gioco disfa la pausa sul non-proprietario**: `<Enemy>::OnUpdate` chiama `EnablePhysics(true)` e `StartBehaviour()` su **8 tipi** | 🟢 **da misurare** | ⚠️ **NON è la stessa cosa della voce 26**, e il fix 26 l'ha resa **più rilevante, non meno**: **26 = "non abbiamo mai messo in pausa"**, **11 = "il gioco ci toglie dalla pausa"**. Ora la pausa **viene applicata davvero**, quindi **c'è qualcosa che il gioco può disfare**. **MA l'effetto sembra svanito**: lo scivolamento è **quasi azzerato** e l'utente non lo vede. **Gli 8 tipi sono specifici**: `ShieldMaiden`, `RangedBoomerang`, `Firethrower`, `CrossCrawler`, `Nun`, `Fool`, `ExplodingEnemy`, `Lesmes` + coroutine di boss. **Conclusione corretta: MISURARLA, non chiuderla a scatola chiusa.** **Fix possibile non ancora valutato**: bloccare il gioco dal disfarla *(Prefix su `<Enemy>::OnUpdate` / `EnablePhysics`, che non agisce sui puppet)* — **ma `OnUpdate` è caldo: va progettata bene** |
+| **12** | **Camminata troncata** | ✅ **stabile, il residuo è del gioco** | **CHIUSA su decisione dell'utente.** Richiede di ripensare il protocollo animazione *(**loop vs one-shot**)*, e **succede solo in casi estremi**: con le interazioni risolte **è stato fatto il massimo possibile, e il resto è bloccato dalla logica del gioco**. **NB: voce re-inglobata** |
+| **13** | **La migrazione host non riarbitra** | ✅ **RISOLTO E VERIFICATO** | **Due fix, e il TODO indicava il ramo sbagliato.** Il difetto **misurato** nasceva dalla **DEMOZIONE**, non dalla promozione: quando l'host perde la connessione, `SetHost(false)` mette in pausa **tutti** i nemici, ma `IsHost = _isHost \|\| !IsConnected` **resta `true`**, e `DecideOwnership` è dietro `if (!IsConnected) return;` ⇒ **5/5 nemici sospesi, 70 campioni identici = 35 s**, camminata attiva e spostamento nullo. **1A**: nel ramo di demozione, **se non si è connessi**, si reclama la proprietà e si chiama `ResumeEnemy` **invece di metterli in pausa**. **1B**: nella promozione la proprietà viene **reclamata subito** *(`OwnedByLocal=true`)*, non solo il timer ⇒ **sparisce il buco di 0,5-1,0 s** in cui nessuno simulava. **E il fix C, nel SERVER**: la promozione era annunciata **solo al promosso** e **mai ritentata** ⇒ con 3 giocatori il terzo **non riceveva né `Host role: True` né il leave del precedente** *(`owner=altro` su un giocatore **uscito**, AI ferma 128 campioni)*. Ora è un **broadcast a tutti i rimasti**. **Verificato**: primo handover *(`io=230/230`)* e secondo *(G3 riceve `Host role: True`)*, **zero `pause:`** sui log. **Variante non coperta**: *G2 esce per primo*. Vedi §12 |
 | **14** | **`IMPRONTA DIVERSA`** | ✅ **RISOLTO** | **ERA UN FALSO ALLARME**: `_listFingerprint` era calcolata solo in `OnEnemiesSpawned`, ma `_ids` viene **appesa** ogni 0.5 s e **rimossa** in `ForgetEnemy` ⇒ la fingerprint descriveva una lista che non esisteva più. **Peggio**: la segnalazione era **una-tantum**, quindi un falso allarme **zittiva ogni divergenza reale**. Ora `_idsDirty` + `RefreshFingerprintIfDirty()` + cooldown 15 s. Vedi §12 |
-| **15** | **Il protocollo di rete**: `Common.dll` va copiato insieme a mod e server | 🟢 documentato | ⏳ |
-| **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | 🔴 **procedura** | ✅ **RISOLTO con uno strumento**: `tools\verify-deploy.ps1` — hash + marcatori + protocollo, esce con codice 1. Vedi §12 |
-| **17** | **I nemici che restano fermi (`pos_distinte=1`)** | 🟢 **non è un bug** | ✅ nemici **senza IA di movimento** |
+| **15** | **Deploy: `Common.dll` va copiato su ENTRAMBE, nella versione giusta per ciascuna** | 🟢 **procedura** | ⏳ **`Modding\data` è net35 (gioco), `SERVER-COOP` è net8.0 (server): gli hash DIFFERISCONO per costruzione, quindi vanno confrontati SEMANTICAMENTE, non per hash.** Se non si copia quello giusto, **il join viene rifiutato con `RefusalType::Protocol`** *(è già successo)*. ✅ **verificato automaticamente da `tools\verify-deploy.ps1`.** ⚠️ **`PROTOCOL_VERSION = 11` NON sta in `Common.dll`**: è una costante **duplicata** in `Client\Network\NetworkManager.cs` e `Server\Server.cs`, confrontata **solo all'handshake** *(`Common.dll` contiene solo l'enum `NetworkType`)* |
+| **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | ✅ **RISOLTO** | **Errore di copia nel testing.** ✅ **RISOLTO con uno strumento**: `tools\verify-deploy.ps1` — hash + marcatori + protocollo, esce con codice 1. Vedi §12 |
+| **17** | **I nemici che restano fermi (`pos_distinte=1`)** | ✅ **non è un bug** | nemici **senza IA di movimento** *(1 sola `posNemico` per tutta la loro presenza nel log, `anim=Idle` sempre)*. **Attenzione a leggerli come "sospesi": non lo sono.** |
 | **18** | **Boss: test boss per boss** | 🟡 | ⏳ l'unica cosa non prevedibile |
-| **19** | **`Entity.Dead` calcolato vs `EntityStatus.Dead`** — §7 | 🟢 nota tecnica | ✅ documentato |
+| **19** | **`Entity.Dead` calcolato vs `EntityStatus.Dead`** — §7 | ✅ **nota tecnica** | documentato |
 | ~~20~~ | ~~Passo 5: le 130 patch sul Penitente~~ | — | ❌ **cade**: `Animator.name == "Body"` su entrambe |
 | ~~21~~ | ~~Passo 1: test di controllo single-player~~ | — | ❌ **cade**: la baseline disconnessa c'è già |
 | ~~22~~ | ~~Isteresi via `targetTime` su `EnemyBehaviour`~~ | — | ❌ **cade**: `targetTime` è `Private, InitOnly` e **mai assegnato** ⇒ `LookAtTarget` è **codice morto** |
@@ -57,13 +57,16 @@
 | **29** | 🔴 **Dopo un `EnemySpawner.Reset` le due liste locali DIVERGONO** | 🟡 **priorità media** | **NUOVA, misurata nel test della voce 28.** Nel log G2 RESET **`IMPRONTA DIVERSA` ×4** *(righe 558, 1043, 1271, 1499)*: tornando in `D01Z01S01` la macchina registra **3 id invece di 5** *(e il suo `Post-spawn` dice `2 enemies` dove l'host ne ha 3)*. **Causa accertata**: `EnemySpawner.Reset` **non trasmette nulla** — rigenera i nemici **solo in locale**, quindi **chi non esegue il reset resta con i suoi consumati**. **È lo stesso meccanismo del falò**: per questo la voce 4 resta gialla. **Il rilevatore ha funzionato: ha segnalato una divergenza VERA.** Vedi §12 |
 | **30** | ⚠️ **La memoria delle morti si azzera SOLO sulla macchina che esegue il reset** | 🟢 **latente** | In IL `RespawnDeadEnemies` **non trasmette nulla**: chiama `EnemySpawnPoint.CreateEnemy()` **in locale** + `OnEnemiesRespawn`; i **tre chiamanti** sono tutti della macchina che si siede. Quindi `_announcedDeaths`/`_pendingDeaths`/`_killLogged` si svuotano **solo dove si siede** *(o dove il giocatore muore)*. **Se G1 si riconnette dopo, G2 potrebbe annunciargli morti che non esistono più.** **NON si è materializzato nei log** *(G2 non ha mai annunciato N>0)*: **reale ma latente.** Vedi §12 |
 | **31** | **Il falò (`RespawnDeadEnemies`) non è mai stato esercitato nei test** | 🟢 **verifica** | Il hook su `EnemySpawner.Reset` è confermato, ma **il ramo del falò non compare in nessuno dei sette log**. Serve **un test dedicato con falò su UNA SOLA macchina**: *(1)* l'altra vede rinascere i nemici? *(2)* la memoria si svuota su chi si siede? *(3)* **su chi NON si siede NON si svuota** ⇒ un `[EnemyJoin]` successivo annuncerebbe `N>0` → **conferma della voce 4**. **È lo stesso test già indicato per la voce 4.** Vedi §12 |
+| **32** | 🔴 **L'arbitraggio host-only è CIECO fuori dalla scena condivisa** | 🟡 **aperta — decisione di architettura** | **Il token di proprietà NON risolve il problema che dichiarava di risolvere.** La frase che l'ha motivato è **FALSA**: `5ecbc27` dice *"le due misure non possono coincidere"*, ma `bf2f568` **due commit dopo** dice *"**la regola di prossimità era giusta: il dato che le passavo era sbagliato**"* — `GetPosition()` sull'"altro" restituiva la posizione **locale** *(`posMia` e `posAltro` IDENTICHE)*. **Con i dati corretti le due macchine CONCORDANO**: `e2a8ab4` mostra distanze **speculari** e owner **coerenti**. **E l'host-only arbitrato è STRUTTURALE, non aggirabile**: `_ids` è la **scena locale**, `DecideOwnership` ha **un solo chiamante dentro `if (IsHost)`**, e **il server non gli consegnerebbe comunque il token** *(`Server.cs:816` manda solo all'host, `relayToScene` filtra per scena, `PlayerInfo.cs:30`)*. ⇒ **in stanze diverse il peer resta `OwnedByLocal=false` e `PauseEnemy` lo blocca PER SEMPRE** *(misurato: `WheelCarrier` fermo **134 campioni ≈ 67 s**)*. **Il trade-off vero**: il token garantisce **un solo simulatore SEMPRE** ma è **cieco fuori scena**; la **decisione locale simmetrica** *(già fatta e verificata in gioco nel tag `stato-sync-movimento-ok`, con l'isteresi **già a HEAD**: `OWNER_DISTANCE_MARGIN=2.5` + `OWNER_HOLD_SECONDS=0.5`)* garantisce **un solo simulatore TRANNE una finestra** ma **non è mai cieca** — e **la finestra esiste già oggi** *(5 tick `owner=nuovo` su entrambe)*. **PASSO 1 fatto** *(il peer simula i nemici con `OwnershipKnown == false`)*. **PASSO 2 da fare**: togliere `if (!localIsHost) return false;` e chiamare `DecideOwnership` **su entrambe**. ⚠️ **Rischio del passo 2 da decidere, non scoprire**: quando l'host **entra** nella stanza del peer, il peer possiede già quei nemici e l'host può riprenderseli ⇒ `PauseEnemy` + trascinamento → **scatto visibile**. Vedi §12 |
+| **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | 🟡 **da misurare — strumentazione deployata** | **Il test F4b.1 è fallito al suo caso centrale, e i log lo provano**: `0d384626` rotta da G1 in `D17Z01S03`, il server **rimanda** la entry a G2, G2 la **riceve e la ricorda** *(`[BreakSync] rottura rimandata`)*, entra in `D17Z01S03` e **la trova in piedi** — e **la rompe di nuovo lui**, annuncio che il server **scarta in dedup**. **`[BreakSync] rottura applicata` NON esiste in nessun log**: **la MEMORIA ha funzionato, l'HOOK no.** **Il perché era ignoto** *(dentro l'hook non c'era una riga di log — **errore mio: dovevo strumentarlo prima, come con F4a**)*. **Tre possibilità indistinguibili**: *(i)* l'hook è girato **prima** che l'entry arrivasse; *(ii)* è girato ma `FindObjectsOfType` **non trovava ancora gli oggetti**; *(iii)* ha trovato l'oggetto e **qualcosa l'ha ripristinato**. **Strumentazione deployata**: una riga dentro l'hook *(`scena=… oggetti=N daApplicare=M pending=P applied=A`)* **e una SECONDA possibilità un frame dopo** *(`Multiplayer.OnLateUpdate`, armato da `OnLevelLoaded`)*, **additiva**, così il log dice quale dei due dipinge. Vedi §12 |
+| **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | 🟢 **ridimensionata** | `TeamInfo.AddTeamProgress` deduplica **per stringa id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`**: tutti gli oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` è **falso** e un id già visto viene **sempre rifiutato** *(`Server.cs:591` esce senza inoltrare)*. ⚠️ **Ma è meno grave di quanto sembrasse**: nel test **177 righe `duplicated or inferior`, ma UNA SOLA con un GUID** — tutte le altre sono i **progressi iniziali al join** *(`Type 8/9/10/11/12`, `Value 0`)*. **Quindi**: ogni oggetto può essere annunciato **una volta per sessione**; il formato `scena\|guid` dei vasi **aggira il caso "cambio stanza"** *(la chiave cambia con la scena)* **ma NON il caso "stessa scena annunciata due volte"** *(rirompere lo stesso vaso dopo un falò)*. **Da decidere dopo la voce 33.** Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
 
 ---
 
-Ultimo aggiornamento: **CAPITOLO CHIUSO** — blocco *chiuso (non è nostro)*, test a due *pulito*, riconnessione *verificata*, reset *verificato*, desync *chiuso* (`exceptions=0` su sette log). **Restano**: il falò (voci 4, 29, 30, 31), i boss, il feedback del colpo, i distruttibili.
+Ultimo aggiornamento: **i distruttibili (vasi) quasi chiusi** — tipo, identità e meccanica accertati; F4b.1 ha aggiunto la memoria per scena, ma **l'hook non dipinge ancora** e la **strumentazione è deployata**. **E il passo 1 dell'arbitraggio** *(il peer simula ciò che l'host non vede)* è **fatto e deployato**. **Restano**: la voce 33 *(misura)*, il passo 2 dell'arbitraggio *(voce 32)*, il falò *(voce 4 + 29/30/31)*, lo spettatore *(9)*, i boss *(8/18)*.
 
 
 ---
@@ -1921,3 +1924,262 @@ lezione: **compilare non e'' funzionare, e "sembra corretto" non e'' una verific
 | `stato-behaviour-fallback` | voce 26 (`FindBehaviour`) | `stato-blindature-2` |
 | `stato-riconnessione` | voci 24 e 25 | `stato-behaviour-fallback` |
 | `stato-dedup-fix` | la chiave di `LogTreeState` | `stato-riconnessione` |
+
+
+## [2026-10-10 09:30] I DISTRUTTIBILI (i vasi) e L'ARBITRAGGIO: due capitoli che cambiano forma
+
+### PARTE 1 — I vasi: cosa sono, e perche'' il piano del TODO era sbagliato
+
+**Il tipo e'' `Tools.Level.Actionables.BreakableObject`.** In Blasphemous i "vasi" non esistono come
+tipo *(0 match per `Pot`/`Vase`/`Urn` su tutta Assembly-CSharp)*: la scenografia che si spacca sono i
+prefab **`ACT_Lantern_breakable`**, **`ACT_TwistedSymbol_breakable`**, **`ACT_HangedEskleton_breakable`**,
+e portano **tutti** il componente `BreakableObject`. Si rompono con **UN SOLO colpo**.
+
+⚠️ **E il TODO §4 sbagliava la strada**: diceva *"4 file gemelli di `BreakableWallHelper.cs`"*.
+`BreakableWall` e `BreakableObject` sono **FRATELLI, non parenti** *(entrambi derivano da
+`PersistentObject`)*, e **hanno cicli di vita diversi**: `BreakableWall` **non ha ne'' `OnUsePrieDieu`
+ne'' `Restore`** *(e'' permanentemente rotto)*, `BreakableObject` **si''** — il gioco lo ripristina
+a ogni falò. **Sono due problemi diversi, non due istanze dello stesso.**
+
+**E l''utente vuole proprio QUESTI**: *"a me interessa solo di questi, di base la mod sincronizza tutto
+il resto... a me interessano solo i vasetti, scheletri, lanterne di scena e stupidagini che si rompono
+e respawnano"*. **La sua idea originale — "come il sync dei nemici" — era quella giusta.**
+
+### L''IDENTITA'': IL GUID, E NON `scena~indice`
+
+Verificato **contro il salvataggio reale**, non per deduzione: i `BreakableObject` hanno **GUID veri,
+per-istanza e authored di scena** *(7/7 canonici, 36 caratteri, 4 trattini, 0 duplicati)*.
+`PersistentObject.GetPersistenID()` = `GetComponent<UniqueId>().uniqueId`, e in **tutta** l''assembly
+`UniqueId.uniqueId` ha **UN SOLO SCRITTORE**: il costruttore, che scrive `Empty`.
+⇒ **nessuna generazione a runtime** ⇒ **dato serializzato di scena** ⇒ **identico sulle due macchine**.
+
+⚠️ **Ma i NOMI non sono unici**: due oggetti chiamati **esattamente** `ACT_Lantern_breakable`
+hanno GUID diversi. **Il nome non e'' una chiave, il GUID si''.**
+
+**Perche'' NON `scena~indice`**: tutti gli altri oggetti persistenti viaggiano cosi'', dove l''indice e''
+una posizione nella tabella **cablata a mano** `PersistentStates` *(371 voci)*. Quella tabella contiene
+**ZERO GUID di `BreakableObject`** *(misurato: 0 su 10)*, e `ProgressManager.UsePersistentObject` **esce
+in silenzio** quando la ricerca fallisce ⇒ **con la tabella com''era, il mittente non avrebbe mai spedito
+NULLA**.
+**Completarla e'' stato scartato di proposito**: gli indici sono **POSIZIONALI** e **finiscono dentro il
+salvataggio del giocatore** come `scene~index`, quindi inserire voci puo'' **spostare l''indice di tutto
+cio'' che segue** e far puntare i vecchi salvataggi **all''oggetto sbagliato**.
+⇒ **il GUID viaggia come `ProgressUpdate.Id`**, che e'' gia'' una stringa libera: **nessun cambio di
+pacchetto, di server, di protocollo**.
+
+### LE TRE PATCH + IL RAMO, e i due guai che evitano
+
+1. **MITTENTE** — `Postfix` su `Damage`, con tre guard: `!___destroyed` *(Harmony legge un campo
+   **privato**; ed e'' significativo solo in una Postfix)*, `CurrentlyUpdatingProgress` *(anti-eco:
+   e'' `true` mentre `ProgressManager` svuota la coda, cioe'' esattamente quando una rottura arrivata
+   dalla rete viene applicata qui)*, `IsConnected`.
+2. **RICEVENTE live** — `Prefix` su `GetCurrentPersistentState("use")` → **`__instance.Use()`**.
+   ⚠️ **E NON `SetCurrentPersistentState(data)`**, e non e'' stilistico: quello legge la rottura da
+   `BreakableManager.ContainsBreakable`, e **`AddBreakable` e'' chiamato da UN SOLO posto in tutta
+   l''assembly** *(`BreakableObject.Damage`)*. Con il manager vuoto concluderebbe che l''oggetto **NON
+   e'' rotto** e chiamerebbe `Restore()`: **la rottura verrebbe CANCELLATA IN SILENZIO**, senza
+   un''eccezione che avverta qualcuno. **Peggio di un crash.**
+3. **RICEVENTE load** — `Prefix` su `SetCurrentPersistentState`, **OBBLIGATORIA**: l''originale fa
+   `((BreakablePersistenceData)data).broken` **senza null-check**, e `ProgressManager.LevelLoaded`
+   *(riga 140)* lo chiama con **`null`** per dire "animazione istantanea". Il gioco non passa mai null
+   *(il suo loader controlla prima)*; **questa mod si''**.
+4. **`PersistentObjectHelper.ApplyProgress`** — un ramo per il GUID: prima faceva `Split('~')` e
+   `int.Parse(sections[1])`, quindi **un GUID nudo non sarebbe stato ignorato: avrebbe lanciato
+   `IndexOutOfRange`**, e `ProgressManager.Update` **svuota la coda in un solo ciclo SENZA try/catch**
+   ⇒ **avrebbe perso ogni aggiornamento accodato dietro di lui**.
+
+**E il CREDITO al ricevente si accetta, con i numeri**: `SendBreakBreakableEvent<T>` esiste per
+**`RosaryBead`, `Relic`, `Prayer`, `Sword`** e finisce in `ObjectEffect.OnBreakBreakable`, che agisce
+solo se **`effectType == OnBreakBreakable`** e il cui payload **`breakableObject` e'' scritto e MAI
+LETTO** in tutta l''assembly ⇒ **nessun contatore, nessuna collezione, nessuna percentuale**.
+**Gravita'' BASSA.** Ed e'' **lo stesso modello del canale delle morti**, dove il ricevente esegue la
+morte nativa e prende il proprio drop: e'' **voluto**, e il commento dell''autore lo dice
+*("so peers always see the corpse and the drop")*.
+
+### ⚠️ E l''argomento "il muro lo fa da anni" e'' FALSO
+
+`BreakableWall.Damage` **non chiama `OnBreakBreakable`**: `OnBreakBreakable` ha **un solo call site**
+in tutta l''assembly *(`BreakableObject.Damage`)*. Quindi `BreakableWallHelper` e'' sicuro **solo perche''
+quella classe non tocca l''inventario** — **non e'' evidenza sulla sicurezza di `Use()`**, e'' un
+accidente di gerarchia. **Ed e'' coerente col `// Needs to be changed` che quel file porta scritto.**
+
+### IL TEST: passi 1-6 ✅, punto 7 ❌, e la diagnosi
+
+**Passati a pieni voti**: stessa stanza *(il vaso sparisce sull'altro)*, inversione dei ruoli, falo''
+*(i vasi tornano su chi si siede)*. ⚠️ **E l''osservazione dell''utente e'' precisa**: *"per chi non si
+e'' seduto no, perche'' la logica di ripristino/respawn globale ancora non e'' stata implementata"* —
+**esatto, ed e'' la voce 4.**
+
+**Il punto 7 — "G2 entra dopo" — e'' FALLITO**, e le cause sono **due, nessuna delle quali il filtro di
+scena che sospettavo**:
+
+**(a) il ricevente.** `ApplyByGuid` cercava il `PersistentObject` fra quelli della **SCENA CORRENTE**:
+se il ricevente era altrove non trovava nulla, usciva **in silenzio**, e la coda veniva svuotata.
+Al rientro **nessuno ri-applicava**, perche'' `ProgressManager.LevelLoaded` ri-applica **solo** le voci
+`scene~index` della tabella **e un GUID non lo e''**. ⇒ **mancava la memoria che i nemici hanno**
+*(`_pendingDeaths`)*.
+
+**(b) il server — PREESISTENTE, e piu'' insidioso.** `TeamInfo.AddTeamProgress` deduplica **per stringa
+id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`**. Tutti gli
+oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` e'' **falso** ⇒ un id gia'' visto viene
+**sempre rifiutato** e `Server.cs:591` **esce senza inoltrare**.
+⇒ **Ogni oggetto poteva essere annunciato UNA SOLA VOLTA per sessione del server.**
+**Non e'' un difetto dei vasi: vale per muri e leve compresi.**
+
+**E la prova nei log, riga per riga**: `0d384626` rotta da G1 in `D17Z01S03` → il server **rimanda** la
+entry a G2 → G2 la **riceve e la ricorda** *(`[BreakSync] rottura rimandata`)* → **entra in `D17Z01S03`
+e la trova IN PIEDI** → **la rompe di nuovo lui**, annuncio che il server **scarta come duplicato**.
+
+### F4b.1 — il fix, e il suo fallimento
+
+Il mittente manda **`scena|guid`** *(la scena DEVE viaggiare: il ricevente puo'' essere altrove, e un
+GUID non dice a quale stanza appartiene)*, piu'' una **memoria** `BreakSyncMemory`
+*(`Remember`/`Apply`/`Forget`)* e **due hook**:
+- **`PersistentManager.LoadSnapShot`** (postfix) → `ReapplyCurrentScene()`. E'' il primo istante in cui
+  valgono due condizioni: gli oggetti sono nella scena *(il metodo lavora su `FindObjectsOfType`,
+  verificato in IL)* **E** il gioco ha finito di scriverci sopra il suo snapshot.
+  ⚠️ **`Multiplayer.OnLevelLoaded` gira PRIMA che la scena esista** — il progetto l''aveva gia'' imparato
+  con i nemici — e un replay li'' verrebbe **anche sovrascritto dal save**.
+- **`BreakableObject.Restore`** (postfix) → `Forget`. E'' il punto in cui il gioco riporta in vita
+  l''oggetto: **al falo''** *(via `OnUsePrieDieu`)* e **quando lo snapshot lo dice integro**.
+  **Per oggetto, non per scena**: e'' cosi'' che lo fa il gioco, e **non serve nessun annuncio globale
+  di respawn**.
+
+⚠️ **E il risultato: la MEMORIA ha funzionato, l''HOOK no.** La entry e'' arrivata ed e'' stata
+ricordata; l''hook **non l''ha dipinta**, e `[BreakSync] rottura applicata` **non esiste in nessun log**.
+**Dentro l''hook non c''era una riga di log**, quindi **il perche'' era ignoto** — errore mio:
+**dovevo strumentarlo prima di fidarmi dell''IL, come ho fatto con F4a.**
+
+**Strumentazione deployata** *(tag `strumentazione-breaksync`)*: una riga dentro l''hook
+*(`scena=… oggetti=N daApplicare=M pending=P applied=A`)* che distingue le tre possibilita''
+*("girato troppo presto" / "girato ma non trovato" / "applicato e poi ripristinato")*, **e una SECONDA
+possibilita'' un frame dopo** *(`Multiplayer.OnLateUpdate`, armato da `OnLevelLoaded`)*, **additiva**:
+il vecchio hook resta, e **il log dice quale dei due dipinge**.
+⚠️ **E la prima versione di quella patch era sbagliata in due modi**, entrambi scoperti compilando:
+usava `StartCoroutine` su un tipo **non `MonoBehaviour`**, e la firma di `OnLevelLoaded` *(due stringhe)*
+non corrispondeva.
+
+### PARTE 2 — L''ARBITRAGGIO: il token risolveva un problema che non esisteva
+
+**L''utente ha chiesto**: *"il fatto del giocatore che deve essere host e ammaestrare tutto serve
+effettivamente? nonostante la logica del token che abbiamo implementato abbastanza tempo fa?"*
+
+**E la risposta, verificata nella storia git, e'' NO — non nella forma attuale.**
+
+**La frase che ha motivato il token e'' FALSA.** `5ecbc27` dice:
+> *"entrambe le macchine calcolavano la proprieta'' per conto proprio dalla distanza misurata localmente.
+> **Le due misure non possono coincidere** - i due giocatori hanno posizioni leggermente diverse, e
+> sulle slope peggio."*
+
+**Ma due commit dopo, `bf2f568`**:
+> *"**La regola di prossimita'' era giusta: il dato che le passavo era sbagliato.**"*
+> `HOST: posMia=(-704.4,9.0) posAltro=(-704.4,9.0) <- IDENTICHE`
+
+**`GetPosition()` sull''"altro giocatore" restituiva la posizione LOCALE**: la regola confrontava il
+nemico con **lo stesso giocatore due volte**, quindi **ogni macchina si credeva la piu'' vicina**.
+⇒ **"Le misure non possono coincidere" e'' stato generalizzato DA UN BUG a un limite
+dell''architettura** — ed e'' **su quella generalizzazione** che e'' stato costruito il token.
+
+**E con i dati corretti le due macchine CONCORDANO** — e non e'' teoria, e'' un log *(`e2a8ab4`)*:
+```
+HOST:   dist_io=26.2  dist_altro=22.3  owner=altro
+CLIENT: dist_io=22.3  dist_altro=26.2  owner=io
+```
+**Distanze speculari, decisione identica.** ⇒ **il disaccordo nasceva dall''errore del dato, non dalla
+regola.**
+
+**E le altre due prove:**
+- **La doppia simulazione era GIA'' risolta, PRIMA del token, con una riga che non richiede l''host**:
+  `68a4054` *("Solo il proprietario trasmette")* — **e'' il gate che c''e'' ancora oggi**.
+- **Il progetto HA GIA'' FATTO la decisione locale simmetrica, e l''utente l''aveva verificata in gioco**:
+  il tag **`stato-sync-movimento-ok`** → commit `0c2e199`, con `DecideOwnership(enemy, previous, IsHost)`
+  chiamata **su ENTRAMBE le macchine**. **E l''isteresi era GIA'' li''**: `OWNER_DISTANCE_MARGIN = 2.5`
+  + `OWNER_HOLD_SECONDS = 0.5`.
+
+### ⚠️ E "stanze diverse" e'' STRUTTURALE, piu'' di quanto sembrasse
+
+**Non e'' solo che l''host non vede la stanza: il server NON GLI CONSEGNEREBBE il token comunque.**
+```
+Server.cs:816     if (playerIp != _hostIp) return;        // solo l'host puo' emettere
+Server.cs:819     relayToScene(...)                        // e filtrato per SCENA
+PlayerInfo.cs:30  return sceneName == player.sceneName;
+```
+**E anche la posizione del giocatore viaggia per scena**: in stanze diverse `_remotePositions`
+**non si aggiorna affatto** — non e'' "stantia per poco", e'' **ferma dall''ultima volta che eravate
+insieme**.
+
+**La catena, riga per riga:**
+```
+_ids = la scena LOCALE (RegisterEnemies -> FindObjectsOfType<EnemySpawnPoint>)
+  -> DecideOwnership ha UN SOLO chiamante (2557), dentro `if (IsHost)` (2555)
+  -> il peer resta OwnedByLocal = false (il default di EnemyState, riga 80)
+  -> 2584 PauseEnemy + FreezePhysics (controller.enabled = false)
+  -> NESSUNA via d''uscita: ResumeEnemy sul peer e'' raggiungibile solo da
+     ReceiveEnemyOwnership, dal ramo else di ReceiveEnemyUpdate, e da SetHost ONLINE
+```
+**⇒ "l''host combatte i suoi nemici; il peer guarda i propri nemici immobili."**
+**Ed e'' GIA'' misurato**: `WheelCarrier` fermo **134 campioni ≈ 67 secondi**.
+
+**E NON e'' un caso limite: e'' la normalita'' del co-op.** Nei test precedenti non era mai emerso
+**perche'' i due giocatori entravano sempre INSIEME nella stanza** — e l''utente l''ha detto lui stesso:
+*"non escludo che questo problema ci fosse anche prima, anche perche'' tutti i test che ho effettuato
+tutti i player entravano nello stesso momento nella stanza"*.
+
+### IL TRADE-OFF VERO, che non e'' "host si'' o no"
+
+| | Token | Locale simmetrico |
+|---|---|---|
+| **Simulatori** | **uno SEMPRE** *(garantito per costruzione)* | **uno TRANNE una finestra** |
+| **Fuori dalla scena condivisa** | **cieco, e il server glielo impone** | **mai cieco** |
+
+⭐ **E l''argomento che decide**: **la finestra esiste GIA'' OGGI.** I log documentano **5 tick
+`owner=nuovo` su entrambe le macchine prima del primo token**. ⇒ **il token non elimina la finestra:
+la SPOSTA.** **Nella stessa stanza la scelta e'' sottile; fuori dalla stanza non c''e'' scelta: il token
+non arriva, e il gioco si blocca.**
+
+### PASSO 1 — FATTO E DEPLOYATO *(tag `passo1-peer-simula`)*
+
+**Il peer simula quando `!IsHost && !previous.OwnershipKnown`**, cioe'' **quando l''host non ha MAI
+detto niente su quel nemico**. Il flag **esiste gia''** ed e'' gia'' scritto nei posti giusti
+*(`SetHost`, e sul token in arrivo)*; finora era letto **una volta sola**, per il gate di pubblicazione.
+**Prende il posto che merita: distinguere "l''host ha deciso che non e'' mio" da "l''host non ha ancora
+parlato".**
+**Ed e'' sicuro** perche'' la proprieta'' e'' **esclusiva per costruzione**: appena l''host vede il nemico
+pubblica il token, il blocco sopra lo aggancia, e da li'' in poi **il ruolo lo decide l''host** — con
+`OWNER_HOLD_SECONDS` ad assorbire il passaggio.
+
+### PASSO 2 — DA FARE *(voce 32)*
+
+**Togliere `if (!localIsHost) return false;`** e tornare a chiamare `DecideOwnership` **su entrambe**:
+**e'' `stato-sync-movimento-ok` + il fix del dato di `bf2f568` + il gate di freschezza di `d66cf70` —
+tutti GIA'' a HEAD.**
+⚠️ **Il rischio va DECISO, non scoperto**: **quando l''host ENTRA nella stanza del peer, il peer
+possiede gia'' quei nemici e l''host puo'' riprenderseli** ⇒ `PauseEnemy` + trascinamento
+dell''interpolazione → **scatto visibile**. Mitigato da `OWNER_HOLD_SECONDS` *(il possesso del peer
+e'' fresco per costruzione)*, **ma serve un test a due macchine in stanze diverse.**
+
+**E un regalo**: **`NearestRemoteDistance` esiste gia'' ed e'' codice morto** *(il suo chiamante e''
+sparito)* — **ed e'' esattamente il predicato "sono solo nella stanza".**
+
+### PARTE 3 — SCOPERTE COLLATERALI DI QUESTA SESSIONE
+
+- **`PROTOCOL_VERSION = 11` NON sta in `Common.dll`**: e'' una costante **duplicata** in
+  `Client\Network\NetworkManager.cs` e `Server\Server.cs`, confrontata **solo all''handshake**
+  *(`Common.dll` contiene solo `Protocol.VERSION = 0`, mai confrontato, e l''enum `NetworkType`)*.
+  **Una premessa sbagliata che ho ripetuto tre volte prima che tre Esploratori la correggessero.**
+- **`output_log.txt` NON e'' affidabile con due sessioni sulla stessa macchina**: contiene **DUE processi
+  intrecciati** *(`Initialize engine version` alle righe 1 e 19; le due notifiche di join a 6 righe di
+  distanza)*. **I marker sono la somma esatta dei due log per-processo.** **Non usarlo per misure.**
+- **`BreakableObject.Use()` non e'' idempotente al 100%**: invoca `OnDead` **FUORI** dal guard
+  `destroyed` dentro `Damage`. Il consumatore e'' `DestructibleDead` *(un''azione PlayMaker che per
+  giunta ha un bug: `OnExit` fa `Delegate.Combine` invece di `Remove`)*. **L''utente ha notato proprio
+  questo**: *"vedo che le animazioni partono quando gli oggetti vengono distrutti"*.
+- **`NearestRemoteDistance` (2071-2082) e'' codice morto**, e **`RemoteEverClaimed` e'' scritto e mai
+  letto** *(lo conferma anche `d66cf70`)*.
+- **I 4 tipi di `SendBreakBreakableEvent`**: **`RosaryBead`, `Relic`, `Prayer`, `Sword`** — e gli array
+  passati sono quelli degli oggetti **EQUIPAGGIATI** del **Penitente locale**.
+- **Le fiale**: per chi si siede, **refill e respawn sono LA STESSA AZIONE**
+  *(`PrieDieu.OnUse` → `ShallowActivationLogic` → `Life` + `Flask` + `Fervour` `SetToCurrentMax` +
+  `SaveGame(true)`)*. ⚠️ **MAI eseguire `ShallowActivationLogic`/`ShallowUse` sul ricevente**:
+  setterebbe **`SpawnManager.ActivePrieDieu` al falo'' del MITTENTE** *(alla morte il peer finirebbe
+  nella stanza di G1!)* **e forzerebbe un `SaveGame` sul peer.**
