@@ -58,8 +58,10 @@
 | **30** | ⚠️ **La memoria delle morti si azzera SOLO sulla macchina che esegue il reset** | 🟢 **latente** | In IL `RespawnDeadEnemies` **non trasmette nulla**: chiama `EnemySpawnPoint.CreateEnemy()` **in locale** + `OnEnemiesRespawn`; i **tre chiamanti** sono tutti della macchina che si siede. Quindi `_announcedDeaths`/`_pendingDeaths`/`_killLogged` si svuotano **solo dove si siede** *(o dove il giocatore muore)*. **Se G1 si riconnette dopo, G2 potrebbe annunciargli morti che non esistono più.** **NON si è materializzato nei log** *(G2 non ha mai annunciato N>0)*: **reale ma latente.** Vedi §12 |
 | **31** | **Il falò (`RespawnDeadEnemies`) non è mai stato esercitato nei test** | 🟢 **verifica** | Il hook su `EnemySpawner.Reset` è confermato, ma **il ramo del falò non compare in nessuno dei sette log**. Serve **un test dedicato con falò su UNA SOLA macchina**: *(1)* l'altra vede rinascere i nemici? *(2)* la memoria si svuota su chi si siede? *(3)* **su chi NON si siede NON si svuota** ⇒ un `[EnemyJoin]` successivo annuncerebbe `N>0` → **conferma della voce 4**. **È lo stesso test già indicato per la voce 4.** Vedi §12 |
 | **32** | 🔴 **L'arbitraggio host-only è CIECO fuori dalla scena condivisa** | 🟡 **aperta — decisione di architettura** | **Il token di proprietà NON risolve il problema che dichiarava di risolvere.** La frase che l'ha motivato è **FALSA**: `5ecbc27` dice *"le due misure non possono coincidere"*, ma `bf2f568` **due commit dopo** dice *"**la regola di prossimità era giusta: il dato che le passavo era sbagliato**"* — `GetPosition()` sull'"altro" restituiva la posizione **locale** *(`posMia` e `posAltro` IDENTICHE)*. **Con i dati corretti le due macchine CONCORDANO**: `e2a8ab4` mostra distanze **speculari** e owner **coerenti**. **E l'host-only arbitrato è STRUTTURALE, non aggirabile**: `_ids` è la **scena locale**, `DecideOwnership` ha **un solo chiamante dentro `if (IsHost)`**, e **il server non gli consegnerebbe comunque il token** *(`Server.cs:816` manda solo all'host, `relayToScene` filtra per scena, `PlayerInfo.cs:30`)*. ⇒ **in stanze diverse il peer resta `OwnedByLocal=false` e `PauseEnemy` lo blocca PER SEMPRE** *(misurato: `WheelCarrier` fermo **134 campioni ≈ 67 s**)*. **Il trade-off vero**: il token garantisce **un solo simulatore SEMPRE** ma è **cieco fuori scena**; la **decisione locale simmetrica** *(già fatta e verificata in gioco nel tag `stato-sync-movimento-ok`, con l'isteresi **già a HEAD**: `OWNER_DISTANCE_MARGIN=2.5` + `OWNER_HOLD_SECONDS=0.5`)* garantisce **un solo simulatore TRANNE una finestra** ma **non è mai cieca** — e **la finestra esiste già oggi** *(5 tick `owner=nuovo` su entrambe)*. **PASSO 1 fatto** *(il peer simula i nemici con `OwnershipKnown == false`)*. **PASSO 2 da fare**: togliere `if (!localIsHost) return false;` e chiamare `DecideOwnership` **su entrambe**. ⚠️ **Rischio del passo 2 da decidere, non scoprire**: quando l'host **entra** nella stanza del peer, il peer possiede già quei nemici e l'host può riprenderseli ⇒ `PauseEnemy` + trascinamento → **scatto visibile**. Vedi §12 |
-| **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | 🟡 **da misurare — strumentazione deployata** | **Il test F4b.1 è fallito al suo caso centrale, e i log lo provano**: `0d384626` rotta da G1 in `D17Z01S03`, il server **rimanda** la entry a G2, G2 la **riceve e la ricorda** *(`[BreakSync] rottura rimandata`)*, entra in `D17Z01S03` e **la trova in piedi** — e **la rompe di nuovo lui**, annuncio che il server **scarta in dedup**. **`[BreakSync] rottura applicata` NON esiste in nessun log**: **la MEMORIA ha funzionato, l'HOOK no.** **Il perché era ignoto** *(dentro l'hook non c'era una riga di log — **errore mio: dovevo strumentarlo prima, come con F4a**)*. **Tre possibilità indistinguibili**: *(i)* l'hook è girato **prima** che l'entry arrivasse; *(ii)* è girato ma `FindObjectsOfType` **non trovava ancora gli oggetti**; *(iii)* ha trovato l'oggetto e **qualcosa l'ha ripristinato**. **Strumentazione deployata**: una riga dentro l'hook *(`scena=… oggetti=N daApplicare=M pending=P applied=A`)* **e una SECONDA possibilità un frame dopo** *(`Multiplayer.OnLateUpdate`, armato da `OnLevelLoaded`)*, **additiva**, così il log dice quale dei due dipinge. Vedi §12 |
+| **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | ✅ **RISOLTA — la causa era MIA, in `Forget`** | **Il test F4b.1 era fallito al suo caso centrale**: `0d384626` rotta da G1 in `D17Z01S03`, il server **rimanda** la entry a G2, G2 la **riceve e la ricorda**, entra nella stanza e **la trova in piedi**. **La causa, ricostruita in IL**: `LoadSnapShot` chiama `SetCurrentPersistentState` su ogni oggetto di cui ha dati → per un `BreakableObject` **`IsBroken()` è FALSO** *(il `BreakableManager` non viene ripopolato al load)* → **il gioco chiama `Restore()`** → il mio postfix su `Restore` → **`Forget` cancellava il guid da `pending` E da `applied`**. **E l'hook è un POSTFIX di `LoadSnapShot`, quindi gira DOPO** ⇒ **quando guardava, il pending era già stato cancellato.** **Fix**: un flag `loadingSnapshot` *(Prefix su `LoadSnapShot`, abbassato dopo la ri-applicazione)*: **`Forget` esce subito se il flag è alzato**, e decide la ri-applicazione. **Verificato in IL.** ⚠️ **E il caso "G2 entra dopo" NON è mai stato esercitato nei test**: le 3 entry rimandate restavano `pending=3` fino alla fine **perché la stanza non è più stata rivisitata** ⇒ **serve un test che la rivisiti.** Vedi §12 |
 | **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | 🟢 **ridimensionata** | `TeamInfo.AddTeamProgress` deduplica **per stringa id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`**: tutti gli oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` è **falso** e un id già visto viene **sempre rifiutato** *(`Server.cs:591` esce senza inoltrare)*. ⚠️ **Ma è meno grave di quanto sembrasse**: nel test **177 righe `duplicated or inferior`, ma UNA SOLA con un GUID** — tutte le altre sono i **progressi iniziali al join** *(`Type 8/9/10/11/12`, `Value 0`)*. **Quindi**: ogni oggetto può essere annunciato **una volta per sessione**; il formato `scena\|guid` dei vasi **aggira il caso "cambio stanza"** *(la chiave cambia con la scena)* **ma NON il caso "stessa scena annunciata due volte"** *(rirompere lo stesso vaso dopo un falò)*. **Da decidere dopo la voce 33.** Vedi §12 |
+| **35** | 🟡 **Se un giocatore muore nella bossroom, il boss spegne l'IA** | 🟡 **nuova, segnalata dall'utente** | **Segnalato in gioco**: *"se uno muore nella bossroom il boss spegne l'IA"*. **Comportamento voluto**: **se ci sono altri giocatori nella bossroom, il boss deve cambiare target con uno di quelli ANCORA VIVI nella stanza** *(e non spegnersi)*. **Questo tocca la voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(il cambio bersaglio dei boss)*: la morte di un giocatore **non è oggi comunicata ai peer**, quindi **probabilmente serve un pacchetto "player death"** *(⚠️ `NetworkType` **non ha** un tipo player-death ⇒ richiederebbe un bump di protocollo)*. **Da analizzare, non da ipotizzare.** Vedi §12 |
+| **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | 🟢 **operativa — da avvertire SEMPRE** | **Il percorso dei salvataggi è costruito così** *(IL del gioco)*: `persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamUser.GetSteamID().ToString() : "") + "/"`. ⇒ **avviare il gioco SENZA Steam sposta silenziosamente ogni salvataggio in `Savegames\` invece che in `Savegames\<steamid>\`.** **E con Steam Cloud abilitato le due cartelle DIVERGONO**: una sessione iniziata senza Steam **sembra** aver corrotto o perso i salvataggi — **non erano corrotti: erano da un'altra parte.** **Intermittente e dipendente dalla macchina**, quindi **facile da scambiare per un bug della mod**. ⚠️ **E la struttura "anomala" che aveva allarmato** *(cartelle vuote `savegame_0\`, `savegame_0_backup\`, contenitore `76561199216304572\` vuoto)* **è NORMALE: le crea il GIOCO** *(`PersistentManager.CreateAndGetSaveGameInternalDir` + `BackupSlot`→`FileTools.DirectoryCopy`)* **e convivono coi file anche su un'installazione sana.** **La mod NON c'entra**: scrive **un solo file** *(`savegame_N_modded.save`)* e **il gioco non lo legge mai** *(solo `.save`/`.save_backup`; nessuna `Directory.GetFiles` sulla cartella)*. **RACCOMANDAZIONE OPERATIVA, da ripetere SEMPRE**: *(1)* **avviare SEMPRE Steam prima del gioco**, oppure *(2)* **disattivare Steam Cloud per Blasphemous**, e *(3)* **backup a mano di `Savegames` prima delle sessioni di test.** ✅ **Ora reso VISIBILE**: la mod logga all'avvio `[Path] Steam inizializzato: … · cartella salvataggi in uso: …` e **avverte se Steam manca**. Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -2183,3 +2185,171 @@ sparito)* — **ed e'' esattamente il predicato "sono solo nella stanza".**
   `SaveGame(true)`)*. ⚠️ **MAI eseguire `ShallowActivationLogic`/`ShallowUse` sul ricevente**:
   setterebbe **`SpawnManager.ActivePrieDieu` al falo'' del MITTENTE** *(alla morte il peer finirebbe
   nella stanza di G1!)* **e forzerebbe un `SaveGame` sul peer.**
+
+
+## [2026-10-10 11:15] IL MISTERO DEI SALVATAGGI: non erano corrotti, erano da un''altra parte
+
+### 🔴 LA SCOPERTA, e vale piu'' di qualunque fix
+
+L''indagine era partita da un sospetto mio, sbagliato: **"F4 puo'' aver rotto il salvataggio"**. L''ho
+scritto e l''ho fatto indagare. **Era falso, e le prove sono cinque.** Ma l''indagine ha trovato la
+causa vera, che **non e'' della mod**.
+
+**Il percorso dei salvataggi del gioco** *[verificato in IL]*:
+```
+GetPathAppSettings =
+   persistentDataPath + "/Savegames/" + (SteamManager.Initialized
+                                          ? SteamUser.GetSteamID().ToString()
+                                          : "")                              + "/"
+```
+⇒ **Se Steam NON e'' inizializzato, il segmento dello SteamID e'' VUOTO** e **gioco e mod scrivono in
+`Savegames\`** invece che in `Savegames\<steamid>\`. I log lo mostrano col **doppio slash**:
+`…/Savegames//savegame_0.save`.
+
+**E con Steam Cloud ABILITATO le due cartelle divergono:**
+- sessioni **con** Steam → il gioco scrive in `Savegames\<steamid>\`, **e il Cloud sincronizza QUELLA**;
+- sessioni **senza** Steam → il gioco scrive in `Savegames\`, **che il Cloud non guarda**;
+- ⇒ **al riavvio con Steam, il Cloud riporta la sua versione** e la partita **sembra persa o corrotta**.
+
+**⇒ Spiega TUTTO quello che l''utente ha osservato:**
+| Sintomo | Spiegazione |
+|---|---|
+| *"salvataggi corrotti"*, due volte | i file sono in **un percorso o nell''altro** |
+| *"non riesco a replicarlo"* | **dipende da se Steam e'' avviato** |
+| *"ho riavviato e funzionano ancora"* | Steam e'' partito, il percorso e'' tornato canonico |
+| *"su macchine diverse"* | **su una Steam si inizializza, sull''altra no** |
+
+**E l''utente ha confermato la condizione**: *"avevo avviato il gioco senza steam attivo... mi sono
+accorto che il gioco si avviava senza steam inizializzato, e sospetto che sia successo anche l''altra
+volta"*. **E Steam Cloud e'' attivo su entrambe le macchine.** **Le due cose insieme sono la causa.**
+
+### ⚠️ E LA STRUTTURA "ANOMALA" ERA NORMALE
+
+Avevo allarmato l''utente con *"questo puo'' aver rotto il salvataggio"* guardando **cartelle vuote**
+*(`savegame_0\`, `savegame_0_backup\`, e il contenitore `76561199216304572\` svuotato)*.
+**Sbagliato**: **le crea IL GIOCO, normalmente** *[verificato in IL]*:
+```
+PersistentManager.CreateAndGetSaveGameInternalDir(slot) = Directory.CreateDirectory(
+      GetPathAppSettings("savegame_" + slot) + "/")
+   chiamata da: SaveGame, ResetCurrent, OnLevelLoaded, OnBeforeLevelLoad, LoadGameWithOutRespawn
+savegame_0_backup/  da BackupSlot -> FileTools.DirectoryCopy -> Directory.CreateDirectory
+```
+**E convivono coi file anche su un''installazione SANA** — *verificato sull''installazione viva: nella
+stessa cartella ci sono `savegame_0\` (vuota), `savegame_0_backup\` (vuota), `76561199216304572\`
+(vuota), `savegame_0.save` (78008 B), `savegame_0.save_backup` (77916 B), `savegame_0_modded.save`.*
+**Quindi quelle cartelle non erano il sintomo di niente.**
+
+### ✅ E F4 E'' ESCLUSO, con cinque prove
+
+1. **F4 non tocca il percorso di scrittura**: `git diff` **vuoto** su `Multiplayer.cs`,
+   `ProgressManager.cs`, `PersistentStates.cs`, `SlotSaveData.cs`, `GlobalSaveData.cs`, `FileHandler.cs`.
+2. **La mod scrive UN SOLO file**, `savegame_{slot}_modded.save`, con `File.WriteAllText` *(ModdingAPI)*,
+   **postfix di `PersistentManager.SaveGame_Internal`**.
+3. **Il gioco NON LEGGE MAI quel file**: `GetSaveGameFile` = `savegame_{slot}.save`;
+   `ExistSlot`/`ExistBackupSlot` = `File.Exists(.save/.save_backup)`; e **in tutto l''assembly NON esiste
+   nessuna `Directory.GetFiles/GetDirectories`** sulla cartella dei salvataggi.
+4. **`Use()` e `GetCurrentPersistentState("use")` NON toccano il disco** *[IL: base `ldnull; ret`;
+   per il breakable solo `broken = destroyed`]*.
+5. **Nei cinque log**: `IndexOutOfRange` **0** · `ArgumentOutOfRange` **0** · `Failed to save` **0** ·
+   `SAVEERROR 1/2/3` **0** · `SaveGame error` **0** · `LoadGame parsing error` **0**. E la sonda riporta
+   **`exceptions=0` in ogni riga** delle sessioni lunghe.
+
+**E il server**: **ZERO I/O su disco** *(nessun match per `File.`, `Directory.`, `Path.Combine`,
+`StreamWriter`, `savegame` in Server e Common)*. **Nessuna cartella `Savegames` di sua proprieta''.**
+
+**E il gioco non puo'' corrompersi da solo in questo modo**: `SaveSnapShot` ha le guardie
+`InsideLoadLevelProcess/InsideSaveProcess/InsideLoadProcess` → **`*** SAVEERROR 1/2/3` e return SENZA
+scrivere**; le eccezioni sono **catturate per oggetto**; `TrySerialize` fallito ⇒ **nessuna scrittura**.
+**Caso peggiore: salvataggio NON fatto, in silenzio.** L''unica fragilita'' e'' `FileTools.SaveSecure`,
+che e'' una **coroutine senza file temporaneo** ⇒ un crash a meta'' scrittura puo'' troncare il `.save`.
+
+**E i due log "Salvataggio corrotto"**: **S1** ha **905 NRE ma NON della mod** *(tempesta in
+`CameraManager.get_PanningRequired` / `Tools.UI.InputIcon` / `ControlRemapManager`)* e **`LOADGAME` = 0**:
+**la partita non e'' mai stata caricata**. **S2** e'' pulita: tre `LOADGAME` e per **tutti e tre** manca
+**solo il file della mod** *("Could not find file `Savegames\savegame_N_modded.save`")* mentre **il
+salvataggio nativo si carica senza errori** ⇒ **il file cercato era nell''ALTRO percorso.**
+
+### ✅ E LA MISURA, ora, e'' PERMANENTE
+
+Una riga all''avvio, **una volta per sessione**:
+```
+[Path] Steam inizializzato: <bool> · cartella salvataggi in uso: <percorso>
+```
+e, **se Steam manca**, un **avviso esplicito** che dice cosa sta succedendo e cosa fare.
+**Costa un minuto ed e'' la cosa che avrebbe risparmiato questa intera indagine** — *e se il difetto
+si ripresenta, lo dice in un secondo.*
+
+### RACCOMANDAZIONE OPERATIVA — da ripetere SEMPRE
+
+1. ⭐ **Avviare SEMPRE Steam PRIMA del gioco** *(e'' la radice: un solo percorso, niente da sincronizzare)*;
+2. **Oppure disattivare Steam Cloud per Blasphemous**;
+3. **E backup a mano della cartella `Savegames` prima delle sessioni di test** *(5 secondi)*.
+
+---
+
+## [2026-10-10 11:15] VOCE 33 RISOLTA, e il PASSO 1 confermato in gioco
+
+### VOCE 33 — la causa era MIA, in `Forget`
+
+**Il sintomo**: l''hook `LoadSnapShot` **girava**, il contatore diceva **che c''era qualcosa da
+applicare**, e **non dipingeva nulla**.
+
+**La causa, ricostruita in IL** *[verificato]*:
+```
+LoadSnapShot chiama SetCurrentPersistentState su ogni oggetto di cui ha dati
+  -> per un BreakableObject IsBroken() e'' FALSO (BreakableManager NON viene ripopolato al load)
+  -> il gioco chiama Restore()
+  -> il MIO postfix su Restore -> BreakSyncMemory.Forget(guid)
+  -> Forget rimuoveva il guid da `pending` E da `applied`
+E l''hook e'' un POSTFIX di LoadSnapShot, quindi gira DOPO
+  => quando ReapplyCurrentScene guardava, il pending era GIA'' STATO CANCELLATO
+```
+
+**⇒ Era il mio `Forget`, non l''hook.** **Fix**: un flag **`loadingSnapshot`**, alzato da un **Prefix**
+su `LoadSnapShot` e abbassato dal postfix **dopo** la ri-applicazione. **`Forget` esce subito se il flag
+e'' alzato** ⇒ l''entry resta, e **decide la ri-applicazione**. Se l''oggetto e'' davvero tornato integro
+e **non e'' nella stanza che si sta caricando**, la ri-applicazione **non lo trova e lo lascia stare** —
+che e'' il risultato giusto.
+
+⚠️ **E il caso centrale NON era mai stato esercitato**: nei test le 3 entry rimandate restavano
+**`pending=3` fino alla fine**, **perche'' la stanza non e'' piu'' stata rivisitata**.
+⇒ **il test da fare e'': rimandare una rottura e POI RIVISITARE QUELLA STANZA.**
+
+**E una conferma dal test lungo**: l''hook **gira e dipinge** *(T1 57 righe, T2 56, OUT 113;
+`rottura applicata` 5 / 4 / 9)*. **Quindi il meccanismo funziona: si rompeva solo sul caso "pending"**,
+che e'' esattamente quello che il fix ripara.
+
+### ⚠️ E DUE DIFETTI TROVATI PER STRADA *(non ancora fixati)*
+
+1. **`ProgressManager.Update` e'' senza `try/catch` E senza `finally`**: **una sola eccezione lascia
+   `CurrentlyUpdatingProgress = true` PER SEMPRE** ⇒ **il guard del mittente F4 sopprimerebbe OGNI
+   futura rottura**, e la coda non si svuota *(stessa entry rilancia ogni frame)*.
+   Trigger plausibile: `ApplyProgress` fa `AddInteractedObject` **prima** di validare, e
+   `getObjectPersistentId` controlla solo `Count > idx` ⇒ **un id `scena~-1` da un peer fa `lista[-1]`**
+   → `ArgumentOutOfRangeException`. **0 occorrenze nei log.**
+2. **`AddInteractedObject` = `List.Add` senza dedup** ⇒ il file della mod ha **doppioni**
+   *(osservato: 8 voci, 4 distinte)*. Innocuo, ma e'' sporcizia.
+3. E **`ReapplyCurrentScene` mette in `toApply` TUTTI gli `applied` senza filtro di scena**: il
+   contatore `daApplicare` **mente** *(osservato: `scena=MainMenu ogg=0 daApp=1`)*.
+
+### ✅ PASSO 1 CONFERMATO IN GIOCO, dall''utente
+
+> *"Abbiamo risolto il fatto che se l''host non c''e'' i nemici funzionano per i non host, appena l''host
+> si collega alla stanza i nemici vengono posizionati nei punti giusti, **ho verificato anche lo scambio
+> di target e funziona, quindi questo punto e'' pulitissimo**"*
+
+**⇒ il caso "stanze diverse", che era la NORMALITA'' del co-op e non era mai stato testato, e'' risolto.**
+**E il rischio che avevo dichiarato per il passo 1** *(lo "scatto" quando l''host entra nella stanza)*
+**non si e'' manifestato**: *"i nemici vengono posizionati nei punti giusti"*.
+
+### 🟡 VOCE 35 — NUOVA, segnalata dall''utente
+
+> *"Se uno muore nella bossroom il boss spegne l''IA. Se ci sono altri giocatori nella bossroom, il boss
+> deve cambiare il target con uno dei giocatori presenti nella bossroom ancora vivo."*
+
+**Comportamento voluto**: **il boss non deve spegnersi quando un giocatore muore**, ma **cambiare
+bersaglio con un giocatore ANCORA VIVO nella stanza**.
+**Tocca**: la **voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(cambio bersaglio
+dei boss)*. ⚠️ **E la morte di un giocatore NON e'' oggi comunicata ai peer**, quindi **probabilmente
+serve un pacchetto "player death"** — e **`NetworkType` NON ha un tipo player-death** ⇒ **richiederebbe
+un bump di protocollo.** **Da analizzare, non da ipotizzare.**
