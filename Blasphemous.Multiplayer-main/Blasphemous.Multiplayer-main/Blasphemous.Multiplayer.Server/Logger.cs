@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace Blasphemous.Multiplayer.Server;
 
@@ -36,6 +36,15 @@ public static class Logger
 
     public static void Print(object message)
     {
-        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+        // One line, in one place, on both destinations.
+        //
+        // The console is what the operator watches; the file is what survives the window being closed, and
+        // it is the only reason the server's account of a session can be examined afterwards. They are
+        // formatted together so the two can never drift apart - a mismatch between what was seen and what
+        // was kept would be worse than having no file at all.
+        string line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+
+        Console.WriteLine(line);
+        ServerLog.Write(line);
     }
 }
