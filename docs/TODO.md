@@ -3186,3 +3186,188 @@ benigno — ma 32 occorrenze in quella finestra meritano una nota, e non le avev
 **Server**: `duplicated or inferior` = **134**, **NESSUNO con GUID di breakable** *(tutti id tabellari
 `~0`/`~1`, Type 5/8/9/10/11/12)*. **`brk|` = 0** ✅. `Received new pers. object` = **4**.
 **2 connessioni, 2 disconnessioni, 1 host reassign** *(G1 → G2)*, **0 errori**.
+
+
+## [2026-10-11 00:30] LA MAPPATURA DEL FALO'' IN IL — e la trappola che avrebbe fatto esplodere il fix
+
+### 🔴 LA SCOPERTA PIU'' IMPORTANTE: `RespawnDeadEnemies` ha TRE chiamanti, e uno NON e'' il falo''
+
+```
+1. PrieDieu/<ActivationLogic>c__Iterator1::MoveNext     @IL_0188   ✅ falo'', prima accensione
+2. PrieDieu/<ReActivationLogic>c__Iterator2::MoveNext   @IL_013E   ✅ falo'', ri-seduta
+3. Framework.Penitences.PenitencePE02::OnLevelLoaded    @IL_000A   ❌ NO!
+```
+**`PenitencePE02::Activate()` fa `LevelManager.add_OnLevelLoaded(OnLevelLoaded)`** *(e `Deactivate()`
+la disiscrive)*. ⇒ **finche'' quella penitenza e'' attiva, OGNI CAMBIO STANZA chiama
+`RespawnDeadEnemies`.**
+
+🔴 **CONSEGUENZA OPERATIVA, e stavo per commetterla**: **il postfix della mod
+(`EnemyRespawnPatch`, `EnemySpawnPatch.cs:54`) e'' su quel metodo** ⇒ **`OnEnemiesRespawned()` gira
+GIA'' OGGI su tutti e 3 i chiamanti.** **Un broadcast messo nudo li'' dentro esploderebbe a ogni
+cambio stanza in penitenza PE02.** **Percorso VIVO, non teorico.** **Questa ricerca ha appena
+risparmiato un disastro.**
+
+**`EnemySpawner::Reset` — 3 chiamanti, NESSUNO e'' il falo''**:
+```
+Penitent::Respawn()            @IL_000A   morte del giocatore
+PersistentManager::LoadGame    @IL_001E   load di un salvataggio
+LogicManager::ResetAllData()   @IL_0014   reset dal menu
+```
+**`Reset()` = 4 istruzioni** *(`ldfld consumedSpawns; callvirt Clear(); ret`)* e **non fa rinascere
+nulla** ✅. ⚠️ **Due `Reset` omonimi**: **il falo'' chiama `BreakableManager::Reset`** *(tail di
+`OnUse`)* **e MAI `EnemySpawner::Reset`** ⇒ **`EnemySpawnResetPatch` non scatta al falo''**, e non
+dobbiamo temerlo.
+
+### ✅ LA CATENA DELLA SEDUTA, IN IL
+
+```
+PrieDieu::OnUpdate  IL_0022/0059 -> Interactable::Use()
+Interactable::Use   IL_0002      -> Interactable::UseCorroutine()
+<UseCorroutine>c__Iterator1::MoveNext:
+   IL_00E4  SendMessage("OnUsePre")
+   IL_0106  callvirt Interactable::OnUse()     <- ritorna l''ITERATORE
+   IL_010B  StartCoroutine(IEnumerator)        <- il corpo parte ORA
+   IL_0129  SendMessage("OnUsePost")
+PrieDieu/<OnUse>c__Iterator0::MoveNext:
+   IL_002B  if (get_Ligthed())  -> ReActivationLogic() : ActivationLogic()
+   IL_0084  LogicManager::UsePrieDieu()        <- EVENTO
+   IL_0098  BreakableManager::Reset()
+```
+**`ReActivationLogic`** *(gia'' acceso)*: `ShallowActivationLogic()` @IL_002B → audio/sprite/flip →
+`KNEE_START` → attesa → **`RespawnDeadEnemies()` @IL_013E** → *(`KneeledMenuCoroutine` e'' solo
+`UIController.*`, **nessuna chiamata al mondo**)* → `KNEE_END`.
+**`ActivationLogic`** *(prima accensione)*: metrica → audio → nasconde sprite/`DamageArea` → flip →
+`ACTIVATION` → `WaitForSeconds` → `ligthed=true` → `LaunchEvent` → **`ShallowActivationLogic()`
+@IL_015F** → `if (gotoAttrackWhenActivate) LoadAttrackScene()` **← CAMBIO LIVELLO** →
+**`RespawnDeadEnemies()` @IL_0188**.
+
+### ⭐ BENEFICI DEL GIOCATORE vs MONDO — la distinzione su cui si costruisce il fix
+
+**SOLO GIOCATORE — `ShallowActivationLogic()`** *(privato, 23 istruzioni)*:
+`SpawnManager.ActivePrieDieu = this` · `Life.SetToCurrentMax()` · **`Flask.SetToCurrentMax()`** *(le
+FIALE sono QUI, quindi non propagarle e'' a costo zero)* · `if (GetPrieDieuLevel() > 1)
+Fervour.SetToCurrentMax()` · **`SaveGame(true)`** *(scrive su disco)*. **ZERO effetti sul mondo.**
+
+**MONDO — solo TRE cose**:
+1. **`EnemySpawner::RespawnDeadEnemies()`** *(in 2 punti, uno per ramo)*
+2. **`LogicManager::UsePrieDieu()`** = `{ if (OnUsePrieDieu != null) OnUsePrieDieu.Invoke(); ret }`
+   → **unico sottoscrittore: `BreakableObject`** → `Restore()`
+3. **`BreakableManager::Reset()`** = `breakablesId.Clear()`
+
+**SOLO UI/ANIMAZIONE**: metrica, audio, `SpriteRenderer.enabled=false`, `DamageArea.enabled=false`,
+`flipX`, `SetTrigger`, `LaunchEvent`, `KneeledMenuCoroutine`.
+
+⭐ **Il punto minimo per replicare i SOLI respawn**:
+```csharp
+Core.Logic.EnemySpawner.RespawnDeadEnemies();   // nemici
+Core.Logic.UsePrieDieu();                       // -> OnUsePrieDieu -> Restore() su tutta la scena
+Core.Logic.BreakableManager.Reset();            // memoria distruttibili
+```
+**NO `ShallowActivationLogic()`** — **e'' privato, setta `ActivePrieDieu` al falo'' del MITTENTE, e
+forza un `SaveGame(true)` sul ricevente.** **NO `ActivationLogic`/`ReActivationLogic`** *(audio,
+animazioni, `WaitForSeconds`, `LaunchEvent`, menu, e `LoadAttrackScene()` = **cambio livello**)*.
+
+### ✅ L''INVENTARIO DI COSA VIENE RESPAWNATO
+
+| elemento | identita'' | chi lo riporta in vita | propagazione |
+|---|---|---|---|
+| **Nemici** | `EnemySpawnPoint`; **chiave = `transform.position`** | `RespawnDeadEnemies()` | **basta il metodo** |
+| **`BreakableObject`** | GUID authored per istanza | **`Restore()`** *(`public`)* | **basta il metodo** — via `Logic.UsePrieDieu()`. ⚠️ **NON `Use()`**: `Use()`→`Damage()` **ROMPE** |
+| **`breakablesId`** | — | `BreakableManager::Reset()` | locale, gratis |
+| **`BreakableWall`** *(muri)* | `PersistentObject` | **il falo'' NON lo tocca** | serve stato/altro canale |
+| **Porte / leve / altari / gate / item** | `PersistentObject` | **nessuno** | ✅ **niente da propagare** |
+| **snapshot** | — | **il falo'' SCRIVE, non rilegge** | `LoadSnapShot` ha 3 chiamanti: **nessuno e'' il falo''** |
+
+**Sottoscrittori di `OnUsePrieDieu`** *(ricerca sui RIFERIMENTI di campo, non sulle chiamate)*:
+```
+ldfld LogicManager::UsePrieDieu @0001, 000C
+ldfld BreakableObject::Start    @0017     stfld BreakableObject::Start @0032  <- Delegate::Combine
+ldfld BreakableObject::OnDestroy @0017    stfld BreakableObject::OnDestroy @0032
+```
+⇒ **`BreakableObject` e'' l''UNICO tipo che tocca quel campo** ✅.
+`OnUsePrieDieu` = **`{ call Restore(); ret }`** ✅ letteralmente.
+`Restore()`: **esce subito se `!destroyed`**; poi `destroyed=false`, riabilita
+collider/animator/renderer, `Play("idle")`, **`BreakableManager.RemoveBreakable(GetHashId())`**.
+E `AddBreakable` ← **solo** `Damage`; `RemoveBreakable` ← **solo** `Restore`; `ContainsBreakable` ←
+**solo** `IsBroken`.
+
+### ⭐ `consumedSpawns`: GLOBALE, e la chiave e'' la POSIZIONE
+
+- E'' una **`List<Vector3>`**, con **uguaglianza ESATTA** *(`List.Contains`)*.
+  `AddConsumedSpawner` *(unico chiamante: `EnemySpawnPoint::OnEntityDie`)* **appende solo se non
+  presente**. ⇒ **NON esiste alcun "ordine di scena"** *(e la frase che avevo attribuito alla voce 29
+  non e'' nel TODO: `grep` = 0 occorrenze — **errore mio di citazione**)*.
+- ⭐ **E'' GLOBALE, non per-scena**: `EnemySpawner` nasce in `LogicManager::Initialize` e **non viene
+  ricreato a ogni livello**. Il residuo e'' innocuo grazie a **`EnablePersistence`**.
+- ⭐ **`CreateEnemy` rispetta GIA'' `consumedSpawns`**: `IL_000C IsSpawnerConsumed→set_Consumed`;
+  `IL_0022 if(!EnablePersistence) Consumed=false`; **`IL_0034-006A` early-exit** se
+  `HasEnemySpawned || selectedEnemy==null || spawnPoint==null || Consumed`. ⇒ **il falo'' "funziona"
+  SOLO perche'' azzera la lista PRIMA di ricreare.**
+- `OnEntityDie` @IL_0008: **`HasEnemySpawned=false`** + `AddConsumedSpawner` ⇒ il ciclo si chiude.
+  `OnDestroyEntity` fa **solo** `UnregisterEnemiesEvents` *(non azzera `HasEnemySpawned`)*.
+
+### ✅ COSA SERVE PROPAGARE DAVVERO — e i due casi si distinguono
+
+**"Chi e'' FUORI SCENA"** — ✅ verificato: **`FindObjectsOfType<EnemySpawnPoint>()` restituisce solo
+gli oggetti attivi della scena caricata** ⇒ **e'' un NO-OP sui nemici altrui.** **Serve solo azzerare
+la MEMORIA** *(`consumedSpawns` e'' unica e globale ⇒ `Reset()` la svuota)*.
+⚠️ **MA il ricevente fuori scena NON deve chiamare `RespawnDeadEnemies()`**: gli ricreerebbe **i morti
+della stanza in cui STA**, senza che nessuno si sia seduto li''. ⇒ **DUE GESTI DISTINTI**.
+
+**"Chi e'' NELLA STESSA stanza ma non si e'' seduto"** — ✅ **basta `RespawnDeadEnemies()`**:
+*(1)* `HasEnemySpawned` ⇒ **nessun duplicato**; *(2)* **i nemici vivi NON vengono toccati** *(vita e
+posizione intatte)*; *(3)* `OnEnemiesRespawn` invocato; *(4)* ⚠️ **fa scattare il postfix sul
+ricevente** ⇒ svuota la memoria della mod *(desiderabile)* **ma e'' ECO INFINITA se il broadcast vive
+li'' dentro** → **serve un flag con SALVA/RIPRISTINA** *(lezione della voce 37)*.
+
+### 🔴 E UN DIFETTO LATENTE CHE ESISTE GIA'' OGGI
+
+**`PrieDieuUse_Patch` e'' un postfix su `PrieDieu.OnUse`, ma quel metodo COSTRUISCE SOLO L''ITERATORE
+E RITORNA** *(6 istruzioni: `newobj`, `stfld $this`, `ret`)*. **Il chiamante fa `callvirt
+Interactable::OnUse()` @IL_0106 e `StartCoroutine` SOLO a IL_010B** ⇒ **il postfix della mod gira
+PRIMA che il corpo esegua la prima istruzione**: prima di `ShallowActivationLogic`, prima di
+`RespawnDeadEnemies`, prima di `Restore()`.
+⇒ **E'' un buon SEGNALE DI INTENTO, non un "la seduta e'' avvenuta".** **Per il broadcast il punto
+giusto e'' il postfix di `RespawnDeadEnemies`** *(che c''e'' gia'')*.
+
+### ⚠️ E LE TRAPPOLE DEL BROADCAST — tutte verificate
+
+1. 🔴 **Il postfix copre TUTTI e 3 i chiamanti** *(penitenza PE02 inclusa)* ⇒ **il broadcast NON puo''
+   stare nudo in `OnEnemiesRespawned()`.**
+2. 🔴 **ECO INFINITA** se il ricevente esegue `RespawnDeadEnemies()` ⇒ flag **salva/ripristina**.
+3. ⚠️ **`EnemySpawner.Reset` vs `BreakableManager.Reset`**: **omonimi**, e il falo'' chiama il secondo.
+4. ⚠️ **Fuori scena = SOLO azzeramento memoria**, mai `RespawnDeadEnemies()`.
+5. ⚠️ **Le FIALE restano fuori** *(sono in `ShallowActivationLogic`, che non va eseguito)* — coerente
+   con la decisione di progetto.
+6. ⚠️ **Un id `falo|` non riconosciuto finirebbe in `_pendingDeaths` come se fosse un nemico.** **E
+   `_pendingDeaths` e'' la memoria che fa UCCIDERE i nemici.** Verificato che oggi sarebbe innocuo
+   *(`MarkSpawnPointConsumed` esce su `!StartsWith("sp|")`; il loop su `_ids` non matcha;
+   `RegisterEnemy` confronta contro id `sp|` veri)*, **ma sporcherebbe i conteggi e farebbe dipendere
+   il fix dal fatto che nessuno interpreti mai quella stringa.** ⇒ **il ramo va messo PRIMA della
+   riga 3396, accanto al `brk|`** *(`:3374` null-check · `:3388-3394` `brk|` · `:3396`
+   `_pendingDeaths.Add`)*.
+
+### ✅ LA CHIAVE DEL BROADCAST, CONFERMATA
+
+**`NetworkType.EnemyDeathGlobal = 24`**; **`Server.receiveEnemyDeathGlobal`** *(`Server.cs:798-810`)* =
+`foreach(connectedPlayers) if (playerIp != ip) Send(...)` — **nessun dizionario, nessuna dedup,
+nessun filtro di scena**; **`NetworkManager.SendEnemyDeathGlobal`** *(`:606`)* manda la stringa
+**verbatim**. Prefissi in uso: **`sp|`** e **`brk|`**. ⇒ **un terzo prefisso `falo|` viaggia gratis,
+senza bump di protocollo e senza ricopiare `Common.dll`.** ✅
+
+### ✅ E LA MEMORIA DEI DISTRUTTIBILI SI SISTEMA DA SOLA
+
+**`Logic.UsePrieDieu()` → `Restore()` → il nostro `BreakableObjectRestore_Patch` → `Forget(guid)`**
+⇒ **`applied` e `pending` si svuotano per gli oggetti riportati in vita.**
+⭐ **Ed e'' legato all''esecuzione LOCALE di `Restore()`** — **che era il rischio n.3 segnalato**:
+*svuotare solo sul mittente farebbe divergere le macchine.* ✅ **Risolto per costruzione.**
+⚠️ **Ma `applied` va trattato con lo stesso criterio di `pending`**: `ReapplyCurrentScene` ri-applica
+**tutto `applied`** *(`:619-622`, **mai filtrato per scena**)* ⇒ **se il falo'' rimette in piedi i vasi
+ma `applied` conserva il guid, alla prossima ri-applicazione il vaso viene RI-ROTTO** — **e la guardia
+F4b.4 non basta, perche'' dopo il falo'' `destroyed` e'' `false`.**
+
+### 📌 E LO STATO DELLE VOCI, dopo questa mappatura
+
+**24** ✅ confermato in IL · **29** 🟡 *il testo reale e'' diverso da come l''avevo citato* · **30** 🟢
+confermato *(nessuna rete)* · **31** 🟢 **ora il postfix logga SEMPRE** *(il prossimo test lo vedra'')*
+· **39** ✅ · **4** 🟡 **aperta, ed e'' questa mappatura a renderla affrontabile**.
