@@ -64,8 +64,9 @@
 | **37** | 🔴 **L'ECO INFINITA: un'annuncio applicato veniva ri-annunciato** | ✅ **RISOLTA (F4b.3) — ma la LEZIONE va ricordata** | **F4b.2 funzionava ma aveva introdotto qualcosa di peggio del difetto che curava.** **Conteggi incrociati nei log**: `APPLY(G1)=SEND(G2)` e `APPLY(G2)=SEND(G1)-2` ⇒ **ogni annuncio ricevuto veniva riapplicato E re-annunciato, un round-trip per iterazione** ⇒ **187 + 34 SEND su DUE soli vasi**. **Meccanismo, in IL**: `BreakableObject::Damage` fa `ldfld destroyed / brfalse / ret` ⇒ **se l'oggetto è GIÀ rotto esce subito LASCIANDO `destroyed = true`**, e il postfix del mittente faceva `if (!___destroyed) return;` ⇒ **annunciava pur non essendo successo nulla**. **E il percorso nuovo non alzava `reapplying`**. ⚠️ **PERCHÉ NON SI VEDEVA PRIMA: il canale Progress deduplicava, quindi l'eco veniva inghiottita dall'eco stessa.** **LA LEZIONE, e vale per tutto il progetto**: *cambiare canale obbliga a ricontrollare TUTTI i guard che proteggevano il canale vecchio — un guard che sembra ridondante può essere l'unico che teneva su la baracca.* **Fix**: una **Prefix** su `Damage` cattura **se l'oggetto era già rotto PRIMA** *(l'unico momento in cui la domanda ha risposta: dopo, il campo è `true` in entrambi i casi)*, e la Postfix esce subito se lo era. **Più** `ApplyOrRemember` che alza `reapplying` con **salva/ripristina** *(non azzera: un'applicazione può annidarsi)*. **Verificato in IL**: ordine `TryGetValue → CurrentlyUpdatingProgress → IsReapplying → IsConnected → Send`. Vedi §12 |
 | **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | 🟢 **operativa — da avvertire SEMPRE** | **Il percorso dei salvataggi è costruito così** *(IL del gioco)*: `persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamUser.GetSteamID().ToString() : "") + "/"`. ⇒ **avviare il gioco SENZA Steam sposta silenziosamente ogni salvataggio in `Savegames\` invece che in `Savegames\<steamid>\`.** **E con Steam Cloud abilitato le due cartelle DIVERGONO**: una sessione iniziata senza Steam **sembra** aver corrotto o perso i salvataggi — **non erano corrotti: erano da un'altra parte.** **Intermittente e dipendente dalla macchina**, quindi **facile da scambiare per un bug della mod**. ⚠️ **E la struttura "anomala" che aveva allarmato** *(cartelle vuote `savegame_0\`, `savegame_0_backup\`, contenitore `76561199216304572\` vuoto)* **è NORMALE: le crea il GIOCO** *(`PersistentManager.CreateAndGetSaveGameInternalDir` + `BackupSlot`→`FileTools.DirectoryCopy`)* **e convivono coi file anche su un'installazione sana.** **La mod NON c'entra**: scrive **un solo file** *(`savegame_N_modded.save`)* e **il gioco non lo legge mai** *(solo `.save`/`.save_backup`; nessuna `Directory.GetFiles` sulla cartella)*. **RACCOMANDAZIONE OPERATIVA, da ripetere SEMPRE**: *(1)* **avviare SEMPRE Steam prima del gioco**, oppure *(2)* **disattivare Steam Cloud per Blasphemous**, e *(3)* **backup a mano di `Savegames` prima delle sessioni di test.** ✅ **Ora reso VISIBILE**: la mod logga all'avvio `[Path] Steam inizializzato: … · cartella salvataggi in uso: …` e **avverte se Steam manca**. Vedi §12 |
 | **38** | ⚠️ **Il log del SERVER non esisteva su disco** | ✅ **RISOLTA — `ServerOutput.log`** | **`Logger.Print` era solo `Console.WriteLine`** *(`Logger.cs:39`)* **e nella cartella del server NON c'era nessun file di log** ⇒ **il resoconto del server moriva con la finestra**. **È costato DUE indagini di fila**: la dedup della proprietà e la lanterna post-falò sono state diagnosticate dai log dei **client**, perché il log del server non era mai stato conservato — *e le due righe che le avrebbero provate in un colpo solo sono `Server.cs:625` "Received new pers. object from X: Y" e `Server.cs:593` "Received duplicated or inferior progress from X: Y"*. ✅ **Ora il server scrive `ServerOutput.log`** accanto al binario *(`AppContext.BaseDirectory`)*, con intestazione datata e **flush a ogni riga**. **`Print` formatta la riga UNA volta e la manda a entrambe le destinazioni**, così ciò che si è visto e ciò che si è conservato non possono divergere. **Tutte le 33 chiamate del server passano dal `Logger`**, quindi lo specchio le prende tutte. ⚠️ **Due scelte deliberate**: *scrittura sincrona sotto lock* *(un log che perde le ultime righe quando il processo viene fermato — e questo server si ferma con un tasto — è peggio di nessun log, perché viene creduto)*, e **nessun errore può far cadere il server**. **Verificato AVVIANDOLO**, non solo compilato. **Da chiedere per nome: `ServerOutput.log` dell'host.** Vedi §12 |
-| **39** | ⚠️ **La doppia animazione dei vasi all'ingresso in stanza** | ✅ **RISOLTA (F4b.4) — ma resta una LIMITAZIONE NOTA** | **Segnalata dall'utente**: *"G1 e G2 vedono 2 vasi rotti → si siedono al falò → G2 entra e ne rompe 1 → G1 entra e vede l'animazione di ENTRAMBI"*. **Causa: `ReapplyCurrentScene` gira più di una volta per ogni caricamento di livello** *(`LoadSnapShot` viene invocato due volte: la prima PRIMA di `Loaded level`, la seconda dopo)*, **e ogni passata che trova un oggetto ancora in piedi lo rompe e ne riproduce l'animazione** ⇒ **4 `Use()` per 2 vasi in un ingresso, 2 animazioni per vaso** *(`G1 L1093/L1094/L1095` → `L1115/L1116/L1117`)*. **Fix**: **una guardia in `BreakableObjectReceive_Patch.Prefix`** *(l'unico posto che chiama `Use()`)* — se `___destroyed` è già `true`, **ritorna `false` senza applicare**. **Non tocca rete, `applied`, `pending` né `Forget`.** ✅ **E la strumentazione temporanea è stata rimossa** *(la riga `hook LoadSnapShot` e le due funzioni di conteggio)*. ⚠️ **LIMITAZIONE NOTA, non risolta**: **`pending` NON viene ripulito dal falò.** Il guard `loadingSnapshot` in `Forget` salta **solo** la parte `pending` *(confermato in IL: `applied.Remove` precede il guard)*, **e il falò non passa da `LoadSnapShot`** — quindi **`applied` si svuota e `pending` no**. **È il PROGETTO della voce 33** *(è ciò che fa comparire il vaso rotto a chi entra dopo)*, **ma diventa un'eco** quando il vaso **era già rotto in questa vita prima del falò**. **Toccarlo è rischioso**: è lo stesso `Forget` che ha causato "l'hook non dipinge". **Da valutare solo se il sintomo si ripresenta dopo F4b.4.** Vedi §12 |
+| **39** | ⚠️ **La doppia animazione dei vasi all'ingresso in stanza** | 🟡 **FIXATO (F4b.4) MA NON DIMOSTRATO — l'utente non la vede più, i log non lo provano** | **Segnalata dall'utente**: *"G1 e G2 vedono 2 vasi rotti → si siedono al falò → G2 entra e ne rompe 1 → G1 entra e vede l'animazione di ENTRAMBI"*. **Causa: `ReapplyCurrentScene` gira più di una volta per ogni caricamento di livello** *(`LoadSnapShot` viene invocato due volte per load)*, **e ogni passata che trova un oggetto ancora in piedi lo rompe e ne riproduce l'animazione** ⇒ **4 `Use()` per 2 vasi in un ingresso, 2 animazioni per vaso**. **Fix (F4b.4)**: **una guardia in `BreakableObjectReceive_Patch.Prefix`** *(l'unico posto che chiama `Use()`)* — se `___destroyed` è già `true`, **ritorna `false` senza applicare**. **Non tocca rete, `applied`, `pending` né `Forget`.** ⚠️ **MA LA GUARDIA NON È DIMOSTRATA, e va detto**: **il log NON può provarla**, perché `[BreakSync] rottura applicata` è stampato **DOPO** la chiamata e **`ApplyToLoadedObject` ritorna `true` anche quando la guardia sopprime** ⇒ **restano 2 righe per GUID per ingresso, e non si distingue "due applicazioni" da "una applicazione + una soppressa"**. **E il meccanismo che la aggira esiste, nel GIOCO** *(IL)*: `SetCurrentPersistentState` scrive `destroyed` dallo snapshot, poi `IsBroken()` è falso *(il `BreakableManager` non viene ripopolato al load)* ⇒ **IL_0040 `call Restore()`** ⇒ **`Restore()` rimette `destroyed = false`**. **Quindi la premessa del fix** *("la seconda passata trova gli oggetti già rotti")* **vale solo se nessuno li riporta in piedi fra le due passate.** **L'utente conferma che il sintomo è sparito** *("tutto funziona alla grande")*, **ma serve una misura**: una riga di log **quando la guardia sopprime**. ⚠️ **LIMITAZIONE NOTA**: **`pending` NON viene ripulito dal falò** *(il guard `loadingSnapshot` in `Forget` salta solo la parte `pending`; il falò non passa da `LoadSnapShot`)*. **È il PROGETTO della voce 33, ma diventa un'eco** quando il vaso era già rotto in questa vita prima del falò. **Toccarlo è rischioso**: è lo stesso `Forget` che ha causato "l'hook non dipinge". Vedi §12 |
 | **40** | 🟡 **`ReapplyCurrentScene` gira due volte per caricamento di livello** | 🟢 **nota tecnica — innocua con la guardia** | **Due invocazioni**: *(1)* il postfix di `PersistentManager.LoadSnapShot` *(il fix vero)*; *(2)* **la "seconda possibilità"** `MultiplayerLateUpdate_Patch`, armata da `Multiplayer.OnLevelLoaded` *(⚠️ **era strumentazione temporanea mia, aggiunta per misurare quale delle due dipingesse** — il log ha detto che dipingono **entrambe**)*. **Con la guardia della voce 39 è innocua** *(la seconda passata trova gli oggetti già rotti e non fa nulla)*, **quindi è stata TENUTA di proposito**: rimuoverla sarebbe stato un secondo azzardo nello stesso momento, **e le due non scattano nello stesso istante** *(la prima può girare mentre gli oggetti si stanno ancora costruendo)*. **Se un giorno si vuole semplificare, è un candidato**, con la raccomandazione di farlo **dopo** aver verificato che la prima passata basti da sola. Vedi §12 |
+| **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDE la sincronizzazione PER SEMPRE** | 🔴 **IL DIFETTO PIÙ PERICOLOSO DEL PROGETTO — priorità massima** | **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lascia il flag `true` PER SEMPRE**, e si porta dietro: **(a)** `BreakableObjectHelper` **sopprime OGNI futura rottura** *(`if (!CurrentlyUpdatingProgress) Send…`)*, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimono l'invio di TUTTA la progressione**, **(c)** **la coda non si svuota e rilancia ogni frame**. **⇒ il gioco resta vivo ma il co-op smette di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log: `exceptions=0` in ogni `[Probe]`)* **ma non nulla**, e i percorsi che la possono causare sono **verificati**: `PersistentObjectHelper.ApplyProgress` fa **`int.Parse(sections[1])`** e **`PersistentStates.getObjectPersistentId`**, **entrambi senza `try/catch`** — **e la difesa attuale è SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` dice esplicitamente che un `IndexOutOfRange` lì dentro **sarebbe fatale** *"perché `ProgressManager.Update` svuota la coda in un solo ciclo senza `try/catch`"* — **e quella consapevolezza non è mai diventata un fix**. **Fix: `try/finally` attorno al corpo di `Update` (2 righe) + `catch` per-elemento in `ApplyProgress`. Nessun bump.** Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -2724,3 +2725,134 @@ diventare attiva quando qualcuno la trova comoda*. **Resta come SPUNTO di lettur
 **`EnemyHealthBarExtensions` e'' l''unica cosa da guardare quando arriveremo ai boss.**
 **Nota dichiarata dal README stesso**: il percorso AssetBundle e'' **deferito** *(issue #60)* e
 `ModAnimator` ha un *"known last-frame skip behavior"*.
+
+
+## [2026-10-10 20:20] VERIFICA FINALE DI STATO — e due correzioni mie
+
+### ⚠️ CORREZIONE 1: la voce 39 NON era "risolta", era "fixata ma non dimostrata"
+
+**Avevo scritto `✅ RISOLTA (F4b.4)`. E'' troppo, e lo correggo.** **La guardia c''e''** *[IL del
+binario testato, `BlasClient.dll` sha `901a3a0f…`: `ldarg.2` → `brfalse` → `return false`, un solo
+`Use()`]*, **ma NON c''e'' prova che sia mai stata colpita.**
+
+**E il log NON PUO'' provarlo**, per un motivo strutturale: **`[BreakSync] rottura applicata` e''
+stampato DOPO la chiamata**, e **`ApplyToLoadedObject` ritorna `true` anche quando la guardia
+sopprime** ⇒ **restano 2 righe per GUID per ingresso** *(G1 ingresso#1 in `D17Z01S03`: L738 + L758)*,
+**e non si distingue "due applicazioni" da "una applicazione + una soppressa".**
+
+**E il meccanismo che aggira la guardia ESISTE, ed e'' nel GIOCO** *[IL di `Assembly-CSharp.dll`]*:
+```
+BreakableObject::SetCurrentPersistentState scrive `destroyed` dallo SNAPSHOT
+    (IL_0009 ldfld broken / IL_000E stfld destroyed)
+poi IsBroken() (= BreakableManager.ContainsBreakable, NON ripopolato al load) e'' FALSO
+    -> IL_0040 call Restore()
+E Restore() rimette destroyed = false.
+E LoadSnapShot chiama SetCurrentPersistentState DUE volte per caricamento.
+```
+⇒ **la premessa del fix** *("la seconda passata trova gli oggetti gia'' rotti")* **vale solo se fra
+le due passate NESSUNO riporta `destroyed = false`.** **L''utente conferma che il sintomo e'' sparito**
+*(“tutto funziona alla grande”)*, **ma serve una misura**: **una riga di log quando la guardia
+sopprime.** **Fino ad allora la voce resta 🟡.**
+
+### ⚠️ CORREZIONE 2: nel §12 precedente ho citato righe di un''ALTRA sessione
+
+**La entry del `2026-10-10 19:40` cita, come se fossero di quella verifica**, le righe
+`hook scena=D17Z01S03 daApplicare=2 pending=2 applied=0` a `G1 L1093/L1094/L1095` e
+`L1115/L1116/L1117`, piu'' i conteggi `[BreakSync] 38/48`, `Broke breakable 3/3`, `duplicati 126`.
+**Sono della sessione PRECEDENTE** *(quella con la strumentazione `daApplicare`/`hook`)*.
+**I tre log dell''ultima verifica sono un''ALTRA sessione** *(`ServerOutput.log` 18:59:38 → 19:03:30,
+178 righe, 130 duplicati)*, **e non contengono ne'' `daApplicare` ne'' `hook`** *(0 occorrenze)* —
+**perche'' la strumentazione e'' stata rimossa in F4b.4.**
+**⇒ il confronto prima/dopo su quelle righe NON e'' riproducibile con gli allegati attuali.**
+**Confusione mia nel documentare.** *(Nota per il futuro: le righe citate vanno sempre legate al file
+e alla sessione a cui appartengono.)*
+
+### ✅ E CIO'' CHE INVECE E'' CONFERMATO
+
+- ✅ **F4b.4 e'' DEPLOYATO**: la guardia c''e'' nell''IL del binario testato.
+- ✅ **L''eco e'' MORTA**: `Broke breakable` **G1=1, G2=2**, **un GUID distinto ciascuno** = il numero
+  reale di rotture a mano. **Prima erano ~90 per vaso.**
+- ✅ **`hook LoadSnapShot` = 0** su entrambi: **la strumentazione e'' stata rimossa davvero.**
+- ✅ **Server**: `duplicated or inferior` **130** ma **tutti id di formato tabella/mappa/flag/item**;
+  **`brk|` = 0**; `Received new pers. object` **4** *(tutte tabelle)*; **0 errori.**
+- ✅ **Marcatori**: `NullReference` 0 · `IndexOutOfRange` 0 · `IMPRONTA DIVERSA` 0 · `SAVEERROR` 0.
+  **Le 44/48 righe "Exception" sono TUTTE il campo `exceptions=0` della sonda.**
+- ✅ **`[Path]`**: **Steam inizializzato su ENTRAMBE** — G1 `…/76561198161597473/`,
+  G2 `…/76561199216304572/`. **Percorso canonico. La voce 36 funziona.**
+- ⚠️ **E i NEMICI non sono stati esercitati in QUESTI log**: `Post-spawn: 0 enemies / 0 spawn points /
+  0 ids` in **tutte** le 24 occorrenze, `[EnemyTick]`/`[EnemyTree]` = 0. **Quindi da qui non si
+  confermano** — *l''utente li aveva confermati nella sessione precedente.*
+
+### 🔴 E IL DIFETTO PIU'' PERICOLOSO DEL PROGETTO *(nuova voce 41)*
+
+**`ProgressManager.Update` non ha `try/catch` NE'' `finally`** *[verificato nel codice]*:
+```
+CurrentlyUpdatingProgress = true;
+... i 14 helper di ApplyProgress ...
+CurrentlyUpdatingProgress = false;
+```
+**Fuori c''e'' un `try/finally` in `Multiplayer.cs:154`, ma resetta `PerformanceProbe`, NON questo
+flag.** ⇒ **una sola eccezione in un helper lascia il flag `true` PER SEMPRE**, e si porta dietro:
+- **`BreakableObjectHelper` sopprime OGNI futura rottura**;
+- **~29 guard negli altri helper sopprimono l''invio di TUTTA la progressione**
+  *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)*;
+- **la coda non si svuota e rilancia ogni frame.**
+
+**⇒ il gioco resta vivo ma il co-op smette di sincronizzare**, **senza un crash e senza un errore
+evidente.** **Probabilita'': BASSA** *(0 occorrenze nei log)* **ma non nulla**, **e i percorsi che la
+possono causare sono verificati**: `ApplyProgress` fa **`int.Parse(sections[1])`** e
+**`getObjectPersistentId`**, **entrambi senza `try/catch`** — **e la difesa attuale e'' SOLO il
+parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch.**
+⚠️ **E il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` dice **esplicitamente** che
+un `IndexOutOfRange` li'' dentro **sarebbe fatale** *"perche'' `ProgressManager.Update` svuota la coda
+in un solo ciclo senza `try/catch`"* — **e quella consapevolezza non e'' mai diventata un fix.**
+
+### 📊 I NUMERI DELLO STATO *(per la domanda strategica)*
+
+```
+248 attributi [HarmonyPatch] su 37 file      (150 in AnimationFixes.cs da solo)
+19 NetworkType distinti                       (nessun tipo player-death)
+~29 punti che leggono CurrentlyUpdatingProgress
+PROTOCOL_VERSION = 11 duplicata              (NetworkManager.cs:631, Server.cs:854)
+```
+
+**⇒ NON e'' uno stato da lavoro grande.** **Dopo cinque fix di fila, di cui almeno due hanno
+introdotto un problema nuovo** *(F4b.2 → eco infinita; F4b.1 → hook che non dipinge)*, **il progetto ha
+248 patch e un percorso di stato la cui unica uscita e'' una riga senza `finally`.**
+**Raccomandazione**: **una consolidazione breve** *(il `try/finally`, la dedup di
+`AddInteractedObject`, e la misura della guardia F4b.4)* **PRIMA del falo''.**
+
+### 📋 E IL FALO'', dimensionato sul codice
+
+**3 pezzi, VERIFICATI NEL CODICE**:
+1. **broadcast del respawn** — `EnemyRespawnPatch` → `OnEnemiesRespawned()` fa **SOLO**
+   `_pendingDeaths.Clear()` + `_announcedDeaths.Clear()` + log: **nessuna riga di rete**. Idem
+   `EnemySpawnResetPatch` → `OnDeathStateReset()`. **E `PrieDieuHelper` ha 3 patch e nessuna comunica
+   il respawn.**
+2. **azzeramento della memoria su chi NON si siede.**
+3. **reset di `pending`** *(la limitazione nota della voce 39)*.
+
+**File**: `EnemySyncManager.cs`, `EnemySpawnPatch.cs`, forse `BreakableObjectHelper.cs`.
+⭐ **Bump di protocollo NON necessario**: `EnemyDeathGlobal` **non ha dizionario**
+*(`Server.cs:808`: `Send(ip, data, EnemyDeathGlobal)` a tutti tranne il mittente)* ⇒ **un prefisso
+nuovo (es. `falo|`) viaggia gratis.** **E `PROTOCOL_VERSION` e'' duplicata** *(due costanti, confrontate
+solo all''handshake)*, mentre `Protocol.VERSION` di `Common.dll` e'' **0 e non usata**.
+⚠️ **Il costo vero NON e'' il codice: e'' il TEST.** La voce 31 dice che **il ramo falo'' non e'' mai
+stato esercitato in nessun log**, **e lo confermo: 0 occorrenze.**
+
+⭐ **E una precisazione importante sul falo''**: **l''allineamento dei distruttibili per chi si siede
+e'' LOCALE**, non una sincronizzazione — *`BreakableObject.Start` sottoscrive `Logic.OnUsePrieDieu`
+(IL: `Delegate::Combine` + `stfld`), e `OnUsePrieDieu()` e'' `Restore(); ret`, che gira su OGNI
+macchina che si siede.* **Funziona perche'' entrambi si siedono.** **Il falo'' vero deve PROPAGARE il
+respawn.**
+
+### ⚠️ E IL RESPIRO DEL PROGETTO: il boss richiede un bump
+
+**`NetworkType` NON ha un tipo player-death** *(19 membri: Position 0 … HostAssign 13, 21-25)*.
+**La morte del giocatore non e'' comunicata** *(nessun `PlayerDeath`/broadcast; solo
+`PlayerDeathAnimationBehaviour` in `AnimationFixes.cs`, che e'' animazione locale)*.
+⇒ **per la voce 35 serve un pacchetto nuovo**: **bump di `PROTOCOL_VERSION` OBBLIGATORIO** *(entrambe
+le costanti + la riga di handshake)*, **piu'' ricopiare `Common.dll` su entrambe nella versione giusta
+per ciascuna** *(voce 15: `Modding\data` e'' net35, `SERVER-COOP` e'' net8.0 ⇒ hash diversi, e
+`verify-deploy.ps1` lo controlla)*. **E la voce 9 (spettatore) richiede 3 pezzi interamente da
+scrivere**: **nessun hook `DeadScreenWidget` esiste oggi nel repo** *(0 occorrenze)*.
