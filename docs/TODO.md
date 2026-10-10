@@ -57,7 +57,7 @@
 | **29** | 🔴 **Dopo un `EnemySpawner.Reset` le due liste locali DIVERGONO** | 🟡 **priorità media** | **NUOVA, misurata nel test della voce 28.** Nel log G2 RESET **`IMPRONTA DIVERSA` ×4** *(righe 558, 1043, 1271, 1499)*: tornando in `D01Z01S01` la macchina registra **3 id invece di 5** *(e il suo `Post-spawn` dice `2 enemies` dove l'host ne ha 3)*. **Causa accertata**: `EnemySpawner.Reset` **non trasmette nulla** — rigenera i nemici **solo in locale**, quindi **chi non esegue il reset resta con i suoi consumati**. **È lo stesso meccanismo del falò**: per questo la voce 4 resta gialla. **Il rilevatore ha funzionato: ha segnalato una divergenza VERA.** Vedi §12 |
 | **30** | ⚠️ **La memoria delle morti si azzera SOLO sulla macchina che esegue il reset** | 🟢 **latente** | In IL `RespawnDeadEnemies` **non trasmette nulla**: chiama `EnemySpawnPoint.CreateEnemy()` **in locale** + `OnEnemiesRespawn`; i **tre chiamanti** sono tutti della macchina che si siede. Quindi `_announcedDeaths`/`_pendingDeaths`/`_killLogged` si svuotano **solo dove si siede** *(o dove il giocatore muore)*. **Se G1 si riconnette dopo, G2 potrebbe annunciargli morti che non esistono più.** **NON si è materializzato nei log** *(G2 non ha mai annunciato N>0)*: **reale ma latente.** Vedi §12 |
 | **31** | **Il falò (`RespawnDeadEnemies`) non è mai stato esercitato nei test** | 🟢 **verifica** | Il hook su `EnemySpawner.Reset` è confermato, ma **il ramo del falò non compare in nessuno dei sette log**. Serve **un test dedicato con falò su UNA SOLA macchina**: *(1)* l'altra vede rinascere i nemici? *(2)* la memoria si svuota su chi si siede? *(3)* **su chi NON si siede NON si svuota** ⇒ un `[EnemyJoin]` successivo annuncerebbe `N>0` → **conferma della voce 4**. **È lo stesso test già indicato per la voce 4.** Vedi §12 |
-| **32** | 🔴 **L'arbitraggio host-only è CIECO fuori dalla scena condivisa** | 🟡 **aperta — decisione di architettura** | **Il token di proprietà NON risolve il problema che dichiarava di risolvere.** La frase che l'ha motivato è **FALSA**: `5ecbc27` dice *"le due misure non possono coincidere"*, ma `bf2f568` **due commit dopo** dice *"**la regola di prossimità era giusta: il dato che le passavo era sbagliato**"* — `GetPosition()` sull'"altro" restituiva la posizione **locale** *(`posMia` e `posAltro` IDENTICHE)*. **Con i dati corretti le due macchine CONCORDANO**: `e2a8ab4` mostra distanze **speculari** e owner **coerenti**. **E l'host-only arbitrato è STRUTTURALE, non aggirabile**: `_ids` è la **scena locale**, `DecideOwnership` ha **un solo chiamante dentro `if (IsHost)`**, e **il server non gli consegnerebbe comunque il token** *(`Server.cs:816` manda solo all'host, `relayToScene` filtra per scena, `PlayerInfo.cs:30`)*. ⇒ **in stanze diverse il peer resta `OwnedByLocal=false` e `PauseEnemy` lo blocca PER SEMPRE** *(misurato: `WheelCarrier` fermo **134 campioni ≈ 67 s**)*. **Il trade-off vero**: il token garantisce **un solo simulatore SEMPRE** ma è **cieco fuori scena**; la **decisione locale simmetrica** *(già fatta e verificata in gioco nel tag `stato-sync-movimento-ok`, con l'isteresi **già a HEAD**: `OWNER_DISTANCE_MARGIN=2.5` + `OWNER_HOLD_SECONDS=0.5`)* garantisce **un solo simulatore TRANNE una finestra** ma **non è mai cieca** — e **la finestra esiste già oggi** *(5 tick `owner=nuovo` su entrambe)*. **PASSO 1 fatto** *(il peer simula i nemici con `OwnershipKnown == false`)*. **PASSO 2 da fare**: togliere `if (!localIsHost) return false;` e chiamare `DecideOwnership` **su entrambe**. ⚠️ **Rischio del passo 2 da decidere, non scoprire**: quando l'host **entra** nella stanza del peer, il peer possiede già quei nemici e l'host può riprenderseli ⇒ `PauseEnemy` + trascinamento → **scatto visibile**. Vedi §12 |
+| **32** | **L'arbitraggio host-only è CIECO fuori dalla scena condivisa** | ✅ **CHIUSA — e la diagnosi "è un difetto da fixare col passo 2" era SBAGLIATA** | **Il DIFETTO VERO era uno solo: il peer si congelava quando il token non poteva arrivare** *(l'host altrove ⇒ `_ids` non contiene quei nemici ⇒ nessun token ⇒ `PauseEnemy` per sempre, misurato: `WheelCarrier` fermo 134 campioni ≈ 67 s)*. **Ed è chiuso dal PASSO 1** *(`f09839d`: il peer simula `!IsHost && !OwnershipKnown`)*, **verificato in gioco dall'utente**. ⚠️ **Ma la parte "PASSO 2 da fare: togliere `if (!localIsHost)`" era SBAGLIATA, e l'ho ripetuta senza verificarne la conseguenza pratica**: **il peer NON PUBBLICA un token** *(`ReceiveEnemyOwnership` ritorna subito `if (IsHost) return;`)* **e APPLICA quello dell'host** *(`OwnedByLocal = ownedByReceiver`)* ⇒ **se il peer decidesse, la sua decisione verrebbe SOVRASCRITTA** ⇒ **il gate non è il difetto: è ciò che tiene il peer da parte mentre aspetta l'autorità dell'host.** **E' il disegno, ed è coerente.** ✅ **PROVA DOCUMENTALE**: **`DecideOwnership` e il suo chiamante sono IDENTICI fra il tag `stato-sync-movimento-ok` (`998c561`, 7 ott 18:40) e HEAD** — *la "parità" era ed è DENTRO la funzione: la prima assegnazione è simmetrica, `wants \|\| (!peerCloser && localIsHost)`, e il commento spiega che prima leggeva `localIsHost \|\| wants` "e questo è ciò che faceva sembrare essere il primo a connettersi un privilegio"*. **⇒ NULLA È ANDATO PERSO.** **L'utente ricordava bene.** ⚠️ **REGISTRATA ANCHE LA LEZIONE**: **"verificato nel codice" NON è "verificato nel comportamento"** — *una verifica strutturale ("`DecideOwnership` ha un solo chiamante") può essere vera e portare a una conclusione sbagliata se non si guarda chi pubblica e chi applica il risultato.* Vedi §12 e voce 43 |
 | **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | ✅ **RISOLTA — la causa era MIA, in `Forget`** | **Il test F4b.1 era fallito al suo caso centrale**: `0d384626` rotta da G1 in `D17Z01S03`, il server **rimanda** la entry a G2, G2 la **riceve e la ricorda**, entra nella stanza e **la trova in piedi**. **La causa, ricostruita in IL**: `LoadSnapShot` chiama `SetCurrentPersistentState` su ogni oggetto di cui ha dati → per un `BreakableObject` **`IsBroken()` è FALSO** *(il `BreakableManager` non viene ripopolato al load)* → **il gioco chiama `Restore()`** → il mio postfix su `Restore` → **`Forget` cancellava il guid da `pending` E da `applied`**. **E l'hook è un POSTFIX di `LoadSnapShot`, quindi gira DOPO** ⇒ **quando guardava, il pending era già stato cancellato.** **Fix**: un flag `loadingSnapshot` *(Prefix su `LoadSnapShot`, abbassato dopo la ri-applicazione)*: **`Forget` esce subito se il flag è alzato**, e decide la ri-applicazione. **Verificato in IL.** ⚠️ **E il caso "G2 entra dopo" NON è mai stato esercitato nei test**: le 3 entry rimandate restavano `pending=3` fino alla fine **perché la stanza non è più stata rivisitata** ⇒ **serve un test che la rivisiti.** Vedi §12 |
 | **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | ✅ **RISOLTA per i vasi (F4b.2) — e il difetto è STRUTTURALE per tutto il resto** | `TeamInfo.AddTeamProgress` deduplica **per stringa id su TUTTA la sessione del server** e accetta **solo se `progressValue > currentValue`** *(in IL: `cgt` **unsigned**)*: tutti gli oggetti persistenti mandano **`value = 0`**, quindi `0 > 0` è **falso** e un id già visto è **sempre rifiutato** *(`Server.cs:591` esce senza inoltrare)*. **Conseguenza vera: ogni oggetto può essere annunciato UNA VOLTA per sessione del server.** ⚠️ **CORREZIONE a una riga precedente di questa voce**: *"il formato `scena\|guid` aggira il caso cambio stanza"* **era IMPRECISO** — **il GUID è authored e unico per ISTANZA**, quindi **l'id è per-oggetto, non per-visita**: rompere un'ALTRA lanterna altrove dà un id nuovo *(passa)*, ma **rirompere la STESSA lanterna, anche uscendo e rientrando, dà lo STESSO id** *(scartato)*. **Quindi lasciare e rientrare NON rinfresca la chiave.** **✅ RISOLTA per i vasi da F4b.2**: l'annuncio **non usa più il canale Progress**, ma **`EnemyDeathGlobal`** con id `brk\|scena\|guid` — **il canale che il server inoltra senza alcun dizionario** *(e che i nemici già usavano, ed è il motivo per cui i nemici non hanno mai avuto questo problema)*. **Solo client: nessun `NetworkType` nuovo, nessun bump di protocollo, nessuna `Common.dll` da ricopiare.** ⚠️ **RESTA STRUTTURALE per muri, leve e ogni altro oggetto che usa il canale Progress**: se in futuro servisse ri-annunciarli, **il problema è ancora lì**. Vedi §12 |
 | **35** | 🟡 **Se un giocatore muore nella bossroom, il boss spegne l'IA** | 🟡 **nuova, segnalata dall'utente** | **Segnalato in gioco**: *"se uno muore nella bossroom il boss spegne l'IA"*. **Comportamento voluto**: **se ci sono altri giocatori nella bossroom, il boss deve cambiare target con uno di quelli ANCORA VIVI nella stanza** *(e non spegnersi)*. **Questo tocca la voce 9** *(`Respawn`/morte del giocatore in bossroom)* **e la voce 8** *(il cambio bersaglio dei boss)*: la morte di un giocatore **non è oggi comunicata ai peer**, quindi **probabilmente serve un pacchetto "player death"** *(⚠️ `NetworkType` **non ha** un tipo player-death ⇒ richiederebbe un bump di protocollo)*. **Da analizzare, non da ipotizzare.** Vedi §12 |
@@ -68,6 +68,7 @@
 | **40** | 🟡 **`ReapplyCurrentScene` gira due volte per caricamento di livello** | 🟢 **nota tecnica — innocua con la guardia** | **Due invocazioni**: *(1)* il postfix di `PersistentManager.LoadSnapShot` *(il fix vero)*; *(2)* **la "seconda possibilità"** `MultiplayerLateUpdate_Patch`, armata da `Multiplayer.OnLevelLoaded` *(⚠️ **era strumentazione temporanea mia, aggiunta per misurare quale delle due dipingesse** — il log ha detto che dipingono **entrambe**)*. **Con la guardia della voce 39 è innocua** *(la seconda passata trova gli oggetti già rotti e non fa nulla)*, **quindi è stata TENUTA di proposito**: rimuoverla sarebbe stato un secondo azzardo nello stesso momento, **e le due non scattano nello stesso istante** *(la prima può girare mentre gli oggetti si stanno ancora costruendo)*. **Se un giorno si vuole semplificare, è un candidato**, con la raccomandazione di farlo **dopo** aver verificato che la prima passata basti da sola. Vedi §12 |
 | **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDEVA la sincronizzazione PER SEMPRE** | ✅ **RISOLTA — con l'eccezione isolata E loggata** | **Era il difetto più pericoloso del progetto.** **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lasciava il flag `true` PER SEMPRE**, e si portava dietro: **(a)** `BreakableObjectHelper` **sopprimeva OGNI futura rottura**, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimevano l'invio di TUTTA la progressione**, **(c)** **la coda non si svuotava e rilanciava ogni frame**. **⇒ il gioco restava vivo ma il co-op smetteva di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log)* **ma i percorsi sono verificati**: `ApplyProgress` fa **`int.Parse`** su un id **che arriva dalla rete** e una lookup che può uscire dalla tabella — **e la difesa era SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` lo dice **esplicitamente**, e **non era mai diventato un fix**. **✅ FIX**: **`try/finally` con `Clear()` E il flag abbassato DENTRO il `finally`** *(il `Clear` deve stare lì: una coda parziale va comunque scartata, o la stessa entry che lancia verrebbe ritentata ogni frame)* **+ `catch` per-elemento in `ApplyProgress`, CON LOG dell'id** *(un `catch` silenzioso nasconderebbe l'unica prova che spiega perché un aggiornamento è sparito)*. **Nessun bump.** Vedi §12 |
 | **42** | **`AddInteractedObject` senza dedup** | ✅ **RISOLTA — `if (!Contains)`** | **`List.Add` senza controllo**, e **il file su disco lo mostrava: 8 voci dove 4 erano distinte**. **Innocuo in effetto** *(quella lista finisce in `savegame_N_modded.save`, che il gioco non legge mai — voce 36)*, **ma è il tipo di innocuo che smette di esserlo il giorno in cui qualcuno conta le voci o confronta due liste per uguaglianza.** ✅ **Fix**: `IsNullOrEmpty` → **`Contains`** → `Add`. Vedi §12 |
+| **43** | 🟢 **`if (!localIsHost) return false;` in `DecideOwnership` è probabilmente codice MORTO** | 🟢 **opzionale — PULIZIA, non un fix** | **Il gate esiste per un motivo storico**: *"only the arbiter decides; this method is never the peer's path"*. **E con il disegno attuale è coerente**: **il peer NON PUBBLICA un token** *(`ReceiveEnemyOwnership` ritorna subito `if (IsHost) return;`)* **e APPLICA quello dell'host** ⇒ **qualsiasi decisione del peer verrebbe sovrascritta.** **Quindi il gate non cambia nulla di osservabile.** ⚠️ **Non è un difetto e non c'è fretta**: **rimuoverlo sarebbe una semplificazione, e va fatta SOLO dopo aver verificato che la PRIMA ASSEGNAZIONE SIMMETRICA** *(`state.OwnedByLocal = wants \|\| (!peerCloser && localIsHost);`)* **basti da sola** — *il ramo dei cambi successivi serve oggi solo all'host, che lo esegue con `localIsHost = true`*. ⚠️ **E il test in gioco NON può deciderla**: *"il non-host si muove"* è **il comportamento del PASSO 1** *(il peer simula `!OwnershipKnown`)*, **e succede sia col gate sia senza**. **Serve un'analisi dei percorsi nel codice, non una sessione.** Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -2961,3 +2962,101 @@ e'' il metodo, non la parola**, **e il flag e'' un `stsfld`** *(campo statico)*,
 deve cadere PRIMA sul check.** *E'' la quarta volta in questa sessione che un mio strumento di
 verifica produce un falso negativo — le altre tre sono state `__instance.Destroyed`,
 `Tools.Level.Layout` e `AllActivePlayers`.*
+
+
+## [2026-10-10 22:00] LA VOCE 32 CHIUSA: "verificato nel codice" NON e'' "verificato nel comportamento"
+
+### ✅ E L''UTENTE AVEVA RAGIONE — la prova documentale
+
+**L''utente ha detto**: *"sono certo che lo abbiamo risolto... potresti verificare che non sto impazzendo?
+Ho testato anche precedentemente qualche sessione fa"*. **E aveva ragione.** **Ecco la catena git reale**:
+```
+5ecbc27  7 ott 10:59   Token di proprieta'': decide solo l''host, il peer obbedisce
+efcf8b7  7 ott 17:38   Token di proprieta'' + quattro correzioni (protocollo 11)   <- il gate qui
+0c2e199  7 ott 18:30   ThawPhysics...
+998c561  7 ott 18:40   "Arbitro e peer pari: la proprieta'' si decide sulle distanze,
+                        non sull''ordine di connessione"    <- E'' IL TAG stato-sync-movimento-ok
+```
+⚠️ **E `998c561` NON e'' antenato di `5ecbc27`: viene DOPO.** **Quindi il progetto prima ha messo il
+token, POI ha scritto "Arbitro e peer pari", e quella e'' la versione che l''utente ha verificato in
+gioco.**
+
+**E la verifica decisiva**:
+```
+DIFF fra 998c561 e HEAD, su DecideOwnership:
+   --- NESSUNA DIFFERENZA ---
+E il CHIAMANTE e'' identico:  if (IsHost) { DecideOwnership(enemy, previous, true); }
+```
+**⇒ NULLA E'' ANDATO PERSO.** **La "parita''" era ed e'' DENTRO la funzione**: la prima assegnazione
+e'' simmetrica *(`state.OwnedByLocal = wants || (!peerCloser && localIsHost);`)*, **e il commento nel
+codice lo dice esplicitamente**:
+> *"It used to read `localIsHost || wants`, which handed the enemy to the arbiter whatever the
+> distances were. **That is what made being the first player to connect feel like a privilege**: the
+> arbiter kept every enemy it touched, and the peer could not take one even standing on top of it."*
+
+### 🔴 E LA CORREZIONE CHE DEVO: la voce 32 NON era "un difetto da fixare"
+
+**Avevo scritto che il "passo 2" era da fare** *(togliere `if (!localIsHost) return false;` e chiamare
+`DecideOwnership` su entrambe)*. **E'' SBAGLIATO.** **L''agente l''aveva dedotto dal codice senza
+guardare il comportamento completo, e io l''ho ripetuto senza verificarlo.** **Ecco perche'' e'' sbagliato**:
+```
+Il peer NON PUBBLICA un token: ReceiveEnemyOwnership ritorna subito `if (IsHost) return;`
+Il peer APPLICA il token dell''host: state.OwnedByLocal = ownedByReceiver
+
+=> se togliessi il gate e lasciassi decidere anche il peer:
+   1. il peer deciderebbe correttamente (le distanze sono speculari)   OK
+   2. ma la sua decisione verrebbe SOVRASCRITTA dal token dell''host
+   3. e nel frattempo il peer deciderebbe inutilmente su nemici che l''host vede
+=> il gate NON e'' il difetto: e'' cio'' che tiene il peer da parte mentre aspetta l''autorita''
+   dell''host. E'' il disegno, ed e'' coerente.
+```
+**Il DIFETTO VERO era UNO SOLO**: **il peer si congelava quando il token non poteva arrivare** *(l''host
+altrove ⇒ `_ids`, che e'' la scena locale dell''host, non contiene quei nemici ⇒ nessun token ⇒
+`PauseEnemy` per sempre)*. **Ed e'' chiuso dal PASSO 1** *(`f09839d`)*, **verificato in gioco**.
+
+### ⭐ LA LEZIONE, e vale piu'' della voce
+
+> **"VERIFICATO NEL CODICE" NON E'' "VERIFICATO NEL COMPORTAMENTO".**
+> **Una verifica strutturale** *("`DecideOwnership` ha un solo chiamante, dentro `if (IsHost)`")*
+> **puo'' essere VERA e portare a una conclusione SBAGLIATA**, **se non si guarda chi PUBBLICA il
+> risultato e chi lo APPLICA.** **La domanda giusta non era "chi chiama la funzione", ma "cosa
+> succede alla decisione".**
+
+⚠️ **E in questa sessione e'' la QUARTA volta che una verifica produce una conclusione sbagliata**:
+1. **`__instance.Destroyed`** *(non esiste: e'' un campo privato)*
+2. **`Tools.Level.Layout`** *(namespace sbagliato)*
+3. **`AllActivePlayers`** *(usato in un controllo "sono da solo" dove era sbagliato)*
+4. **"il passo 2 e'' da fare"** *(dedotto dalla struttura, mai verificato nel comportamento)*
+**⇒ REGOLA**: **quando una diagnosi dice "manca X", va verificata la CONSEGUENZA di X, non solo la sua
+presenza.** **E quando l''utente dice "sono certo che funzioni", l''utente ha visto qualcosa che il
+codice non mostra.**
+
+### 📌 E LA VOCE 43, che nasce da qui
+
+**Il gate `if (!localIsHost)` e'' probabilmente CODICE MORTO**, **perche'' il peer decide ma la sua
+decisione viene sovrascritta.** **Ma non e'' un difetto e non c''e'' fretta**: **rimuoverlo e'' una
+SEMPLIFICAZIONE**, **e va fatta solo dopo aver verificato che la prima assegnazione simmetrica basti
+da sola** *(il ramo dei cambi successivi serve oggi solo all''host, che lo esegue con `localIsHost = true`)*.
+⚠️ **E IL TEST IN GIOCO NON PUO'' DECIDERLA**: *"il non-host si muove"* e'' **il comportamento del
+PASSO 1** *(il peer simula `!OwnershipKnown`)*, **e succede sia col gate sia senza.** **Serve
+un''analisi dei percorsi nel codice, non una sessione.** **Ed e'' esattamente la lezione di cui sopra,
+applicata alla prossima decisione.**
+
+### ✅ E I COMMIT CHE L''UTENTE AVEVA IN MENTE *(la sua ipotesi, verificata)*
+
+**L''utente ha chiesto se la cosa fosse stata risolta in `0939b92` e `697133e`. Risposta: NO, ma sono
+due cose DIVERSE e reali**:
+```
+697133e (F1A)    -> EnemySyncManager.cs  51 righe   ← la DEMOZIONE offline e il buco della promozione
+0939b92 (FIX C)  -> Server.cs            16 righe   ← l''annuncio della promozione a TUTTI
+f09839d (PASSO 1)-> EnemySyncManager.cs  31 righe   ← il peer simula cio'' che l''host non vede
+```
+**F1A e FIX C curano la MIGRAZIONE dell''host** *(il problema TEMPORANEO: l''host cambia e per un
+momento nessuno arbitra)*. **La voce 32 era l''ASSENZA di proprieta'' quando l''host e'' altrove.**
+**Due difetti diversi**, **e il secondo e'' chiuso dal passo 1.**
+
+⭐ **E la sequenza temporale spiega il ricordo dell''utente**: *"si e'' presentato un problema, forse
+quello dei salvataggi proprio quando lo abbiamo risolto"*. **`efcf8b7` e `5ecbc27` sono del 7 ottobre
+(mattina), `998c561` del 7 ottobre 18:40, e la corruzione dei salvataggi e'' arrivata con
+`mega-fix-1`/F4a nei giorni successivi.** **Non erano collegati** *(lo abbiamo dimostrato: erano le due
+cartelle di Steam — voce 36)*, **ma sono capitati vicini, e in memoria si sono attaccati.** **Normale.**
