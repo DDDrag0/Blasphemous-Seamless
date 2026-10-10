@@ -147,10 +147,29 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     [HarmonyPatch(typeof(BreakableObject), "GetCurrentPersistentState")]
     class BreakableObjectReceive_Patch
     {
-        public static bool Prefix(string dataPath, BreakableObject __instance)
+        /// <summary>
+        /// Applies a break, unless the object is ALREADY broken.
+        ///
+        /// This guard is what keeps a break from being applied twice, and it is not a micro-optimisation:
+        /// the re-application runs more than once per level load - the log shows two passes, each calling
+        /// Use() on both objects of a room - and every pass that reaches an object still standing breaks it
+        /// and plays the animation. The player sees the same vase shatter again for no reason.
+        ///
+        /// ___destroyed is Harmony's way of reading the private field, and it is the same source the sender
+        /// already trusts: when the object is already broken, Use() builds a Hit and Damage returns
+        /// immediately (ldfld destroyed / brfalse / ret, verified in IL), so the call is work that cannot
+        /// produce anything except a second animation.
+        ///
+        /// Nothing here touches the network, the pending memory or Forget. An object that genuinely needs
+        /// breaking has destroyed == false and goes through exactly as before.
+        /// </summary>
+        public static bool Prefix(string dataPath, BreakableObject __instance, bool ___destroyed)
         {
             if (dataPath != "use")
                 return true;
+
+            if (___destroyed)
+                return false; // already broken: the break is already applied, and applying it again only replays the animation
 
             __instance.Use();
             return false;
@@ -284,17 +303,13 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     }
 
     /// <summary>
-    /// A SECOND chance, one frame later - and for now it is also a measurement.
+    /// A SECOND chance, one frame later.
     ///
-    /// The LoadSnapShot hook never painted the break it was written for, and the logs could not say whether
-    /// it ran before the scene had its objects, ran before the announcement had even arrived, or ran and was
-    /// then overwritten. The three cases look identical from outside, which is why guessing at the answer
-    /// would have been the wrong move: this asks instead.
-    ///
-    /// The frame after the level load is a good place to ask because by then the scene is built and the
-    /// game's own state has been written - the two conditions the LoadSnapShot hook was meant to satisfy.
-    /// It is deliberately additive: the existing hook is untouched, so whichever of the two paints the
-    /// object, the log says which one it was.
+    /// The re-application runs more than once per level load - the log shows two passes, both reaching the
+    /// objects - and duplicate work is harmless now that applying a break to an already broken object is
+    /// refused. This pass is kept because the two do not fire at the same moment: the LoadSnapShot one can
+    /// run while the objects are still being built, and this one runs after the level has been announced as
+    /// loaded. Whichever of the two finds an object that still needs breaking is the one that counts.
     ///
     /// The hook is OnLateUpdate rather than OnLevelLoaded: the mod class is not a MonoBehaviour, so there is
     /// no coroutine to start and no frame to wait in - the frame boundary is taken from the update that
@@ -586,15 +601,6 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             if (string.IsNullOrEmpty(scene))
                 return;
 
-            // TEMPORARY (diagnostics). The first version of this hook never painted a break, and the logs
-            // could not say why: there was no line inside it. This one answers the three questions the log
-            // could not - is the hook running at all, is it running before the scene has its objects, and was
-            // the entry already in memory by then - and it prints the object count so "ran too early" can be
-            // told apart from "ran but found nothing". Remove with the rest of the probe.
-            ModLog.Info($"[BreakSync] hook LoadSnapShot: scena={scene} " +
-                        $"oggetti={CountPersistentObjects()} daApplicare={CountFor(scene)} " +
-                        $"pending={pending.Count} applied={applied.Count}");
-
             List<string> toApply = null;
             foreach (string guid in applied)
             {
@@ -635,26 +641,6 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             {
                 reapplying = false;
             }
-        }
-
-        /// <summary>How many persistent objects exist right now. Diagnostics only.</summary>
-        private static int CountPersistentObjects()
-        {
-            return Object.FindObjectsOfType<PersistentObject>().Length;
-        }
-
-        /// <summary>How many remembered breaks belong to this scene. Diagnostics only.</summary>
-        private static int CountFor(string scene)
-        {
-            int count = applied.Count;
-            foreach (string entry in pending)
-            {
-                int split = entry.IndexOf(IdSeparator);
-                if (split >= 0 && entry.Substring(0, split) == scene)
-                    count++;
-            }
-
-            return count;
         }
 
         /// <summary>
