@@ -1,47 +1,132 @@
 using Blasphemous.ModdingAPI;
+using Blasphemous.Multiplayer.Client.ProgressSync;
+using Blasphemous.Multiplayer.Common.Enums;
+using Framework.Managers;
 using HarmonyLib;
 using Tools.Level.Actionables;
+using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
 {
     /// <summary>
-    /// INSTRUMENTATION ONLY - this patch reports, it does not synchronise anything yet.
+    /// Synchronises BreakableObject: the scenery a player smashes - lanterns, hanged skeletons, twisted
+    /// symbols. They are the objects that break and come BACK, and that is the whole reason they are worth
+    /// synchronising: everything that stays broken for good is already handled by the older helpers.
     ///
-    /// The breakable objects a player smashes are BreakableObject, and none of them is synchronised today.
-    /// Before writing that - which needs a sender AND a receiver, because the persistent-object table does
-    /// not contain a single one of their GUIDs - there are two facts that must be established in game rather
-    /// than assumed, and both of them are answered by this one line:
+    /// WHY THE IDENTITY IS THE GUID, AND NOT THE USUAL SCENE~INDEX
     ///
-    ///   1. does GetPersistenID() return a real GUID on these prefabs? The evidence so far is indirect (a
-    ///      GUID appears in the save file under sceneElements), and a GUID is authored scene data, which is
-    ///      what would make it identical on both machines. If it came back empty, the whole approach would
-    ///      need a different identity.
+    /// Every other persistent object in this project travels as "scene~index", where the index is a position
+    /// in a hand-written table (PersistentStates, 371 entries). That table contains ZERO BreakableObject
+    /// GUIDs - measured against a real save file, not deduced - and ProgressManager.UsePersistentObject
+    /// returns silently when the lookup fails, so with the table as it is the sender would never send
+    /// anything at all.
     ///
-    ///   2. does a postfix on Damage actually fire? BreakableObject.Damage is public and it is the method the
-    ///      game runs when the object is struck, but the object could be reached through another path.
+    /// Completing the table was rejected on purpose. The indices are positional and end up inside the
+    /// player's save file as "scene~index", so inserting entries can shift the index of everything after
+    /// them and make old saves point at the wrong object. Instead the GUID travels as the id itself:
+    /// ProgressUpdate.Id is already a free-form string, so nothing about the packet, the server or the
+    /// protocol changes, no table has to be completed, and no save has to be migrated.
     ///
-    /// The log is emitted BEFORE the guard that skips an already-destroyed object, deliberately: the guard
-    /// inside the game (if (destroyed) return;) already makes repeat hits harmless, and seeing a second line
-    /// for a second swing is information, not noise - it says the object was hit twice while already broken.
+    /// WHY THERE IS NO MEMORY AND NO BONFIRE HOOK
     ///
-    /// Note this is not the same as the "Broke wall" line already in the project: that one covers
-    /// BreakableWall, which IS in the persistent table and IS synchronised. A count of zero there means the
-    /// wall was never hit in that session, not that the hook is broken.
+    /// BreakableObject.Start subscribes to Core.Logic.OnUsePrieDieu, and on every PrieDieu use the game runs
+    /// Restore() on every breakable in the scene: destroyed = false, collider and renderer back on, idle
+    /// animation playing. The broken state is transient BY DESIGN, and it is the game that clears it, on
+    /// every machine, by itself. So this sync only has to cover the window between two bonfires - and when
+    /// the bonfire itself is synchronised later, the vases will line up for free.
     /// </summary>
     [HarmonyPatch(typeof(BreakableObject), "Damage")]
     class BreakableObjectUse_Patch
     {
         /// <summary>
-        /// Note the odd parameter name: "___destroyed" is how Harmony injects a PRIVATE field, and the field
-        /// cannot be read from here by its plain name. It is captured because the value tells the two cases
-        /// apart - the first swing sets it true, a later one finds it already true.
+        /// The sender. Two guards, and both are load-bearing.
+        ///
+        /// ___destroyed is Harmony's way of reading a PRIVATE field, and reading it in a POSTFIX is the only
+        /// place it is meaningful: Damage returns early when the object is already broken, so by the time
+        /// this runs the flag is true - but it is ALSO true when the damage came from the network and we are
+        /// the one applying it. That second case is exactly what
+        /// CurrentlyUpdatingProgress is for: it is set while ProgressManager drains its queue, which is
+        /// precisely the window in which a relayed break is applied here. Relaying it back would be an echo,
+        /// and the other machine would apply the break it just told us about.
         /// </summary>
         public static void Postfix(BreakableObject __instance, bool ___destroyed)
         {
-            string persistentId = __instance.GetPersistenID();
+            if (!___destroyed)
+                return; // the game refused the hit, so nothing actually broke
 
-            ModLog.Info($"Broke breakable: {persistentId} " +
-                        $"(distrutto={___destroyed} oggetto={__instance.gameObject.name})");
+            if (Main.Multiplayer.ProgressManager.CurrentlyUpdatingProgress)
+                return; // this break arrived from the network: do not send it back
+
+            if (!Main.Multiplayer.NetworkManager.IsConnected)
+                return; // single player: there is nobody to tell, and the log below stays quiet
+
+            string persistentId = __instance.GetPersistenID();
+            if (string.IsNullOrEmpty(persistentId))
+                return; // no UniqueId on this prefab: without an identity there is nothing to send
+
+            ModLog.Info($"Broke breakable: {persistentId} (oggetto={__instance.gameObject.name})");
+
+            ProgressUpdate progress = new ProgressUpdate(persistentId, ProgressType.PersistentObject, 0);
+            Main.Multiplayer.NetworkManager.SendProgress(progress);
+        }
+    }
+
+    /// <summary>
+    /// The receiver, live path: this is the call PersistentObjectHelper.ApplyProgress makes inside
+    /// ProgressManager.Update, and therefore the one that runs while CurrentlyUpdatingProgress is set.
+    ///
+    /// It calls Use(), which is the game's own "this object just broke" entry point: Use() builds a default
+    /// Hit and calls Damage with it. That matters, and it is not a stylistic choice.
+    /// BreakableObject.SetCurrentPersistentState CANNOT be used to apply a break: it reads the break from
+    /// BreakableManager.ContainsBreakable, and AddBreakable is called from exactly ONE place in the whole
+    /// assembly - BreakableObject.Damage. With an empty manager it concludes the object is not broken and
+    /// runs Restore() instead, so the break would be cancelled in silence, with no exception to warn anyone.
+    /// </summary>
+    [HarmonyPatch(typeof(BreakableObject), "GetCurrentPersistentState")]
+    class BreakableObjectReceive_Patch
+    {
+        public static bool Prefix(string dataPath, BreakableObject __instance)
+        {
+            if (dataPath != "use")
+                return true;
+
+            // No guard on the already-broken case, and the reason is that Use() is idempotent where it
+            // matters: Damage returns early when destroyed is true, so a repeated application does not double
+            // the break, does not re-run OnBreakBreak and does not re-add the object to BreakableManager.
+            //
+            // It is NOT fully idempotent, and that is worth knowing rather than guarding: Use() invokes the
+            // instance OnDead event OUTSIDE the destroyed guard inside Damage, so applying a break twice
+            // fires that event twice. Its only consumer is the DestructibleDead PlayMaker action, and the
+            // sender cannot produce that case: a break is announced once, and the packet queue is drained
+            // once. A guard would need the private destroyed field through Harmony on a path that already
+            // runs inside a try/catch in the caller, which is more risk than the case is worth.
+            __instance.Use();
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The receiver, load path - and this one is not optional, it is a crash waiting to happen.
+    ///
+    /// BreakableObject.SetCurrentPersistentState casts the argument and immediately reads a field off it,
+    /// with no null check: ((BreakablePersistenceData)data).broken. The game never passes null - its own
+    /// loader checks ContainsKey first and skips - but this mod does: ProgressManager.LevelLoaded calls
+    /// persistence.SetCurrentPersistentState(null, false, null) to mean "play the instant animation".
+    /// The day a BreakableObject becomes reachable from that path, it throws.
+    ///
+    /// So the two cases are split explicitly: real data means the game is loading a save and is left alone;
+    /// null means the mod is asking for the instant state, and gets Use().
+    /// </summary>
+    [HarmonyPatch(typeof(BreakableObject), "SetCurrentPersistentState")]
+    class BreakableObjectLoad_Patch
+    {
+        public static bool Prefix(PersistentManager.PersistentData data, BreakableObject __instance)
+        {
+            if (data != null)
+                return true; // the game's own data: let the original method run
+
+            __instance.Use();
+            return false;
         }
     }
 }
