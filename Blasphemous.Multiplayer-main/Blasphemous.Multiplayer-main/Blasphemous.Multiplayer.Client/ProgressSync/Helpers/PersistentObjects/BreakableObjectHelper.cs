@@ -341,7 +341,21 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                 return;
 
             armed = false;
-            BreakSyncMemory.ReapplyCurrentScene();
+            try
+            {
+                BreakSyncMemory.ReapplyCurrentScene();
+            }
+            catch (System.Exception e)
+            {
+                // A throw here does not stay here. Harmony runs the several postfixes on
+                // Multiplayer.OnLateUpdate one after another, and an exception escaping one of them ALSO
+                // costs the others their turn - which is how a null level in the breakable memory silently
+                // suppressed the save-path report and made the mod look like it had failed to start.
+                //
+                // The failure is logged rather than swallowed, because a deferred re-application that stops
+                // happening is exactly the kind of silence this project has learned to distrust.
+                ModLog.Error($"[BreakSync] la passata differita e' fallita: {e.GetType().Name} - {e.Message}");
+            }
         }
 
         /// <summary>Arms the deferred pass. Called after the level has been announced as loaded.</summary>
@@ -609,6 +623,19 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             // finally below clear the flag while the outer pass is still running - leaving a window in which
             // the sender would announce an application as if it were a swing.
             if (reapplying)
+                return;
+
+            // THE LEVEL DOES NOT EXIST YET at this point, and that is the expected case, not an edge one.
+            // The deferred pass is armed by OnLevelLoaded, whose own comment above says it fires BEFORE the
+            // scene exists - so this method is called on the next frame precisely when currentLevel may
+            // still be null. Reading .LevelName straight through threw a NullReferenceException on every
+            // frame from the main menu onwards, and because the exception came out of a postfix on
+            // Multiplayer.OnLateUpdate it also took down the sibling postfix that reports the save path:
+            // that is why no [Path] line ever appeared, which looked like the mod failing to initialise.
+            //
+            // The scene is read the same way the rest of this file reads it - the enemy log asks
+            // "currentLevel == null ? "?" : ..." - and this one place had been missed.
+            if (Core.LevelManager == null || Core.LevelManager.currentLevel == null)
                 return;
 
             string scene = Core.LevelManager.currentLevel.LevelName;
