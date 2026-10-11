@@ -71,7 +71,26 @@ namespace Blasphemous.Multiplayer.Client
             return Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers.Count > 0;
         }
 
-        /// <summary>Reads the values back, for logs. Null-safe: the player may not exist yet.</summary>
+        /// <summary>
+        /// Reads the values back, for logs. Null-safe: the player may not exist yet.
+        ///
+        /// WHICH MAXIMUM, AND WHY IT MATTERS. Life and flasks are reported against **Final**, not against
+        /// CurrentMax, because that is what the game's own bars divide by:
+        /// `PlayerHealth.BarTarget = Life.Current / Life.Final`, and PlayerFlask builds its total from
+        /// Flask.Final. Today the two are equal - MaxFactor is never touched on Life or Flask anywhere in the
+        /// assembly - but the whole point of the guilt work is to start lowering Life.MaxFactor, and on that
+        /// day CurrentMax would report a penalised maximum while the bar kept dividing by Final. The
+        /// instrument would then disagree with the thing it exists to measure, precisely while the new
+        /// feature is on, and a measurement that lies is worse than no measurement.
+        ///
+        /// Fervour is the exception and is reported against CurrentMax on purpose: PlayerFervour draws its
+        /// segments from CurrentMax, so for fervour that IS the right number - and fervour is the one the
+        /// game already penalises through GuiltManager, which is why its maximum visibly moves between
+        /// readings.
+        ///
+        /// MaxFactor is printed as well, because when a maximum moves it is worth knowing whether the cause
+        /// was ours.
+        /// </summary>
         public static string StatsLine()
         {
             try
@@ -80,9 +99,10 @@ namespace Blasphemous.Multiplayer.Client
                     return "stats=non disponibili";
 
                 var stats = Core.Logic.Penitent.Stats;
-                return $"vita={stats.Life.Current:F0}/{stats.Life.CurrentMax:F0} " +
-                       $"fiale={stats.Flask.Current:F0}/{stats.Flask.CurrentMax:F0} " +
-                       $"fervour={stats.Fervour.Current:F0}/{stats.Fervour.CurrentMax:F0}";
+                return $"vita={stats.Life.Current:F0}/{stats.Life.Final:F0} " +
+                       $"fiale={stats.Flask.Current:F0}/{stats.Flask.Final:F0} " +
+                       $"fervour={stats.Fervour.Current:F0}/{stats.Fervour.CurrentMax:F0} " +
+                       $"(fattori: vita={stats.Life.MaxFactor:F2} fervour={stats.Fervour.MaxFactor:F2})";
             }
             catch (System.Exception e)
             {
