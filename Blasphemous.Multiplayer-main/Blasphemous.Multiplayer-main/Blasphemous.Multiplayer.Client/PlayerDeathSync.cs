@@ -186,8 +186,18 @@ namespace Blasphemous.Multiplayer.Client
         [HarmonyPostfix]
         public static void Postfix()
         {
-            ModLog.Info($"[Falo''] stats dopo il respawn: {PlayerDeathSync.StatsLine()}" +
-                        (PlayerDeathSync.SuppressingWorldReset ? " (stiamo replicando un falo'')" : ""));
+            // The suffix reports whether THIS call came from a replicated bonfire, and it used to read the
+            // wrong flag: PlayerDeathSync.SuppressingWorldReset is the DEATH flag, while a replication is
+            // marked by EnemySyncManager.IsReplicatingBonfire. The two are unrelated, so the suffix never
+            // appeared - not even on the line that genuinely was a replication, which is how the mistake was
+            // caught. A label that is always false is worse than no label: it reads as evidence.
+            string origin = EnemySyncManager.IsReplicatingBonfire
+                ? " (stiamo replicando un falo'')"
+                : PlayerDeathSync.SuppressingWorldReset
+                    ? " (stiamo sopprimendo il respawn di una morte)"
+                    : " (falo' locale)";
+
+            ModLog.Info($"[Falo''] stats dopo il respawn: {PlayerDeathSync.StatsLine()}{origin}");
         }
     }
 }
