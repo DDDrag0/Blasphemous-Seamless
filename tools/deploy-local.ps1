@@ -30,3 +30,24 @@ Get-ChildItem $srvSrc -File | ForEach-Object { Copy-Item $_.FullName (Join-Path 
 "  hash : " + (Get-FileHash $modDst -Algorithm SHA256).Hash.ToLower()
 "server -> $srvDst"
 "  hash : " + (Get-FileHash (Join-Path $srvDst 'blas1mpserver.dll') -Algorithm SHA256).Hash.ToLower()
+
+# 3. I BERSAGLI DELLE PATCH HARMONY.
+#
+# Un [HarmonyPatch(typeof(X), "nome")] porta il bersaglio in una STRINGA: se quel metodo non esiste,
+# il build passa e il guasto arriva solo a runtime, come HarmonyException dentro PatchAll - che
+# INTERROMPE l'applicazione di tutte le patch successive. Il sintomo non assomiglia alla causa: la mod
+# smette di scrivere qualsiasi riga di log e l'update per frame esplode con un NullReferenceException
+# che non c'entra nulla con la patch sbagliata.
+#
+# E' successo l'11 ottobre 2026 (OnPlayerSpawn e' un evento, non un metodo) e ha bruciato una sessione.
+# Da allora il deploy si ferma se un bersaglio non esiste: e' il momento giusto per scoprirlo, perche'
+# e' l'ultimo prima del test.
+$verifier = Join-Path $PSScriptRoot 'verify-patch-targets.ps1'
+if (Test-Path $verifier) {
+    ""
+    "=== bersagli delle patch Harmony ==="
+    & pwsh -NoProfile -File $verifier -ModDll $modDst
+    if ($LASTEXITCODE -ne 0) {
+        throw "Il deploy e' stato copiato, ma ci sono bersagli Harmony INESISTENTI: un test ora non misurerebbe niente. Vedi l'elenco sopra."
+    }
+}

@@ -245,12 +245,19 @@ namespace Blasphemous.Multiplayer.Client
     /// The asymmetry is what settles it. A LOST "pdead" heals itself, because the player eventually comes
     /// back and "palive" arrives. A "pdead" with no "palive" NEVER heals.
     ///
-    /// SpawnManager.OnPlayerSpawn is static and fires from CreatePlayer, immediately after the new Penitent
-    /// is assigned - which is also why it is the right place to re-subscribe anything that lives on the
-    /// instance. It is hooked only to report for now.
+    /// WHY THIS PATCHES CreatePlayer AND NOT OnPlayerSpawn. The first attempt used
+    /// `[HarmonyPatch(typeof(SpawnManager), "OnPlayerSpawn")]` and it was wrong in a way that cost a whole
+    /// session: OnPlayerSpawn is an EVENT FIELD, not a method. Harmony looked for a method by that name,
+    /// found none, threw, and PatchAll ABORTED - so every patch after this one in the assembly was never
+    /// applied. The mod then produced no log lines at all and OnLateUpdate threw on every frame. A wrong
+    /// name in a HarmonyPatch attribute is a string: it compiles, and it fails at runtime.
+    ///
+    /// CreatePlayer is the method that actually exists and actually runs on every spawn - private, in
+    /// SpawnManager, called from SpawnPlayerOnLevelLoad, and it is where the new Penitent is instantiated
+    /// and assigned. It is also the right moment to re-subscribe anything that lives on the instance.
     /// </summary>
-    [HarmonyPatch(typeof(SpawnManager), "OnPlayerSpawn")]
-    public static class SpawnManagerOnPlayerSpawn_Patch
+    [HarmonyPatch(typeof(SpawnManager), "CreatePlayer")]
+    public static class SpawnManagerCreatePlayer_Patch
     {
         [HarmonyPostfix]
         public static void Postfix()
