@@ -44,6 +44,16 @@ namespace Blasphemous.Multiplayer.Client
     {
         private const float SEND_INTERVAL = 0.05f;   // ~20 state broadcasts per second
         private const float RESCAN_INTERVAL = 0.5f;  // spawn points created after the level load
+
+        // How often the per-enemy diagnostic snapshot is written.
+        //
+        // Deliberately separate from RESCAN_INTERVAL, which it used to share by accident: that made the
+        // writing as frequent as the scanning, and the scan has to stay fast because it is what notices
+        // spawn points created after a level load. This number only trades detail for a readable log.
+        // At 0.5 it was six lines a second in a three-enemy room and half the file; at ten it is a couple
+        // of dozen lines in a whole session, which is few enough to actually be read.
+        private const float DIAGNOSTIC_LOG_INTERVAL = 10f;
+        private static float _lastDiagnosticLog;
         private const float FULL_RESEND_INTERVAL = 1f;
         private const float POSITION_EPSILON = 0.01f;
         private const float LIFE_EPSILON = 0.01f;
@@ -1308,6 +1318,11 @@ namespace Blasphemous.Multiplayer.Client
             _rescanTimer = 0f;
             _lastSweep = 0f;
 
+            // And the diagnostic log with them, so the first snapshot of a new scene is written immediately
+            // instead of waiting out the interval. The scene just changed: that is the moment worth
+            // describing, and the one where a stale timer would show the least interesting frame.
+            _lastDiagnosticLog = 0f;
+
             _updatesSent = 0;
             _updatesReceived = 0;
             _damageSent = 0;
@@ -1964,6 +1979,26 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void LogDiagnosticSnapshot()
         {
+            // THE LOGGING CADENCE IS NOT THE SCAN CADENCE, and conflating them was costing half the log.
+            //
+            // This method is called from inside the block that fires every RESCAN_INTERVAL, so it printed
+            // one line per enemy every half second for the whole session - measured at 640 lines for a
+            // three-enemy room, 46% of the lines and about 70% of the bytes of that machine's log.
+            //
+            // The obvious fix - raise RESCAN_INTERVAL - would have been wrong: the rescan is not there for
+            // logging, it is what discovers spawn points created AFTER the level load, and that is precisely
+            // what makes a respawned enemy visible on the machine that owns it. Slowing it to quieten the
+            // log would have bought tidiness with correctness.
+            //
+            // So the scan stays at half a second and only the writing slows down. These snapshots were what
+            // settled the movement and animation questions, and they are worth keeping at a rate where
+            // reading one is still useful; they are worth nothing at six lines a second, because a log
+            // nobody reads is the same as no log - and it hides the lines that matter.
+            if (Time.time - _lastDiagnosticLog < DIAGNOSTIC_LOG_INTERVAL)
+                return;
+
+            _lastDiagnosticLog = Time.time;
+
             Penitent local = Core.Logic.Penitent;
 
             for (int i = 0; i < _ids.Count; i++)
