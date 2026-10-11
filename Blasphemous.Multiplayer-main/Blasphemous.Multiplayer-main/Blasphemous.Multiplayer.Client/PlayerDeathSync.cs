@@ -74,22 +74,25 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>
         /// Reads the values back, for logs. Null-safe: the player may not exist yet.
         ///
-        /// WHICH MAXIMUM, AND WHY IT MATTERS. Life and flasks are reported against **Final**, not against
-        /// CurrentMax, because that is what the game's own bars divide by:
-        /// `PlayerHealth.BarTarget = Life.Current / Life.Final`, and PlayerFlask builds its total from
-        /// Flask.Final. Today the two are equal - MaxFactor is never touched on Life or Flask anywhere in the
-        /// assembly - but the whole point of the guilt work is to start lowering Life.MaxFactor, and on that
-        /// day CurrentMax would report a penalised maximum while the bar kept dividing by Final. The
-        /// instrument would then disagree with the thing it exists to measure, precisely while the new
-        /// feature is on, and a measurement that lies is worse than no measurement.
+        /// WHICH MAXIMUM, AND WHY IT MATTERS. Everything is reported against **Final**, which is what the
+        /// game's own bars divide by: `PlayerHealth.BarTarget = Life.Current / Life.Final`, and PlayerFlask
+        /// builds its total from Flask.Final. CurrentMax is a different number - it is Final clamped to
+        /// MaxValue and then scaled by MaxFactor, so it moves when the game's guilt penalty moves it.
         ///
-        /// Fervour is the exception and is reported against CurrentMax on purpose: PlayerFervour draws its
-        /// segments from CurrentMax, so for fervour that IS the right number - and fervour is the one the
-        /// game already penalises through GuiltManager, which is why its maximum visibly moves between
-        /// readings.
+        /// The first version printed CurrentMax and produced a reading that looked impossible: fervour=37/6,
+        /// a current larger than its own maximum. It was not a bug in the game and not a bug in the player -
+        /// it was this line reading two numbers from two different moments. The prefix on Respawn runs while
+        /// the player is dead and the Penitent is being rebuilt, and the guilt factor is re-applied DURING
+        /// the respawn, so CurrentMax was caught mid-transition while Current had not been clamped yet.
+        ///
+        /// Final does not take part in that clamp, so it is the stable number and the one the bar uses. For
+        /// fervour the clamped value is reported too, because PlayerFervour draws its segments from
+        /// CurrentMax and it is worth seeing both when they disagree.
         ///
         /// MaxFactor is printed as well, because when a maximum moves it is worth knowing whether the cause
-        /// was ours.
+        /// was ours or the game's native guilt system - which, as it turns out, is the only thing that ever
+        /// moves it: `set_MaxFactor` has two callers in the whole assembly, both GuiltManager, both on
+        /// Fervour.
         /// </summary>
         public static string StatsLine()
         {
@@ -101,7 +104,8 @@ namespace Blasphemous.Multiplayer.Client
                 var stats = Core.Logic.Penitent.Stats;
                 return $"vita={stats.Life.Current:F0}/{stats.Life.Final:F0} " +
                        $"fiale={stats.Flask.Current:F0}/{stats.Flask.Final:F0} " +
-                       $"fervour={stats.Fervour.Current:F0}/{stats.Fervour.CurrentMax:F0} " +
+                       $"fervour={stats.Fervour.Current:F0}/{stats.Fervour.Final:F0} " +
+                       $"[fervour con la penalita' di colpa: max={stats.Fervour.CurrentMax:F0}] " +
                        $"(fattori: vita={stats.Life.MaxFactor:F2} fervour={stats.Fervour.MaxFactor:F2})";
             }
             catch (System.Exception e)
