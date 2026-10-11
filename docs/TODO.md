@@ -69,8 +69,9 @@
 | **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDEVA la sincronizzazione PER SEMPRE** | ✅ **RISOLTA — con l'eccezione isolata E loggata** | **Era il difetto più pericoloso del progetto.** **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lasciava il flag `true` PER SEMPRE**, e si portava dietro: **(a)** `BreakableObjectHelper` **sopprimeva OGNI futura rottura**, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimevano l'invio di TUTTA la progressione**, **(c)** **la coda non si svuotava e rilanciava ogni frame**. **⇒ il gioco restava vivo ma il co-op smetteva di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log)* **ma i percorsi sono verificati**: `ApplyProgress` fa **`int.Parse`** su un id **che arriva dalla rete** e una lookup che può uscire dalla tabella — **e la difesa era SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` lo dice **esplicitamente**, e **non era mai diventato un fix**. **✅ FIX**: **`try/finally` con `Clear()` E il flag abbassato DENTRO il `finally`** *(il `Clear` deve stare lì: una coda parziale va comunque scartata, o la stessa entry che lancia verrebbe ritentata ogni frame)* **+ `catch` per-elemento in `ApplyProgress`, CON LOG dell'id** *(un `catch` silenzioso nasconderebbe l'unica prova che spiega perché un aggiornamento è sparito)*. **Nessun bump.** Vedi §12 |
 | **42** | **`AddInteractedObject` senza dedup** | ✅ **RISOLTA — `if (!Contains)`** | **`List.Add` senza controllo**, e **il file su disco lo mostrava: 8 voci dove 4 erano distinte**. **Innocuo in effetto** *(quella lista finisce in `savegame_N_modded.save`, che il gioco non legge mai — voce 36)*, **ma è il tipo di innocuo che smette di esserlo il giorno in cui qualcuno conta le voci o confronta due liste per uguaglianza.** ✅ **Fix**: `IsNullOrEmpty` → **`Contains`** → `Add`. Vedi §12 |
 | **43** | 🟢 **`if (!localIsHost) return false;` in `DecideOwnership` è probabilmente codice MORTO** | 🟢 **opzionale — PULIZIA, non un fix** | **Il gate esiste per un motivo storico**: *"only the arbiter decides; this method is never the peer's path"*. **E con il disegno attuale è coerente**: **il peer NON PUBBLICA un token** *(`ReceiveEnemyOwnership` ritorna subito `if (IsHost) return;`)* **e APPLICA quello dell'host** ⇒ **qualsiasi decisione del peer verrebbe sovrascritta.** **Quindi il gate non cambia nulla di osservabile.** ⚠️ **Non è un difetto e non c'è fretta**: **rimuoverlo sarebbe una semplificazione, e va fatta SOLO dopo aver verificato che la PRIMA ASSEGNAZIONE SIMMETRICA** *(`state.OwnedByLocal = wants \|\| (!peerCloser && localIsHost);`)* **basti da sola** — *il ramo dei cambi successivi serve oggi solo all'host, che lo esegue con `localIsHost = true`*. ⚠️ **E il test in gioco NON può deciderla**: *"il non-host si muove"* è **il comportamento del PASSO 1** *(il peer simula `!OwnershipKnown`)*, **e succede sia col gate sia senza**. **Serve un'analisi dei percorsi nel codice, non una sessione.** Vedi §12 |
-| **44** | 🔴 **La MORTE di un giocatore respawna i nemici SOLO per chi muore — e lascia le due macchine DIVERGENTI** | 🔴 **NUOVA — è il primo lavoro del piano (morti → boss → cam → colpa)** | **Misurato nei log**: `G2:885 PLAYERDEAD` + `DEAD_SCREEN enabled`, **G1 `PLAYERDEAD` = 0 occorrenze** ⇒ *G1 non sa nulla*. **E il respawn avviene SOLO sulla macchina morta**: G2 rientra in `D01Z01S01` con **`5/7/5`** *(i 2 nemici uccisi tornano vivi)*, **G1 resta a `3/7/3`** e tiene le 2 morti in `_pendingDeaths` **fino a 2014**, con l'id `@SPAWN` a **0 occorrenze su G1** contro **76 righe su G2**. ⚠️ **E LA CONVERGENZA E' AVVENUTA PER CASO**: G1 ha ricevuto un annuncio di **falò** *(righe 2008/2013, e era per un'ALTRA stanza!)*. ⇒ **senza quel falò le due macchine resterebbero divergenti: G1 ri-uccide nemici che G2 vede vivi.** **Nessun `annuncio inviato` alla morte: la morte NON è comunicata** *(verificato in codice: `Penitent::Respawn → EnemySpawner::Reset` non ha percorso di rete, e `OnDeathStateReset` logga soltanto)*. **REQUISITO DELL'UTENTE**: **sopprimere il respawn dei nemici alla morte SE connesso a un server con altre persone** *(check: connesso + ci sono peer? sì → sopprimo; no → lascio fare al gioco)*. **Motivazione di design**: *in un Metroidvania, se A è a metà di una sezione platform punitiva e B muore all'inizio della mappa, far respawnare tutto in faccia ad A è ingiusto e spezza il ritmo.* **MECCANISMO PROPOSTO**: `consumedSpawns` è **GLOBALE** e la sequenza è `Reset()` *(svuota)* → level load → `SpawnEnemiesOnLoad` → `CreateEnemy` *(early-exit se `Consumed`)* ⇒ **per tenere i nemici morti, `CreateEnemy` deve trovarli CONSUMATI**: **intercettare il `Reset` e RIPRISTINARE `consumedSpawns` con le posizioni note**, ricostruite dagli id `sp\|<scena>\|<x>\|<y>` **che la mod già possiede** in `_announcedDeaths`/`_pendingDeaths`. ⚠️ **E la morte va COMUNICATA ai peer** *(serve alla voce 35: il boss deve cambiare target)*: **da decidere se con un bump di protocollo o con un quarto prefisso su `EnemyDeathGlobal`** *(`sp\|`, `brk\|`, `falo\|` esistono già)*. ⚠️ **ATTENZIONE**: la riga `[Falo'] consumedSpawns azzerati … N annunciate e 0 ricevute` **da sola NON distingue una morte da un reset benigno** *(load di salvataggio, reset dal menu)* ⇒ **la strumentazione deve agganciarsi a `PLAYERDEAD`/`DEAD_SCREEN`, non a `EnemySpawner.Reset`.** Vedi §12 |
+| **44** | **La MORTE di un giocatore respawnava i nemici SOLO per chi muore, e lasciava le due macchine DIVERGENTI** | ✅ **RISOLTA E VERIFICATA IN GIOCO** | **Misurato prima del fix**: `PLAYERDEAD` + `DEAD_SCREEN` su una macchina e **zero occorrenze sull'altra**; il respawn avveniva **solo sulla macchina morta** *(G2 rientrava con `5/7/5`, G1 restava a `3/7/3`)*, e **la convergenza era avvenuta PER CASO** — *per un annuncio di falò che era per un'ALTRA stanza*. ⇒ **non era "ingiusto per gli altri": era un BUG DI DIVERGENZA.** **✅ FIX IN DUE PEZZI**: *(1)* **il rilevamento** *(`Prefix` su `Penitent.Respawn` che alza un flag, `Finalizer` che lo abbassa — **non** un Postfix: se `Respawn` lancia, un Postfix non girerebbe e il flag resterebbe alto per sempre)*; *(2)* **la soppressione** *(un `Prefix` su `EnemySpawner.Reset` che ritorna `false`, **e una guardia in `OnDeathStateReset`**)*. **⭐ E le due metà leggono lo STESSO flag**: *il gioco non svuota la lista E la mod non dimentica le morti* — **la coerenza è per costruzione, non per disciplina.** ⚠️ **E il Postfix del `Reset` gira COMUNQUE** *(in Harmony i postfix vengono sempre eseguiti, anche quando un prefix ritorna `false`)*: **senza la guardia, il gioco avrebbe tenuto i nemici morti e la mod li avrebbe dimenticati** — *l'errore della voce 24 al contrario.* **✅ VERIFICATO IN GIOCO, con un controllo interno elegante**: *dopo entrambe le morti, G2 e G1 danno **`3/7/3` e `3/7/3`** — lo stesso numero, e uguale allo stato **pre-morte**; e `5/7/5` ricompare su G2 **solo dopo il falò vero** ⇒ `3/7/3` = lista conservata, `5/7/5` = lista azzerata.* **E `consumedSpawns azzerati` in gameplay = ZERO** *(le 2 superstiti sono `MainMenu`)*. ✅ **E il confine "mondo sì / benefici no" è misurato**: *le fiale erano a **0** su entrambi; dopo la seduta **solo il seduto** è salito a `2/2`, il ricevente è rimasto `0/2`.* **⚠️ Il refill (vita/fiasche/fervour) NON è toccato, ed è voluto**: sta in `PersistentManager.RestoreStored`, una chiamata **diversa** dentro `Respawn` *(`Reset` @IL_000A, `RestoreStored` @IL_0014)*. **Vedi voce 46 per la divergenza residua.** Vedi §12 |
 | **45** | ⚠️ **`_ids` è appeso dal rescan SOLO sull'host ⇒ il peer è CIECO sui nemici creati fuori dai pass di spawn** | 🟡 **NUOVA — causa strutturale delle `IMPRONTA DIVERSA`** | **Verificato in codice e nei log**: `_ids` è **appeso** dal rescan periodico che gira **solo sull'host** *(`EnemySyncManager.cs:2525-2533`)* ⇒ **sull'host un nemico creato fuori dai pass di spawn compare nei probe entro ~0,5 s** *(è così che si vede la rinascita in-place)*, **sul peer `_ids` cambia solo ai load ⇒ cieco.** **⇒ è questa l'asimmetria che produce le `IMPRONTA DIVERSA`** *(5 su G1 e 6 su G2 in un test, **tutte** le righe `[Error]` della sessione)*, **NON il falò** *(la voce 29 resta coerente)*. ⚠️ **E spiega anche perché una "rinascita in-place" è osservabile sull'host e non sul peer.** **Da collegare alla voce 11 e alle rifiniture.** Vedi §12 |
+| **46** | 🔴 **Dopo un falò i due mondi possono restare `5` contro `4`** | 🟡 **NUOVA — causa NON verificata, e NON è il fix delle morti** | **Osservato nel test del Pezzo 2**: dopo il falò di G2 *(che si era seduto)*, **G2 ha `5/7/5` e G1 `4/7`**, e i log lo denunciano da soli *(`IMPRONTA DIVERSA` su entrambi: G1 id locali 4, G2 id locali 5)*. ⚠️ **Un solo nemico dei due non riappare su G1**: quello a **`-697.1`** non compare vivo in nessun punto del log di G1, mentre l'altro *(`-715.1`)* **è stato ricreato** *(1492 `owner=nuovo`, vivo per 22 rilevazioni)*. **⇒ 1 su 2, non zero su 2.** **La mappatura dice che `ReplicateBonfire` esegue `RespawnDeadEnemies()` nella scena CORRENTE del ricevente, e che `CreateEnemy` scansiona solo la scena caricata** ⇒ **il candidato è che i due spawn point siano in stanze diverse, o che uno dei due sia a spawn ON-DATE** *(il messaggio del gioco dice "Respawning dead enemies on level")*. ⚠️ **NON è il Pezzo 2**: compare **dopo il falò**, e prima del falò i conteggi coincidevano. **Da indagare con un test dedicato**: *un falò con due nemici uccisi in stanze diverse, e i due log a confronto.* Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -3777,3 +3778,93 @@ entrambe; `S07 0/7/0`)*.
 · `SAVEERROR` 0 · `[Progress] apply failed` 0 · `[Falo''] replica fallita` 0 ·
 **`IMPRONTA DIVERSA` 1 su G1, 0 su G2** · `[Error` = la stessa riga.
 **Server**: 2 connessioni, 2 disconnessioni, **0 riassegnazioni di host**, **0 errori**.
+
+
+## [2026-10-11 06:00] IL PEZZO 2 VERIFICATO IN GIOCO — e il controllo interno che rende la lettura non ambigua
+
+### ✅ LA SOPPRESSIONE FUNZIONA, coi numeri
+
+**Stanza della morte = `D01Z01S01`.** `Post-spawn`, **seconda riga di ogni coppia** *(la prima e'' il
+postfix Harmony, la seconda il rescan della mod)*:
+```
+dopo la 1a morte:  G2 2/7/2 -> 953 = 3/7/3     G1 2/7/2 -> 1227 = 3/7/3
+dopo la 2a morte:  G2 2/7/2 -> 1658 = 3/7/3    G1 2/7/2 -> 1457 = 3/7/3
+```
+**⇒ G1 e G2 coincidono, E coincidono con lo stato PRE-MORTE** *(G2 prima di morire: 3 vivi, indici
+12/14/16; al rientro: gli stessi 3)*.
+
+⭐ **IL CONTROLLO INTERNO, ed e'' la cosa piu'' elegante di questo test**: **lo stesso `5/7/5`
+ricompare su G2 SOLO a 1817, cioe'' DOPO IL FALO'' VERO** ⇒ **la lettura non e'' ambigua**:
+```
+3/7/3  = la lista dei consumati e'' stata CONSERVATA   (morte soppressa)
+5/7/5  = la lista dei consumati e'' stata AZZERATA    (falo' vero)
+```
+
+**E la memoria**: `NON dimenticata (2 annunciate, 0 ricevute)` a 861 e 1564 ⇒ **al rientro G2 ha
+TROVATO I NEMICI GIA'' MORTI, non li ha ri-uccisi** *(`[EnemyKill]` = 2 in tutto il log, entrambe
+PRIMA della morte: 382, 632)*. ✅
+**E la prova negativa**: `consumedSpawns azzerati dal gioco` in **gameplay** = **ZERO** *(le 2 righe su
+G2 e le 2 su G1 sono tutte `MainMenu`)*. ✅
+**E il `Finalizer`**: le righe di soppressione di `EnemySpawner.Reset` su G2 sono **2 = il numero
+delle morti** ⇒ **il flag non e'' rimasto alto.** ✅
+**⚠️ E il `5/7/5` vs `3/7/3` "di base" ESISTE ANCORA in questa sessione, ma all''INGRESSO INIZIALE e
+PRIMA di ogni morte**: *e'' l''asimmetria dei due salvataggi* *(G2 aveva 5, G1 ne vede 3)*, **non la
+morte.** ✅ **E dopo la morte di G2 i due si sono allineati.**
+
+### ✅ E IL CONFINE MONDO/BENEFICI E'' MISURATO
+
+```
+G1 (riceve il falo'', NON si siede):  fiale=0/2    <- NON salite  ✅
+G2 (si siede):                        fiale=2/2    <- salite      ✅
+```
+*Le fiale erano a **0** su entrambi* *(l''utente le aveva usate tutte)*, **quindi il valore non si
+confonde con lo stato precedente.** ✅
+⚠️ **Riserve dichiarate**: **su G1 manca una lettura "prima"** *(`fiale=` compare una volta sola)* ⇒
+**il confine e'' misurato solo in USCITA**; **e su G2 il `2/2` non isola il falo''**, perche'' era
+appena morto e `RestoreStored` aveva gia'' riempito tutto. **Entrambe le riserve sono oneste e non
+intaccano la conclusione**, che regge anche in IL *(`LogicManager.UsePrieDieu()` e'' **solo**
+`OnUsePrieDieu.Invoke()`, 23 byte)*.
+
+### ⚠️ E DUE CORREZIONI ALLA MIA ULTIMA ENTRY
+
+**(1) `fervour=37/6` NON ESISTE in questi log.** Estrazione esaustiva: **4 righe** — `37/60`, `30/60`
+*(fattore 1.00)*, `0/50` *(fattore 0.83)*, `60/60`. **Sempre `Current <= CurrentMax`.** ⇒ **`/6` era
+un `/60` TRONCATO dal mio `Select-String`** *(stessi 37 e 30, massimo diverso)*. **E il "dilemma del
+fervour" che avevo sollevato era quindi in parte un artefatto della mia lettura.** ✅ *(Nota: il
+`Current > CurrentMax` resta possibile in teoria — `CalculateValue()` **fa** il clamp, `IL` — solo
+nella finestra fra il cambio del fattore di colpa e il clamp successivo, cioe'' **l''istante esatto del
+prefix su `Respawn`**. **Non e'' un danno: la mod non scrive MAI `Stats.Fervour`.**)*
+
+**(2) 🔴 E un difetto VERO dello strumento, corretto**: **il suffisso `(stiamo replicando un falo'')`
+leggeva `PlayerDeathSync.SuppressingWorldReset`** *— il flag della **MORTE*** — **mentre una replica e''
+marcata da `EnemySyncManager.IsReplicatingBonfire`.** ⇒ **il suffisso non e'' mai apparso: 0
+occorrenze in tutti i log, compresa la riga di G1 che ERA una replica.** ✅ **Corretto, e ora distingue
+i tre casi**: *replica · morte soppressa · falo'' locale.*
+⭐ **Uno strumento che etichetta sempre allo stesso modo e'' peggio di uno che non etichetta: si legge
+come una prova.** *(E'' la stessa famiglia delle guardie che tacciono e dei postfix che girano comunque.)*
+
+### 🔴 E UNA DIVERGENZA RESIDUA, NON NOSTRA DEL PEZZO 2 *(voce 46)*
+
+**Dopo il falo'' di G2, G2 ha `5/7/5` e G1 `4/7`** — e i log lo denunciano da soli
+*(`IMPRONTA DIVERSA` su entrambi: G1 id locali 4, G2 id locali 5)*. ⚠️ **Un solo nemico dei due non
+riappare su G1**: quello a **`-697.1`** non compare vivo in nessun punto del log di G1, mentre l''altro
+*(`-715.1`)* **e'' stato ricreato** *(1492 `owner=nuovo`, vivo per 22 rilevazioni)*.
+**⇒ 1 su 2, non zero su 2.** **Candidato** *(non verificato)*: **`ReplicateBonfire` esegue
+`RespawnDeadEnemies()` nella scena CORRENTE del ricevente, e `CreateEnemy` scansiona solo la scena
+caricata** ⇒ *forse i due spawn point sono in stanze diverse, o uno dei due e'' a spawn on-date.*
+⚠️ **NON e'' il Pezzo 2**: compare **dopo il falo''**, e **prima del falo'' i conteggi coincidevano.**
+**Da indagare con un test dedicato.** Vedi voce 46.
+
+### 📌 E NESSUNA REGRESSIONE
+
+`NullReference` 0/0 · `IndexOutOfRange` 0/0 · **`exceptions=` ≠ 0: 0** *(118 righe `[Probe]` su G1,
+125 su G2)* · `SAVEERROR` 0 · `[Progress] apply failed` 0 · `[Falo''] replica fallita` 0 ·
+`IMPRONTA DIVERSA` **2 su G1 e 1 su G2** *(di cui una e'' la divergenza residua)*.
+**Server**: 2 connessioni, 2 disconnessioni, **1 riassegnazione di host**, **0 errori**.
+
+### ⚠️ E UNA NOTA SUI BINARI, che spiega una confusione
+
+**Il binario testato era compilato alle 15:06:46/49, PRIMA di `fca4611` (15:07:20)** ⇒ **non conteneva
+i due commit dello strumento.** **Ecco perche'' le letture erano `/60` e `/50` con la `StatsLine`
+vecchia.** ✅ **Coerente, e senza conseguenze**: *la soppressione — cioe'' la cosa che il test doveva
+verificare — c''era.*
