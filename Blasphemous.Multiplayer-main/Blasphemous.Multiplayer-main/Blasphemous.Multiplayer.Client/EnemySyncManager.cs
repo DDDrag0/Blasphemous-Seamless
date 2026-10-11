@@ -2505,6 +2505,28 @@ namespace Blasphemous.Multiplayer.Client
             if (!localIsHost)
                 return false; // only the arbiter decides; this method is never the peer's path
 
+            // A DEAD OWNER GIVES IT UP, IMMEDIATELY.
+            //
+            // Refusing to TAKE an enemy while dead is not the same as letting go of one, and only the first
+            // was handled. The single branch that releases is the peerCloser one, and it demands the peer be
+            // MEANINGFULLY closer - nearestRemote + OWNER_DISTANCE_MARGIN < localDistance. So the likeliest
+            // case of all slipped through: dying right next to the boss, where the survivor standing beside
+            // the corpse is not 2.5 units nearer. The host then kept the boss, and because the boss's own
+            // Damage() discards everything while the LOCAL player's life is zero, every hit the survivor
+            // landed was thrown away - on the host, which is where those hits arrive from. The boss was
+            // simply invulnerable, and the survivor had no way to tell, because the health bar is local and
+            // only the owner ever sees a truthful one.
+            //
+            // No hold time here, on purpose. OWNER_HOLD_SECONDS exists to stop two LIVING players trading
+            // the same enemy many times a second; a corpse has nothing to stabilise, and waiting half a
+            // second would be half a second of an unkillable boss.
+            if (PlayerDeathSync.IsLocalPlayerDead() && state.OwnedByLocal)
+            {
+                state.OwnedByLocal = false;
+                state.OwnerSince = Time.time;
+                return true;
+            }
+
             bool changed = false;
 
             // Take it when this machine's player is meaningfully closer; give it up when the other player

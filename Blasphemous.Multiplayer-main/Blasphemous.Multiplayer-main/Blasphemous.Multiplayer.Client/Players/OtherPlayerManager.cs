@@ -425,13 +425,33 @@ namespace Blasphemous.Multiplayer.Client.Players
             }
         }
 
+        /// <summary>
+        /// The level this machine is in, or null when there is no level yet.
+        ///
+        /// Both readers below run from ProcessQueue, which Multiplayer calls BEFORE its own
+        /// "if (CurrentlyInLevel)" gate - so they run on the frames where no level exists, including the
+        /// main menu. Reading currentLevel.LevelName straight through there is the same
+        /// NullReferenceException that once threw 192 times in a single session out of the deferred
+        /// breakable pass, and it is worth remembering why that one was so hard to read: the exception came
+        /// out of a Harmony postfix, so it also suppressed whatever other postfix had not run yet.
+        ///
+        /// Returning null rather than a sentinel is deliberate: the callers compare it against a scene name,
+        /// and null equals no scene, which is exactly true when there is no level.
+        /// </summary>
+        private static string CurrentLevelNameOrNull()
+        {
+            return Core.LevelManager == null || Core.LevelManager.currentLevel == null
+                ? null
+                : Core.LevelManager.currentLevel.LevelName;
+        }
+
         public void ReceiveEnterScene(string playerName, string scene)
         {
             PlayerStatus player = FindConnectedPlayer(playerName);
             if (player == null) return;
 
             player.CurrentScene = scene;
-            if (Core.LevelManager.currentLevel.LevelName == scene)
+            if (CurrentLevelNameOrNull() == scene)
                 AddActivePlayer(playerName);
 
             Main.Multiplayer.MapManager.QueueMapUpdate();
@@ -442,7 +462,7 @@ namespace Blasphemous.Multiplayer.Client.Players
             PlayerStatus player = FindConnectedPlayer(playerName);
             if (player == null) return;
 
-            if (Core.LevelManager.currentLevel.LevelName == player.CurrentScene)
+            if (CurrentLevelNameOrNull() == player.CurrentScene)
                 RemoveActivePlayer(playerName);
             player.CurrentScene = string.Empty;
 
