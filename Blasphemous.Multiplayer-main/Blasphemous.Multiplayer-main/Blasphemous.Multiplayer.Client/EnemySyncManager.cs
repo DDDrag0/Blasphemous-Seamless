@@ -3517,6 +3517,26 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             }
 
+            // A player died, or came back. Both return here for the same reason as the bonfire: everything
+            // that is not recognised falls through to _pendingDeaths.Add, and this payload is a PLAYER NAME.
+            // It would be inert there - that list is never iterated, MarkSpawnPointConsumed demands "sp|",
+            // and a name cannot contain '|' - but it would linger in memory and inflate the "received"
+            // counter that the bonfire logs report, which is a measurement we are actively using.
+            //
+            // PIECE 3a: these branches only report. Keeping the state of who is dead, and answering "is
+            // everybody down", comes next and deliberately separately - with both at once, "the
+            // announcement never left" and "the state was wrong" would look identical in the log.
+            if (PlayerDeathSync.IsDeathId(enemyId) || PlayerDeathSync.IsAliveId(enemyId))
+            {
+                bool died = PlayerDeathSync.IsDeathId(enemyId);
+                string who = PlayerDeathSync.NameOf(enemyId, died
+                    ? PlayerDeathSync.DeathPrefix
+                    : PlayerDeathSync.AlivePrefix);
+
+                ModLog.Info($"[Morte] annuncio RICEVUTO: {who} {(died ? "e' morto" : "e' di nuovo vivo")}");
+                return;
+            }
+
             _pendingDeaths.Add(enemyId);
             MarkSpawnPointConsumed(enemyId);
 

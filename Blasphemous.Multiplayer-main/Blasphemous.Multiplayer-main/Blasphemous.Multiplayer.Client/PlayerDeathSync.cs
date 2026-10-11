@@ -48,6 +48,78 @@ namespace Blasphemous.Multiplayer.Client
         public static bool SuppressingWorldReset { get; internal set; }
 
         /// <summary>
+        /// Marks a death announcement. Fourth convention on the enemy-death channel, whose only others are
+        /// "sp|" for spawn points, "brk|" for a broken vase and "falo|" for a bonfire. The server relays
+        /// that channel to everyone but the sender with no dictionary and no scene filter, so a new prefix
+        /// costs nothing and needs no protocol bump.
+        /// </summary>
+        public const string DeathPrefix = "pdead|";
+
+        /// <summary>
+        /// The counterpart, and it is not decoration: without it the set of dead players only grows, so
+        /// "is everybody down?" could never be answered and the spectator state would have no end.
+        /// </summary>
+        public const string AlivePrefix = "palive|";
+
+        /// <summary>True when this id is a death announcement rather than a death of an enemy.</summary>
+        public static bool IsDeathId(string id)
+        {
+            return !string.IsNullOrEmpty(id) && id.StartsWith(DeathPrefix, System.StringComparison.Ordinal);
+        }
+
+        /// <summary>True when this id is the "I am alive again" counterpart.</summary>
+        public static bool IsAliveId(string id)
+        {
+            return !string.IsNullOrEmpty(id) && id.StartsWith(AlivePrefix, System.StringComparison.Ordinal);
+        }
+
+        /// <summary>The player name carried by one of the two announcements, or null.</summary>
+        public static string NameOf(string id, string prefix)
+        {
+            if (string.IsNullOrEmpty(id) || !id.StartsWith(prefix, System.StringComparison.Ordinal))
+                return null;
+
+            string name = id.Substring(prefix.Length);
+            return string.IsNullOrEmpty(name) ? null : name;
+        }
+
+        /// <summary>
+        /// Tells the other machines that this player has just died.
+        ///
+        /// The name must travel. ReceiveMessage discards the sender and ProcessQueue passes only the bytes,
+        /// so without a name in the payload the receiver cannot tell who died - and "who" is the whole
+        /// question, both for the boss that has to hand over and for counting how many are still standing.
+        /// The name cannot contain '|' (the validator allows "_-.' " up to sixteen characters), so it cannot
+        /// be mistaken for a spawn-point id on a channel where that would matter.
+        /// </summary>
+        public static void AnnounceDeath()
+        {
+            if (!Main.Multiplayer.NetworkManager.IsConnected)
+                return;
+
+            string name = Main.Multiplayer.PlayerName;
+            if (string.IsNullOrEmpty(name))
+                return;
+
+            Main.Multiplayer.SendEnemyDeathGlobal(DeathPrefix + name);
+            ModLog.Info($"[Morte] annuncio inviato: {name} e' morto");
+        }
+
+        /// <summary>Tells the other machines that this player is back on their feet.</summary>
+        public static void AnnounceAlive()
+        {
+            if (!Main.Multiplayer.NetworkManager.IsConnected)
+                return;
+
+            string name = Main.Multiplayer.PlayerName;
+            if (string.IsNullOrEmpty(name))
+                return;
+
+            Main.Multiplayer.SendEnemyDeathGlobal(AlivePrefix + name);
+            ModLog.Info($"[Morte] annuncio inviato: {name} e' di nuovo vivo");
+        }
+
+        /// <summary>
         /// True when this machine should suppress the world reset on death.
         ///
         /// Two conditions, both required: a connection, and at least one other player on it. Alone - single
@@ -112,6 +184,78 @@ namespace Blasphemous.Multiplayer.Client
             {
                 return $"stats=errore ({e.GetType().Name})";
             }
+        }
+    }
+
+    /// <summary>
+    /// The death, the instant it happens - which is NOT where the first version watched.
+    ///
+    /// Respawn has exactly one caller, DeadScreenWidget, and it runs only after the player has pressed a
+    /// key on the death screen. In one measured session the death state was set 151 lines before the
+    /// Respawn prefix fired: that gap is however long the player leaves the screen up. Announcing a death
+    /// there would tell the other machines that a player is down only once that player decided to come
+    /// back - so a boss would keep chasing a corpse, and the spectator camera would have nothing to follow.
+    ///
+    /// So the announcement has to happen at the death itself: Penitent.OnUpdate, right after the game
+    /// raises OnDead.
+    ///
+    /// WHY A PREFIX RATHER THAN SUBSCRIBING TO OnDead. Subscribing looks natural and is a trap:
+    ///   - the Penitent is REBUILT on every level load (InitializeLevel -> SpawnPlayerOnLevelLoad ->
+    ///     CreatePlayer -> Instantiate), so a subscription would last exactly one death;
+    ///   - an exception in a subscriber BREAKS THE MULTICAST CHAIN, and two of the other subscribers are
+    ///     GuiltManager (which drops the guilt) and DeadScreenWidget (which shows the death screen) - so a
+    ///     mistake in our handler could cost the player the death screen entirely;
+    ///   - the invocation order is not deterministic.
+    /// A prefix has none of those problems, and the original method still runs afterwards, so the other
+    /// seventeen subscribers are untouched.
+    ///
+    /// THE GUARD IS THE GAME'S OWN. OnUpdate runs every frame, so the handler needs to fire once per death.
+    /// Doing it with a flag of ours would work until two of our features needed the same event; the game
+    /// already has one - DeathEventLaunched, public, set immediately before OnDead is invoked - and using
+    /// it means our "once" and the game's "once" cannot drift apart. The cost is one boolean per frame.
+    ///
+    /// PIECE 3a, AND IT ONLY MEASURES AND ANNOUNCES. It reports the death, and the receive side logs the
+    /// announcement. Keeping the state - who is dead, whether everyone is dead - comes next, deliberately
+    /// separate: with both at once, "the announcement never left" and "the state was wrong" would look
+    /// identical in the log.
+    /// </summary>
+    [HarmonyPatch(typeof(Penitent), "OnUpdate")]
+    public static class PenitentOnUpdateDeath_Patch
+    {
+        [HarmonyPrefix]
+        public static void Prefix(Penitent __instance)
+        {
+            if (__instance == null || __instance.Status == null)
+                return;
+
+            if (!__instance.Status.Dead || __instance.DeathEventLaunched)
+                return; // alive, or this death has already been announced by the game itself
+
+            PlayerDeathSync.AnnounceDeath();
+        }
+    }
+
+    /// <summary>
+    /// The alive counterpart, and it is not optional.
+    ///
+    /// Without it the set of dead players only ever grows: a machine that hears "X died" and never hears
+    /// anything else will believe X dead for the rest of the session, so "is everybody down?" can never be
+    /// answered - and the spectator state has no way to know when to end.
+    ///
+    /// The asymmetry is what settles it. A LOST "pdead" heals itself, because the player eventually comes
+    /// back and "palive" arrives. A "pdead" with no "palive" NEVER heals.
+    ///
+    /// SpawnManager.OnPlayerSpawn is static and fires from CreatePlayer, immediately after the new Penitent
+    /// is assigned - which is also why it is the right place to re-subscribe anything that lives on the
+    /// instance. It is hooked only to report for now.
+    /// </summary>
+    [HarmonyPatch(typeof(SpawnManager), "OnPlayerSpawn")]
+    public static class SpawnManagerOnPlayerSpawn_Patch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            PlayerDeathSync.AnnounceAlive();
         }
     }
 
