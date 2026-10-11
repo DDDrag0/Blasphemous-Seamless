@@ -1521,6 +1521,29 @@ namespace Blasphemous.Multiplayer.Client
             int announced = _announcedDeaths.Count;
             int pending = _pendingDeaths.Count;
 
+            string scene = Core.LevelManager.currentLevel == null
+                ? "?"
+                : Core.LevelManager.currentLevel.LevelName;
+
+            // A DEATH WE ARE SUPPRESSING MUST NOT BE FORGOTTEN HERE EITHER.
+            //
+            // The game drops its consumed list and the mod drops its death memory in the same breath, and
+            // they are the two halves of one fact: "those enemies are alive again". If the enemy list is kept
+            // but this memory is wiped, the two disagree - and the damage is not symmetric, because
+            // _announcedDeaths is what lets a joiner learn about kills that already happened. A machine that
+            // wiped it while still holding dead enemies would simply stop telling the next player about them,
+            // which is the voice-24 error in reverse.
+            //
+            // This is why the flag is read in both places instead of the two changes being written
+            // independently: the coherence is by construction, not by remembering.
+            if (PlayerDeathSync.SuppressingWorldReset)
+            {
+                ModLog.Info($"[Morte] memoria delle morti NON dimenticata ({announced} annunciate, " +
+                            $"{pending} ricevute) e la lista del gioco non e' stata svuotata: " +
+                            $"la morte non deve respawnare il mondo (scena={scene})");
+                return;
+            }
+
             _announcedDeaths.Clear();
             _pendingDeaths.Clear();
             _killLogged.Clear();
@@ -1528,10 +1551,6 @@ namespace Blasphemous.Multiplayer.Client
             // Always logged, for the same reason as OnEnemiesRespawned: a measurement that stays silent when
             // there is nothing to forget cannot distinguish "the game did not reset anything" from "it did,
             // and the lists happened to be empty".
-            string scene = Core.LevelManager.currentLevel == null
-                ? "?"
-                : Core.LevelManager.currentLevel.LevelName;
-
             ModLog.Info($"[Falo''] consumedSpawns azzerati dal gioco: dimenticate {announced} morti " +
                         $"annunciate e {pending} ricevute (scena={scene})");
         }

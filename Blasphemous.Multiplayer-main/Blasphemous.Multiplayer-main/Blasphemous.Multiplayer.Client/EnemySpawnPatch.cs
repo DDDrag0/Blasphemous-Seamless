@@ -94,6 +94,46 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(EnemySpawner), nameof(EnemySpawner.Reset))]
     public class EnemySpawnResetPatch
     {
+        /// <summary>
+        /// On a death we are suppressing, the game's consumed list must NOT be dropped.
+        ///
+        /// The list is what makes a room come back with its dead enemies still dead: EnemySpawner scans the
+        /// loaded scene and CreateEnemy skips every spawn point marked consumed. Clearing it is precisely
+        /// what brings them back - and on a death the game does that locally, on the machine that died, with
+        /// no network line anywhere in the chain. So one player respawning at a bonfire silently resurrected
+        /// every enemy they had killed, while the other machine kept them dead, kept killing them again, and
+        /// the two only agreed if something else forced them together.
+        ///
+        /// SUPPRESSING HERE RATHER THAN AT SpawnEnemiesOnLoad. Skipping the spawn pass instead would be
+        /// wrong, not merely later: Reset has already emptied the list, so the respawn would only be
+        /// POSTPONED to the next room change - which is the case we are trying to avoid. Keeping the list
+        /// full acts at the right moment by construction.
+        ///
+        /// THE REFILL IS NOT TOUCHED. Health, flasks and fervour are restored by
+        /// PersistentManager.RestoreStored, a separate call inside Penitent.Respawn. Suppressing this leaves
+        /// it alone, and that is deliberate: without it the player comes back to the bonfire with nothing.
+        /// The boundary is exactly the one the design asks for - the world does not reset, the player does
+        /// recover.
+        ///
+        /// ONLY THE DEATH. Reset has three callers and the other two - loading a save and resetting from the
+        /// menu - must keep working: the consumed list is not serialised, so it has to be dropped when a save
+        /// is loaded. The flag is raised around Penitent.Respawn alone, which is why this reads it rather
+        /// than testing anything about the caller.
+        ///
+        /// THE POSTFIX BELOW STILL RUNS even when this returns false: Harmony always executes postfixes.
+        /// That is why the mod's own memory wipe is guarded by the same flag - see OnDeathStateReset.
+        /// </summary>
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            if (!PlayerDeathSync.SuppressingWorldReset)
+                return true;
+
+            ModLog.Info("[Morte] EnemySpawner.Reset NON svuota la lista: i nemici restano morti " +
+                        "per chi muore, e il mondo degli altri non cambia");
+            return false;
+        }
+
         [HarmonyPostfix]
         public static void Postfix()
         {
