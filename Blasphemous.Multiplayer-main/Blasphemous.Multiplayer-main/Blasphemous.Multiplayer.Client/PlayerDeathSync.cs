@@ -94,6 +94,43 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// True while this machine's own player is down.
+        ///
+        /// Read straight from the game rather than from our own announcement flag, because the two are not
+        /// the same window: the flag is raised when the death is TOLD, while Status.Dead is true from the
+        /// instant the player falls until the respawn finishes. Anything that has to stop treating a corpse
+        /// as a participant needs the second one - most of all the ownership rule, which decided which
+        /// machine simulates each enemy.
+        ///
+        /// The game exposes this as a public FIELD on Entity, not a property, which is why it is reached
+        /// through Status.Dead.
+        /// </summary>
+        public static bool IsLocalPlayerDead()
+        {
+            try
+            {
+                return Core.Logic != null
+                    && Core.Logic.Penitent != null
+                    && Core.Logic.Penitent.Status != null
+                    && Core.Logic.Penitent.Status.Dead;
+            }
+            catch (System.Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Whether this player is alive AND we know it - used where "not dead" and "known to be alive" are
+        /// different things. A remote player we have never heard from is not evidence of life.
+        /// </summary>
+        public static bool IsRemotePlayerKnownAlive(string name)
+        {
+            var player = Main.Multiplayer.OtherPlayerManager.FindConnectedPlayerQuietly(name);
+            return player != null && !player.IsDead;
+        }
+
+        /// <summary>
         /// Tells the other machines that this player has just died.
         ///
         /// The name must travel. ReceiveMessage discards the sender and ProcessQueue passes only the bytes,

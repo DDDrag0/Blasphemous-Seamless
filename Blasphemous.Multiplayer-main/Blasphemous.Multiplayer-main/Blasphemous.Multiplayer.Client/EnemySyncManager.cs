@@ -1883,6 +1883,29 @@ namespace Blasphemous.Multiplayer.Client
             if (local == null)
                 return true; // no local player yet: keep it, so an enemy is never left unowned
 
+            // A CORPSE DOES NOT KEEP THE ENEMY.
+            //
+            // This is what put a boss in a permanent orbit around a dead player. Nothing in the game retargets
+            // it: EnemyBehaviour.GetTarget does not check whether its target is alive and falls back to the
+            // LOCAL Penitent, and the remote player is not a Penitent at all. So the boss keeps chasing
+            // whichever corpse is on the machine that owns it - and this method was happily keeping that
+            // ownership, because it only ever compared distances.
+            //
+            // The rest of the rule made it worse rather than better: a dead player stops sending positions
+            // (the packet only goes out when the position changes), so their last known position goes stale
+            // within 0.3 seconds and the "no remote position known" branch below keeps the enemy here.
+            //
+            // So a dead player declines ownership, full stop. That is safe in both directions:
+            //   - if this machine's player cannot use it, somebody else should have it, and the host grants
+            //     it to whoever is closer and alive;
+            //   - if EVERYBODY is down, refusing changes nothing, because nobody is simulating anything the
+            //     players can see, and the ownership is rebuilt from distances the moment someone respawns.
+            //
+            // It has to be the game's own death state and not our announcement flag: the flag is raised when
+            // the death is TOLD, while this has to be true from the instant the player falls.
+            if (PlayerDeathSync.IsLocalPlayerDead())
+                return false;
+
             Vector2 enemyPos = enemy.transform.position;
             float localDistance = Vector2.Distance(enemyPos, local.transform.position);
 
