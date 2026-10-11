@@ -3567,3 +3567,125 @@ ha funzionato *(14:10:52 G1 disconnesso → `Host reassigned to: G2`)*.
 in questo test: **tutte** le righe `[Error]` della sessione)*. **La voce 29 resta coerente.** ⭐ **E
 spiega anche perche'' una rinascita in-place e'' osservabile sull''host e non sul peer.** **Da collegare
 alla voce 11 e alle rifiniture.**
+
+
+## [2026-10-11 04:00] LA MORTE DEL GIOCATORE — mappatura completa in IL, e TRE DATI che decidono il fix
+
+### 🔴 DATO 1 — IL REFILL STA IN UN''ALTRA CHIAMATA, e questo rende il fix piccolo
+
+```
+Penitent::Respawn()  -- 8 istruzioni, e il suo UNICO chiamante e'' DeadScreenWidget (<>m__0 @IL_0020)
+   IL_000A  EnemySpawner.Reset()                     <- svuota la lista delle posizioni consumate
+   IL_0014  PersistentManager.RestoreStored()        <- QUI STA IL REFILL
+   IL_001E  SpawnManager.Respawn() -> SpawnPlayer(..., forceLoad=true) -> ChangeLevel -> InitializeLevel
+```
+**`RestoreStored()`** *[36 istruzioni]*: `Life.SetToCurrentMax` @IL_0024 · `Flask.SetToCurrentMax`
+@IL_003D · Fervour @IL_0066 *(se `GetPrieDieuLevel()>1`, altrimenti `Current=0`)* ·
+`InventoryManager.ResetObjectsEffects()` @IL_0093 · **`SaveGame(true)` @IL_009A**.
+⇒ **`Reset()` e il refill sono DUE CHIAMATE DIVISE dentro lo stesso metodo: sopprimere `Reset()`
+lascia il refill INTATTO** — *e va lasciato, altrimenti il giocatore torna al falò con 0 HP.*
+**E'' esattamente il confine richiesto: i nemici non respirano, la vita sì.**
+⚠️ **Effetto collaterale nuovo**: **OGNI MORTE SCRIVE IL SALVATAGGIO** *(`SaveGame(true)`)*.
+⭐ **E il falo'' rifà le stesse 3 cose in `PrieDieu::ShallowActivationLogic`** *(metodo diverso)* ⇒
+**due implementazioni parallele del refill**, ed e'' per questo che il ricevente di un falo'' non
+guarisce: **non passa da nessuna delle due.**
+
+### 🔴 DATO 2 — I POSTFIX GIRANO ANCHE QUANDO UN PREFIX RITORNA `false`
+
+**In Harmony** *("Postfix methods are always executed", documentazione v2)*: **`EnemySpawnResetPatch`
+e'' un Postfix su `EnemySpawner.Reset`** ⇒ **sopprimere il `Reset` con un Prefix NON ferma il suo
+postfix** ⇒ **`OnDeathStateReset()` girerebbe comunque** ⇒ **il gioco tiene i nemici morti ma la mod
+dimentica le morti** = **l''errore della voce 24, AL CONTRARIO** *(una macchina con nemici morti che
+non li annuncia piu'' a chi entra)*.
+✅ **Quindi sopprimere il respawn SIGNIFICA anche NON svuotare la memoria, e il salto va SCRITTO.**
+⭐ **E la soluzione e'' che le DUE cose leggano lo STESSO flag** ⇒ **la coerenza e'' per costruzione,
+non per disciplina.**
+*(Nota: `_pendingDeaths` svuotato sarebbe innocuo — `ReceiveEnemyDeathGlobal` chiama anche
+`MarkSpawnPointConsumed`; `_announcedDeaths` NO.)*
+
+### 🔴 DATO 3 — `Reset()` HA TRE CHIAMANTI, E SOLO UNO E'' LA MORTE
+
+```
+Penitent::Respawn()            @IL_000A   morte del giocatore
+PersistentManager::LoadGame    @IL_001E   load di un salvataggio
+LogicManager::ResetAllData()   @IL_0014   reset dal menu
+```
+⇒ **il fix richiede un FLAG attorno a `Penitent::Respawn`**: sopprimere gli altri due **romperebbe il
+caricamento dei salvataggi** *(la lista `consumedSpawns` non e'' serializzata)*.
+⚠️ **E il flag va abbassato in un `Finalizer`, NON in un Postfix** *(lezione della voce 41: se
+`Respawn` lancia a metà, un Postfix non girerebbe e il flag resterebbe alzato **per sempre**).*
+
+### ✅ E LE ALTRE RISPOSTE
+
+**(b) Il respawn della morte e'' 100% LOCALE.** *Nessuna riga di rete in
+`Respawn`/`Reset`/`RestoreStored`/`SpawnManager.Respawn`/`SpawnPlayer`/`ChangeLevel`/`InitializeLevel`/
+`SpawnEnemiesOnLoad`/`CreateEnemy`; `consumedSpawns` e'' `ldfld` di **istanza**.* **I 4 soli siti di
+invio di `EnemySyncManager` sono `AnnounceDeathStateToPeers` L2308 e `UpdateCore` L2627/2685/2782:
+NESSUNO nel percorso di morte.** ✅ **E la mod NON ha alcun hook sulla morte del giocatore** *[grep
+ricorsivo: nessun `HarmonyPatch` su `Penitent`/`DeadScreen`/`Respawn`/`EntityStatus`/`OnDead`]*.
+**⇒ "Si sopprime per CHI MUORE; negli altri non c''e'' nulla da sopprimere."** **La prima frase
+dell''utente descriveva il difetto, la seconda la conseguenza operativa.**
+
+**(c) La strada (a) e'' quella giusta**, con il flag obbligato. ⚠️ **La strada "sopprimere
+`SpawnEnemiesOnLoad`" e'' SCORRETTA**: `Reset` ha **gia''** svuotato la lista ⇒ il respawn sarebbe
+solo **rimandato al primo cambio stanza successivo** = proprio il caso da evitare. ⚠️ **Limite noto,
+non un difetto**: `CreateEnemy` fa `if (!EnablePersistence) Consumed = false` ⇒ **quegli spawn point
+rinascono comunque.**
+✅ **E NON collide col falo'' appena deployato**: `RespawnDeadEnemies()` ha il **`Clear()` dentro**
+*(IL_0017-001C)* e **non passa mai da `Reset`**; `ReplicateBonfire` chiama quello ⇒ **sedersi al falò
+respawna normalmente.**
+
+**(d) Il check**: **`Main.Multiplayer.NetworkManager.IsConnected`** *(copre **host E peer**)* **+
+`Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers.Count > 0`** *(popolata da
+`NetworkManager.cs:336` in `ReceiveConnection`)*.
+⚠️ **NON usare `EnemySyncManager.IsHost`**: e'' `_isHost || !IsConnected` ⇒ **`true` anche da soli.**
+
+**(e) QUARTO PREFISSO, NON UN BUMP.** `NetworkType` *(49 righe, membri 0-13 e 21-25)* **non ha** un
+player-death. Aggiungerlo costerebbe: **enum in `Common.dll` da ridistribuire su ENTRAMBE le
+macchine** + **`PROTOCOL_VERSION` in DUE posti** *(`NetworkManager.cs:631`, `Server.cs:854`)* +
+`verify-deploy.ps1` + 2 switch + plumbing + **invaliderebbe ogni deployment esistente**.
+**`EnemyDeathGlobal = 24`** invece porta **stringa UTF-8 libera**, il server inoltra **a tutti tranne
+il mittente senza dizionario ne'' filtro di scena**, e ha gia'' `sp|`, `brk|`, `falo|`.
+⇒ **`pdead|`, ~4 righe, zero bump.**
+⚠️ **Contro**: **sovraccarico semantico**; **il ramo deve ritornare SUBITO**, prima di
+`_pendingDeaths.Add` *(`:3501`)* — metterlo li'' sarebbe **piu'' rischioso di `falo|`**, perche'' il
+payload naturale e'' un **nome giocatore** e quella lista e'' **la memoria che fa UCCIDERE i nemici**;
+**nessuna garanzia di consegna** *(se il ricevente e'' a meta'' level load, il boss puo'' non esistere
+ancora)* ⇒ **progettarlo IDEMPOTENTE.**
+✅ **E NON replicarlo in `_announcedDeaths`**: **la morte di un giocatore e'' TRANSIENTE**, chi entra
+dopo **non deve** apprenderla. **Lo schema dei nemici esiste perche'' una morte di nemico e'' stato
+PERSISTENTE.**
+
+### 🔴 E LA VOCE 35 (BOSS) CAMBIA FORMA — in meglio
+
+```
+EnemyBehaviour::GetTarget() (54 istr.) NON guarda MAI se il target e'' morto:
+   @IL_0022-0041 ritorna il target corrente
+   @IL_0042-008F FALLBACK = Core.Logic.Penitent LOCALE (lo setta e lo ritorna)
+=> "il boss spegne l''IA" NON si spiega con GetTarget.
+E IL GIOCATORE REMOTO NON E'' UN Penitent:
+   OtherPlayerManager.AddActivePlayer (:189-191) fa `new GameObject("_"+name)` + OtherPlayerScript
+   => nessun Penitent, nessun collider
+   E il nemico e'' simulato sulla macchina che lo possiede, dove GetTarget() puo'' solo
+      restituire il Penitente LOCALE
+=> ⭐ "far cambiare target al boss verso un vivo" NON e'' un retarget: E'' IMPOSSIBILE.
+```
+**Le due strade reali, entrambe piu'' piccole di un retarget:**
+| | Strada | Meccanismo |
+|---|---|---|
+| **A** | ⭐ **Cambiare la PROPRIETA'' del boss** alla macchina col giocatore **vivo** | **esiste GIA''**: `EnemyOwnership=25`, `SendEnemyOwnership` :2685, `ShouldOwnByProximity` :1846 |
+| **B** | **Mettere in PAUSA il boss** | `PauseEnemy` :965 **esiste GIA''** |
+
+⇒ **Il lavoro sui boss e'' medio-piccolo, e la (A) e'' quella giusta** *(il boss passa a chi puo''
+combatterlo)*. **⚠️ Ma entrambe richiedono di comunicare la morte ⇒ il `pdead|` e'' il prerequisito.**
+
+**E un dettaglio che conferma il disegno**: **`Penitent.OnDead` ha 71 sottoscrittori** — nemici
+normali con `TargetIsDead`/cambio stato *(`AshChargerBehaviour::TargetOnDead`,
+`WalkingTomb`, `Runner`, `Jumper`, `NewFlagellant`, `ViciousDasher`)*, e **boss: SOLO
+`AmanecidasBehaviour`** *(`AmanecidasAudio.StopAll`, solo audio)*, **`SnakeBehaviour::OnPenitentDead`**,
+**`IsadoraAudio`** ⇒ **la maggior parte dei boss (Crisanta, Esdras, Perpetua, Pietat, HighWills,
+PontiffHusk, Bejeweled, Lesmes/Quirce…) NON e'' iscritta**, **e il meccanismo esatto resta NON
+VERIFICATO** *(candidato: `Logic.SetState(2)`/`PlayerCurrentLife=-1` in `Penitent::OnUpdate`
+@IL_003E/005F, che produce il log `Game state -> PLAYERDEAD`)*.
+⭐ **Ma con la strada (A) non ci serve saperlo**: **il boss passa alla macchina del vivo e combatte
+normalmente.**
