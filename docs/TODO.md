@@ -3689,3 +3689,91 @@ VERIFICATO** *(candidato: `Logic.SetState(2)`/`PlayerCurrentLife=-1` in `Peniten
 @IL_003E/005F, che produce il log `Game state -> PLAYERDEAD`)*.
 ⭐ **Ma con la strada (A) non ci serve saperlo**: **il boss passa alla macchina del vivo e combatte
 normalmente.**
+
+
+## [2026-10-11 05:00] PEZZO 1 E 2 DELLE MORTI — e un difetto latente trovato nello strumento
+
+### ✅ PEZZO 1 CONFERMATO, e la linea di base per il Pezzo 2 e'' chiara
+
+```
+G2 L941  Game state has been set to PLAYERDEAD
+G2 L1092 [Morte] il giocatore e'' morto: connesso=True altri giocatori=1
+             => SOPPRIMO il respawn del mondo · vita=0/88 fiale=2/2 fervour=32/60
+G2 L1093 [Falo''] consumedSpawns azzerati dal gioco: dimenticate 0 annunciate e 0 ricevute (S01)
+G2 L1094 RestoreStored · L1095 SAVEGAME · poi il level load
+G1:      [Morte] = 0 occorrenze ✅ (la morte e'' locale, e nessuno la comunica)
+```
+✅ **`altri giocatori=1` e `SOPPRIMO`: il rilevamento e la decisione sono corretti.**
+⭐ **E `consumedSpawns azzerati` e'' girato IN GAMEPLAY alla morte** *(su G1 le 2 occorrenze sono
+entrambe `MainMenu`)* ⇒ **il Pezzo 2 ha davvero qualcosa da sopprimere, e questa e'' la linea di base.**
+⚠️ **E il `Finalizer` ha funzionato**: nessuna seconda morte in sessione, **ma la riga delle stats al
+falo'' NON porta il suffisso `(stiamo replicando un falo'')`** ⇒ **il flag era a terra** ✅.
+⭐ **E un dato per il futuro `pdead|`**: **`[Morte]` scatta alla PRESSIONE DEL TASTO, non al decesso**
+*(`PLAYERDEAD` a L941, `[Morte]` a L1092: `Respawn` ha un solo chiamante, `DeadScreenWidget`, dopo il
+tasto)*. **⇒ per il boss, "quando comunicare la morte" e'' una decisione da prendere.**
+
+### 🔴 IL DIFETTO LATENTE NELLO STRUMENTO — trovato per tempo
+
+**Le barre del gioco** *[IL]*: `PlayerHealth.get_BarTarget = Life.Current / Life.**Final**` ·
+`PlayerFlask` usa `Flask.**Final**` · `PlayerFervour` usa `Fervour.**CurrentMax**` per i segmenti.
+**Il mio `StatsLine()` stampava `CurrentMax` per TUTTI e tre** ⇒ **giusto per il fervore, sbagliato per
+vita e fiale.**
+⚠️ **Oggi coincidono** *(`MaxFactor` non e'' mai toccato su Life/Flask: `set_MaxFactor` ha **2 soli
+chiamanti in tutto l''assembly, entrambi `GuiltManager`, entrambi su `Fervour`**)* ⇒ **le misure gia''
+fatte sono vere.** **MA il giorno in cui abbasseremo `Life.MaxFactor`** — **cioe'' esattamente la Colpa
+con le spine che stiamo per costruire** — **lo strumento avrebbe misurato il massimo PENALIZZATO
+mentre la barra continuava a dividere per `Final`.**
+✅ **CORRETTO**: vita e fiale su `Final`, fervore su `CurrentMax`, **e in piu'' stampa i `MaxFactor`**
+*("fattori: vita=… fervour=…")*, **cosi'' quando un massimo si muove si sa se la causa e'' nostra o
+della Colpa nativa.**
+⭐ **La lezione**: **uno strumento che misura una cosa mentre la barra ne mostra un''altra e'' peggio di
+nessuno strumento, perche'' viene creduto** — *e la divergenza sarebbe cominciata proprio il giorno in
+cui la funzione nuova entra in funzione.*
+
+### ✅ E LE DUE ANOMALIE SPIEGATE — nessuna e'' nostra
+
+**(A) Il massimo del fervour cambia (60 → 50): e'' la COLPA NATIVA.** `CurrentMax` e'' **calcolata**:
+`Mathf.Min(Attribute.CalculateValue(), MaxValue) * MaxFactor` *[IL]*. **Il fattore =
+`guiltConfig.fervourMaxFactor.Evaluate(guiltDrops.Count)`**, una curva sul **numero di colpe cadute**
+*(l''asset e'' `Resources/GuiltConfig`, quindi il 5/6 non e'' in IL)*. **E la cronologia si spiega da
+sola**: al `[Morte]` *(prefix di `Respawn`, **prima** del corpo)* il fattore e'' ancora 1 ⇒ `32/60`;
+**il fattore viene riapplicato al prossimo spawn del Penitente** *(durante `Respawn`)* ⇒ dopo e'' `50`.
+✅ **E `0/50`**: **`RestoreStored` E `ShallowActivationLogic` ricaricano il fervore SOLO se
+`GetPrieDieuLevel() > 1`, altrimenti `Current = 0`** ⇒ **con `0` osservato, il livello e'' ≤ 1.**
+*Quindi `0` = "non ricaricato", `50` = "massimo sceso per la Colpa".*
+
+**(B) La fiala di G1: NON e'' un bug.** **"Ha perso una fiala" e'' ESCLUSO in IL** *(un clamp 2→1 e''
+escluso perche'' il massimo letto e'' 2)*. **Il caso realistico e'': aveva 1/2** *(un giocatore vivo che
+ha bevuto)*. ⚠️ **Ma la baseline non e'' nei log** *(`fiale=` compare una volta sola)* ⇒ **il confine
+"mondo si'' / benefici no" NON e'' dimostrato dal test: lo dimostra l''IL** —
+**`LogicManager.UsePrieDieu()` e'' SOLO `OnUsePrieDieu.Invoke()` (23 byte)** *[IL]*, e
+`Life/Flask/Fervour.SetToCurrentMax` + `SaveGame(true)` vivono **solo** in
+`PrieDieu.ShallowActivationLogic`, che la mod **non chiama mai**.
+
+### ⚠️ E DUE CORREZIONI ALLA MAPPATURA
+
+**(1) `ShallowActivationLogic` NON e'' solo del ramo di prima attivazione**: **anche
+`ReActivationLogic::MoveNext` lo chiama come PRIMISSIMA istruzione** *(`IL_002b`)*, **poi
+`RespawnDeadEnemies`** *(`IL_013e`)*. **⇒ il postfix delle stats legge DOPO i benefici in ENTRAMBI i
+rami** *(meglio di quanto dichiarava il commit)*, **e il `SAVEGAME` visto su G2 non prova "prima
+attivazione".**
+
+**(2) ⚠️ E il test del confine era debole**: **su G2 la riga delle stats NON isola il beneficio del
+falo''**, perche'' era **appena morto** e `RestoreStored` aveva **gia''** messo vita e fiale al massimo
+⇒ **`88/88 2/2` non dimostra nulla sul falo''.** **Serve un falo'' su una macchina NON appena morta.**
+
+### ⚠️ E IL PEZZO 2 NON E'' ANCORA VERIFICATO IN GIOCO
+
+**Il difetto della voce 44 NON e'' riprodotto in questa sessione, e NON per merito**: **G2 muore in
+`D01Z01S01`, azzera i consumati li'', rispunta al falo'' di `D01Z01S07` e poi esce al menu: NON rientra
+mai in S01.** **Nemmeno G1.** ⇒ **la stanza del reset non e'' stata riosservata da nessuno.**
+⭐ **Per il Pezzo 2 serve UNA sessione che TORNI nella stanza della morte: e'' l''unica misura
+"prima/dopo" possibile.** **E i conteggi dove sono osservabili coincidono** *(`S01 3/7/3 → 5/7/5` su
+entrambe; `S07 0/7/0`)*.
+
+### 📌 E NESSUNA REGRESSIONE
+
+`NullReference` 0 · `IndexOutOfRange` 0 · **`exceptions=` ≠ 0: 0** *(67 righe `[Probe]` su G1, 62 su G2)*
+· `SAVEERROR` 0 · `[Progress] apply failed` 0 · `[Falo''] replica fallita` 0 ·
+**`IMPRONTA DIVERSA` 1 su G1, 0 su G2** · `[Error` = la stessa riga.
+**Server**: 2 connessioni, 2 disconnessioni, **0 riassegnazioni di host**, **0 errori**.
