@@ -69,6 +69,8 @@
 | **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDEVA la sincronizzazione PER SEMPRE** | ✅ **RISOLTA — con l'eccezione isolata E loggata** | **Era il difetto più pericoloso del progetto.** **Verificato nel codice** *(`ProgressManager.cs:58-69`)*: `CurrentlyUpdatingProgress = true;` → **i 14 helper di `ApplyProgress`** → **`= false`**, **senza `try` né `finally`**. **Fuori c'è un `try/finally` in `Multiplayer.cs:154` che però resetta `PerformanceProbe`, NON questo flag.** ⇒ **una sola eccezione in un helper lasciava il flag `true` PER SEMPRE**, e si portava dietro: **(a)** `BreakableObjectHelper` **sopprimeva OGNI futura rottura**, **(b)** **~29 guard** negli altri helper *(`BeadHelper`, `PrayerHelper`, `RelicHelper`, `QuestItemHelper`, `CollectibleHelper`, `HeartHelper`…)* **sopprimevano l'invio di TUTTA la progressione**, **(c)** **la coda non si svuotava e rilanciava ogni frame**. **⇒ il gioco restava vivo ma il co-op smetteva di sincronizzare**, senza un crash e senza un errore evidente. **Probabilità: BASSA** *(0 occorrenze nei log)* **ma i percorsi sono verificati**: `ApplyProgress` fa **`int.Parse`** su un id **che arriva dalla rete** e una lookup che può uscire dalla tabella — **e la difesa era SOLO il parsing** *(`IsTableId` / `char.IsDigit`)*, **non un catch**. ⚠️ **Il progetto lo sapeva**: il commento in `BreakSyncMemory.IsTableId` lo dice **esplicitamente**, e **non era mai diventato un fix**. **✅ FIX**: **`try/finally` con `Clear()` E il flag abbassato DENTRO il `finally`** *(il `Clear` deve stare lì: una coda parziale va comunque scartata, o la stessa entry che lancia verrebbe ritentata ogni frame)* **+ `catch` per-elemento in `ApplyProgress`, CON LOG dell'id** *(un `catch` silenzioso nasconderebbe l'unica prova che spiega perché un aggiornamento è sparito)*. **Nessun bump.** Vedi §12 |
 | **42** | **`AddInteractedObject` senza dedup** | ✅ **RISOLTA — `if (!Contains)`** | **`List.Add` senza controllo**, e **il file su disco lo mostrava: 8 voci dove 4 erano distinte**. **Innocuo in effetto** *(quella lista finisce in `savegame_N_modded.save`, che il gioco non legge mai — voce 36)*, **ma è il tipo di innocuo che smette di esserlo il giorno in cui qualcuno conta le voci o confronta due liste per uguaglianza.** ✅ **Fix**: `IsNullOrEmpty` → **`Contains`** → `Add`. Vedi §12 |
 | **43** | 🟢 **`if (!localIsHost) return false;` in `DecideOwnership` è probabilmente codice MORTO** | 🟢 **opzionale — PULIZIA, non un fix** | **Il gate esiste per un motivo storico**: *"only the arbiter decides; this method is never the peer's path"*. **E con il disegno attuale è coerente**: **il peer NON PUBBLICA un token** *(`ReceiveEnemyOwnership` ritorna subito `if (IsHost) return;`)* **e APPLICA quello dell'host** ⇒ **qualsiasi decisione del peer verrebbe sovrascritta.** **Quindi il gate non cambia nulla di osservabile.** ⚠️ **Non è un difetto e non c'è fretta**: **rimuoverlo sarebbe una semplificazione, e va fatta SOLO dopo aver verificato che la PRIMA ASSEGNAZIONE SIMMETRICA** *(`state.OwnedByLocal = wants \|\| (!peerCloser && localIsHost);`)* **basti da sola** — *il ramo dei cambi successivi serve oggi solo all'host, che lo esegue con `localIsHost = true`*. ⚠️ **E il test in gioco NON può deciderla**: *"il non-host si muove"* è **il comportamento del PASSO 1** *(il peer simula `!OwnershipKnown`)*, **e succede sia col gate sia senza**. **Serve un'analisi dei percorsi nel codice, non una sessione.** Vedi §12 |
+| **44** | 🔴 **La MORTE di un giocatore respawna i nemici SOLO per chi muore — e lascia le due macchine DIVERGENTI** | 🔴 **NUOVA — è il primo lavoro del piano (morti → boss → cam → colpa)** | **Misurato nei log**: `G2:885 PLAYERDEAD` + `DEAD_SCREEN enabled`, **G1 `PLAYERDEAD` = 0 occorrenze** ⇒ *G1 non sa nulla*. **E il respawn avviene SOLO sulla macchina morta**: G2 rientra in `D01Z01S01` con **`5/7/5`** *(i 2 nemici uccisi tornano vivi)*, **G1 resta a `3/7/3`** e tiene le 2 morti in `_pendingDeaths` **fino a 2014**, con l'id `@SPAWN` a **0 occorrenze su G1** contro **76 righe su G2**. ⚠️ **E LA CONVERGENZA E' AVVENUTA PER CASO**: G1 ha ricevuto un annuncio di **falò** *(righe 2008/2013, e era per un'ALTRA stanza!)*. ⇒ **senza quel falò le due macchine resterebbero divergenti: G1 ri-uccide nemici che G2 vede vivi.** **Nessun `annuncio inviato` alla morte: la morte NON è comunicata** *(verificato in codice: `Penitent::Respawn → EnemySpawner::Reset` non ha percorso di rete, e `OnDeathStateReset` logga soltanto)*. **REQUISITO DELL'UTENTE**: **sopprimere il respawn dei nemici alla morte SE connesso a un server con altre persone** *(check: connesso + ci sono peer? sì → sopprimo; no → lascio fare al gioco)*. **Motivazione di design**: *in un Metroidvania, se A è a metà di una sezione platform punitiva e B muore all'inizio della mappa, far respawnare tutto in faccia ad A è ingiusto e spezza il ritmo.* **MECCANISMO PROPOSTO**: `consumedSpawns` è **GLOBALE** e la sequenza è `Reset()` *(svuota)* → level load → `SpawnEnemiesOnLoad` → `CreateEnemy` *(early-exit se `Consumed`)* ⇒ **per tenere i nemici morti, `CreateEnemy` deve trovarli CONSUMATI**: **intercettare il `Reset` e RIPRISTINARE `consumedSpawns` con le posizioni note**, ricostruite dagli id `sp\|<scena>\|<x>\|<y>` **che la mod già possiede** in `_announcedDeaths`/`_pendingDeaths`. ⚠️ **E la morte va COMUNICATA ai peer** *(serve alla voce 35: il boss deve cambiare target)*: **da decidere se con un bump di protocollo o con un quarto prefisso su `EnemyDeathGlobal`** *(`sp\|`, `brk\|`, `falo\|` esistono già)*. ⚠️ **ATTENZIONE**: la riga `[Falo'] consumedSpawns azzerati … N annunciate e 0 ricevute` **da sola NON distingue una morte da un reset benigno** *(load di salvataggio, reset dal menu)* ⇒ **la strumentazione deve agganciarsi a `PLAYERDEAD`/`DEAD_SCREEN`, non a `EnemySpawner.Reset`.** Vedi §12 |
+| **45** | ⚠️ **`_ids` è appeso dal rescan SOLO sull'host ⇒ il peer è CIECO sui nemici creati fuori dai pass di spawn** | 🟡 **NUOVA — causa strutturale delle `IMPRONTA DIVERSA`** | **Verificato in codice e nei log**: `_ids` è **appeso** dal rescan periodico che gira **solo sull'host** *(`EnemySyncManager.cs:2525-2533`)* ⇒ **sull'host un nemico creato fuori dai pass di spawn compare nei probe entro ~0,5 s** *(è così che si vede la rinascita in-place)*, **sul peer `_ids` cambia solo ai load ⇒ cieco.** **⇒ è questa l'asimmetria che produce le `IMPRONTA DIVERSA`** *(5 su G1 e 6 su G2 in un test, **tutte** le righe `[Error]` della sessione)*, **NON il falò** *(la voce 29 resta coerente)*. ⚠️ **E spiega anche perché una "rinascita in-place" è osservabile sull'host e non sul peer.** **Da collegare alla voce 11 e alle rifiniture.** Vedi §12 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -3451,3 +3453,117 @@ aggiungerne uno parallelo** — *e "Blocco del Fervore" e'' gia'' il suo mestier
 si basa su codice e IL, e ha trovato la prova che mancava** *(`NU1605`, `AssemblyRef` hard, `PatchAll`
 di terzi, assenza totale di import immagini)*. **⇒ Una decisione presa sulla documentazione va
 riconfermata sul codice prima di considerarla definitiva — e ora lo e''.**
+
+
+## [2026-10-11 03:00] LA MORTE DI UN GIOCATORE: respawna SOLO per chi muore, e le due macchine DIVERGONO
+
+### 🔴 LA SCOPERTA, ed e'' piu'' grave di quanto pensassimo
+
+**L''utente aveva notato**: *"quando un giocatore muore, non estende il respawn dei nemici anche agli
+altri ma solo a se stesso"*. **CONFERMATO, e con le prove**:
+```
+G2:884  Event ENTITY_DEAD
+G2:885  Game state has been set to PLAYERDEAD
+G2:886  blocker DEAD_SCREEN enabled
+G1:     PLAYERDEAD = 0 occorrenze            <- G1 NON SA NULLA
+
+G2:1020 [Falo''] consumedSpawns azzerati … 2 annunciate e 0 ricevute (scena=D01Z01S01)   <- LA MORTE
+G2:1021 RestoreStored -> 1023 Active priedieu S07 -> 1035 Load and activate level D01Z01S07
+G2:1119 Post-spawn 5/7/5                     <- i 2 nemici RINASCONO su G2
+G1:1995 Post-spawn 3/7/3                     <- su G1 restano MORTI
+   e G1 tiene le 2 morti in _pendingDeaths FINO A 2014
+   e l''id `D01Z01S01@SPAWN` ha 0 occorrenze su G1 fino a 2014, contro 76 righe su G2
+```
+**E NESSUN `annuncio inviato` alla morte**: *in codice, `Penitent::Respawn → EnemySpawner::Reset` non
+ha percorso di rete, e l''hook `OnDeathStateReset` **logga soltanto**.*
+
+### ⚠️ MA LA CONVERGENZA E'' AVVENUTA **PER CASO**
+
+```
+G1 ha ricevuto un annuncio di FALO'' (righe 2008/2013) -- e quel falo'' era per un''ALTRA stanza!
+=> e solo ALLORA ha dimenticato le 2 morti e ha visto il nemico tornare vivo (2019)
+```
+🔴 **⇒ Il problema NON e'' "il respawn e'' ingiusto per gli altri": e'' un BUG DI DIVERGENZA.**
+**Senza quel falo'', le due macchine resterebbero divergenti: G1 ri-ucciderebbe nemici che G2 vede
+vivi.** **⇒ Il lavoro sulle morti e'' un fix di CORRETTEZZA, non una rifinitura.** E ora e'' chiaro
+perche'' **il pacchetto "player death" serve davvero** *(anche per la voce 35: il boss deve cambiare
+target)*.
+
+### 📌 IL LAVORO, come richiesto dall''utente *(voce 44)*
+
+```
+SOPPRIMERE il respawn dei nemici alla morte, SE connesso a un server con altre persone.
+   check: sono connesso E ci sono peer?  si'' -> sopprimo.  no -> lascio fare al gioco.
+Motivazione di design (utente): in un Metroidvania, se A e'' a meta'' di una sezione platform
+   punitiva e B muore all''inizio della mappa, far respawnare tutto in faccia ad A e'' ingiusto
+   e spezza il ritmo. (Coerente con Elden Ring Seamless.)
+```
+**MECCANISMO PROPOSTO**: `consumedSpawns` e'' **GLOBALE** e la sequenza e''
+`Reset()` *(svuota)* → level load → `SpawnEnemiesOnLoad` → `CreateEnemy` *(early-exit se `Consumed`)*
+⇒ **per tenere i nemici morti, `CreateEnemy` deve trovarli CONSUMATI**: **intercettare il `Reset` e
+RIPRISTINARE `consumedSpawns` con le posizioni note**, ricostruite dagli id
+**`sp|<scena>|<x>|<y>`** che la mod **gia'' possiede** in `_announcedDeaths`/`_pendingDeaths`.
+
+⚠️ **E la morte va COMUNICATA ai peer** *(serve alla voce 35)*: **da decidere se con un bump di
+protocollo o con un quarto prefisso su `EnemyDeathGlobal`** *(`sp|`, `brk|`, `falo|` esistono gia'')*.
+
+⚠️ **ATTENZIONE ALLA STRUMENTAZIONE**: la riga `[Falo''] consumedSpawns azzerati … N annunciate e 0
+ricevute` **da sola NON distingue una morte da un reset benigno** *(load di salvataggio, reset dal
+menu)* ⇒ **va agganciata a `PLAYERDEAD`/`DEAD_SCREEN`, non a `EnemySpawner.Reset`**.
+
+### ✅ E TUTTI I 5 PUNTI CHE RESTAVANO APERTI — chiusi, con tre correzioni alle MIE premesse
+
+**(a) Rinascita IN-PLACE: OSSERVATA** *(ramo "altra stanza")*: `G1:2008 annuncio RICEVUTO` →
+`2009 [TRACE][SPAWN] Respawning dead enemies on level` → `2013 RespawnDeadEnemies` → **`2019` il
+nemico appare con `vita=12` e `pos=(-715.1,10.0)`**, **senza alcun `Loaded level` in mezzo**
+*(precedente 1981, successivo 2221)*. **La vita risale**: l''id era assente prima *(0 occorrenze su
+700-2012)* e presente dopo *(33 righe su 2014-2800)*.
+⚠️ **Il caso "STESSA stanza con morti nella stanza" resta NON PROVATO**: entrambe le sedute sono in
+`D01Z01S07`, che in questa sessione ha **0 nemici**.
+
+**(b) "Chi uccide = chi si siede": COPRIBILE, e COPERTO.** G1: 1 seduta + 2 kill · G2: 2 sedute +
+3 kill. ⚠️ **La MIA premessa era FALSA**: *avevo scritto che G2 non si era mai seduto.*
+
+**(c) I due `Post-spawn` per load: confermati, ma la MIA spiegazione era SBAGLIATA.**
+**Non e'' `SpawnEnemiesOnLoad` che gira 2×** *(gira **1 volta per load**: 11 trace in G1 = 11 load)*:
+- **la 1ª e'' il postfix Harmony** *(`EnemySpawnPatch.cs:28-32`)*, 4 righe dopo il trace del gioco e
+  **prima** di `Loaded level`;
+- **la 2ª e'' il RESCAN DELLA MOD** *(`EnemySyncManager.cs:2514-2524`,
+  `if (!_spawnFinalized) OnEnemiesSpawned()`)*, 11-24 righe **dopo** `Loaded level`.
+**Numero corretto della linea di base = la SECONDA riga**, per le stanze con nemici.
+⚠️ **E per `D01Z01S07` NESSUNA delle due e'' utilizzabile**: la prima e'' `0/7/0` e la seconda
+`0/0/0` *(0 spawn point trovati: artefatto)*.
+
+**(d) Fiasche e vita: NON MISURABILI oggi.** **0 righe** di `Flask`/`Fiala`/`Heal`/`Fervour` come
+misura *(`vita=`/`life=` e'' dei NEMICI; `Storing 60 fervour…` e'' un messaggio del gioco al load)*.
+**Strumento proposto** *(API già nel repo, `PvP/DamageCalculator.cs:83-84` e
+`ProgressSync/Helpers/StatHelper.cs:17-26`)*: loggare `Core.Logic.Penitent.Stats.Life.Current`,
+`Stats.Flask.Current`, `Stats.Fervour.Current` **nel postfix di `PrieDieu.OnUse`** e **dentro
+`ReplicateBonfire`** ⇒ `[Falo''] stats: vita=X/Y fiale=A/B fervour=Z/W`.
+⚠️ **Il postfix di `OnUse` gira PRIMA del corpo** ⇒ la lettura "dopo i benefici" va fatta **~1 s dopo**
+*(coroutine)* oppure **nel postfix di `RespawnDeadEnemies`**, che nel ramo prima-attivazione e''
+**dopo** `ShallowActivationLogic` *(confermato dall''ordine `save` → `respawn`)*.
+✅ **E il misurabile che c''e'': il SEDUTO SALVA, IL RICEVENTE NO.** G1 *(1 seduta)*: `SAVEGAME` a 2256
+e `SaveGame` a 2265, **11 righe dopo** `Used PrieDieu` 2254. G2 *(2 sedute)*: 1656/1659 e 1713/1716.
+**Tutti gli altri save** stanno a **9 righe da un `OnBeforeLevelLoad`**. ✅ **Coerente con
+`ReplicateBonfire` che NON chiama `ShallowActivationLogic`.**
+⚠️ **E questo smentisce il CONTEGGIO del test precedente**: G1 si e'' seduto **1 volta** *(non 2)* e
+G2 ha **10** `SaveGame` *(non 13)*, di cui 2 da seduta, **1 doppio dalla morte**, 7 da transizione.
+
+**(f) REGRESSIONI: nessuna.** `[Falo''] replica fallita` **0** · `NullReference` **0** ·
+`IndexOutOfRange` **0** · `SAVEERROR` **0** · `[Progress] apply failed` **0** · **`exceptions=`
+non-zero: 0** *(110 righe `[Probe]` su G1, 116 su G2)*. **Server: nessun errore**, e l''host reassign
+ha funzionato *(14:10:52 G1 disconnesso → `Host reassigned to: G2`)*.
+
+### ⭐ E UNA SCOPERTA STRUTTURALE CHE SPIEGA LE `IMPRONTA DIVERSA` *(voce 45)*
+
+```
+`_ids` e'' APPESO dal rescan periodico che gira SOLO SULL''HOST (EnemySyncManager.cs:2525-2533)
+   => sull''HOST un nemico creato fuori dai pass di spawn compare nei probe entro ~0,5 s
+      (ed e'' cosi'' che si vede la rinascita in-place)
+   => sul PEER `_ids` cambia solo ai load => CIECO
+```
+**⇒ E'' l''asimmetria host/peer, NON il falo''**, a produrre le `IMPRONTA DIVERSA` *(5 su G1 e 6 su G2
+in questo test: **tutte** le righe `[Error]` della sessione)*. **La voce 29 resta coerente.** ⭐ **E
+spiega anche perche'' una rinascita in-place e'' osservabile sull''host e non sul peer.** **Da collegare
+alla voce 11 e alle rifiniture.**
