@@ -1,4 +1,4 @@
-﻿using Framework.Managers;
+using Framework.Managers;
 using System.Collections;
 using UnityEngine;
 
@@ -41,6 +41,28 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         // Determines whether to set player objects skin texture in an update cycle
         public SkinStatus SkinUpdateStatus { get; set; }
+
+        // Whether this player is currently down.
+        //
+        // It is state the game does not have and cannot be asked for: there is exactly one Penitent, and
+        // the other player is not one - OtherPlayerManager builds them as a bare GameObject with a script
+        // and no Penitent at all, so nothing on this machine can inspect whether they are alive. The only
+        // source is what they tell us, which is what the pdead/palive announcements are for.
+        //
+        // It matters because two things depend on it: the count of who is still standing, which decides
+        // when a spectator state may end, and the boss, which has to hand over to someone who can fight it.
+        //
+        // Reset is deliberately silent about a player it does not know. Network messages can arrive before
+        // the connection entry exists, and FindConnectedPlayer also LOGS A WARNING when it misses - so the
+        // noisy lookup is the wrong tool here: a legitimate message for a not-yet-known player would fill
+        // the log with warnings that mean nothing.
+        public bool IsDead { get; private set; }
+
+        /// <summary>Records that this player is down, or back up.</summary>
+        public void SetDead(bool dead)
+        {
+            IsDead = dead;
+        }
 
         public PlayerStatus(string name)
         {

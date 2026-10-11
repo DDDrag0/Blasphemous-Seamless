@@ -143,6 +143,74 @@ namespace Blasphemous.Multiplayer.Client.Players
             return null;
         }
 
+        /// <summary>
+        /// Records that a player is down, or back up, without complaining if they are not known yet.
+        ///
+        /// Deliberately NOT built on FindConnectedPlayer: that one logs a warning whenever it misses, and
+        /// here a miss is ordinary rather than surprising - an announcement can arrive before the server's
+        /// connection packet that creates the entry. Using the noisy lookup would fill the log with warnings
+        /// that mean nothing, which is how a log stops being read.
+        /// </summary>
+        public void SetPlayerDead(string name, bool dead)
+        {
+            PlayerStatus player = FindConnectedPlayerQuietly(name);
+            if (player != null)
+                player.SetDead(dead);
+        }
+
+        /// <summary>
+        /// Whether every player we know about is down, this one included.
+        ///
+        /// This is ours to answer because the game cannot: there is one Penitent and the remote players are
+        /// not Penitents, so nothing in the game keeps a count of who is still standing. What depends on it
+        /// is the end of the spectator state - a dead player waiting to be released has to know when there
+        /// is nobody left to watch.
+        ///
+        /// With nobody else connected the answer is false: being alone is not "everybody is down", and
+        /// treating it as such would release the state the instant the player died in single player.
+        /// </summary>
+        public bool AreAllPlayersDead(bool localPlayerDead)
+        {
+            if (connectedPlayers.Count == 0)
+                return false;
+
+            if (!localPlayerDead)
+                return false;
+
+            for (int i = 0; i < connectedPlayers.Count; i++)
+            {
+                if (!connectedPlayers[i].IsDead)
+                    return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>Same search as FindConnectedPlayer, without the warning. See SetPlayerDead.</summary>
+        public PlayerStatus FindConnectedPlayerQuietly(string name)
+        {
+            for (int i = 0; i < connectedPlayers.Count; i++)
+            {
+                if (connectedPlayers[i].Name == name)
+                    return connectedPlayers[i];
+            }
+
+            return null;
+        }
+
+        /// <summary>How many connected players are currently down. For logs.</summary>
+        public int CountDeadPlayers()
+        {
+            int count = 0;
+            for (int i = 0; i < connectedPlayers.Count; i++)
+            {
+                if (connectedPlayers[i].IsDead)
+                    count++;
+            }
+
+            return count;
+        }
+
         public void AddConnectedPlayer(string name)
         {
             connectedPlayers.Add(new PlayerStatus(name));

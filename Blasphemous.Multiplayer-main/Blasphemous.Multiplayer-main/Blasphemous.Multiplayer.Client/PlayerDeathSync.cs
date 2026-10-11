@@ -48,6 +48,16 @@ namespace Blasphemous.Multiplayer.Client
         public static bool SuppressingWorldReset { get; internal set; }
 
         /// <summary>
+        /// Whether this machine has told the others that its own player is down.
+        ///
+        /// It exists so that "I am alive again" can be sent only when it has something to cancel. CreatePlayer
+        /// runs on every level load, so without this the alive message goes out constantly - measured at four
+        /// for a single death - and on a channel whose purpose is to be believed, a message that is usually
+        /// meaningless is worse than a rare one.
+        /// </summary>
+        private static bool localDeathAnnounced;
+
+        /// <summary>
         /// Marks a death announcement. Fourth convention on the enemy-death channel, whose only others are
         /// "sp|" for spawn points, "brk|" for a broken vase and "falo|" for a bonfire. The server relays
         /// that channel to everyone but the sender with no dictionary and no scene filter, so a new prefix
@@ -91,23 +101,42 @@ namespace Blasphemous.Multiplayer.Client
         /// question, both for the boss that has to hand over and for counting how many are still standing.
         /// The name cannot contain '|' (the validator allows "_-.' " up to sixteen characters), so it cannot
         /// be mistaken for a spawn-point id on a channel where that would matter.
+        ///
+        /// Returns whether the announcement actually went out, because "I died" and "I told them I died"
+        /// are different facts and only the second one earns a matching "I am alive again".
         /// </summary>
-        public static void AnnounceDeath()
+        public static bool AnnounceDeath()
         {
             if (!Main.Multiplayer.NetworkManager.IsConnected)
-                return;
+                return false;
 
             string name = Main.Multiplayer.PlayerName;
             if (string.IsNullOrEmpty(name))
-                return;
+                return false;
 
             Main.Multiplayer.SendEnemyDeathGlobal(DeathPrefix + name);
+            localDeathAnnounced = true;
             ModLog.Info($"[Morte] annuncio inviato: {name} e' morto");
+            return true;
         }
 
-        /// <summary>Tells the other machines that this player is back on their feet.</summary>
+        /// <summary>
+        /// Tells the other machines that this player is back on their feet - but only if we ever said they
+        /// went down.
+        ///
+        /// CreatePlayer runs again every time the level loads rebuilds the Penitent, so this is reached far
+        /// more often than a death is. Announcing every time produced four "alive" messages for one death in
+        /// the measured session. Harmless while nothing kept state, but it is noise on a channel whose whole
+        /// job is to be believed, and once the dead set is tracked it would be actively misleading.
+        ///
+        /// The pairing also means a machine that never heard the death hears nothing now - which is correct:
+        /// there is no state to clear.
+        /// </summary>
         public static void AnnounceAlive()
         {
+            if (!localDeathAnnounced)
+                return;
+
             if (!Main.Multiplayer.NetworkManager.IsConnected)
                 return;
 
@@ -116,7 +145,37 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             Main.Multiplayer.SendEnemyDeathGlobal(AlivePrefix + name);
+            localDeathAnnounced = false;
             ModLog.Info($"[Morte] annuncio inviato: {name} e' di nuovo vivo");
+        }
+
+        /// <summary>
+        /// Applies a death or resurrection heard from another machine, and reports the resulting state.
+        ///
+        /// The per-player flag lives on PlayerStatus because that is where the identity already is, and
+        /// because it has to disappear with the player: RemoveConnectedPlayer drops the whole entry, so a
+        /// player who leaves while down cannot leave a permanent "somebody is dead" behind.
+        /// </summary>
+        public static void ApplyRemoteState(string name, bool dead)
+        {
+            Main.Multiplayer.OtherPlayerManager.SetPlayerDead(name, dead);
+
+            ModLog.Info($"[Morte] stato aggiornato: {name} {(dead ? "morto" : "vivo")} · " +
+                        $"morti in questo momento: {Main.Multiplayer.OtherPlayerManager.CountDeadPlayers()}" +
+                        $"/{Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers.Count}");
+        }
+
+        /// <summary>
+        /// True when nobody is left standing, this player included.
+        ///
+        /// This is what the spectator state will end on, and the game cannot answer it: there is one
+        /// Penitent, the remote players are not Penitents, and position packets are not a liveness signal -
+        /// they are only sent when the position changes, so a player standing still looks exactly like a
+        /// player who is not there. The only trustworthy source is the announcements themselves.
+        /// </summary>
+        public static bool IsEveryoneDead(bool localPlayerDead)
+        {
+            return Main.Multiplayer.OtherPlayerManager.AreAllPlayersDead(localPlayerDead);
         }
 
         /// <summary>

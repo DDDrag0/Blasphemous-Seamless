@@ -3522,10 +3522,6 @@ namespace Blasphemous.Multiplayer.Client
             // It would be inert there - that list is never iterated, MarkSpawnPointConsumed demands "sp|",
             // and a name cannot contain '|' - but it would linger in memory and inflate the "received"
             // counter that the bonfire logs report, which is a measurement we are actively using.
-            //
-            // PIECE 3a: these branches only report. Keeping the state of who is dead, and answering "is
-            // everybody down", comes next and deliberately separately - with both at once, "the
-            // announcement never left" and "the state was wrong" would look identical in the log.
             if (PlayerDeathSync.IsDeathId(enemyId) || PlayerDeathSync.IsAliveId(enemyId))
             {
                 bool died = PlayerDeathSync.IsDeathId(enemyId);
@@ -3533,7 +3529,9 @@ namespace Blasphemous.Multiplayer.Client
                     ? PlayerDeathSync.DeathPrefix
                     : PlayerDeathSync.AlivePrefix);
 
-                ModLog.Info($"[Morte] annuncio RICEVUTO: {who} {(died ? "e' morto" : "e' di nuovo vivo")}");
+                if (who != null)
+                    PlayerDeathSync.ApplyRemoteState(who, died);
+
                 return;
             }
 
