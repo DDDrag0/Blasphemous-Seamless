@@ -3371,3 +3371,83 @@ F4b.4 non basta, perche'' dopo il falo'' `destroyed` e'' `false`.**
 **24** ✅ confermato in IL · **29** 🟡 *il testo reale e'' diverso da come l''avevo citato* · **30** 🟢
 confermato *(nessuna rete)* · **31** 🟢 **ora il postfix logga SEMPRE** *(il prossimo test lo vedra'')*
 · **39** ✅ · **4** 🟡 **aperta, ed e'' questa mappatura a renderla affrontabile**.
+
+
+## [2026-10-11 02:00] LA LIBRERIA ESTERNA: verdetto DEFINITIVO, con le prove questa volta
+
+**La domanda e'' tornata** perche'' il progetto ha ora **due bisogni concreti di GUI**: il **messaggio
+d''ingresso alla bossfight** e le **spine della Colpa sulla barra della vita**. **La prima valutazione
+era basata SOLO sul README**, quindi e'' stata rifatta **leggendo il codice e l''IL**.
+
+### 🔴 VERDETTO: NON SERVE A NESSUNO DEI DUE BISOGNI
+
+**Bisogno 1 — il messaggio a schermo: NON coperto.** `LocalizationHandlerExtensions.Localize` legge
+`_textByLanguage` della mod via `TraverseUtils` e ritorna `"LOC_ERROR"`: e'' **traduzione, non
+visualizzazione**. **Nessuno dei 44 tipi del binario disegna testo.**
+
+**Bisogno 2 — le spine sulla vita: NON coperto, ed e'' il buco che si temeva.**
+> **LA LIBRERIA NON CARICA SPRITE.** `SpriteStorage` e'' **solo un dizionario nome->`Sprite`**:
+> nessun `AssetBundle`, nessuna `Texture2D`, nessun `LoadImage`, nessun `File.`.
+> **E il percorso AssetBundle e'' DEFERITO** *(issue #60)*. **`AnimationImportInfo` porta un
+> `filePath` che NESSUNO legge**, e la spec interna S3.4 dice che lo storage
+> *"does not own FileHandler importing"*.
+> ⇒ **Non trasforma un PNG in uno sprite, quindi il bisogno non e'' coperto ne'' oggi ne'' domani.**
+
+### ⚠️ E IL COSTO DI INTEGRARLA E'' PIU'' ALTO DI QUANTO SEMBRASSE
+
+```
+1 pacchetto nuovo: Blasphemous.Framework.Levels 0.1.4
+1 DLL nuova da deployare accanto a BlasClient.dll, SU DUE MACCHINE
+   (e tools\deploy-local.ps1 copia SOLO BlasClient.dll: andrebbe modificato)
++ UPGRADE OBBLIGATO ModdingAPI 3.0.0 -> 3.0.1
+     ⚠️ VERIFICATO con un restore di prova: FALLISCE con
+        error NU1605: Detected package downgrade: Blasphemous.ModdingAPI from 3.0.1 to 3.0.0
++ un assembly TERZO che inietta patch Harmony proprie:
+     HarmonyPatchInstaller fa `new Harmony(...).PatchAll(typeof(HarmonyPatchInstaller).Assembly)`
+     -- in un progetto con 248 [HarmonyPatch] e la regola "un intervento alla volta"
+```
+**⇒ Beneficio per i due bisogni: ZERO.** **E `GameLibs` non c''entra**: e'' un pacchetto di **sola
+compilazione** *(assembly del gioco publicizzate)* e **il progetto la referenzia GIA''**
+*(`<PackageReference Include="Blasphemous.GameLibs" Version="4.0.67" />`, presente anche in `bin\Debug`)*.
+Sull''install vivo: **zero file GameLibs, e va bene cosi''**. Licenza **MIT**: nessun ostacolo legale.
+
+### ✅ E IL REFERTO HA TROVATO LE ALTERNATIVE VERE — migliori, e senza dipendenze
+
+| Bisogno | Come si fa col codice che ABBIAMO GIA'' |
+|---|---|
+| **1 · Il messaggio** | ⭐ **Il progetto HA GIA'' un `NotificationManager`** *(`Notifications\NotificationManager.cs`: `DisplayNotification(string)`, `Update()` chiamato da `Multiplayer.cs:148`, `LevelLoaded()` che costruisce la UI **clonando l''oggetto testo di `PlayerPurgePoints`** sotto il Canvas **"Game UI"**, 4 righe, fade)*. **Oppure il gioco**: `UIController.instance` *(campo **statico pubblico**)* → **`ShowPopUp(string message, string eventSound, float timeToWait, bool blockPlayer)`**, che in IL fa **`messageText.text = message`** — **testo arbitrario**.<br>⚠️ **MA LA FRASE VERA DELLA BOSSROOM NON E'' RIUSABILE**: `ShowQuotePopup.OnEnter` e'' **l''unico chiamante** di `ShowQuoteWidget` in tutto `Assembly-CSharp`, e `QuoteWidget.Open(...)` fa **solo un fade di `CanvasGroup`**: **il testo sta nel prefab** e non si puo'' iniettare. `FullMensages` e'' un enum chiuso.<br>⭐ **Costo reale: UNA chiave in `Modding\localization\Multiplayer.txt` + una chiamata `DisplayNotification(LocalizationHandler.Localize("boss"))` al gate "tutti nella stanza".** |
+| **2 · Le spine sulla vita** | ⭐ **L''arte ESISTE GIA'' a runtime**: `PlayerFervour.RefreshGuilt(bool)` legge `Fervour.MaxFactor` e fa `DOFade` su **`guiltStart`/`guiltBar`/`guiltEnd`** *(tre `Image`, campi **privati** => Traverse)*. **Si possono istanziare/re-parentare sulla barra vita.**<br>**Oppure un PNG nostro**, col percorso **che il progetto usa gia''**: `Map\MapManager.cs:117` → `cfg.Marks[...]`, cioe'' **`Sprite` da config di ModdingAPI** *(`ConfigHandler` + `SpriteImportOptions` → `FileHandler` → `Texture2D.LoadImage` + `Sprite.Create`)* — **precedente interno, funzionante e deployato**. |
+
+### ⚠️ E DUE SCOPERTE CHE CAMBIANO IL DESIGN DELLA COLPA
+
+```
+1. IL GIOCO HA GIA'' UN SISTEMA DI COLPA: GuiltManager.
+   E in TUTTO il gioco `set_MaxFactor` ha DUE SOLI chiamanti, ENTRAMBI GuiltManager
+   (OnPenitentReady, UpdateGuilt), e SEMPRE su `Stats.Fervour` -- MAI su `Life`.
+
+2. ⚠️ E ABBASSARE `Life.MaxFactor` NON MOSTREREBBE UN TRATTO BLOCCATO:
+   CurrentMax = CurrentMaxWithoutFactor * MaxFactor, e `CalculateValue()` CLAMPA `Current` a `CurrentMax`
+   => `PlayerHealth.BarTarget = Life.Current / Life.Final` si RISCALA: la barra risulta di nuovo PIENA.
+```
+⇒ **Il disegno "spine sulla vita" NON si ottiene abbassando un massimo: va DISEGNATO.** **E la buona
+notizia e'' che l''arte delle spine esiste gia''** *(sono le stesse del Fervore)*, **quindi si riusa
+invece di disegnarla.**
+⭐ **E c''e'' gia'' un `GuiltManager`**: **se estendibile, la Colpa si aggancia a quello invece di
+aggiungerne uno parallelo** — *e "Blocco del Fervore" e'' gia'' il suo mestiere.*
+
+### 📌 E COSA RESTA DA GUARDARE IN FUTURO *(come RIFERIMENTO di lettura, mai come dipendenza)*
+
+1. ⭐ **`EnemyHealthBarExtensions`** — `EnemyHealthBar.GetOwner()`, `BossHealth.GetTarget()`,
+   `UIController.GetBossHealth()`: **3 getter via Traverse**. **Utilissima come promemoria dei nomi
+   dei campi privati** per i boss *(voci 8/18)*, **e riscrivibile da noi in 6 righe.**
+2. `TraverseUtils` — wrapper di `Harmony.Traverse` *(ma Harmony lo usiamo gia'')*.
+3. `ModFlagsManager` — flag di mod con policy NG+ e ownership per-mod.
+4. `CheatConsoleLogging` + `ModSubCommandAttribute`/`AutoModCommand` — la console la usiamo gia''.
+5. `SpriteStorage`/`AnimationStorage`/`ModAnimator`/`ItemCollection<T>` — **inutili finche'' l''import
+   di immagini resta deferito**; e l''import da PNG ce lo da'' gia'' ModdingAPI.
+6. Marginali: `*HandlerExtensions`, `ValidationUtils`, `SystemExtensions`, `InventoryManagerExtensions`.
+
+**⚠️ E LA LEZIONE**: **la prima valutazione era giusta, ma si basava solo sul README.** **Questa volta
+si basa su codice e IL, e ha trovato la prova che mancava** *(`NU1605`, `AssemblyRef` hard, `PatchAll`
+di terzi, assenza totale di import immagini)*. **⇒ Una decisione presa sulla documentazione va
+riconfermata sul codice prima di considerarla definitiva — e ora lo e''.**
