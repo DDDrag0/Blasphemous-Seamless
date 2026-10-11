@@ -3870,3 +3870,121 @@ caricata** ⇒ *forse i due spawn point sono in stanze diverse, o uno dei due e'
 i due commit dello strumento.** **Ecco perche'' le letture erano `/60` e `/50` con la `StatsLine`
 vecchia.** ✅ **Coerente, e senza conseguenze**: *la soppressione — cioe'' la cosa che il test doveva
 verificare — c''era.*
+
+
+## [2026-10-11 07:00] IL BOSS, VERIFICATO — il fix della cessione NON era una precauzione: era una correzione, e nel caso peggiore
+
+### ✅ (a) LA GUARDIA `<Boss>::Damage` E'' VERA, e il verso NON e'' scambiato
+
+**Verificato in IL**: `PietyMonster::Damage(Hit)` **e** `ElderBrother::Damage(Hit)` hanno la guardia
+agli **stessi offset**:
+```
+get_Dead @0006 · brtrue -> ret
+get_Logic @0010 -> get_Penitent @0015 -> Entity::Stats @001A -> get_Life @001F
+   -> get_Current @0024 -> ldc.r4 0 @0029 -> bgt.un @002E -> altrimenti ret @0033
+```
+✅ **E'' il verso RICEVENTE, non quello con cui il boss infligge danno**: `IDamageable` dichiara
+`Void Damage(Hit)` **e** `Vector3 GetPosition()`, e `PietyMonster` dichiara esattamente quei due.
+**Percorso del colpo del giocatore**: `Weapon::AttackDamageableEntities` → `callvirt
+IDamageable::Damage(Hit)` → `<Boss>::Damage(Hit)` ⇒ **IL COLPO VIENE SCARTATO.** ✅
+*(L''altro `Damage`, quello **senza parametri** di `XxxBehaviour::Damage()`, ha corpo `ret` ed e''
+chiamato **DAL** ricevente: il nome ambiguo **non** ha ingannato la mappatura.)*
+⚠️ **CORREZIONE AL CONTEGGIO**: **16 classi su 22** sotto `Bosses.*` hanno la guardia, **non "18 su 21"**.
+*La lista e le eccezioni erano giuste: `HighWills`, `PontiffHuskBoss`, `Lesmes` + le parti-accessorio
+`WickerWurmHeart`, `HomingBonfire`, `SingleAnguish`.*
+
+### ✅ (b) IL BOSS ERA DEL MORTO, ed e'' passato all''altro DOPO la morte
+
+**Nei log**: `G2` = host *(`IsHost: True`, tutte le righe `mia=host`)* **ed e'' G2 il giocatore morto.**
+```
+G2:777  owner=io  dist_io=0.0  dist_altro=2.7  life=220     <- ULTIMO tick prima della morte
+G2:786  [Morte] annuncio inviato: G2 e'' morto
+G2:787  PLAYERDEAD
+G2:789  [EnemyTree] ElderBrother enabled=False isRunning=False  vita=190  mia=host   <- PAUSA
+G2:801  owner=altro
+G1:1934 [Morte] stato aggiornato: G2 morto
+        [EnemyTree] ElderBrother enabled=True isRunning=True esito=resume:StartBehaviour  vita=190
+```
+
+### ⭐ (c) IL NOSTRO FIX E'' STATO ESERCITATO — e il ramo VECCHIO non poteva bastare
+
+**Al rilascio**: `dist_io=7.9`, `dist_altro=6.2` *(G2:801)*.
+**`PeerIsCloser` esige `nearestRemote + OWNER_DISTANCE_MARGIN(2.5) < localDistance`** ⇒
+*`6.2 + 2.5 = 8.7 < 7.9` = **FALSO***. **E `wants` e'' falso** *(il locale e'' morto)*.
+⇒ **NESSUNO dei due rami vecchi scatta** ⇒ **solo `DecideOwnership` con `IsLocalPlayerDead()`** *(e
+**senza** `OWNER_HOLD_SECONDS`)* **puo'' aver ceduto.** ✅
+**Firma osservabile**: *pausa sul morto + `resume:StartBehaviour` sul vivo, **nello stesso istante della
+morte**, a `vita=190`.*
+⭐ **E `dist_io=0.0` significa che G2 e'' morto ADDOSSO al boss** — **il caso peggiore, quello che
+`peerCloser` non copriva, e il buco morde SOLO li''** *(a meno di 2,5 unita'')*. **Ecco perche'' "in
+passato funzionava": se il proprietario moriva LONTANO, il ramo vecchio bastava.**
+*(Nota: la stringa `PauseEnemy` non compare nei log perche'' `PauseEnemy` logga come `[EnemyTree]`.)*
+
+### 🔴 (d) E IL BUCO ERA REALE, e si VEDE nei log — e'' esattamente il sintomo segnalato
+
+```
+Dopo la morte:
+   la copia dell''HOST resta FERMA a 190      <- ⭐ la riga "la barra resta ferma mentre l''altro colpisce"
+   il CLIENT (nuovo proprietario, vivo) la porta a 190 -> 0
+```
+**⇒ Con l''host ancora PADRONE sarebbe stato BOSS INVULNERABILE.** ✅
+⚠️ **E la spiegazione della "vita condivisa" dell''utente e'' ora precisa**: *scende **identica** su
+entrambe finche'' entrambe applicano *(400→190 identico nei due log)*, **poi solo sul client** e
+**gelata sull''host**.* ⇒ **e'' la fragilita'' gia'' annotata in §2** *("giusta per ora, ma fragile:
+se un danno arrivasse per una via che non passa da `EnemyDamageArea.TakeDamage`, la barra
+divergerebbe")* — **e il caso "proprietario morto addosso al boss" e'' proprio una di quelle vie.**
+**⇒ Materializzata, non piu'' solo prevista.** **Da decidere** *(non implementare a sorpresa)*.
+
+### ⚠️ (e) `EnemyDamagePatch`: il suo COMMENTO e'' FALSO
+
+**E'' un Postfix su `EnemyDamageArea.TakeDamage`** *(nome di METODO reale: `Void TakeDamage(Hit,
+Boolean)` — non un evento)*. ⚠️ **Ma la frase «a PEER never sees its own hit applied» e'' falsa**: un
+Postfix gira **dopo** `EnemyDamageArea::TakeDamage` → `TakeDamageAmount` *(la sottrazione vita)*, **e per
+i boss la vita NON viene riscritta dalla rete** *(`if (!isBoss) enemy.SetHealth(currentLife)`;
+`IsBoss` = namespace sotto `Gameplay.GameControllers.Bosses`)*.
+**Prova nei log**: *la copia del client **perde vita mentre il padrone e'' l''host*** *(G1 `owner=altro`
+con `life=400` → `owner=altro` con `life=370`)*.
+**Il doppio conteggio NON avviene** perche'' ogni macchina applica ogni colpo **una volta sola** *(il
+proprio in locale + gli altrui via relay)*. ⇒ **funziona, ma il commento va corretto: descrive un
+modello che non e'' quello vero.**
+
+### ⚠️ CORREZIONE IMPORTANTE: il boss NON era `PietyMonster`
+
+**Era `ElderBrother`** *(= Warden of the Silent Sorrow, il PRIMO boss, scena `D17Z01S11`)*.
+**Prove**: id `en|D17Z01S11|ElderBrother|-806|22` · clip `ElderBrother_Death` ·
+`ElderBrotherIntroDummy` · **G2:914 "G1 has defeated the Warden"** · progresso `D17Z01_BOSSDEAD`.
+**`PietyMonster` = 0 occorrenze nei log.**
+⭐ **E questo spiega la terza riga del test** *("il boss si ferma del tutto" → "MAI avvenuto")*:
+**`PietyMonsterBehaviour::OnUpdate` e'' l''UNICO behaviour di boss che legge `LogicManager::get_CurrentState`
+e ferma l''albero sul `PlayerDead`** *(verificato in IL su tutti i chiamanti)*; **`ElderBrotherBehaviour`
+non ha quel ramo** ⇒ **non poteva fermarsi.** ✅ **"Mai avvenuto" era corretto E previsto.**
+
+### ✅ (f) LA MORTE DEL BOSS: una sola, pulita, sulla macchina proprietaria
+
+`[EnemyKill] D17Z01S11@ElderBrother MORTO Dead=True vita=0.0 attivo=True` — **1× su G1, 0× su G2**;
+clip `ElderBrother_Death`. **`[EnemyDeath]` = 0 in entrambi** ⇒ **`SettleStuckDeaths` MAI SCATTATA**:
+**il rischio dichiarato NON si e'' materializzato.** L''host lo seppe dal canale progresso
+*(G2:913 `D17Z01_BOSSDEAD`, G2:914 "G1 has defeated the Warden")* dopo aver lasciato la stanza.
+**Al rientro (G2:977) il boss NON e'' risorto** ✓.
+⚠️ **La struttura del rischio resta comunque confermata dal codice**: *il blocco che annuncia la morte
+(`[EnemyKill]`+`SendEnemyKill`+`SendEnemyDeathGlobal`) **non e'' protetto da controllo di proprieta''***,
+e le copie non-proprietarie **possono** davvero arrivare a zero *(la vita dei boss non e'' sincronizzata)*.
+**Porta aperta, non attraversata.**
+
+### ✅ (g) NESSUNA REGRESSIONE
+
+**`exceptions` max=0 e somma=0 in ENTRAMBI** *(attenzione: il valore, non il nome del campo — le righe
+che **contengono** la parola sono 173/174)*. Zero `NullReference` · `IndexOutOfRange` ·
+`Object reference` · `IMPRONTA DIVERSA` · `SAVEERROR` · `[Progress] apply failed` · `replica fallita`.
+**Unica `[Error` per log = file di salvataggio assente, benigna.** `animRestart` 89/59 · `animRepeat`
+45/33 · `orientFlip` 14/16 · `orientSkip` 0/0 · un solo `stalls100=1` per log.
+⭐ **E `[EnemyTick]` e'' scesa a <1% del log** *(22 righe su G1, 18 su G2, intervallo 10 s)*, contro
+**`[EnemyTree]` = 1140 righe** misurate in una sessione precedente prima del fix del dedup.
+**Server**: nessun log fornito ⇒ non verificabile.
+
+### 📌 E UNA NOTA DI METODO DELL''UTENTE, che vale come regola
+
+> *"talvolta codice che funziona non va toccato; al massimo se e'' grave e va pulito."*
+**Applicata qui**: il meccanismo dei boss **funziona**, ed e'' **giusto per ora** *(parole della todo
+§2)*. **⇒ La divergenza delle barre a proprietario morto si REGISTRA, non si tocca a sorpresa.**
+**La decisione si prende con i dati davanti.**
