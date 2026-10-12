@@ -1,76 +1,89 @@
 # BUG NOTI — Blasphemous COOP
 
-> **A cosa serve questo file.** Alcuni difetti sono **troppo difficili da riprodurre in laboratorio** per
-> poterli chiudere qui: dipendono da una combinazione di stanza, tutorial, ordine di ingresso e
-> tempismo che non si riesce a ricreare a comando. Sono reali — li hanno visti i giocatori — ma non
-> sono diagnosticabili con un test controllato.
+> **A cosa serve questo file.** Alcuni difetti **non si riescono a far succedere a comando**: dipendono
+> da una combinazione di stanza, tutorial, ordine di ingresso e tempismo che non si riesce a ricreare
+> pilotando un test. Sono reali — li hanno visti i giocatori — ma **un test controllato non li produce**.
 >
-> **Quindi si dichiarano.** Un bug noto e scritto è un bug su cui, quando un giocatore lo riporta, si
-> sa già dove guardare. Un bug noto e taciuto è una segnalazione che si ricomincia da zero.
+> **Quindi si dichiarano.** Un difetto noto e scritto è un difetto su cui, quando un giocatore lo
+> riporta, si sa già dove guardare. Un difetto noto e taciuto è una segnalazione che ricomincia da zero.
 >
-> **⚠️ E vale la regola del progetto**: *un difetto difficile da riprodurre **non** è un difetto da
-> aggirare con un fix "a naso".* Meglio lasciarlo scritto e aspettare un log.
+> **⚠️ E vale la regola del progetto**: *un difetto che non si riproduce **non** è un difetto da aggirare
+> con un fix "a naso".* Meglio lasciarlo scritto e aspettare un log.
+
+## ⚠️ Il criterio, e cosa NON va in questo file
+
+**Ci va un difetto che non si riesce a far succedere quando si vuole.**
+**NON ci va un difetto che stiamo ancora indagando**: *quelli vivono nel `TODO.md`, con la loro voce e la
+loro priorità.* Se un difetto è **ancora aperto e in lavorazione**, metterlo qui lo farebbe sembrare
+abbandonato — e non lo è.
+
+**La forma giusta di una voce qui**: *cos'è, come si riconosce, cosa si sa della causa, e cosa serve per
+capirlo meglio.* **Mai un sintomo senza contesto.**
 
 ---
 
-## 1. Le stanze del tutorial sono inaffidabili — sprite e nemici non respawnano al falò
+## 1. 🔴 Un'esecuzione seguita dalla morte di un nemico poteva bloccare il gioco — **CHIUSO, ma non sappiamo riprodurlo**
 
-**Cosa si vede.** Nelle stanze con i **tutorial a sprite** (quelli che spiegano una meccanica), sedersi
-al falò **non fa respawnare gli sprite del tutorial**, mentre **in tutte le altre stanze il respawn
-funziona**. E in generale quelle stanze si comportano in modo anomalo: è lì che si sono visti il
-maggior numero di difetti difficili da riprodurre.
+**Cosa si vedeva.** *"G1 uccide un nemico, esce il prompt di esecuzione a G2, G2 esegue l'esecuzione,
+diventa **invisibile** nel suo schermo e **fermo** a G1; nel client di G2 non era possibile fare nulla,
+**completamente bloccati tutti i tasti**"* — **costretti a chiudere il gioco a forza.**
+
+**Perché sta ancora qui pur essendo chiuso.** **La causa è stata trovata e corretta**, ma il difetto
+**non si è mai riuscito a riprodurre a comando**: è capitato due volte in sessioni diverse, in momenti
+non pilotati. ⇒ **Se ricapita, va riconosciuto in un minuto**, non re-indagato da zero.
+
+**Cos'era.** `DestroyDeadEnemy` faceva `Object.Destroy` sul GameObject del nemico **mentre il gioco
+teneva ancora** `Execution.ExecutedEntity` e la macchina a stati della prop di esecuzione:
+- `StuntBehaviour.OnStateUpdate` chiama `GetComponent<EnemyBehaviour>()`, e con l'oggetto distrutto
+  l'eccezione nasce **dentro l'icall nativo** ⇒ **514 eccezioni non gestite**, il **78% di quel log**;
+- e lo stato `Stunt` **non riesce più a uscire** *(la via d'uscita è l'ultima istruzione di
+  `OnStateUpdate`, che l'eccezione salta)* ⇒ viene richiamato **ogni frame**;
+- **ma il blocco dei tasti non era il diluvio**: la coroutine di esecuzione
+  `SetBlocker(EXECUTION,true) → KillEntity() → ShowPlayer → SetBlocker(false)` **moriva** su
+  `KillEntity()` ⇒ penitente invisibile, `IsOnExecution` mai resettato, **blocker acceso per sempre.**
+
+**Fix** *(commit `22d9fec`, tag `niente-destroy-sul-nemico-morto`)*: **`SetActive(false)` invece di
+`Destroy`** — il nemico sparisce come deve, **i riferimenti del gioco restano validi.**
+
+### 🔎 Se ricapita, queste sono le firme da cercare nel log
+
+```
+[Error: Unity Log] NullReferenceException                       <- in DILUVIO = questo bug
+[Error: Unity Log] Ups! There was an unhandled exception: ...   <- e questo
+   stack: UnityEngine.Component.GetComponent[EnemyBehaviour]()
+          ...StuntBehaviour.OnStateUpdate
+   stack: Tools.Level.Interactables.Execution.TriggerAwareness()   <- il prompt
+[TRACE][INPUT] blocker EXECUTION ... enabled                    <- e NESSUN "disabled" dopo
+```
+**⇒ Se vedi `EXECUTION enabled` senza il `disabled` corrispondente, è questo**: *il penitente è
+invisibile e i tasti sono morti.*
+
+**⚠️ E c'è un secondo punto, mai osservato**: in `SettleStuckDeaths` è rimasta **la stessa
+`Object.Destroy`**, lasciata perché non è **mai** scattata *(`[EnemyDeath]` = 0 in ogni sessione
+misurata)*. **Ha un commento nel codice che dice cosa fare la prima volta che appare in un log:**
+diventare `SetActive(false)` come l'altra.
+
+---
+
+## 2. Le stanze del tutorial sono inaffidabili — sprite e nemici non respawnano al falò
+
+**Cosa si vede.** Nelle stanze con i **tutorial a sprite**, sedersi al falò **non fa respawnare gli
+sprite del tutorial**, mentre **in tutte le altre stanze il respawn funziona**. E in generale quelle
+stanze si comportano in modo anomalo: è lì che si è visto il maggior numero di difetti difficili da
+riprodurre.
 
 **Perché non lo chiudiamo qui.** Il respawn degli sprite del tutorial è **logica di scena del gioco**,
-non nostra: la mod non ha un percorso per i tutorial (`ShowTutorial` = 0 in tutti i log misurati).
-E la stanza **mischiata al tutorial** rende ogni altro sintomo ambiguo — *"è un bug del multi o è il
-tutorial che si comporta così?"* non ha risposta in quella stanza.
+non nostra: la mod non ha un percorso per i tutorial *(`ShowTutorial` = 0 in tutti i log misurati)*. E
+la stanza **mischiata al tutorial** rende ogni altro sintomo ambiguo: *"è un bug del multi o è il
+tutorial che si comporta così?"* non ha risposta lì dentro.
 
 **Cosa fare.** **Non testare le meccaniche in quelle stanze.** Si perdono ore su sintomi che non hanno
-niente a che vedere col multi. **Se un giocatore le attraversa, va bene** — ma un difetto osservato lì
-va riportato **e poi riverificato altrove** prima di indagarlo.
+niente a che vedere col multi. **Se un giocatore le attraversa va bene** — ma un difetto osservato lì va
+riportato **e poi riverificato altrove** prima di indagarlo.
 
 ---
 
-## 2. Desync quando l'HOST si siede al falò e il NON-HOST è nella stanza
-
-**Cosa si vede.** *Le due macchine simulano due stanze differenti.* **Uscire e rientrare risolve.**
-
-**La condizione isolata** *(dall'osservazione diretta, molte interazioni)*:
-- **l'HOST si siede al falò**, **e**
-- **il NON-HOST è presente nella stanza in quel momento**.
-
-**Indifferente**: l'ordine di ingresso *(chi entra prima)*, l'ordine dell'aggro, e **se il trigger di
-aggro iniziale è scattato o no**.
-**Non si vede** se il non-host **non** è nella stanza.
-
-**Perché è difficile.** Serve una combinazione precisa di presenza e tempismo, e la finestra è breve.
-È il tipo di difetto che **emerge giocando**, non pilotando un test.
-
-**⚠️ Nota**: la **voce 4** del TODO è *"il falò si propaga"* ed è **verificata** in entrambi i casi
-*(stessa stanza e stanze diverse)*. Questo difetto è **un'altra cosa** e va tenuto separato: non
-rimette in dubbio la propagazione, ma dice che **in una condizione specifica lo stato delle due
-macchine diverge lo stesso.**
-
----
-
-## 3. L'AI va in pausa dopo il parry, e l'aggro è difficile
-
-**Cosa si vede**, sul **non-host**:
-- l'AI di un nemico **sembra andare in pausa** quando il nemico fa **parry / contrattacco**;
-- un nemico **fatica ad andare in aggro** se non **dopo aver colpito o essere stato colpito**.
-
-**L'ipotesi, coerente col disegno.** La mod **mette in pausa l'albero di comportamento sui
-non-proprietari** *(è il modo in cui un "puppet" segue la posizione invece di simulare)*. Un albero in
-pausa **non decide**: quindi non completa una reazione e **non entra in aggro da solo**. Sarebbe
-**conseguenza del disegno**, non un difetto nuovo — ma **non è verificato**, e va misurato prima di
-toccare qualsiasi cosa.
-
-**Cosa servirebbe.** Un log che dica, per il nemico vicino al non-host: **chi lo possiede**, **se
-l'albero è in pausa**, e **cosa fa l'aggro** quando il giocatore si avvicina senza colpire.
-
----
-
-## 4. I salvataggi cambiano cartella se Steam non è avviato
+## 3. I salvataggi cambiano cartella se Steam non è avviato
 
 **Cosa si vede.** La partita sembra **persa o corrotta** dopo un avvio senza Steam.
 
@@ -82,33 +95,19 @@ cartelle divergono.
 **Cosa fare.** **Avvia SEMPRE Steam prima del gioco.** La mod scrive `[Path]` all'avvio con la cartella
 in uso: *quella riga è la risposta a "dove sono finiti i salvataggi".*
 
-**Stato.** Documentato *(voce 36)*. Non è un difetto della mod e non è fixabile da qui.
+**Stato.** Documentato *(voce 36)*. **Non è un difetto della mod e non è fixabile da qui.**
 
 ---
 
-## 5. Fuori portata, con la causa nota: la divergenza dopo un falò
-
-**Cosa si vede.** Dopo un falò i due mondi possono restare **`5` contro `4`** nemici nella stessa
-stanza.
-
-**Causa parziale, misurata.** La divergenza residua **non è più la lista degli spawn point** *(i
-conteggi ora coincidono: 5/5 e 9/9)*: è la **lista VIVA** dei nemici, che **si accorcia in modo
-asimmetrico con le morti** — gli hash dei due log sono **incrociati**, cioè le due liste vive sono
-davvero diverse.
-
-**Perché è qui.** Va indagato con un test dedicato *(un falò con nemici uccisi in stanze diverse)* e
-**non** è la stessa cosa delle morti o della proprietà. **Voce 46.**
-
----
-
-## Come si riporta un bug noto *(per chi gioca e per i tester)*
+## Come si riporta un difetto *(per chi gioca e per i tester)*
 
 **Quello che serve**, in ordine di utilità:
 
 1. **Cosa hai visto**, in una frase, **e dove** *(quale stanza, o che aspetto aveva)*.
-2. **Cosa stavate facendo**: chi era **host**, chi era **nella stanza**, e **cosa è successo subito prima**
-   *(un falò, una morte, un'esecuzione, un cambio di stanza)*.
-3. **L'ordine degli eventi**, anche approssimativo. *"Prima X, poi Y"* vale più di un minuto di descrizione.
+2. **Cosa stavate facendo**: chi era **host**, chi era **nella stanza**, e **cosa è successo subito
+   prima** *(un falò, una morte, un'esecuzione, un cambio di stanza)*.
+3. **L'ordine degli eventi**, anche approssimativo. *"Prima X, poi Y"* vale più di un minuto di
+   descrizione.
 4. ⭐ **I due log**, uno per macchina:
    `%USERPROFILE%\AppData\LocalLow\TheGameKitchen\Blasphemous\output_log.txt`
    **E il log del server**, `ServerOutput.log`, nella cartella del server.
@@ -116,6 +115,6 @@ davvero diverse.
    **Un difetto riproducibile a comando è un difetto che si chiude.**
 
 **⚠️ E una cosa da NON fare**: *non descrivere il sintomo con la causa che immaginate.*
-*"Il nemico si teletrasporta perché la sincronizzazione è rotta"* è **meno** utile di
-*"il nemico era a sinistra e dopo un secondo era tornato al punto di partenza"*.
+*"Il nemico si teletrasporta perché la sincronizzazione è rotta"* è **meno** utile di *"il nemico era a
+sinistra e dopo un secondo era tornato al punto di partenza"*.
 **Il sintomo si osserva, la causa si ipotizza — e le ipotesi sbagliate costano sessioni.**
