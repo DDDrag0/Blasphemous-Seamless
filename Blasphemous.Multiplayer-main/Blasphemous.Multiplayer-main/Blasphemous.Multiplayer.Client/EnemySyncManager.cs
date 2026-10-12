@@ -3359,6 +3359,20 @@ namespace Blasphemous.Multiplayer.Client
                         break;
                     }
                 }
+
+                // Deactivate the corpse, and this is the other half of the voice-54 fix.
+                //
+                // The announcement channel (DestroyDeadEnemy) deactivates via SetActive(false), but it can
+                // only do so while the enemy is still in _ids - and this health channel has just forgotten it.
+                // So a peer that receives the death through the synced health (the normal case) removed the id
+                // here, the announcement then found nothing to deactivate, and the corpse stayed visible,
+                // untargetable, with its AI off: the "ghost". On the peer the death animation never plays on
+                // its own because the behaviour tree is paused, so there is nothing to wait for - deactivating
+                // immediately is the correct end, and the host's own copy still plays its death normally.
+                //
+                // ForgetEnemy has already run, so this cannot race the announcement channel anymore.
+                if (enemy != null && enemy.gameObject != null && enemy.gameObject.activeSelf)
+                    enemy.gameObject.SetActive(false);
             }
         }
 
