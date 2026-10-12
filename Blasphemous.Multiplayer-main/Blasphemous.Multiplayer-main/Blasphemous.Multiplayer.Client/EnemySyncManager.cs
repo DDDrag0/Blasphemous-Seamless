@@ -1892,7 +1892,7 @@ namespace Blasphemous.Multiplayer.Client
         private static string BuildSpawnPointId(string scene, EnemySpawnPoint point)
         {
             Vector3 p = point.transform.position;
-            return $"sp|{scene}|{point.gameObject.name}|{p.x:F2}|{p.y:F2}";
+            return $"sp|{scene}|{StripInstanceSuffix(point.gameObject.name)}|{p.x:F2}|{p.y:F2}";
         }
 
         /// <summary>
@@ -1904,18 +1904,64 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static string BuildFreeEnemyId(string scene, Enemy enemy)
         {
-            string name = StripInstanceHash(enemy.gameObject.name);
+            string name = StripInstanceSuffix(enemy.gameObject.name);
             Vector3 p = enemy.transform.position;
             return $"en|{scene}|{name}|{p.x:F0}|{p.y:F0}";
         }
 
-        private static string StripInstanceHash(string name)
+        /// <summary>
+        /// Removes the per-instance suffix a name picks up, so the same object is called the same thing on
+        /// both machines.
+        ///
+        /// TWO DIFFERENT SUFFIXES HAVE TO BE HANDLED, and treating them as one is what broke the spawn
+        /// points. They come from different places and look different:
+        ///
+        ///   - the GAME appends a hash: EnemySpawnPoint.SetEntityName does "EntityName + GetHashCode()",
+        ///     so 'Tutorial757000320' becomes 'Tutorial'. A hash is digits, so the digits are stripped -
+        ///     but only when they were APPENDED to something, never for a name that is all digits.
+        ///
+        ///   - UNITY appends an instance counter in parentheses: 'SPAWN (11)' on one machine,
+        ///     'SPAWN (15)' on the other. The counter differs between processes exactly like the hash does.
+        ///
+        /// The spawn-point builder only did the first, so 'SPAWN (11)' came out unchanged and the two
+        /// machines produced different ids for the same spawn point: measured at TWO ids out of five
+        /// differing in one room, and the keys that differ never match a claim - no ownership token ever
+        /// resolves against them, so those enemies lose BOTH their token and their position. In a full room
+        /// that is a handful of enemies permanently broken, silently.
+        ///
+        /// The parentheses form is removed first, because a name like 'SPAWN (11)' also ends in a digit once
+        /// the closing bracket is taken off - the two patterns would otherwise overlap on nothing useful.
+        /// </summary>
+        private static string StripInstanceSuffix(string name)
         {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            // Unity's instance counter: 'NAME (12)'. Stripped only when the parentheses hold digits and
+            // close the name, so a genuine 'Fool (Clone)' keeps its suffix.
+            int open = name.LastIndexOf(" (", System.StringComparison.Ordinal);
+            if (open > 0 && name.EndsWith(")", System.StringComparison.Ordinal))
+            {
+                string inside = name.Substring(open + 2, name.Length - open - 3);
+                if (inside.Length > 0)
+                {
+                    bool digits = true;
+                    foreach (char ch in inside)
+                    {
+                        if (!char.IsDigit(ch)) { digits = false; break; }
+                    }
+
+                    if (digits)
+                        return name.Substring(0, open);
+                }
+            }
+
+            // The game's own hash-append: trailing digits, but never a name that was all digits to begin
+            // with.
             int end = name.Length;
             while (end > 0 && char.IsDigit(name[end - 1]))
                 end--;
 
-            // Only strip when digits were appended to something, never when the name is all digits.
             if (end == name.Length || end == 0)
                 return name;
 
