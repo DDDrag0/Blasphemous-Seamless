@@ -128,6 +128,22 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         {
             // Left a scene
             ModLog.Info("Leaving old scene");
+
+            // GIVE THE ENEMIES BACK BEFORE ANNOUNCING THAT WE ARE GONE, and the order is the whole point.
+            //
+            // Ownership is scene memory on both machines, but only the machine that MOVES clears its own:
+            // EnemySyncManager.LevelLoaded wipes _ids and _lastSent here, on this machine, a moment from now.
+            // The peer keeps everything. So a host that walks into a room, takes the enemies it is closer to
+            // and then walks out would never hand them back - its list no longer has them, so it cannot
+            // arbitrate them - and the peer, whose self-heal only fires while OwnershipKnown is false, would
+            // hold a paused puppet for the rest of the session.
+            //
+            // This has to come before SendLeaveScene because the server filters ownership by the SENDER's
+            // scene: receivePlayerLeaveScene sets that to the empty string, so a token queued afterwards is
+            // never delivered at all, and one queued after the next scene loads arrives in the wrong room.
+            // Both messages share one queue, so the enqueue order is the delivery order.
+            EnemySyncManager.ReleaseOwnedEnemiesBeforeLeaving();
+
             NetworkManager.SendLeaveScene();
         }
 

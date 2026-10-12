@@ -1280,6 +1280,65 @@ namespace Blasphemous.Multiplayer.Client
         /// name relative to the spawn, so the id sets built here diverged and the peer rejected every
         /// index as out of range.
         /// </summary>
+        /// <summary>
+        /// Gives back every enemy this machine owns, because it is about to leave the scene.
+        ///
+        /// THE BUG THIS CLOSES. Ownership is scene memory by construction: LevelLoaded wipes _ids,
+        /// _lastSent and _puppetEnemies on whichever machine changes scene, with the note that ids do not
+        /// survive a scene change. So the machine that MOVES forgets, and the one that STAYS does not - and
+        /// that asymmetry left a hole. The host walks into a room, sees the enemies, takes the ones it is
+        /// closer to and publishes a token; then it walks out. Its own list no longer contains them, so it
+        /// can no longer arbitrate them and never publishes the hand-back - and the peer is left obeying a
+        /// token that will never be superseded. On the peer the self-heal only fires while OwnershipKnown is
+        /// false, and the token had set it true, so the enemy stayed a paused puppet for the rest of the
+        /// session: it did not walk, did not attack, did not even get pushed around, because FreezePhysics
+        /// switches the controller off.
+        ///
+        /// WHY HERE AND NOT AT THE PEER. The peer could reclaim on ReceiveLeaveScene, and that would be
+        /// simpler - but that packet carries no name, so with three or more players it cannot say WHO left,
+        /// and the peer would have to reclaim from everyone at once. Here the machine leaving knows exactly
+        /// what it owned, in which scene, and who is present.
+        ///
+        /// MUST BE CALLED BEFORE SendLeaveScene. The server filters ownership by the SENDER's scene -
+        /// receivePlayerLeaveScene sets it to the empty string - so a token queued after that line is never
+        /// delivered, and one queued after entering the new scene is delivered to the wrong room. The order
+        /// is the whole fix; sending late is indistinguishable from not sending.
+        ///
+        /// IT DOES NOT RESOLVE THE ENEMY, deliberately. At OnBeforeLevelLoad the old scene is still loaded, so
+        /// the handle could be read from the instance - but reading it from the id means this works even for
+        /// an enemy that is already gone, and a token for an enemy the receiver cannot resolve is harmless:
+        /// it sets the flag, fails to find the object and returns.
+        /// </summary>
+        public static void ReleaseOwnedEnemiesBeforeLeaving()
+        {
+            if (!Main.Multiplayer.NetworkManager.IsConnected)
+                return;
+
+            // Only the arbiter publishes ownership; a peer obeys, and its OwnedByLocal reflects a token the
+            // host sent rather than a decision of its own.
+            if (!IsHost)
+                return;
+
+            int released = 0;
+            foreach (KeyValuePair<string, EnemyState> entry in _lastSent)
+            {
+                if (!entry.Value.OwnedByLocal)
+                    continue;
+
+                // Latch the publication, exactly as the send loop does, so that if this machine comes back
+                // to the scene before LevelLoaded clears the table it does not publish the same hand-back
+                // twice and does not think the peer was told something it was not.
+                entry.Value.OwnershipKnown = true;
+                entry.Value.LastPublishedOwnerIsMe = false;
+
+                Main.Multiplayer.SendEnemyOwnership(HandleOf(entry.Key), true);
+                released++;
+            }
+
+            ModLog.Info($"[Proprieta''] uscendo dalla scena ho restituito {released} nemici sui " +
+                        $"{_lastSent.Count} che avevo in memoria (scena={_scene})");
+        }
+
         public static void LevelLoaded(string scene)
         {
             _scene = scene;
