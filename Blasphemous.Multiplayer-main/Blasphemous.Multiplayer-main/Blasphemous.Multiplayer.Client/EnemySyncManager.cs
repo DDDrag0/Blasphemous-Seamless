@@ -2403,6 +2403,36 @@ namespace Blasphemous.Multiplayer.Client
                 collider.TeleportTo(position);
         }
 
+        /// <summary>
+        /// Snaps an enemy to the last position the network reported, right when this machine takes ownership.
+        ///
+        /// THE BUG THIS CLOSES (voice 51). When a machine stops owning an enemy it stops transmitting, and
+        /// the machine that takes over starts simulating from ITS OWN local copy - which has not been
+        /// simulating, so it is wherever it was, often the spawn point. The new owner then broadcasts that
+        /// stale position, and the other player watches the enemy slide back to where it started.
+        ///
+        /// The corrective data already exists: _remoteTargets[id] holds the last position the previous owner
+        /// transmitted, and it keeps being written by the receive path regardless of who owns the enemy. It
+        /// is the closest thing to the truth this machine has at the moment of the handover, so the enemy is
+        /// placed there before the new owner's AI starts moving it. If there is no record yet - the enemy was
+        /// never seen - the snap is skipped and the local copy stands, because there is no better answer.
+        /// </summary>
+        private static void AdoptLastKnownPosition(Enemy enemy, string id)
+        {
+            if (enemy == null || enemy.gameObject == null)
+                return;
+
+            Vector2 lastKnown;
+            if (!_remoteTargets.TryGetValue(id, out lastKnown))
+                return;
+
+            Vector3 target = new Vector3(lastKnown.x, lastKnown.y, enemy.transform.position.z);
+            PlaceEnemy(enemy, target);
+
+            ModLog.Info($"[Proprieta''] t={Time.time:F1} {FullId(id)} adotta la posizione " +
+                        $"({lastKnown.x:F1},{lastKnown.y:F1}) al passaggio di proprieta'");
+        }
+
         /// <summary>Distance to the nearest other player, or float.MaxValue when none is known.</summary>
         private static float NearestRemoteDistance(Enemy enemy)        {
             float nearest = float.MaxValue;
@@ -2701,6 +2731,7 @@ namespace Blasphemous.Multiplayer.Client
             {
                 state.OwnedByLocal = true;
                 state.OwnerSince = Time.time;
+                AdoptLastKnownPosition(enemy, IdOf(enemy));
                 changed = true;
             }
             else if (peerCloser && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
@@ -2744,7 +2775,10 @@ namespace Blasphemous.Multiplayer.Client
             // Take effect at once rather than waiting for the next send tick, which only runs 20 times a
             // second: an enemy that just lost ownership must stop being simulated immediately.
             if (ownedByMe)
+            {
+                AdoptLastKnownPosition(enemy, id);
                 ResumeEnemy(enemy);
+            }
             else
                 PauseEnemy(enemy);
         }
@@ -2994,6 +3028,7 @@ namespace Blasphemous.Multiplayer.Client
                     else if (!IsHost && !previous.OwnershipKnown)
                     {
                         previous.OwnedByLocal = true;
+                        AdoptLastKnownPosition(enemy, id);
                         ResumeEnemy(enemy);
                     }
                     else
