@@ -83,6 +83,8 @@ sotto `### Voce N — …`. **Le voci APERTE non sono state toccate.**
 | **47** | **La riga dei nemici occupava METÀ del log** — `LogDiagnosticSnapshot` stampava una riga per nemico ogni 0,5 s | ✅ RISOLTA | CHIUSA — integrale in fondo *(cerca "Voce 47 —")* |
 | **48** | 🔴 **Un CADAVERE poteva TENERE il boss — e il boss diventava INVULNERABILE** | ✅ RISOLTA *(2 fix)* | CHIUSA — integrale in fondo *(cerca "Voce 48 —")* |
 | **49** | 🔴 **Il nemico resta FERMO PER SEMPRE se l'host entra nella stanza ed esce subito** — segnalato dall'utente, riproducibile | ✅ RISOLTA (commit 0cbfe7b) | CHIUSA — integrale in fondo *(cerca "Voce 49 —")* |
+| **50** | ✅ **Gli id degli SPAWN POINT divergevano fra le macchine** *(nome Unity col contatore)* — `SPAWN (11)` vs `SPAWN (15)` | ✅ **RISOLTA** | **Misurato**: 9 `[Error]` su G1 e 10 su G2 — *tutte `IMPRONTA DIVERSA`* — con **2 id su 5 divergenti**; e quelle chiavi **non ricevevano mai** una rivendicazione risolvibile. **Causa**: `BuildSpawnPointId` usava il nome **grezzo**, mentre `BuildFreeEnemyId` toglieva il suffisso. **Fix**: `StripInstanceSuffix` gestisce **entrambi** i pattern (hash del gioco + ` (N)` di Unity). Vedi "Voce 50" in fondo |
+| **51** | 🔴 **Il nuovo proprietario IMPONE la sua posizione, e nessuno lo corregge dopo il passaggio** — l'altro vede il nemico "slittare" allo spawn | 🔴 **NUOVA — causa verificata, fix da progettare** | ⭐ **Verificato in codice**: `SendEnemyOwnership` porta **solo handle + 1 bool — NESSUNA POSIZIONE**, e il gate di trasmissione è `if (!previous.OwnedByLocal) continue;` ⇒ **chi cede smette di trasmettere, e chi riceve non riceverà mai più un pacchetto correttivo** ⇒ *la sua copia non viene mai corretta.* E `PlaceEnemy` **non viene mai chiamato per un nemico appena diventato nostro** *(il ciclo salta i posseduti)*: *non esiste una riga che riporti la copia locale alla posizione nota quando si prende la proprietà.* ⚠️ **E il nostro fix di oggi ha TOLTO UNA PROTEZIONE ACCIDENTALE**: *prima il peer restava `OwnedByLocal=false` con la **fisica spenta** ⇒ non poteva muoversi né trasmettere; ora riprende l'AI sul posto e **ritrasmette dalla propria copia**, che se ha appena caricato la scena è **allo spawn**.* ⚠️ **MA il teletrasporto NON è riprodotto nei log**: *escursione massima 4.0 unità su 281 campioni, e `FOLLOW_SNAP_DISTANCE=6` non scatta mai* ⇒ *solo `Lerp(0.25)`, **scivolamento, nessun teletrasporto**; e in tutti i travasi presenti la posizione resta invariata.* ⇒ **⚠️ PRIMA DI FIXARE SERVE UNO STRUMENTO**: *il referto dichiara che l'anello decisivo **non è osservabile** — «serve una riga di log con id + `transform.position` locale + `_remoteTargets[id]` al momento della rivendicazione»*. Vedi "Voce 51" in fondo |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -4349,3 +4351,80 @@ PRIMA di annunciare che e' uscito"*. Il fix e' `EnemySyncManager.ReleaseOwnedEne
 chiamato da `Multiplayer.OnLevelUnloaded` **prima** di `SendLeaveScene()` — *l'ordine e' tutto, perche'
 il server filtra la proprieta' per la scena del MITTENTE.*
 
+
+### Voce 50 — gli id degli spawn point divergevano (nome Unity col contatore di istanza)
+
+**Priorita':** ✅ RISOLTA
+
+**Sintomo**: 9 `[Error]` su G1 e 10 su G2, **tutte `IMPRONTA DIVERSA`**, con
+`host=-1418051589` vs `locale=-1030017804` e *"spawn point locali: 7, id locali: 5"*.
+**Causa, verificata in codice**: `BuildSpawnPointId` usava `point.gameObject.name` **grezzo**,
+mentre `BuildFreeEnemyId` toglieva il suffisso di istanza. Unity nomina le istanze `SPAWN (11)`,
+`SPAWN (15)`, ... e quel contatore **cambia fra processi** ⇒ le due macchine costruivano id
+**diversi** per lo **stesso** spawn point: **2 id su 5 divergenti**.
+**Effetto misurato**: quelle chiavi non ricevono **mai** una rivendicazione risolvibile
+*(`remoto = ?`/`False`, 6/6 e 9/9 campioni)*, mentre le altre si'' *(`remoto=True`)*.
+In una stanza piena sarebbero **2 nemici su N rotti del tutto**: posizione **e** token persi,
+perche'' `FindIdOfHandle` fallisce e il percorso esce.
+**Fix**: `StripInstanceHash` → `StripInstanceSuffix`, che gestisce **entrambi** i pattern —
+l''hash del gioco *(cifre finali)* e il contatore di Unity *(` (N)`)* — con le parentesi per prime.
+Usato da **entrambi** i builder.
+**Verificato su 9 casi reali**, tutti corretti, inclusi i due che rompono un''implementazione
+ingenua: `Fool(Clone)` *(nessuno spazio)* e `123` *(tutte cifre)* restano intatti.
+
+### Voce 51 — il nuovo proprietario impone la sua posizione, e nessuno lo corregge
+
+**Priorita':** 🔴 NUOVA — causa verificata, fix da progettare
+
+**Il sintomo (utente)**: *"i nemici vengono slittati nelle posizioni iniziali, solo di posizione,
+l''AI e i target funzionano, vengono semplicemente spostati"* — *"qualche volta funziona il caso che
+voglio [...], qualche volta no"*.
+
+**LA CAUSA, verificata in codice**
+```
+Il cedente NON trasmette la sua posizione quando cede:
+   `SendEnemyOwnership` porta SOLO handle (4 byte) + 1 bool  => NESSUNA POSIZIONE
+   e il gate di trasmissione e''  `if (!previous.OwnedByLocal) continue;`
+=> chi perde la proprieta'' SMETTE di trasmettere
+=> chi la riceve NON ricevera'' MAI piu'' un pacchetto correttivo => la sua copia non e'' mai corretta
+E `PlaceEnemy` NON viene MAI chiamato per un nemico appena diventato nostro
+   (il ciclo salta i posseduti: righe 2223-2224)
+   e in tutto il file non esiste una riga che riporti la copia locale alla posizione nota
+   quando si prende la proprieta''
+```
+**E la macchina che RICEVE la proprieta'' scrive la posizione SBAGLIATA** — *non da un
+`_remoteTargets` stantio, ma dalla **propria istanza appena ricreata dal gioco allo spawn**, che
+impone **trasmettendola**.*
+
+**⚠️ E IL NOSTRO FIX DELLA VOCE 49 HA TOLTO UNA PROTEZIONE ACCIDENTALE**
+```
+PRIMA: il peer restava `OwnedByLocal=false` con la FISICA SPENTA
+       => NON poteva muoversi ne'' trasmettere => NON contraddiceva mai l''host
+          (ma restava fermo per sempre: era la voce 49)
+ORA:   riprende l''AI sul posto e RITRASMETTE dalla propria copia
+       => che, se ha appena caricato la scena, e'' ALLO SPAWN
+```
+**Il bilancio resta positivo** *(un nemico fermo per sempre e'' peggio di uno spostato)*, **ma va
+detto: il fix ha esposto questo difetto invece di crearlo.**
+
+**⚠️ MA IL TELETRASPORTO NON E'' RIPRODOTTO NEI LOG**
+```
+escursione massima del nemico mobile: 4.0 unita'' su 281 campioni
+FOLLOW_SNAP_DISTANCE = 6  =>  NON SCATTA MAI
+=> solo Lerp(..., 0.25) = SCIVOLAMENTO GRADUALE, nessun teletrasporto
+=> e in TUTTI i travasi presenti la posizione resta invariata a -715.1
+```
+**Il valore di spawn e'' pero'' reale e dimostrato**: `x = -715.1`, identico sulle due macchine,
+**14 volte su 14** ricariche di `D01Z01S01`. **E ogni ritorno a `-715.1` avviene sulla macchina che
+ha appena ricaricato la scena** ⇒ *e'' il respawn del **gioco**, non uno snap di rete.*
+
+**⚠️ PRIMA DI FIXARE SERVE UNO STRUMENTO** — *il referto dichiara il limite*: *"l''unico anello non
+osservabile e'' il contenuto di `_remoteTargets` al momento della rivendicazione: per chiudere oltre
+ogni dubbio servirebbe una riga di log a 3101-3105 / 2875-2879 con `id` + `transform.position`
+locale + `_remoteTargets[id]`"*.
+**⚠️ E in questa stessa indagine ho sbagliato l''ipotesi DUE volte** *(prima "il valore e'' stantio",
+poi la sorgente)*: **meglio uno strumento prima del fix.**
+
+**E LA VOCE 11 NON C''ENTRA**: *`StartBehaviour`/`EnablePhysics` non scrivono posizioni; nei log la 11
+si vede come **churn di proprieta''** (`owner=io` E `remoto=True` insieme), quindi e'' **conseguenza**,
+non causa.*
