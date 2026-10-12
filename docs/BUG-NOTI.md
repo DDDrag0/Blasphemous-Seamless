@@ -119,6 +119,30 @@ in uso: *quella riga è la risposta a "dove sono finiti i salvataggi".*
 
 ---
 
+## 4. 🔴 L'esecuzione "incrociata" — uno uccide mentre l'altro ha il prompt *(RARO)*
+
+**Cosa si vede.** Un nemico viene **ucciso da un giocatore**, mentre **l'altro** ha sullo **stesso**
+nemico il prompt di esecuzione. Per chi aveva il prompt, il nemico può diventare un **fantasma**:
+visibile, non colpibile, AI spenta.
+
+**Perché è raro e difficile da riprodurre.** Servono **due giocatori che agiscono sullo stesso nemico
+nello stesso istante, ma con ruoli diversi** *(uno lo uccide, l'altro lo esegue)*. Chi guida **non ha il
+controllo di entrambe le macchine nello stesso momento**, quindi non lo si può pilotare a comando.
+
+**Stato.** Il caso **generale** del fantasma è **chiuso** *(voce 57: la morte via salute ora disattiva
+il cadavere)*. **Questo scenario "incrociato" è il residuo raro.** L'esecuzione in sé non blocca più
+il gioco *(verificato: `EXECUTION` ON → OFF, nessun crash)*. **⇒ Se ricapita, serve il log completo, non
+un fix a naso.**
+
+**Cosa catturare**, da entrambe le macchine:
+```
+ACT_...Execution · EXECUTION (enabled/disabled) · TRYING TO KILL ENTITY
+[EnemyTick] con l'id COMPLETO del nemico (sp|scena|nome|x|y), prima e dopo l'esecuzione
+[EnemyKill] e [EnemySync] non in _ids, per vedere su quale macchina la morte non è arrivata
+```
+
+---
+
 ## Come si riporta un difetto *(per chi gioca e per i tester)*
 
 **Quello che serve**, in ordine di utilità:
