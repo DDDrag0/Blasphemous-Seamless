@@ -10,6 +10,26 @@
 > **⚠️ E vale la regola del progetto**: *un difetto che non si riproduce **non** è un difetto da aggirare
 > con un fix "a naso".* Meglio lasciarlo scritto e aspettare un log.
 
+---
+
+## 🛑 QUESTO FILE SI AGGIORNA **SOLO SU RICHIESTA ESPLICITA DELL'UTENTE**
+
+**Non è un file che si aggiorna a ogni sessione.** Lo decide l'utente, caso per caso.
+
+**Perché.** Il confine fra *"un difetto che non si riproduce"* e *"un difetto che stiamo ancora
+indagando"* è **sottile, e sbagliarlo è facile**: la prima stesura di questo file ci è caduta dentro,
+elencando tre difetti **ancora in lavorazione** *(il desync del falò col non-host presente, l'AI in
+pausa dopo il parry, la divergenza dopo il falò)* che vivono nel `TODO.md` con la loro voce e la loro
+priorità — e lì devono restare, **perché non sono abbandonati, sono aperti.**
+
+**⇒ Se lo aggiornasse l'agente a ogni sessione, tornerebbe a riempirsi di lavoro in corso**, e la
+sezione perderebbe l'unica cosa che la rende utile: **che tutto ciò che sta qui è roba su cui non
+stiamo più lavorando, ma che va riconosciuta se ricapita.**
+
+**Quindi**: *l'agente lo tocca solo quando l'utente dice di toccarlo.*
+
+---
+
 ## ⚠️ Il criterio, e cosa NON va in questo file
 
 **Ci va un difetto che non si riesce a far succedere quando si vuole.**
