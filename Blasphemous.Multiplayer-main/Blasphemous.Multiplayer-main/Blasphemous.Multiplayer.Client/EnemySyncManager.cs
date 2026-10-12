@@ -3243,6 +3243,14 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     // Even the native kill did not take: take it out of the scene so it cannot be found,
                     // hit, or block anything. The spawn point is marked so the room does not resurrect it.
+                    //
+                    // ⚠️ THIS Destroy IS THE SAME HAZARD AS THE ONE REMOVED FROM DestroyDeadEnemy, and it is
+                    // left here only because it has never been observed to run: `[EnemyDeath]` is 0 in every
+                    // session measured so far. If it ever fires it can invalidate the same game references -
+                    // Execution.ExecutedEntity and the prop of the execution interactable - and produce the
+                    // same dead session: unhandled exceptions out of StuntBehaviour, and the EXECUTION input
+                    // blocker left on with no key that responds. The first time this line appears in a log it
+                    // should become SetActive(false), like the other one.
                     ModLog.Info($"[EnemyDeath] {ShortId(id)} resiste anche a KillInstanteneously: lo rimuovo");
                     MarkSpawnPointConsumed(id);
                     UnityEngine.Object.Destroy(enemy.gameObject);
@@ -3823,21 +3831,53 @@ namespace Blasphemous.Multiplayer.Client
         ///
         /// The state that produced the ghost was: Dead set, but the entity neither animated its death nor
         /// deactivated - visible, idle and untargetable, which is the middle of a death sequence that never
-        /// finished. Destroying the GameObject is the definitive end of it.
+        /// finished.
+        ///
+        /// IT NO LONGER DESTROYS THE GAMEOBJECT, and that change is the whole point of this method's history.
+        /// Destroy() is the definitive end of an object, and it was the definitive end of the session too:
+        /// the game keeps its own references to an enemy - Execution.ExecutedEntity, the prop of the
+        /// execution interactable and its native state machine - and destroying the object invalidates them
+        /// while the game still uses them.
+        ///
+        /// What that cost, measured: `StuntBehaviour.OnStateUpdate` calls `GetComponent&lt;EnemyBehaviour&gt;()`
+        /// on the executed enemy. With the object destroyed, the failure happens inside the NATIVE icall
+        /// (GetComponentFastPath), not on a managed null check - which is why the stack's top frame is
+        /// GetComponent rather than OnStateUpdate. And `StuntBehaviour` leaves its state through the LAST
+        /// instruction of OnStateUpdate, a Destroy of the prop: the exception skips it, so the state is never
+        /// left and the native state machine calls OnStateUpdate every single frame. 514 exceptions in one
+        /// session, 78% of that log.
+        ///
+        /// Then it stops being a log problem. The execution coroutine is
+        /// `SetBlocker("EXECUTION", true) -> ... -> ExecutedEntity.KillEntity() -> ... -> ShowPlayer(...) ->
+        /// SetBlocker("EXECUTION", false)`. When KillEntity throws on the ghost, the exception leaves the
+        /// coroutine and the coroutine DIES: the player is never shown again, IsOnExecution is never reset,
+        /// and the blocker stays on - invisible penitent, every key dead, game closed by force. It happened.
+        ///
+        /// Deactivating instead keeps every reference valid while removing the enemy from the scene exactly
+        /// as intended: not visible, not targetable, not colliding, not blocking. And it lets the game end
+        /// its own sequence rather than having the object pulled out from under it.
         /// </summary>
         private static void DestroyDeadEnemy(Enemy enemy)
         {
             if (enemy == null)
                 return;
 
-            // Ask whether the death sequence started, not whether the health is at zero: see
-            // KillEnemyLocally for why Entity.Dead is the wrong question here.
-            if (!enemy.Status.Dead)
-                KillEnemyLocally(enemy, HandleOf(IdOf(enemy)));
+            string id = IdOf(enemy);
 
-            // The game may have already deactivated it; either way it must not remain in the scene.
-            if (enemy != null && enemy.gameObject != null)
-                UnityEngine.Object.Destroy(enemy.gameObject);
+            // Ask whether the death sequence started, not whether the health is at zero: see
+            // KillEnemyLocally for why Entity.Dead is the wrong question here. This is the half that
+            // already did the right thing - the game's own damage entry point, so the flash, the sound and
+            // the DEATH trigger all follow the normal flow.
+            if (!enemy.Status.Dead)
+                KillEnemyLocally(enemy, HandleOf(id));
+
+            // The game may have already taken it down; either way it must not remain in the scene.
+            //
+            // NOT Destroy: see above. SetActive(false) is enough for everything the destroy was for, and
+            // it is the difference between a session that continues and one that ends with the player
+            // unable to press a key.
+            if (enemy != null && enemy.gameObject != null && enemy.gameObject.activeSelf)
+                enemy.gameObject.SetActive(false);
         }
 
 
