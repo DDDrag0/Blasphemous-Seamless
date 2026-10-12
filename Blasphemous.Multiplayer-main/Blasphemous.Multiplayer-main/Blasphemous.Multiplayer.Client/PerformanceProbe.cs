@@ -124,6 +124,13 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             ModLog.Info($"[AnimName] stato={stateHash} clip='{clipName}' primo-avvistamento={enemyLabel}");
+
+            // The parry state of an enemy has a name we have NOT verified against the repository - a
+            // hardcoded hash here would silently never match. Instead the name is resolved at runtime and
+            // this line fires only when the clip genuinely contains "parry", so the marker cannot be
+            // wrong, it can only be absent. Once a session shows the real name, the gate can be tightened.
+            if (clipName.IndexOf("parry", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                ModLog.Info($"[Parry] stato={stateHash} clip='{clipName}' primo-avvistamento={enemyLabel}");
         }
 
         /// <summary>Counts one orientation change applied to an enemy, per enemy.</summary>

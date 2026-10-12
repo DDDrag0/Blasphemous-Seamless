@@ -344,6 +344,16 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly HashSet<string> _killLogged = new HashSet<string>();
 
         /// <summary>
+        /// Handles for which a resolution failure has already been reported.
+        ///
+        /// A peer keeps receiving packets for an enemy it has already removed - that is normal, not an
+        /// error, and logging every single one would flood the log and bury the failures that matter. One
+        /// line per handle is enough to see which enemies are being asked about and not found; the count of
+        /// what is still tracked is printed next to it, which is the actual signal.
+        /// </summary>
+        private static readonly HashSet<uint> _reportedResolveFailures = new HashSet<uint>();
+
+        /// <summary>
         /// Last animation state hash seen per enemy, so a change can be logged exactly once.
         ///
         /// The game has no single place where enemy animations are triggered: every behaviour class of every
@@ -570,6 +580,38 @@ namespace Blasphemous.Multiplayer.Client
             // Silent on purpose: a peer is told about deaths through the synced health, so it can still
             // receive packets for an enemy it has already removed. That is normal, not an error.
             return null;
+        }
+
+        /// <summary>
+        /// Reports, once per handle, that a packet could not be matched to an enemy here.
+        ///
+        /// This is OBSERVATION, not a verdict. Two cases are kept apart on purpose:
+        ///   - the handle is not in _ids at all: either this machine never knew the enemy, or it already
+        ///     forgot it. The counts printed next to it (how many it tracks now) are the real signal for
+        ///     the divergence the voice-45 desync is about;
+        ///   - the handle IS in _ids but the enemy resolves to null: the record was kept while the
+        ///     instance is gone, which is the normal "already removed" case.
+        ///
+        /// ResolveByHandle conflates the two, which is why this reads FindIdOfHandle and ResolveEnemy
+        /// separately instead of calling it.
+        ///
+        /// Deduplicated by handle: a peer can be told about an already-removed enemy many times, and a
+        /// line per packet would bury the failures that matter. One line per handle is the whole story.
+        /// </summary>
+        private static void ReportResolveFailure(uint handle)
+        {
+            if (!_reportedResolveFailures.Add(handle))
+                return;
+
+            if (!FindIdOfHandle(handle, out string id))
+            {
+                ModLog.Info($"[EnemySync] t={Time.time:F1} handle={handle:X8} non in _ids " +
+                            $"(ids={_ids.Count}, spawn={_spawnPoints.Count})");
+                return;
+            }
+
+            ModLog.Info($"[EnemySync] t={Time.time:F1} {FullId(id)} handle={handle:X8} " +
+                        $"gia' rimosso (ResolveEnemy=null)");
         }
 
         private static bool FindIdOfHandle(uint handle, out string id)
@@ -1155,7 +1197,7 @@ namespace Blasphemous.Multiplayer.Client
             _treeStateLogged[id] = key;
 
             Vector3 p = enemy.transform.position;
-            ModLog.Info($"[EnemyTree] {ShortId(id)} enabled={enabled} isRunning={running} esito={esito} " +
+            ModLog.Info($"[EnemyTree] {FullId(id)} enabled={enabled} isRunning={running} esito={esito} " +
                         $"pos=({p.x:F1},{p.y:F1}) vita={enemy.CurrentLife:F0} " +
                         $"mia={(IsHost ? "host" : "client")}");
         }
@@ -1370,6 +1412,7 @@ namespace Blasphemous.Multiplayer.Client
             // the probe.
             PerformanceProbe.ResetForScene();
             _killLogged.Clear();
+            _reportedResolveFailures.Clear();
 
             RemoveJunkDeathFlags();
 
@@ -2187,7 +2230,7 @@ namespace Blasphemous.Multiplayer.Client
                     break;
                 }
 
-                ModLog.Info($"[EnemyTick] {ShortId(id)} owner={owner} remoto={remote} " +
+                ModLog.Info($"[EnemyTick] {FullId(id)} owner={owner} remoto={remote} " +
                             $"dist_io={localDistance:F1} dist_altro={(remoteDistance == float.MaxValue ? "n/d" : remoteDistance.ToString("F1"))} " +
                             $"anim={(animState == 0 ? "0" : AnimatorStateName(enemy))} " +
                             $"life={enemy.CurrentLife:F0} posNemico=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1}) " +
@@ -2577,6 +2620,20 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// The id in full, so one enemy can be told apart from the others by hand.
+        ///
+        /// ShortId collapses every enemy in a room to "scene@name", because the part that makes each one
+        /// unique is the POSITION - an id is already "sp|scene|name|x|y" or "en|scene|name|x|y". For a
+        /// per-enemy diagnosis that is the one thing the log must not drop, so the full string is what the
+        /// markers print. It is a separate helper and not a change to ShortId: nine existing lines use
+        /// ShortId and are compared against sessions that were logged with it.
+        /// </summary>
+        private static string FullId(string id)
+        {
+            return id;
+        }
+
+        /// <summary>
         /// The HOST's arbitration: decides which machine simulates an enemy, and reports whether the role
         /// changed. Called only on the host - the peer receives this decision as a token instead.
         ///
@@ -2666,7 +2723,10 @@ namespace Blasphemous.Multiplayer.Client
                 return; // the host is the one that decides; it never takes orders
 
             if (!FindIdOfHandle(handle, out string id))
+            {
+                ReportResolveFailure(handle);
                 return;
+            }
 
             EnemyState state = GetOrCreateState(id);
             state.OwnershipKnown = true;
@@ -3069,7 +3129,10 @@ namespace Blasphemous.Multiplayer.Client
 
             Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
+            {
+                ReportResolveFailure(handle);
                 return;
+            }
 
             // Record the sender's claim. This is the input the arbitrating host was missing: without it
             // the host never learned that the peer was simulating an enemy, so it kept simulating too and
@@ -3596,7 +3659,10 @@ namespace Blasphemous.Multiplayer.Client
         {
             Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
+            {
+                ReportResolveFailure(handle);
                 return;
+            }
 
             // If the peer that swung also landed the killing blow, its local application already killed
             // the enemy here. Applying the relayed damage to that corpse would run the death sequence a
@@ -3886,7 +3952,10 @@ namespace Blasphemous.Multiplayer.Client
         {
             Enemy enemy = ResolveByHandle(handle);
             if (enemy == null)
+            {
+                ReportResolveFailure(handle);
                 return;
+            }
 
             // Drop the id so the dead enemy stops being broadcast, then run the native death sequence if
             // it has not already died locally.
