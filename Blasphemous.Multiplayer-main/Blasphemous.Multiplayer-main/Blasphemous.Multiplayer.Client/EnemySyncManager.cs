@@ -2786,10 +2786,23 @@ namespace Blasphemous.Multiplayer.Client
                     // scene name was known, or never fired at all). Finalise here instead.
                     OnEnemiesSpawned();
                 }
-                else if (IsHost)
+                else
                 {
-                    // Only append later discoveries, and only on the host: the peer must not invent ids
-                    // the host does not have, or the indices would stop meaning the same thing.
+                    // BOTH machines append later discoveries, not just the host.
+                    //
+                    // The old guard restricted this to the host so "the peer cannot invent ids the host
+                    // does not have" - a fear from when the wire handle was an INDEX into the id list. It
+                    // no longer is: the handle is a hash of the id string, so a missing or extra id cannot
+                    // land an update on the wrong enemy, it can only make the fingerprint differ (which is
+                    // reported). And the falò proved the cost of the restriction: it respawns enemies, the
+                    // host re-registers them within half a second, and the peer never did - so the two
+                    // machines held different lists until a scene change, which was the desync.
+                    //
+                    // RegisterEnemies is deterministic for spawn points (authored positions) and caches the
+                    // id of a free enemy at its first registration, so scanning the same scene on both
+                    // machines yields the same ids. The [EnemySync] "non in _ids" marker and IMPRONTA
+                    // DIVERSA are the guard: if a machine genuinely has an enemy the other does not, the
+                    // divergence is now VISIBLE instead of silently frozen.
                     RegisterEnemies(_scene);
 
                     // The scan above may have appended ids. Refresh the fingerprint now, so everything sent
