@@ -36,7 +36,7 @@
 | **8** | **Boss impazziscono coi target** — §2b | 🟡 | ⏳ **ultimo dei lavori "di gioco"**. **Proposta utente: quanto di tempo sul cambio bersaglio** |
 | **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 |
 | **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | 🟢 | ⏳ **declassato**: allocazione sì, stallo no. **Cosa sono**: `ProcessQueue` = il ciclo che svuota la coda dei messaggi in arrivo *(alloca una `List<byte>` per messaggio)*; `IdOf` = costruisce l'id di un nemico *(stringa da scena+nome+posizione, alloca ogni volta)*. **Sono due pezzi VIVI e centrali, non residui**: l'ottimizzazione è di secondo ordine |
-| **11** | **Il gioco disfa la pausa sul non-proprietario**: `<Enemy>::OnUpdate` chiama `EnablePhysics(true)` e `StartBehaviour()` su **8 tipi** | 🟢 **da misurare** | ⚠️ **NON è la stessa cosa della voce 26**, e il fix 26 l'ha resa **più rilevante, non meno**: **26 = "non abbiamo mai messo in pausa"**, **11 = "il gioco ci toglie dalla pausa"**. Ora la pausa **viene applicata davvero**, quindi **c'è qualcosa che il gioco può disfare**. **MA l'effetto sembra svanito**: lo scivolamento è **quasi azzerato** e l'utente non lo vede. **Gli 8 tipi sono specifici**: `ShieldMaiden`, `RangedBoomerang`, `Firethrower`, `CrossCrawler`, `Nun`, `Fool`, `ExplodingEnemy`, `Lesmes` + coroutine di boss. **Conclusione corretta: MISURARLA, non chiuderla a scatola chiusa.** **Fix possibile non ancora valutato**: bloccare il gioco dal disfarla *(Prefix su `<Enemy>::OnUpdate` / `EnablePhysics`, che non agisce sui puppet)* — **ma `OnUpdate` è caldo: va progettata bene** |
+| **11** | **Il gioco disfa la pausa sul non-proprietario** — ma **il testo della voce era SBAGLIATO a metà** | 🟢 **da MISURARE, e da RISCRIVERE prima** | ⚠️ **NON è la stessa cosa della voce 26**, e il fix 26 l'ha resa **più rilevante, non meno**: **26 = "non abbiamo mai messo in pausa"**, **11 = "il gioco ci toglie dalla pausa"**. 🔴 **CORREZIONE VERIFICATA IN IL**: i **8 tipi** citati sono corretti **per `StartBehaviour()`** *(CrossCrawler.Update, ExplodingEnemy.OnUpdate, Firethrower.Update, Fool.OnUpdate, Lesmes.Update, Nun.OnUpdate, RangedBoomerang.Update, ShieldMaiden.Update — esattamente 8)*, **ma NESSUNO di quei 16 tipi chiama `EnablePhysics` (zero su tutte le 16 classi)**. **Gli 8 call-site reali di `Entities.Enemy::EnablePhysics` sono ALTRI**: `PietyMonster::EnablePiety`, `Acolyte::OnUpdate` (×2), `BellCarrier::OnUpdate`, `Bishop::OnUpdate`, `Flagellant::OnUpdate` (×2), `Menina::OnUpdate` ⇒ **tipi veri: Acolyte, BellCarrier, Bishop, Flagellant, Menina, PietyMonster**. ⚠️ **E questo importa**: **il fix proposto in questa voce** *(agganciare `<Enemy>::OnUpdate` / `EnablePhysics`)* **sarebbe sul METODO SBAGLIATO** *— e `EnablePhysics` è definito da **72** classi.* ⭐ **NAMESPACE**: dei 7 nemici + `Lesmes`, **solo `Lesmes` è nel namespace dei boss** *(`Gameplay.GameControllers.Bosses.Lesmes`; gli altri in `Gameplay.GameControllers.Enemies.*`; i boss in `Gameplay.GameControllers.Bosses.*`)*. **Coroutine di intro dei boss: NON verificate.** ⭐ **E NEI LOG NON SI VEDE**: `orientFlip=0`, `orientSkip=0`, `gameOrient=0`, `animRestart=0`, `animRepeat=0` in ogni `[Probe]`, e `IMPRONTA DIVERSA`=0 ⇒ **"da misurare, e da riscrivere prima di agganciare qualsiasi cosa"**. ⚠️ **E va tenuto distinto dalla voce 49**: *sono **speculari e indipendenti** (la 11 = il gioco sveglia il puppet; la 49 = noi dimentichiamo il puppet) ⇒ un fix NON copre l'altro.* Vedi §14 |
 | **12** | **Camminata troncata** | ✅ **stabile, il residuo è del gioco** | **CHIUSA su decisione dell'utente.** Richiede di ripensare il protocollo animazione *(**loop vs one-shot**)*, e **succede solo in casi estremi**: con le interazioni risolte **è stato fatto il massimo possibile, e il resto è bloccato dalla logica del gioco**. **NB: voce re-inglobata** |
 | **13** | **La migrazione host non riarbitra** | ✅ **RISOLTO E VERIFICATO** | **Due fix, e il TODO indicava il ramo sbagliato.** Il difetto **misurato** nasceva dalla **DEMOZIONE**, non dalla promozione: quando l'host perde la connessione, `SetHost(false)` mette in pausa **tutti** i nemici, ma `IsHost = _isHost \|\| !IsConnected` **resta `true`**, e `DecideOwnership` è dietro `if (!IsConnected) return;` ⇒ **5/5 nemici sospesi, 70 campioni identici = 35 s**, camminata attiva e spostamento nullo. **1A**: nel ramo di demozione, **se non si è connessi**, si reclama la proprietà e si chiama `ResumeEnemy` **invece di metterli in pausa**. **1B**: nella promozione la proprietà viene **reclamata subito** *(`OwnedByLocal=true`)*, non solo il timer ⇒ **sparisce il buco di 0,5-1,0 s** in cui nessuno simulava. **E il fix C, nel SERVER**: la promozione era annunciata **solo al promosso** e **mai ritentata** ⇒ con 3 giocatori il terzo **non riceveva né `Host role: True` né il leave del precedente** *(`owner=altro` su un giocatore **uscito**, AI ferma 128 campioni)*. Ora è un **broadcast a tutti i rimasti**. **Verificato**: primo handover *(`io=230/230`)* e secondo *(G3 riceve `Host role: True`)*, **zero `pause:`** sui log. **Variante non coperta**: *G2 esce per primo*. Vedi §12 |
 | **14** | **`IMPRONTA DIVERSA`** | ✅ **RISOLTO** | **ERA UN FALSO ALLARME**: `_listFingerprint` era calcolata solo in `OnEnemiesSpawned`, ma `_ids` viene **appesa** ogni 0.5 s e **rimossa** in `ForgetEnemy` ⇒ la fingerprint descriveva una lista che non esisteva più. **Peggio**: la segnalazione era **una-tantum**, quindi un falso allarme **zittiva ogni divergenza reale**. Ora `_idsDirty` + `RefreshFingerprintIfDirty()` + cooldown 15 s. Vedi §12 |
@@ -74,6 +74,7 @@
 | **46** | 🔴 **Dopo un falò i due mondi possono restare `5` contro `4`** | 🟡 **NUOVA — causa NON verificata, e NON è il fix delle morti** | **Osservato nel test del Pezzo 2**: dopo il falò di G2 *(che si era seduto)*, **G2 ha `5/7/5` e G1 `4/7`**, e i log lo denunciano da soli *(`IMPRONTA DIVERSA` su entrambi: G1 id locali 4, G2 id locali 5)*. ⚠️ **Un solo nemico dei due non riappare su G1**: quello a **`-697.1`** non compare vivo in nessun punto del log di G1, mentre l'altro *(`-715.1`)* **è stato ricreato** *(1492 `owner=nuovo`, vivo per 22 rilevazioni)*. **⇒ 1 su 2, non zero su 2.** **La mappatura dice che `ReplicateBonfire` esegue `RespawnDeadEnemies()` nella scena CORRENTE del ricevente, e che `CreateEnemy` scansiona solo la scena caricata** ⇒ **il candidato è che i due spawn point siano in stanze diverse, o che uno dei due sia a spawn ON-DATE** *(il messaggio del gioco dice "Respawning dead enemies on level")*. ⚠️ **NON è il Pezzo 2**: compare **dopo il falò**, e prima del falò i conteggi coincidevano. **Da indagare con un test dedicato**: *un falò con due nemici uccisi in stanze diverse, e i due log a confronto.* Vedi §12 |
 | **47** | **La riga dei nemici occupava METÀ del log** — `LogDiagnosticSnapshot` stampava una riga per nemico ogni 0,5 s | ✅ **RISOLTA** | **Misurato**: su G2 *(`194 KB`) *`[EnemyTick]` = **640 righe (46,1%)*** e con `[EnemyAnim]` 68 e `[EnemyTree]` 12 **le tre insieme erano il 52% delle righe e ~70% dei byte**; su G1 **zero righe di nemici** *(era in una stanza senza nemici)* ⇒ *tutto il rumore da una macchina sola*. **E la distanza media fra due `[EnemyTick]` era 1,5 righe** ⇒ *per nemico, in continuazione*. **LA CAUSA, una riga**: `LogDiagnosticSnapshot()` era chiamata **dentro il blocco che scatta ogni `RESCAN_INTERVAL` (0,5 s)** ⇒ *3 nemici × 2 volte al secondo ≈ 6 righe/s ⇒ 640 in ~107 s, i conti tornano esatti.* ⚠️ **E LA CORREZIONE OVVIA SAREBBE STATA SBAGLIATA**: *alzare `RESCAN_INTERVAL`* — **perché il rescan NON serve al logging**: *serve a **scoprire gli spawn point creati DOPO il level load**, ed è esattamente ciò che rende visibile un nemico rinato sulla macchina che lo possiede* ⇒ **rallentarlo avrebbe comprato ordine pagandolo con la correttezza**, *e quel comportamento l'avevamo appena misurato.* ✅ **LA CORREZIONE GIUSTA**: **separare le due cadenze** — il rescan resta **0,5 s**, **la scrittura** passa a **`DIAGNOSTIC_LOG_INTERVAL = 10 s`**, con la guardia **in testa a `LogDiagnosticSnapshot`** *(non al sito di chiamata: **così la cadenza è una proprietà della funzione che scrive**, non una cosa da ricordare in ogni futuro chiamante)* **e il timer azzerato sul cambio scena**, *altrimenti il primo snapshot di una stanza nuova arriverebbe dopo 10 s.* **`[EnemyAnim]` e `[EnemyTree]` NON toccati**: *scrivono solo quando qualcosa cambia davvero.* **Effetto atteso: da ~640 righe a ~32.** Vedi §12 |
 | **48** | 🔴 **Un CADAVERE poteva TENERE il boss — e il boss diventava INVULNERABILE** | ✅ **RISOLTA** *(2 fix)* | **La causa del "boss che gira intorno a un morto" NON era "il boss che spegne l'IA"**: *`EnemyBehaviour.GetTarget()` non guarda mai se il target è vivo e fa fallback sul **Penitente LOCALE**, e il giocatore remoto **non è un `Penitent`*** ⇒ *il boss insegue il cadavere che sta sulla macchina che lo possiede.* ⚠️ **E la regola della proprietà lo manteneva**: *`ShouldOwnByProximity` confrontava solo distanze*, **e un morto smette di mandare la posizione** *(il pacchetto parte solo se la posizione cambia)* ⇒ *la sua ultima posizione diventa stale in 0,3 s e il ramo "nessuna posizione remota" **TENEVA** l'enemy.* ✅ **FIX 1**: *`ShouldOwnByProximity` ritorna `false` se il giocatore locale è morto* *(verificato in IL: `IsLocalPlayerDead` @9 prima di `Vector2::Distance` @30)*. 🔴 **MA RESTAVA IL BUCO GRAVE, trovato dall'agente**: **«rifiutare non è rinunciare»** — *l'unico ramo che **cede** è `peerCloser`, che esige `nearestRemote + 2,5 < localDistance`* ⇒ **morendo ADDOSSO al boss, dove il vivo accanto al cadavere non è 2,5 unità più vicino, l'host teneva il boss**; **e siccome `<Boss>::Damage` ESCE SUBITO se `Core.Logic.Penitent.Stats.Life.Current <= 0`** *(**18 classi di boss su 21**; eccezioni HighWills, PontiffHuskBoss, Lesmes)*, **ogni colpo del vivo veniva buttato via** *(i colpi arrivano **solo all'host**)* ⇒ **boss INVULNERABILE**, *e il vivo non poteva accorgersene perché **la barra è locale e solo il proprietario ne vede una veritiera**.* ✅ **FIX 2**: *`DecideOwnership` cede **subito** se il locale è morto e lo stato è `OwnedByLocal`* — **senza `OWNER_HOLD_SECONDS`, di proposito**: *quella attesa esiste per impedire a due **vivi** di scambiarsi l'enemy molte volte al secondo; un cadavere non ha niente da stabilizzare.* **✅ E il cambio di proprietà era GIÀ automatico per prossimità** *— host-arbitrato, ricalcolato ogni 0,05 s* ⇒ *il lavoro era solo renderlo consapevole della morte.* ⚠️ **E una scoperta collaterale**: **`BossScripting` esiste** *(`Gameplay.GameControllers.Bosses.BossScripting`, con un campo `PietyMonster Boss`)* **e la mappatura non l'aveva** — *ma la sua `OnDead()` si aggancia a `Entity::add_OnDeath` (la morte **del boss**), non a `Penitent.OnDead`* ⇒ *conferma che i boss non sanno nulla della morte del giocatore.* **Da testare**: *`SettleStuckDeaths` non è esclusa per i boss, e `EnemyDamagePatch` è un **Postfix** ⇒ la copia locale del boss sul non-proprietario potrebbe morire in 1,5 s e propagare la morte senza controlli di proprietà* *(premessa inferita, non verificata)*. Vedi §13 |
+| **49** | 🔴 **Il nemico resta FERMO PER SEMPRE se l'host entra nella stanza ed esce subito** — segnalato dall'utente, riproducibile | 🔴 **NUOVA — diagnosi VERIFICATA, fix ancora da fare** | **Il sintomo (parole dell'utente)**: *"se un giocatore non-host sta in una stanza la simulazione dei nemici funziona bene, ma appena l'host entra ed esce subito dopo, quelli **non ancora triggerati** smettono di funzionare per il non-host."* ⭐ **LA DIAGNOSI, verificata punto per punto nel codice**: **1)** il client è solo nella stanza, `OwnershipKnown = false` ⇒ **il self-heal gli dà il nemico e lui simula** ✅ · **2)** **l'host ENTRA**: i nemici entrano nella sua lista `_ids` *(`_ids` = la scena **dell'host**)* ⇒ `DecideOwnership` gira *(solo sull'host)* e se si ritiene più vicino **se li prende** ⇒ manda il token ⇒ sul client **`OwnedByLocal = false` + `PauseEnemy` + `OwnershipKnown = true`** ← **IL LATCH SCATTA** · **3)** **l'host ESCE**: quei nemici non sono più in `_ids`, quindi **l'host non può più arbitrarli e non manda la restituzione** *— e il token viaggia con `relayToScene`, filtrato per scena* · **4)** ⇒ **il client resta con `OwnershipKnown = true`, e il self-heal `else if (!IsHost && !previous.OwnershipKnown)` NON SCATTA** ⇒ **puppet per sempre, senza via di recupero** *(`ReceiveEnemyUpdate` → `ResumeEnemy` richiederebbe un pacchetto che non arriverà mai)*. ⭐ **E il LATCH SOPRAVVIVE**, verificato: `_lastSent.Clear()` a `:1292` sta in `LevelLoaded(scene)` *(solo se **questa** macchina cambia scena)* e a `:1401` in `OnEnemiesSpawned()` *(il client non rispawna)*; **l'ID non cambia** *(il peer nemmeno riscansiona: `else if (IsHost)`)*; `HandleOf` è **FNV-1a della stringa**; `EnemyState` è una **classe** ⇒ le mutazioni persistono. ⭐ **E LA CAUSA STRUTTURALE**: **la proprietà è MEMORIA DI SCENA per costruzione** *(`LevelLoaded` azzera `_lastSent`/`_ids`/`_puppetEnemies`/…, col commento "ids do not survive a scene change")* ⇒ **chi si muove dimentica, chi resta NO** ⇒ **il reset è ASIMMETRICO.** ✅ **FIX SCELTO — (B): l'host restituisce ciò che possiede mentre esce**, in `Multiplayer.OnLevelUnloaded` *(:125)* **PRIMA di `SendLeaveScene()` (:131)** ⚠️ **L'ORDINE È TUTTO**: *il filtro di scena è quello del **MITTENTE** (`Server.cs:768`), e `receivePlayerLeaveScene` fa `current.sceneName = ""`* ⇒ **token prima = ARRIVA, dopo = MAI** *(e `QueueMesssage` è un'unica coda, quindi vale l'ordine di accodamento)*. ✅ **E il momento è garantito**: `LevelManager` **non ha** `OnLevelUnloaded` *(confermato in IL)*; `ModLoader.cs:86` mappa l'uno su `OnBeforeLevelLoad`, invocato in `<ChangeLevelCorrutine>…::MoveNext()` **prima del load** ⇒ **nemici ancora validi e `_ids` non ancora azzerato.** ⚠️ **SCARTATA LA (A) COME TIMER, e in DUE modi**: *il **token è pubblicato PRIMA** del gate `if (!enemy.gameObject.activeInHierarchy) continue;` (`:2839-2840`)* ⇒ **un nemico inattivo riceve il token e ZERO aggiornamenti di stato** ⇒ *un timer "non sento più l'host" darebbe un **FALSO POSITIVO** — e **"non ancora triggerati" È la popolazione del bug***; **e** `SendPosition` è **change-gated** *(`MainPlayerManager.cs:25`, cutoff 0.03)* ⇒ **anche un host FERMO sembra andato via in 0,3 s** ⇒ *si ruberebbe il nemico a un host fermo.* ⭐ **E la logica giusta esiste già, ma è consultata SOLO dall'host**: `ShouldOwnByProximity` e `PeerIsCloser` trattano `nearestRemote == float.MaxValue` come *"l'altro è in un'altra scena"* — **ma girano dentro `DecideOwnership`, cioè dietro `if (IsHost)`** ⇒ **è letteralmente il pezzo mancante.** **Da NON confondere con la voce 13** *(migrazione host)*, che è un altro caso. Vedi §14 |
 
 **Poi**, in fondo al file: `## 12. ARCHIVIO DELLE AGGIUNTE` (entry datate) e
 `## 13. STORICO DELLE REVISIONI` (le versioni precedenti della todo, conservate).
@@ -3988,3 +3989,136 @@ che **contengono** la parola sono 173/174)*. Zero `NullReference` · `IndexOutOf
 **Applicata qui**: il meccanismo dei boss **funziona**, ed e'' **giusto per ora** *(parole della todo
 §2)*. **⇒ La divergenza delle barre a proprietario morto si REGISTRA, non si tocca a sorpresa.**
 **La decisione si prende con i dati davanti.**
+
+
+## [2026-10-11 08:00] IL NEMICO FERMO PER SEMPRE — diagnosi verificata, e la voce 11 era scritta male a metà
+
+### 🔴 IL BUG DELL''UTENTE *(voce 49)*, e la diagnosi REGGE
+
+**Parole sue**: *"se un giocatore non-host sta in una stanza la simulazione dei nemici funziona bene, ma
+appena l''host entra ed esce subito dopo, quelli **non ancora triggerati** smettono di funzionare per il
+non-host."*
+
+**Diagnosi, verificata punto per punto nel codice:**
+```
+1. il client e'' solo nella stanza: `OwnershipKnown = false`
+   => il self-heal gli da'' il nemico e lui SIMULA ✅
+2. l''HOST ENTRA: i nemici entrano nella SUA lista `_ids` (lista della SUA scena)
+   => `DecideOwnership` gira (solo sull''host) e se si ritiene piu'' vicino SE LI PRENDE
+   => manda il token => sul client: `OwnedByLocal = false` + PauseEnemy + **`OwnershipKnown = true`**
+      <- IL LATCH SCATTA
+3. l''HOST ESCE: quei nemici non sono piu'' in `_ids`
+   => l''host non puo'' piu'' arbitrarli, e non manda la restituzione
+   (e il token viaggia con `relayToScene`, filtrato per scena)
+4. => il client resta con `OwnershipKnown = true`, e il self-heal
+   `else if (!IsHost && !previous.OwnershipKnown)` NON SCATTA
+   => PUPPET PER SEMPRE. Nessuna via di recupero: `ReceiveEnemyUpdate` → `ResumeEnemy`
+      richiederebbe un pacchetto che non arrivera'' mai
+```
+
+**⭐ E il punto debole che avevo dichiarato io NON morde — il latch sopravvive:**
+```
+`_lastSent.Clear()` a :1292 sta in `LevelLoaded(scene)` => solo se QUESTA macchina cambia scena
+`_lastSent.Clear()` a :1401 sta in `OnEnemiesSpawned()` => il client non rispawna
+l''ID non cambia (`RegisterEnemy` esce se l''istanza e'' gia'' in `_enemyIds`; e il peer nemmeno
+   riscansiona: `:2624 else if (IsHost)`)
+`HandleOf` e'' FNV-1a della STRINGA id, non un indice
+`EnemyState` e'' una CLASSE => le mutazioni PERSISTONO
+```
+
+### ⭐ LA CAUSA STRUTTURALE, che risponde alla domanda dell''utente
+
+> *"questa soluzione potrebbe stravolgere il progetto, o lo renderebbe piu'' leggero?"*
+
+```
+`EnemySyncManager.LevelLoaded(scene)` — gira su OGNI macchina che cambia scena:
+   _ids.Clear();  _lastSent.Clear();  _puppetEnemies.Clear();  ... tutto azzerato
+   col commento: "ids do not survive a scene change"
+
+⇒ LA PROPRIETA'' E'' MEMORIA DI SCENA PER COSTRUZIONE
+⇒ chi si MUOVE dimentica, chi RESTA no  => IL RESET E'' ASIMMETRICO
+```
+✅ **Quindi il fix NON stravolge niente e NON duplica niente**: *va in un punto che **gia'' esiste** e
+riguarda **un caso che nessuno sta decidendo**.* **E non sovrappone il self-heal**: *quello copre "l''host
+non ha **mai visto** il nemico"; questo copre "l''host **l''ha visto e poi e'' uscito**"* ⇒ **caso nuovo.**
+✅ **E non tocca nessuna decisione esistente** *(l''host al ritorno ha comunque la proprieta'' da
+ridecidere, perche'' `LevelLoaded` gli ha azzerato tutto)*.
+
+### ✅ IL FIX SCELTO — (B): l''host restituisce mentre esce
+
+**Dove**: `Multiplayer.OnLevelUnloaded` *(:125)*, **PRIMA di `SendLeaveScene()` (:131)**.
+⚠️ **L''ORDINE E'' TUTTO**, e la prova e'' nel server: **il filtro di scena e'' quello del MITTENTE**
+*(`Server.cs:768 current = getCurrentPlayer(playerIp)` → `:771 isInSameScene`)*, e
+`receivePlayerLeaveScene` *(:350)* fa **`current.sceneName = ""`** ⇒
+```
+token PRIMA di SendLeaveScene  = ARRIVA ✅
+token DOPO                     = "" = MAI
+token dopo SendEnterScene      = scena nuova = MAI
+```
+*E `QueueMesssage` e'' un''unica coda, quindi vale l''ordine di accodamento.*
+✅ **E il momento e'' garantito**: `LevelManager` **non ha** `OnLevelUnloaded` *(confermato in IL:
+dichiara `OnMenuLoaded/OnGenericsElementsLoaded/OnBeforeLevelLoad/OnLevelPreLoaded/OnLevelLoaded`)*;
+`ModLoader.cs:86` mappa l''uno su `OnBeforeLevelLoad`, invocato in
+`<ChangeLevelCorrutine>c__Iterator0::MoveNext()` **prima del load** ⇒ **nemici ancora validi e `_ids`
+non ancora azzerato** *(`EnemySyncManager.LevelLoaded` arriva dopo, da `Multiplayer.cs:103`)*.
+*E il server accetta token **solo dall''host** (`Server.cs:816`)* ⇒ **(B) cura esattamente il caso.**
+
+### ⚠️ E LA (A) COME TIMER E'' SCARTATA — e in DUE modi
+
+```
+1. IL TOKEN E'' PUBBLICATO PRIMA DEL GATE:
+      :2764-2786  pubblica il token
+      :2839-2840  `if (!enemy.gameObject.activeInHierarchy) continue;`   <- il gate
+      :2842       il fullSweep sta DOPO
+   => un nemico INATTIVO riceve il TOKEN e ZERO aggiornamenti di stato
+   => un timer "non sento piu'' l''host" da'' un FALSO POSITIVO
+   ⚠️ E IL FALSO POSITIVO CADE PROPRIO SULLA POPOLAZIONE DEL BUG:
+      "non ancora triggerati" = tipicamente `activeInHierarchy == false`
+
+2. E un falso positivo che NON avevamo previsto:
+      `SendPosition` e'' CHANGE-GATED (`MainPlayerManager.cs:25`, cutoff 0.03)
+      => UN HOST FERMO SEMBRA ANDATO VIA IN 0,3 s  => si ruberebbe il nemico a un host fermo
+```
+⭐ **E la logica giusta esiste GIA''', ma e'' consultata SOLO dall''host**: `ShouldOwnByProximity` e
+`PeerIsCloser` trattano **`nearestRemote == float.MaxValue`** come *"l''altro e'' in un''altra scena"* —
+**ma girano dentro `DecideOwnership`, cioe'' dietro `if (IsHost)`** ⇒ **e'' letteralmente il pezzo mancante.**
+**⇒ Se mai si volesse la (A), il discriminante deve essere la SCENA del giocatore, non un timer.**
+⚠️ **Riserva sulla variante "il peer agisce su `ReceiveLeaveScene`"** *(piu'' semplice: esiste, arriva
+**senza filtro di scena**, e su un peer `OwnedByLocal == false` implica "e'' dell''host")*: **a 3+
+giocatori non dice CHI e'' uscito** *(il pacchetto non porta il nome)*. **⇒ (B) classica = precisa.**
+
+### 🔴 E LA VOCE 11 ERA SCRITTA MALE A META'' — corretto, verificato in IL
+
+```
+GLI 8 TIPI SONO CORRETTI **PER `StartBehaviour()`**:
+   CrossCrawler.Update, ExplodingEnemy.OnUpdate, Firethrower.Update, Fool.OnUpdate,
+   Lesmes.Update, Nun.OnUpdate, RangedBoomerang.Update, ShieldMaiden.Update  = esattamente 8 ✅
+MA NESSUNO DI QUEI 16 TIPI CHIAMA `EnablePhysics`  (ZERO su tutte le 16 classi)
+
+GLI 8 CALL-SITE REALI di `Entities.Enemy::EnablePhysics` sono ALTRI:
+   PietyMonster::EnablePiety · Acolyte::OnUpdate (x2) · BellCarrier::OnUpdate ·
+   Bishop::OnUpdate · Flagellant::OnUpdate (x2) · Menina::OnUpdate
+   => tipi veri: Acolyte, BellCarrier, Bishop, Flagellant, Menina, PietyMonster
+```
+⚠️ **E QUESTO IMPORTA**: **il fix che la voce proponeva** *(agganciare `<Enemy>::OnUpdate` /
+`EnablePhysics`)* **sarebbe sul METODO SBAGLIATO** *— e `EnablePhysics` e'' definito da **72** classi.*
+⭐ **NAMESPACE**: dei 7 nemici + `Lesmes`, **solo `Lesmes` e'' nel namespace dei boss**
+*(`Gameplay.GameControllers.Bosses.Lesmes`)*. **Coroutine di intro dei boss: NON verificate.**
+⭐ **E NEI LOG LA 11 NON SI VEDE**: `orientFlip=0`, `orientSkip=0`, `gameOrient=0`, `animRestart=0`,
+`animRepeat=0` in ogni `[Probe]`, e `IMPRONTA DIVERSA` = 0 ⇒ **"da misurare, e da riscrivere prima di
+agganciare qualsiasi cosa".**
+⚠️ **E VA TENUTA DISTINTA DALLA 49**: *sono **speculari e indipendenti*** — **11 = il gioco sveglia il
+puppet**, **49 = noi dimentichiamo il puppet** ⇒ **un fix NON copre l''altro.** *(L''utente aveva chiesto
+se si potevano chiudere assieme: la risposta e'' no.)*
+
+### 📌 E ZERO REGRESSIONI
+
+`IMPRONTA DIVERSA` 0/0 · `Object reference` 0/0 · `NullReference` 0/0 · `IndexOutOfRange` 0/0 ·
+`SAVEERROR` 0/0 · `[Progress] apply failed` 0/0 · `replica fallita` 0/0 ·
+`[Error` **1/1** *(entrambe `savegame_1_modded.save` mancante = voce 36, innocue)*.
+⚠️ **`exceptions=` NON e'' un conteggio**: e'' il contatore cumulativo di `PerformanceProbe` — *173/174
+righe, ma **max=0 e somma=0*** ⇒ **zero eccezioni di sincronizzazione** *(voce 23 chiusa)*.
+**E il latch e'' visibile nei log**: su G1 (client) con l''host **gia'' uscito**, il client mostra
+**`owner=altro` a :894, :916, :925, :942** — *quattro campioni consecutivi, col Cherub **in pausa
+dall'':888***. *Poiche'' su un non-host il self-heal mette `OwnedByLocal=true` quando
+`OwnershipKnown==false`, un `owner=altro` ripetuto **dimostra il latch**.* ✅
