@@ -116,6 +116,11 @@ namespace Blasphemous.Multiplayer.Client
                 // A2: this state used to return true and tell the other machine NOTHING, so the charged attack
                 // existed only on the machine that performed it - the remote avatar simply stood there. Every
                 // other attack already announces itself on this channel; these four were the ones left out.
+                //
+                // The line below is what makes it PROVABLE. The effect type is one the ground attacks already
+                // used, so the effect arriving tells us nothing about whether THIS patch sent it - and that is
+                // a gap in the verification, not in the code. One line, and the attribution is unambiguous.
+                ModLog.Info("[Invia] Carica");
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
                 return true;
             }
@@ -141,6 +146,7 @@ namespace Blasphemous.Multiplayer.Client
             if (animator.name == "Body")
             {
                 // A2: the charged attack's own effect state, which is where the swing is actually visible.
+                ModLog.Info("[Invia] Carica (effetto)");
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.UpwardsGrounded);
                 return true;
             }
@@ -246,6 +252,7 @@ namespace Blasphemous.Multiplayer.Client
             {
                 // A2: the lunge, which is the attack that carries the penitent forward - the one whose absence
                 // is most obvious on the other screen, because the avatar stays put while the player lunges.
+                ModLog.Info("[Invia] Lunge");
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
 
                 // A3: and the trail, which on this attack comes from the same state. Two sends rather than one
