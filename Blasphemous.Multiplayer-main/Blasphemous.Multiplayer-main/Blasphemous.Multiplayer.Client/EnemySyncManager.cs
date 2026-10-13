@@ -2242,6 +2242,27 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// True when this GameObject is the mod's own aggro proxy - the stand-in placed where the other
+        /// player is, so the game's vision can see them.
+        ///
+        /// The game's CONTACT damage must ignore it, and that is not cosmetic. A contact attack is armed by
+        /// `ContactDamage.OnTriggerEnter2D`, which does
+        /// `IDamageable c = other.GetComponentInParent&lt;IDamageable&gt;(); ... EntityContactDamage(c);`
+        /// and `EnemyAttack.ContactAttack` then calls `damageable.Damage(...)` with NO null check - so when
+        /// the collider that entered is the proxy, which deliberately has no IDamageable, that call throws.
+        /// Worse, `IsTargetOverlapped` is raised before the null is reached, and the attack that reads it
+        /// hits `Core.Logic.Penitent` without ever measuring the distance: the proxy walked into a trigger
+        /// and the LOCAL player, twenty units away, took the hit. Ignoring the proxy here is what stops both.
+        /// </summary>
+        public static bool IsRemoteTargetProxy(GameObject go)
+        {
+            if (go == null || _remoteTargetProxy == null)
+                return false;
+
+            return go == _remoteTargetProxy || go.transform.IsChildOf(_remoteTargetProxy.transform);
+        }
+
+        /// <summary>
         /// Points an OWNED enemy at whichever player is closer, so its own AI can engage the other player.
         ///
         /// This runs only for the machine that simulates the enemy, and only that machine's decision matters:
