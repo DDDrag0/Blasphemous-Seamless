@@ -128,6 +128,17 @@ namespace Blasphemous.Multiplayer.Client
         private const float OWNER_HOLD_SECONDS = 0.5f;
 
         /// <summary>
+        /// How long a closer player waits for an enemy's position before taking it anyway, in seconds.
+        ///
+        /// The wait exists so a newly-owning machine does not resume the enemy at its stale copy and
+        /// broadcast that. But the wait must never STRAND an enemy: if the position does not arrive - the
+        /// other machine is not there to send it, or the enemy is stationary and the send is change-gated -
+        /// then there is no remote position to protect, and leaving the enemy paused would freeze the room
+        /// for the machine that is standing in it. Past this grace the enemy is taken where it stands.
+        /// </summary>
+        private const float POSITION_WAIT_GRACE = 1.5f;
+
+        /// <summary>
         /// How much closer the other player must be before this machine gives up an enemy, in world units.
         ///
         /// Positions arrive around 20 times a second, so comparing raw distances makes the owner flip
@@ -2168,6 +2179,46 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// True when at least one other machine is reporting a position we still trust.
+        ///
+        /// This is the "is there anybody out there" test, and it is what stops the position wait from
+        /// stranding an enemy. If no remote position is fresh, the other machine is not here: it cannot own
+        /// this enemy, nothing will ever transmit the enemy's position, and waiting for it would leave the
+        /// enemy paused for the whole visit.
+        /// </summary>
+        private static bool AnyRemotePositionFresh()
+        {
+            foreach (KeyValuePair<string, Vector2> entry in _remotePositions)
+            {
+                if (IsRemotePositionFresh(entry.Key))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// True when this machine should hold off taking an enemy because its position has not arrived yet.
+        ///
+        /// The rule is deliberately three-sided, because each side of it was a real failure:
+        ///   - the position is already here => nothing to wait for, take it now;
+        ///   - nobody is reachable => nothing to receive FROM, so waiting would strand the enemy paused
+        ///     (this is the regression that froze 22 enemies when only the host walked in);
+        ///   - the wait has run past POSITION_WAIT_GRACE => even a reachable peer may never send it (a
+        ///     stationary enemy is skipped by the change-gated send), so take it where it stands.
+        /// </summary>
+        private static bool ShouldWaitForPosition(Enemy enemy, EnemyState state)
+        {
+            if (_remoteTargets.ContainsKey(IdOf(enemy)))
+                return false;
+
+            if (!AnyRemotePositionFresh())
+                return false;
+
+            return Time.time - state.OwnerSince < POSITION_WAIT_GRACE;
+        }
+
+        /// <summary>
         /// Periodic snapshot of what each machine sees, for comparing the two sides by hand.
         ///
         /// This exists because the remaining problems (animations, aggro, the handover) cannot be reasoned
@@ -2715,19 +2766,21 @@ namespace Blasphemous.Multiplayer.Client
                 // the arbiter kept every enemy it touched, and the peer could not take one even standing on
                 // top of it. The distances are known on both machines (they travel in every update), so the
                 // arbiter has no need to favour itself.
-                state.OwnedByLocal = wants || (!peerCloser && localIsHost);
                 state.OwnerSince = Time.time;
 
-                // VOICE 51, the real residual: hold off taking when this machine is the CLOSER player but
-                // does not yet know where the enemy actually is. _remoteTargets is emptied by LevelLoaded,
-                // so in the instant a player walks into a room it is empty, and taking then would resume the
-                // enemy at its spawn copy and broadcast that stale position - before any corrective adopt
-                // could run. The current owner keeps transmitting until the handover token, so by the next
-                // scan the position is here and the take lands on the correct spot. The host fallback
-                // (!peerCloser && localIsHost) is exempt: an enemy nobody is closer to must not be left
-                // unowned just because its position is not known yet.
+                // VOICE 51: hold off taking when this machine is the CLOSER player but the enemy's position
+                // has not arrived yet. _remoteTargets is emptied by LevelLoaded, so in the instant a player
+                // walks into a room it is empty, and taking then would resume the enemy at its spawn copy and
+                // broadcast that stale position - before any corrective adopt could run. The current owner
+                // keeps transmitting until the handover token, so by the next scan the position is here and
+                // the take lands on the correct spot.
+                //
+                // ShouldWaitForPosition carries the two guards that keep the wait from stranding the enemy:
+                // no reachable peer (nobody can send the position), or the wait has run too long. The host
+                // fallback (!peerCloser && localIsHost) is exempt: an enemy nobody is closer to must not be
+                // left unowned just because its position is not known yet.
                 bool take = wants || (!peerCloser && localIsHost);
-                if (wants && !_remoteTargets.ContainsKey(IdOf(enemy)))
+                if (wants && ShouldWaitForPosition(enemy, state))
                     take = false;
 
                 state.OwnedByLocal = take;
@@ -2772,10 +2825,10 @@ namespace Blasphemous.Multiplayer.Client
             // only transmits the enemies it owns, so it could never claim the enemy it was trying to take.
             if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
-                // Same defer as the first-time branch: do not take until the enemy's position is known,
-                // otherwise the take resumes the spawn copy and broadcasts it. The peer keeps owning and
-                // transmitting, so the position arrives and the take lands on the next scan.
-                if (_remoteTargets.ContainsKey(IdOf(enemy)))
+                // Same wait as the first-time branch, with the same guards: take the enemy as soon as the
+                // position is here, and never let the wait outlive POSITION_WAIT_GRACE or a reachable peer,
+                // because either would leave the enemy paused with nobody simulating it.
+                if (!ShouldWaitForPosition(enemy, state))
                 {
                     state.OwnedByLocal = true;
                     state.OwnerSince = Time.time;
