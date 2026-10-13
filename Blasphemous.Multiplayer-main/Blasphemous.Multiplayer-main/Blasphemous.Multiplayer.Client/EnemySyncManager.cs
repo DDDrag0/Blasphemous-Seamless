@@ -1406,7 +1406,12 @@ namespace Blasphemous.Multiplayer.Client
             // The instances of the scene being unloaded. Their ids must not be reused by the next scene's
             // enemies, and Unity compares destroyed objects as null so stale keys could never match anyway.
             _enemyIds.Clear();
-            _remoteTargets.Clear();
+            // _remoteTargets is deliberately NOT cleared. The ids are qualified by SCENE
+            // ("sp|D01Z01S03|SPAWN|x|y"), so entries from another room can never collide with this one's -
+            // and keeping them is what makes a RE-ENTRY safe: the next visit to the same room still has the
+            // positions the other player last reported, so a take adopts those instead of falling back to
+            // the enemy's spawn copy. Clearing it here was exactly what turned a re-entry into a reset.
+            // Stale ids resolve to null and are skipped, so they cost a dictionary entry and nothing else.
             _lastAnim.Clear(); // animation state belongs to the scene being unloaded
             _appliedAnim.Clear();
             _appliedAnimPrev.Clear();    // ditto: keyed by id, and ids do not survive a scene change
