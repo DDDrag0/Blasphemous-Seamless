@@ -4520,6 +4520,14 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy.EntityDamageArea == null)
                 return;
 
+            // Logged so the relayed damage is MEASURABLE, which the health channel alone cannot do: when a hit
+            // kills, both machines agree on the kill and the log shows it, but a hit that only WOUNDS leaves no
+            // trace of how much it took. That gap is what made the worst regression of this project invisible
+            // in the logs - an exception fired before the health was subtracted, so every relayed blow dealt
+            // ZERO and nothing in the log said so. One line closes it.
+            ModLog.Info($"[Danno] relay {IdOf(enemy)} amount={damageAmount:F0} type={damageType} " +
+                        $"elem={damageElement} flags={flags} vitaPrima={enemy.CurrentLife:F0}");
+
             Hit hit = new Hit
             {
                 DamageAmount = damageAmount,

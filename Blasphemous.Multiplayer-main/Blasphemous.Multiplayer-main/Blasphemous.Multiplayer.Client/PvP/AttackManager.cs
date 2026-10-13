@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
@@ -53,9 +53,18 @@ namespace Blasphemous.Multiplayer.Client.PvP
 
         public void ReceiveEffect(string playerName, EffectType effect)
         {
+            // Logged because this channel used to be completely SILENT on arrival, and that silence made the
+            // whole effect path unverifiable: an effect that never arrived and an effect that arrived and did
+            // nothing looked EXACTLY the same in the logs. One line per effect tells them apart, and every
+            // effect fix (trails, ground hits, slide dust) has to be verified through it.
+            ModLog.Info($"[Effect] {effect} per {playerName}");
+
             OtherPlayerScript other = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(playerName);
             if (other == null)
+            {
+                ModLog.Warn($"[Effect] {effect} per {playerName}: giocatore attivo non trovato");
                 return;
+            }
 
             other.OtherPlayerAttack.PlayEffectAnimation(effect, other.IsFacingRight);
         }
