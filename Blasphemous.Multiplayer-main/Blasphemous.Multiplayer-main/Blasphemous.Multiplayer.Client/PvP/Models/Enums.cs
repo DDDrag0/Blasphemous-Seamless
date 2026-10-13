@@ -70,4 +70,20 @@ public enum EffectType
     // is optional by construction: the receiver reads the effect byte and stops, so a longer payload is
     // invisible to the older shapes and no protocol version has to move.
     SlideDust = 80,
+
+    // A4 - the ground impact. FIVE members instead of a payload, for the same reason the position is optional:
+    // the effect byte is free up to 255, and the KIND of impact is what the receiver needs. The two things
+    // VerticalAttack.InstantiateExplosion branches on are the last unlocked skill (VERTICAL_1/2/3) and its
+    // private BeamRequiredHeightReached, and BOTH are decided on the SENDER: the receiver has its own skill
+    // and its own stale height flag, so it cannot work either of them out for itself.
+    //
+    //   Base       no VERTICAL_* skill was selected: the plain dust and NO landing sound, which is what the
+    //              game's own get_GetLandingFxEventKey does (it returns an empty string in that case)
+    //   1 / 2 / 3  the plain dust and that level's landing sound
+    //   3Beam      VERTICAL_3 from a fall high enough for the beam: the UPGRADED dust, the beam, level 3 sound
+    LandingImpactBase = 81,
+    LandingImpact1 = 82,
+    LandingImpact2 = 83,
+    LandingImpact3 = 84,
+    LandingImpact3Beam = 85,
 }

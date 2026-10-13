@@ -387,6 +387,87 @@ namespace Blasphemous.Multiplayer.Client
                 Framework.Managers.Core.Logic.Penitent.transform.position);
         }
     }
+
+    // A4 - the ground impact: the dust, the beam and the landing sound.
+    //
+    // WHY THIS METHOD. VerticalAttack.TriggerVerticalAttack(bool) is where a plunge finishes, and it is reached
+    // exactly ONCE per plunge: OnUpdate latches its private _instantiateExplosion to true immediately before
+    // calling it with true, and it only does so while the animator sits in VerticalAttackLanding. Its only two
+    // callers are VerticalAttack.OnUpdate (true) and PenitentAttackAnimations.PrayerUseAttack (FALSE) - and
+    // that false is the whole reason the argument is checked below. Without the check this patch would also
+    // fire every time a prayer is used, and the peer would watch a ground impact that never happened.
+    //
+    // ⚠️ THE RECEIVING MACHINE MUST NOT CALL THIS METHOD. TriggerVerticalAttack also runs
+    // AttackDamageableEntities on the hard-landing Hit and disables the attack collider: calling it on the
+    // other end would DEAL THE LANDING DAMAGE A SECOND TIME. This end only says WHERE it happened and WHICH
+    // of the five shapes it was, so the other end can draw it without running any of it.
+    //
+    // ⚠️ And it is a POSTFIX, so the ability runs untouched - the same rule as the slide above.
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack), "TriggerVerticalAttack")]
+    class VerticalAttackLandingEffect_Patch
+    {
+        // The skill is read through the PUBLIC LastUnlockedSkillId, which Ability fills from
+        // GetLastUnlockedSkill().id in OnUpdate just before the plunge begins, so at landing it is the same
+        // value the landing itself uses. These three strings are the ones the game compares against in
+        // get_GetLandingFxEventKey - not invented.
+        private const string Vertical1 = "VERTICAL_1";
+        private const string Vertical2 = "VERTICAL_2";
+        private const string Vertical3 = "VERTICAL_3";
+
+        /// <summary>
+        /// VerticalAttack.BeamRequiredHeightReached is PRIVATE (verified in IL: `P Boolean
+        /// BeamRequiredHeightReached` with `M private Boolean get_BeamRequiredHeightReached()`), and it is the
+        /// only thing that separates the upgraded impact - the beam included - from the plain one on a
+        /// VERTICAL_3 plunge. It is looked up once, here, and cached. If the name ever stops existing the
+        /// lookup yields null and the impact degrades to the plain one instead of throwing.
+        /// </summary>
+        private static readonly System.Reflection.PropertyInfo BeamReached =
+            typeof(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack).GetProperty(
+                "BeamRequiredHeightReached",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        public static void Postfix(
+            Gameplay.GameControllers.Penitent.Abilities.VerticalAttack __instance,
+            bool instantiateExplosion)
+        {
+            // PrayerUseAttack calls this with false. Sending here would invent an impact.
+            if (!instantiateExplosion)
+                return;
+
+            if (__instance == null || Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            string skill = __instance.LastUnlockedSkillId;
+            EffectType effect;
+
+            if (skill == Vertical1)
+                effect = EffectType.LandingImpact1;
+            else if (skill == Vertical2)
+                effect = EffectType.LandingImpact2;
+            else if (skill == Vertical3)
+                effect = BeamWasReached(__instance) ? EffectType.LandingImpact3Beam : EffectType.LandingImpact3;
+            else
+                effect = EffectType.LandingImpactBase;
+
+            // The position is the penitent's own, which is where the game takes it from too: both
+            // InstantiateExplosion and the landing audio read the penitent's transform.
+            Main.Multiplayer.NetworkManager.SendEffect(
+                effect,
+                Framework.Managers.Core.Logic.Penitent.transform.position);
+        }
+
+        private static bool BeamWasReached(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack instance)
+        {
+            if (BeamReached == null)
+                return false;
+
+            object value = BeamReached.GetValue(instance, null);
+            if (value == null)
+                return false;
+
+            return (bool)value;
+        }
+    }
     // Vertical attack landing
     [HarmonyPatch(typeof(VerticalAttackLandingBehaviour), "OnStateEnter")]
     class VerticalAttackLandingBehaviourEnter_Patch
