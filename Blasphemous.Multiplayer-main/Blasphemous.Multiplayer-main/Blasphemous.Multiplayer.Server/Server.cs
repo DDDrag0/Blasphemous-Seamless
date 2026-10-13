@@ -700,38 +700,37 @@ public class Server
 
     // Effect
 
-    private void sendPlayerEffect(string playerIp, byte effect)
+    private void sendPlayerEffect(string playerIp, byte[] effectData)
     {
         PlayerInfo current = getCurrentPlayer(playerIp);
         foreach (string ip in connectedPlayers.Keys)
         {
             if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
             {
-                // Send this player's attack
-                Send(ip, getEffectPacket(current, effect), NetworkType.Effect);
+                // Send this player's effect, name included
+                Send(ip, getEffectPacket(current, effectData), NetworkType.Effect);
             }
         }
     }
 
     private void receivePlayerEffect(string playerIp, byte[] data)
     {
-        // The payload is relayed AS IT ARRIVED, never rebuilt.
-        //
-        // It used to be reconstructed from a single byte - the player's name plus the effect - which quietly
-        // discarded everything after it. That was invisible for as long as an effect was one byte, and it ate
-        // the position the moment one was added: the client wrote nine bytes, the server sent two, and the
-        // receiver correctly concluded there was no position to read. The failure was silent at every step,
-        // which is what made it worth a comment rather than a fix.
-        //
-        // Relaying keeps the server as ignorant of the payload as it is everywhere else, and that ignorance is
-        // the whole reason a payload is allowed to grow without a protocol change.
-        relayToScene(playerIp, data, NetworkType.Effect);
+        // The NAME goes in front, exactly as it does for every other relayed payload, and everything the client
+        // sent rides behind it. The receiver's first act is to read that name, so a payload relayed without it
+        // is not a payload missing a detail - it is an unreadable packet.
+
+        // This began as a rebuild from a single byte - the name plus the effect - which quietly discarded the
+        // rest, and adding a position is what made that visible. The first attempt at a fix relayed the raw
+        // client bytes instead, which dropped the NAME: the receiver then read the effect byte as the name's
+        // LENGTH and threw an out-of-range exception on every effect, freezing the peer's animation mid-stride
+        // and detaching its nameplate. Both halves matter - the payload is forwarded WHOLE and PREFIXED.
+        sendPlayerEffect(playerIp, data);
     }
 
-    private byte[] getEffectPacket(PlayerInfo player, byte effect)
+    private byte[] getEffectPacket(PlayerInfo player, byte[] effectData)
     {
         List<byte> bytes = addPlayerNameToData(player.name);
-        bytes.Add(effect);
+        bytes.AddRange(effectData);
         return bytes.ToArray();
     }
 
