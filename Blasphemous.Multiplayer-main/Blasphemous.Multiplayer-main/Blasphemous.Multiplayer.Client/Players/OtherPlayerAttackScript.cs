@@ -116,7 +116,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.SlideDust:
                 {
                     if (hasPosition)
-                        PlaySlideDust(position);
+                        PlaySlideDust(position, facingRight);
                     break;
                 }
                 // A5 - la polvere della SCIVOLATA DI MOVIMENTO (Dash), nel punto in cui il mittente e'
@@ -134,7 +134,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.DashDustStop:
                 {
                     if (hasPosition)
-                        PlayDashDust(effect == EffectType.DashDustStart, position);
+                        PlayDashDust(effect == EffectType.DashDustStart, position, facingRight);
                     break;
                 }
                 // A4 - the ground impact: the dust, the beam and the landing sound. The five members are the
@@ -184,7 +184,7 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// PEER slides would raise dust on the wrong, motionless character. The avatar has no particle system
         /// of its own, so the slide's dust trail is deliberately not part of this.
         /// </summary>
-        private static void PlaySlideDust(Vector2 position)
+        private static void PlaySlideDust(Vector2 position, bool facingRight)
         {
             if (Core.Logic.Penitent == null)
                 return;
@@ -206,8 +206,18 @@ namespace Blasphemous.Multiplayer.Client.Players
             //
             // ⚠️ The null check is NOT decorative: PoolManager.ReuseObject starts with prefab.GetInstanceID(),
             // so a null prefab throws inside the pool instead of quietly drawing nothing.
+            // ⚠️ Anche qui il prefab si specchia da solo leggendo il penitent LOCALE (GuardSlideImpact
+            // ::OnObjectReuse) ⇒ la scivolata di guardia del peer aveva LO STESSO VERSO SBAGLIATO.
+            // Il ritorno si cattura per riapplicare la faccia del peer e per non perdere in silenzio il
+            // caso "pool assente".
             if (slide.GuardSlideImpactEffect != null)
-                pool.ReuseObject(slide.GuardSlideImpactEffect, world, Quaternion.identity, false, 1);
+            {
+                PoolManager.ObjectInstance instance =
+                    pool.ReuseObject(slide.GuardSlideImpactEffect, world, Quaternion.identity, false, 1);
+
+                if (instance != null)
+                    OrientEffect(instance, facingRight, "SlideDust", slide.GuardSlideImpactEffect);
+            }
 
             if (!string.IsNullOrEmpty(slide.GuardSlideSoundFx))
                 Core.Audio.EventOneShotPanned(slide.GuardSlideSoundFx, world);
@@ -230,7 +240,7 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// _penitent.Status - quindi alzerebbero polvere sul TUO personaggio invece che su quello del peer.
         /// Secondo: sono i due metodi che il MITTENTE patcha, quindi chiamarli qui ri-trasmetterebbe.
         /// </summary>
-        private static void PlayDashDust(bool isStart, Vector2 position)
+        private static void PlayDashDust(bool isStart, Vector2 position, bool facingRight)
         {
             if (Core.Logic.Penitent == null)
                 return;
@@ -278,11 +288,72 @@ namespace Blasphemous.Multiplayer.Client.Players
             // createPoolIfNeeded resta FALSE e poolSize resta 1, come in PlaySlideDust e come nelle
             // chiamate del gioco: l'OnStart del DashDustGenerator di QUESTA macchina ha gia' eseguito
             // CreatePool(prefab, 5) per entrambi i prefab.
-            // ⚠️ Se il pool mancasse, ReuseObject restituirebbe null SENZA dire nulla e non comparirebbe
-            // alcuna polvere: vedi il passaggio di ritorno B in fondo al piano.
-            // Il risultato si SCARTA: cosi' il codice non dipende dall'accessibilita' di
-            // PoolManager.ObjectInstance.
-            pool.ReuseObject(prefab, world, Quaternion.identity, false, 1);
+            //
+            // ⚠️ Il ritorno si CATTURA ora, per due motivi: orientare l'effetto (vedi OrientEffect) e
+            // smettere di perdere in silenzio il caso "pool assente", in cui ReuseObject restituisce null
+            // senza dire nulla.
+            PoolManager.ObjectInstance instance =
+                pool.ReuseObject(prefab, world, Quaternion.identity, false, 1);
+
+            if (instance == null)
+            {
+                ModLog.Warn("[DashDust] ReuseObject non ha restituito l'istanza (pool assente?)");
+                return;
+            }
+
+            OrientEffect(instance, facingRight, "DashDust", prefab);
+        }
+
+        /// <summary>
+        /// Re-applies the peer's facing to an effect we just spawned on their behalf.
+        ///
+        /// ⚠️ THE GAME FLIPS THE PREFAB ITSELF, AND IT FLIPS IT BY LOOKING AT THE WRONG PLAYER.
+        ///
+        /// The spawn methods pass Quaternion.identity and never touch scale or flip, and PoolObject.OnObjectReuse
+        /// - which ObjectInstance.Reuse calls right after setting the position - is where the direction is
+        /// actually decided. The only two implementations that read an orientation both go through
+        /// Core.Logic.Penitent, the LOCAL player. On the machine that performed the action that is correct,
+        /// because the local penitent IS the one who slid; on the machine that merely watches, the peer's dust
+        /// mirrors according to YOUR face. That is the whole bug, and it is the same one the ghost trail had.
+        ///
+        /// The fix costs nothing: AttackManager already hands us the peer's facing. It is re-applied through the
+        /// prefab's OWN component so that ITS flags choose the mechanism - SimpleVFX flips with localScale when
+        /// useScaleToFlip is set and with flipX otherwise, so doing flipX ourselves on such a prefab would ADD
+        /// to the scale flip instead of replacing it.
+        /// </summary>
+        private static void OrientEffect(
+            PoolManager.ObjectInstance instance, bool facingRight, string what, GameObject prefab)
+        {
+            if (instance == null || instance.GameObject == null)
+                return;
+
+            Framework.FrameworkCore.EntityOrientation peer = facingRight
+                ? Framework.FrameworkCore.EntityOrientation.Right
+                : Framework.FrameworkCore.EntityOrientation.Left;
+
+            Gameplay.GameControllers.Entities.SimpleVFX vfx =
+                instance.GameObject.GetComponent<Gameplay.GameControllers.Entities.SimpleVFX>();
+
+            if (vfx != null && vfx.FlipByPlayerOrientation)
+            {
+                vfx.SetOrientation(peer, vfx.useReversedPlayerOrientation);
+                return;
+            }
+
+            Gameplay.GameControllers.Effects.Player.GuardSlide.GuardSlideImpact impact =
+                instance.GameObject.GetComponent<Gameplay.GameControllers.Effects.Player.GuardSlide.GuardSlideImpact>();
+
+            if (impact != null && impact.SpriteRenderer != null)
+            {
+                impact.SpriteRenderer.flipX = peer == Framework.FrameworkCore.EntityOrientation.Left;
+                return;
+            }
+
+            // Neither component: the effect is drawn, but its facing is unknown. Said rather than guessed - a
+            // wrong flip is more visible than none, and this line names the prefab so the next session knows
+            // which asset to look at.
+            ModLog.Warn($"[{what}] prefab senza componente di orientamento: " +
+                        (prefab == null ? "n/d" : prefab.name));
         }
 
         /// <summary>
