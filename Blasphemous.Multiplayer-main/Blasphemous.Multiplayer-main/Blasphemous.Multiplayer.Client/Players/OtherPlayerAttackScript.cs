@@ -3,6 +3,9 @@ using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Projectiles;
 using Gameplay.GameControllers.Entities;
+// A5.1 - `EntityAudio`: le etichette dei 14 parametri FMOD del materiale del terreno, i campi che ne
+// tengono i valori, e `SetPanning(EventInstance, Vector3)`.
+using Gameplay.GameControllers.Entities.Audio;
 // A5 - le `public const string` dei suoni del penitent (PenitentFootStep, PenitentAttack1, PenitentDash,
 // ...). Il namespace e' `Gameplay.GameControllers.Penitent.Audio`: la classe e'
 // `Gameplay.GameControllers.Penitent.Audio.PenitentAudio` e deriva da
@@ -333,8 +336,212 @@ namespace Blasphemous.Multiplayer.Client.Players
             return path;
         }
 
+        // ============================================================================================
+        // A5.1 - IL PASSO: PERCHE' NON BASTAVA `EventOneShotPanned`, E COSA SI FA INVECE.
+        // ============================================================================================
+        //
+        // IL DIFETTO, IN UNA RIGA DI IL. Il gioco suona il passo con
+        //     EntityAudio.PlayOneShotEvent("PenitentFootStep", FxSoundCategory.Motion)
+        // e quella categoria e' L'UNICA che chiama `SetFloorMaterialParams`, che imposta QUATTORDICI
+        // parametri FMOD (Dirt, Water, Snow, Stone, Wood, Marble, Flesh, Metal, Mud, SecretFloor, Grass,
+        // Demake, Palio, Snake). Verificato nel corpo IL di `PenitentAudio.PlayFootStep`: @IL_0007 e' un
+        // `call EntityAudio::PlayOneShotEvent`, mentre `PlayBasicAttack1/2`, `PlayHeavyAttack`,
+        // `PlayAirAttack1/2` e `PlayReleaseChargedAttack` fanno @IL_0022 `callvirt PlaySfxOnCatalog(String)`,
+        // che NON imposta un solo parametro. => I FENDENTI SI SENTONO PERCHE' NON DIPENDONO DA NULLA;
+        // IL PASSO E' MUTO PERCHE' DIPENDE DAI MATERIALI, E NOI NON NE IMPOSTAVAMO NESSUNO.
+        //
+        // ⚠️ NON BASTAVA `PlayOneShotFromCatalog`, ed e' un punto importante perche' era la scorciatoia
+        // "ovvia": quella chiama `EventOneShotPanned`, che nel suo corpo IL imposta SOLO `Spanish` e
+        // `Panning`. E' la stessa strada che avevamo, con un nome piu' corto.
+        //
+        // LA STRADA GIUSTA E' RIPRODURRE LA CATENA LOCALE, che ha TRE passi e non uno:
+        //     1. `CreateCatalogEvent(chiave, pos)`  -> risolve la chiave, applica set3DAttributes e Spanish;
+        //     2. i MATERIALI + il PANNING, PRIMA di start();
+        //     3. `start()` e `release()`.
+        // Il punto 2 e' l'unico che mancava. `release()` subito dopo `start()` e' esattamente cio' che fa
+        // anche il gioco in `PlayOneShotEvent`: non e' una differenza introdotta qui.
+        //
+        // ⭐ E IL PANNING SI FA CON `EntityAudio.SetPanning(EventInstance, Vector3)`, che e' PUBLIC STATIC.
+        // Non esisteva nel piano precedente, e risparmia di scrivere a mano il getParameter("Panning"): fa
+        // esattamente la stessa cosa con la stessa formula.
+        //
+        // ⚠️ PERCHE' NON SI CHIAMA `EntityAudio.SetFloorMaterialParams`, CHE ESISTE E FA PROPRIO QUESTO.
+        // Perche' e' PRIVATO. L'alternativa era la riflessione su un metodo privato: si e' preferito
+        // scrivere i 14 `getParameter` per esteso, che sono piu' righe ma non dipendono da un nome privato
+        // che una build futura puo' rinominare.
+        //
+        // ⚠️ E I 14 VALORI DA DOVE VENGONO. Nel gioco vengono dai campi `DirtValue`, `SnowValue`, ... di
+        // `EntityAudio`, aggiornati da `PenitentAudio.FloorSensorEmitterOnEnter`/`OnStay` leggendo il TAG
+        // del collider su cui il penitent sta camminando (`Material:Dirt`, `Material:Stone`, ...).
+        // Quei campi sono `Family` (= protected), quindi NON si leggono da fuori: si leggono per
+        // RIFLESSIONE dal penitent LOCALE.
+        //   E' la scelta giusta e non un ripiego: in co-op i due giocatori stanno quasi sempre sullo stesso
+        // terreno, quindi il materiale locale E' il materiale giusto. E quando non lo fosse, il passo esce
+        // col materiale SBAGLIATO invece che MUTO - che e' il difetto che stiamo togliendo.
+        //   Se la riflessione fallisce (build futura che rinomina i campi) si usano i DEFAULT del gioco e
+        // il passo esce come oggi: DEGRADA, NON BLOCCA. La spia lo dice una volta sola.
+
         /// <summary>
-        /// Suona uno dei sette SUONI non sostenuti di A5 nel punto in cui e' successo.
+        /// I nomi dei parametri FMOD del materiale del terreno, NELL'ORDINE E NELLA GRAFIA del corpo IL di
+        /// `EntityAudio.SetFloorMaterialParams`. La grafia conta: `getParameter` cerca per NOME, e
+        /// `"SecretFloor"` NON e' `"Secret"` (il campo si chiama `SecretValue` e il label e' diverso).
+        /// </summary>
+        private static readonly string[] FloorMaterialParams =
+        {
+            EntityAudio.LabelParamDirt,        // "Dirt"
+            EntityAudio.LabelParamWater,       // "Water"
+            EntityAudio.LabelParamSnow,        // "Snow"
+            EntityAudio.LabelParamStone,       // "Stone"
+            EntityAudio.LabelParamWood,        // "Wood"
+            EntityAudio.LabelParamMarble,      // "Marble"
+            EntityAudio.LabelParamFlesh,       // "Flesh"
+            EntityAudio.LabelParamMetal,       // "Metal"
+            EntityAudio.LabelParamMud,         // "Mud"
+            EntityAudio.LabelParamSecret,      // "SecretFloor"
+            EntityAudio.LabelParamGrass,       // "Grass"
+            EntityAudio.LabelParamDemake,      // "Demake"
+            EntityAudio.LabelParamPalio,       // "Palio"
+            EntityAudio.LabelParamSnake,       // "Snake"
+        };
+
+        /// <summary>
+        /// I campi `protected float` di `EntityAudio` che tengono i valori, NELLO STESSO ORDINE di
+        /// `FloorMaterialParams`. Sono `Family`, quindi si leggono per riflessione. Si risolvono UNA VOLTA:
+        /// `FieldInfo` risolti a ogni passo sarebbero 14 `GetField` per suono.
+        /// </summary>
+        private static readonly System.Reflection.FieldInfo[] FloorMaterialFields = ResolveFloorMaterialFields();
+
+        private static System.Reflection.FieldInfo[] ResolveFloorMaterialFields()
+        {
+            string[] names =
+            {
+                "DirtValue", "WaterValue", "SnowValue", "StoneValue", "WoodValue", "MarbleValue",
+                "FleshValue", "MetalValue", "MudValue", "SecretValue", "GrassValue", "DemakeValue",
+                "PalioValue", "SnakeValue",
+            };
+
+            const System.Reflection.BindingFlags flags =
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+
+            System.Reflection.FieldInfo[] fields = new System.Reflection.FieldInfo[names.Length];
+            for (int i = 0; i < names.Length; i++)
+                fields[i] = typeof(EntityAudio).GetField(names[i], flags);
+
+            return fields;
+        }
+
+        /// <summary>
+        /// Una volta sola, la PRIMA volta che si prova a suonare un passo: la riflessione ha trovato i 14
+        /// campi, o no? Si logga in ogni caso, e in caso di fallimento si dice anche cosa succede (i
+        /// materiali restano ai default del gioco). Una riga per sessione, non una per passo.
+        /// </summary>
+        private static bool floorMaterialReflectionChecked;
+
+        /// <summary>
+        /// Imposta i 14 parametri del materiale del terreno sull'istanza, copiandoli dal penitent LOCALE.
+        /// Se la riflessione non e' disponibile NON imposta nulla e NON e' un errore: l'istanza resta coi
+        /// default del banco, che e' esattamente lo stato in cui si trova oggi.
+        /// </summary>
+        private static void ApplyLocalFloorMaterialParams(FMOD.Studio.EventInstance instance)
+        {
+            if (!floorMaterialReflectionChecked)
+            {
+                floorMaterialReflectionChecked = true;
+
+                bool ok = FloorMaterialFields.Length > 0 && FloorMaterialFields[0] != null;
+                ModLog.Info("[Sound] materiale del terreno per i passi del peer: " +
+                            (ok
+                                ? "letto dal penitent locale (14 parametri)"
+                                : "NON DISPONIBILE (la riflessione non trova i campi di EntityAudio): " +
+                                  "il passo esce coi materiali di default del banco"));
+            }
+
+            // ⚠️ `Core.Logic.Penitent` (o il suo Audio) puo' mancare in cambio scena: in quel caso si esce
+            // senza toccare nulla. Non si mette una guardia sul `null` del penitent PIU' SOPRA perche' il
+            // passo deve poter arrivare anche quando il penitent locale non c'e' piu'.
+            Gameplay.GameControllers.Penitent.Penitent penitent = Core.Logic.Penitent;
+            if (penitent == null || penitent.Audio == null)
+                return;
+
+            EntityAudio localAudio = penitent.Audio;
+
+            for (int i = 0; i < FloorMaterialParams.Length; i++)
+            {
+                System.Reflection.FieldInfo field = FloorMaterialFields[i];
+                if (field == null)
+                    continue;
+
+                FMOD.Studio.ParameterInstance parameter;
+                instance.getParameter(FloorMaterialParams[i], out parameter);
+
+                // ⚠️ `isValid()` NON e' una formalita': `getParameter` restituisce un'istanza NON valida
+                // quando l'evento non HA quel parametro, e chiamare `setValue` su un'istanza non valida e'
+                // il modo di far lanciare FMOD dentro il percorso degli effetti. Si imposta solo se c'e'.
+                if (parameter.isValid())
+                    parameter.setValue((float)field.GetValue(localAudio));
+            }
+        }
+
+        /// <summary>
+        /// Il PASSO del peer, riprodotto dalla CATENA LOCALE e non da `EventOneShotPanned`.
+        ///
+        /// PERCHE' UN METODO SUO E NON UN `case` IN PIU' IN `PlayPeerSound`: perche' e' l'unico dei sette
+        /// suoni che ha bisogno dei parametri di materiale. `PlayPeerSound` resta per i sei fendenti, che
+        /// sono chiavi pure e non hanno un solo parametro da impostare - e' la stessa distinzione che il
+        /// piano fa fra i passi (con fusibile) e i fendenti (senza), per la stessa ragione: chi ha una
+        /// proprieta' in piu' ha un posto suo, altrimenti quella proprieta' si perde nel codice condiviso.
+        /// </summary>
+        private static void PlayPeerFootStep(Vector2 position)
+        {
+            string key = PenitentAudio.FootStepEventKey;   // "PenitentFootStep", const verificata in IL
+
+            // La spia (una volta per chiave): dice se la chiave non esiste su QUESTA macchina, che e' una
+            // cosa diversa da "il pacchetto non e' arrivato". Si usa SOLO come guardia diagnostica.
+            //
+            // ⚠️⚠️ E IL SUO VALORE DI RITORNO NON SI PASSA A `CreateCatalogEvent`. Quest'ultima NON prende
+            // un PERCORSO: prende una CHIAVE DI CATALOGO, e dentro fa `FindSfxInCatalogs(key)` e poi
+            // `RuntimeManager.CreateInstance(clip.FMODKey)`. Verificato nel corpo IL.
+            //   ⇒ passarle `event:/SFX/Penitent/Motion/PenitentFootStep` la farebbe cercare NEL CATALOGO
+            //   come se fosse un Id: `FindSfxInCatalogs` non troverebbe nulla, `FMODKey` sarebbe null,
+            //   `RuntimeManager.CreateInstance(null)` lancerebbe `ArgumentNullException` (o tornerebbe
+            //   un'istanza non valida), e il passo resterebbe MUTO **con una riga di log che dice che va
+            //   tutto bene**. E' l'errore piu' facile da commettere in questo fix: la variabile si chiama
+            //   `path` e sembra la cosa da passare.
+            string path = ResolveCatalogPath(key);
+            if (string.IsNullOrEmpty(path))
+                return;
+
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+                return;
+
+            UnityEngine.Vector3 world = EffectWorldPosition(position);
+
+            // 1. come il gioco: `CreateCatalogEvent(CHIAVE, pos)` risolve la chiave, applica set3DAttributes
+            //    e `Spanish` (UpdateEventInstanceParam). ⚠️ `key`, NON `path`.
+            FMOD.Studio.EventInstance instance = audio.CreateCatalogEvent(key, world);
+
+            // ⚠️ `CreateCatalogEvent` NON dice niente quando la chiave non e' nel catalogo: restituisce
+            // un'istanza NON valida. `ResolveCatalogPath` l'ha gia' detto (una volta per chiave), quindi
+            // qui basta uscire senza chiamare `start` su un'istanza morta.
+            if (!instance.isValid())
+                return;
+
+            // 2. i MATERIALI DEL TERRENO, e il PANNING dalla posizione del PEER (non del penitent locale:
+            //    `SetPanning(EventInstance, Vector3)` e' la variante che prende la posizione, ed e'
+            //    public static - l'altra, `SetPanning(EventInstance)`, leggerebbe `Owner.transform.position`,
+            //    cioe' la posizione del SUONATORE LOCALE, e il passo uscirebbe dal lato sbagliato).
+            ApplyLocalFloorMaterialParams(instance);
+            EntityAudio.SetPanning(instance, world);
+
+            // 3. come il gioco, e nello stesso ordine: `start()` e poi `release()`. Il `release()` subito
+            //    dopo `start()` e' quello che fa anche `EntityAudio.PlayOneShotEvent`, riga per riga.
+            instance.start();
+            instance.release();
+        }
+
+        /// <summary>
+        /// Suona uno dei sei SUONI non sostenuti di A5 nel punto in cui e' successo.
         ///
         /// ⚠️ PERCHE' NON `PlayOneShotFromCatalog`, che sarebbe la riga piu' corta.
         /// Perche' quel metodo NON dice niente quando la chiave non c'e'. Con `ResolveCatalogPath` +
@@ -345,6 +552,16 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// </summary>
         private static void PlayPeerSound(EffectType effect, Vector2 position)
         {
+            // A5.1 - IL PASSO HA UNA STRADA SUA. E' l'unico dei sette suoni che il gioco suona con
+            // `EntityAudio.PlayOneShotEvent(..., FxSoundCategory.Motion)`, e quella categoria imposta i 14
+            // parametri del materiale del terreno. `EventOneShotPanned` non ne imposta nessuno, ed e' per
+            // questo che il passo arrivava, si risolveva nel catalogo, e NON si sentiva.
+            if (effect == EffectType.FootStep)
+            {
+                PlayPeerFootStep(position);
+                return;
+            }
+
             string key = SoundKeyFor(effect);
             if (string.IsNullOrEmpty(key))
                 return;
