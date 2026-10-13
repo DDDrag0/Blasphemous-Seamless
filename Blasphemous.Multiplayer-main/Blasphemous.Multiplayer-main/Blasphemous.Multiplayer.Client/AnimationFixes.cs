@@ -632,6 +632,75 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     // ============================================================================================
+    // ============================================================================================
+    // A5 - IL SUONO DELLA SCIVOLATA (Dash).
+    // ============================================================================================
+    //
+    // PERCHE' DUE PATCH E UN SOLO EVENTO. `PenitentDash` e' un evento di catalogo SOSTENUTO (LATCHED):
+    // `PenitentAudio.PlayDashSound()` fa `StopDashSound(); PlayEvent(ref _dashEventInstance, "PenitentDash");`
+    // e il gioco lo spegne da `DashBehaviour.OnStateExit -> StopDashSound()`. Un suono che va ACCESO e
+    // SPENTO ha bisogno di DUE messaggi: uno solo lascerebbe la scivolata accesa per sempre.
+    //
+    // PERCHE' `Dash.OnCastStart`/`OnCastEnd` E NON `DashBehaviour.OnStateEnter`/`OnStateExit`.
+    //   (1) `DashBehaviour.OnStateExit` porta GIA' il `Prefix => animator.name == "Body"` scritto piu'
+    //       sotto in questo file. In HarmonyX un Postfix viene eseguito ANCHE quando un Prefix restituisce
+    //       false: un mio `Postfix(Animator animator)` su quel metodo girerebbe anche per l'animator
+    //       "Slash" e manderebbe uno STOP mai preceduto da uno START. E un mio Prefix NON si puo'
+    //       aggiungere: sarebbe il TERZO Prefix sullo stesso metodo, e la semantica dei due esistenti e'
+    //       quella che ha gia' bruciato 12 NRE. Regola: i Prefix di questo file non si toccano.
+    //   (2) `Dash.OnCastStart()` e `Dash.OnCastEnd(System.Single castingTime)` sono GIA' patchati da A3
+    //       (ghost trail) con dei Postfix SENZA ARGOMENTI: aggiungere classi sorelle con `Postfix()` e'
+    //       la forma piu' sicura che esista, perche' NON C'E' NESSUN NOME DI PARAMETRO DA INDOVINARE.
+    //   (3) E' la STESSA coppia START/STOP che A3 usa per il ghost trail: un solo meccanismo da collaudare,
+    //       e se A3 si accende e si spegne bene, A5 pure.
+    //
+    // ⚠️ NON SI PATCHA `PenitentMoveAnimations.PlayDash()`, che e' il punto in cui il GIOCO suona. Il
+    // motivo e' al punto (1): il suo unico chiamante e' `DashBehaviour.OnStateEnter`, gia' coperto da un
+    // Prefix, e un Postfix non richiamabile con sicurezza non vale il rischio.
+    //
+    // ⚠️ E IL DASH IN ARIA E' MUTO ANCHE NEL GIOCO: verificato in IL, `AirDashBehaviour` non chiama
+    // `PlayDash` e `PlayDashSound` ha UN SOLO chiamante in tutto l'assembly. Non si inventa un suono che
+    // il gioco non ha.
+    //
+    // ⚠️ SCATTANO SOLO PER IL PENITENT LOCALE: l'avatar remoto e' un GameObject nudo costruito da
+    // OtherPlayerManager.AddActivePlayer e non porta alcuna `Dash`, quindi nulla torna indietro.
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastStart")]
+    class DashSoundStart_Patch
+    {
+        // La posizione e' quella del penitent, che e' dove il gioco prende la sua: PlayDashSound non
+        // prende posizione e il panning lo decide `SetPanning` a partire da `Owner.transform.position`.
+        // E' la stessa scelta che fa il postfix del ghost trail due classi piu' in alto.
+        public static void Postfix()
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+
+            // PROVA LATO MITTENTE. Vedi il passo 2 per la ragione: la riga `[Effect]` e' del RICEVENTE.
+            Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] DashSoundStart ({at.x:F1},{at.y:F1})");
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashSoundStart, at);
+        }
+    }
+
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastEnd")]
+    class DashSoundStop_Patch
+    {
+        // ⚠️ SENZA ARGOMENTI, come il Postfix di A3 sullo stesso metodo. Il parametro del gioco si chiama
+        // `castingTime`, ma non nominarlo e' la scelta: un Postfix senza parametri non puo' avere un nome
+        // sbagliato, e un nome sbagliato e' cio' che ha impedito alla mod di avviarsi.
+        public static void Postfix()
+        {
+            // ⚠️ NIENTE `Core.Logic.Penitent == null` QUI, ed e' voluto: lo STOP deve poter arrivare anche
+            // quando il penitent non c'e' piu' (morte, cambio scena). E' un messaggio idempotente: se non
+            // c'e' nulla da fermare, il ricevente non fa nulla.
+            Blasphemous.ModdingAPI.ModLog.Info("[Sound TX] DashSoundStop");
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashSoundStop);
+        }
+    }
+
     // A5 - LE PROBE SONO STATE RIMOSSE. Avevano un solo scopo: dire QUALE suono il gioco suona
     // davvero per il quarto colpo, per lo sguaino e per l'attacco aereo-a-terra, invece di
     // scommettere su tre fix. Hanno risposto (`ComboHit` si', `ComboHitUp/Down` mai, `IdleSword`

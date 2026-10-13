@@ -83,6 +83,23 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             SwordRenderer.flipX = !facingRight;
 
+            // A5 - LA SCADENZA DELLA SCIVOLATA, ed e' l'unico pezzo di A5 che gira su OGNI effetto.
+            //
+            // PERCHE' QUI. Questo metodo e' gia' chiamato per ogni effetto che arriva, quindi la scadenza
+            // non aggiunge ne' un `Update` ne' un `MonoBehaviour`: e' un confronto di float che costa nulla
+            // e viene valutato solo mentre `dashSoundInstance` e' valida (cioe' solo durante un dash del
+            // peer). Il caso "nessuna scivolata accesa" esce alla prima riga.
+            //
+            // Se scatta, lo DICE: uno STOP perso e' una cosa che si vuole sapere, non una da nascondere
+            // dietro una scadenza silenziosa.
+            if (dashSoundInstance.isValid() &&
+                Time.unscaledTime - dashSoundStartedAt > DASH_SOUND_TIMEOUT)
+            {
+                ModLog.Warn("[Sound] la scivolata del peer non ha ricevuto lo STOP entro " +
+                            DASH_SOUND_TIMEOUT + "s: la spengo io (pacchetto perso?)");
+                StopPeerDashSound();
+            }
+
             switch (effect)
             {
                 case EffectType.SidewaysGrounded:
@@ -200,6 +217,35 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.VerticalStart:
                 case EffectType.VerticalFalling:
                     PlayPeerSound(effect, position);
+                    break;
+                // A5 - IL SUONO DELLA SCIVOLATA, l'UNICO evento SOSTENUTO (LATCHED) di A5, e l'unico che ha
+                // bisogno di DUE casi.
+                //
+                // PERCHE' DUE CASI E NON UNO. `PenitentDash` non e' un one-shot: resta ACCESO finche'
+                // qualcuno non lo spegne - il gioco usa `PlayEvent(ref _dashEventInstance, "PenitentDash")`
+                // e poi `StopDashSound()`. Un byte solo non puo' dire "accendi" e "spegni", quindi START e
+                // STOP sono due membri dell'enum (95 e 96).
+                //
+                // ⭐ PERCHE' `PlayEventWithCatalog(ref ...)` E NON `PlayOneShotFromCatalog`. Quest'ultimo
+                // chiama `release()` subito dopo `start()`: l'istanza e' liberata mentre l'evento sta ancora
+                // suonando, e un evento SOSTENUTO trattato cosi' non si puo' piu' fermare. Firme verificate
+                // in IL: `PlayEventWithCatalog(ref EventInstance, string key, Vector3)` e
+                // `StopEvent(ref EventInstance)`.
+                //
+                // ⚠️ E NON SI PASSA DAL `PenitentAudio` LOCALE. `PlayDashSound()` scriverebbe
+                // `_dashEventInstance` del PENITENT LOCALE: il dash del peer uscirebbe dalla TUA posizione e -
+                // peggio - il TUO dash successivo troverebbe l'istanza occupata e la fermerebbe al posto tuo.
+                // L'istanza dev'essere NOSTRA, una per avatar.
+                case EffectType.DashSoundStart:
+                {
+                    if (hasPosition)
+                        PlayPeerDashSound(position);
+                    break;
+                }
+                case EffectType.DashSoundStop:
+                    // ⚠️ NIENTE guardia su `hasPosition` QUI: lo STOP non porta posizione, e non deve
+                    // farne una condizione. Fermare qualcosa che non c'e' non fa nulla.
+                    StopPeerDashSound();
                     break;
                     //case EffectType.Verdiales:
                     //    StartCoroutine(DisplayVerdiales());
@@ -559,6 +605,126 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// `EventOneShotPanned` prende il PERCORSO, che e' esattamente quello che `ResolveCatalogPath`
         /// restituisce: nessun rischio di passargli una chiave.
         /// </summary>
+        /// <summary>
+        /// L'istanza dell'evento SOSTENUTO della scivolata, una per avatar.
+        ///
+        /// ⚠️ PERCHE' UN CAMPO E NON UNA VARIABILE LOCALE. L'ACCENSIONE e lo SPEGNIMENTO arrivano in due
+        /// pacchetti DIVERSI, a distanza di un dash: fra i due non c'e' alcuna pila che li tenga insieme.
+        /// L'istanza e' l'unico filo che li lega, e per questo vive qui.
+        ///
+        /// ⚠️ È IL PRIMO PEZZO DI A5 CON UNO STATO, e va guardato come tale: se qualcosa di A5 puo'
+        /// "restare acceso", e' questo. Le tre vie di uscita sono: lo STOP (il caso normale), OnDestroy
+        /// (la disconnessione), e la SCADENZA (il caso in cui lo STOP non arriva mai).
+        /// </summary>
+        private FMOD.Studio.EventInstance dashSoundInstance;
+
+        /// <summary>
+        /// Da quando l'istanza della scivolata sta suonando, in `Time.unscaledTime`. Serve alla scadenza.
+        /// </summary>
+        private float dashSoundStartedAt;
+
+        /// <summary>
+        /// Oltre questo tempo la scivolata si spegne da sola, e lo DICE.
+        ///
+        /// PERCHE' UNA SCADENZA E NON SOLO LO STOP. Lo STOP arriva da `Dash.OnCastEnd` sull'altra macchina
+        /// e in condizioni normali c'e' sempre. Ma un evento sostenuto che non viene mai fermato non si
+        /// "sente male": RESTA ACCESO PER SEMPRE, e l'unico modo di farlo smettere e' riavviare il gioco.
+        /// Le due condizioni che lo producono sono note e non rare: un pacchetto perso, e una
+        /// disconnessione nel mezzo di un dash. La prima non si puo' escludere, la seconda la copre
+        /// OnDestroy - ma solo se l'oggetto viene distrutto, e una disconnessione con la scena che si
+        /// ricarica non e' l'unico percorso.
+        ///
+        /// 5 secondi perche' il dash piu' lungo del gioco non arriva a un terzo di questo: e' un fusibile,
+        /// non una durata. Se scatta, il log lo dice - e vuol dire che si e' perso uno STOP, non che il
+        /// dash e' durato tanto.
+        /// </summary>
+        private const float DASH_SOUND_TIMEOUT = 5f;
+
+        /// <summary>
+        /// Accende il suono della scivolata del peer nel punto in cui e' scivolato.
+        ///
+        /// La sequenza e' quella del gioco, non una inventata: `PenitentAudio.PlayDashSound()` fa
+        /// `StopDashSound(); PlayEvent(ref _dashEventInstance, "PenitentDash");` - PRIMA spegne, POI
+        /// accende. Serve per il dash concatenato (due dash di fila: il secondo accende mentre il primo e'
+        /// ancora acceso), e replicarla e' l'unico modo di non trovarsi due istanze vive.
+        /// </summary>
+        private void PlayPeerDashSound(Vector2 position)
+        {
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+                return;
+
+            string key = PenitentAudio.DashEventKey;   // "PenitentDash", const verificata in IL
+
+            // ⚠️⚠️ LA SPIA SI CONSULTA, MA IL SUO VALORE DI RITORNO NON SI PASSA A `PlayEventWithCatalog`.
+            // Quest'ultima prende una CHIAVE DI CATALOGO: dentro fa `CreateCatalogEvent(eventKey, position)`,
+            // che a sua volta fa `FindSfxInCatalogs(key)` e `RuntimeManager.CreateInstance(clip.FMODKey)`.
+            // Passandole il PERCORSO la ricerca fallirebbe, `FMODKey` sarebbe null, e la scivola resterebbe
+            // MUTA **con un log che dice che va tutto bene**.
+            //   ⚠️ E' la stessa trappola dei passi, ed e' per questo che la riga e' scritta cosi': il metodo
+            //   si chiama "WithCatalog" e sembra volere il percorso risolto, mentre vuole l'Id.
+            if (string.IsNullOrEmpty(ResolveCatalogPath(key)))
+                return;
+
+            // Come il gioco: prima si spegne quello che c'e'.
+            StopPeerDashSound();
+
+            audio.PlayEventWithCatalog(
+                ref dashSoundInstance,
+                key,
+                EffectWorldPosition(position));
+
+            // ⚠️ Il controllo NON e' decorativo: se la chiave non e' nel catalogo, `PlayEventWithCatalog`
+            // lascia l'istanza NON VALIDA e non lo dice. Registrare l'ora su un'istanza invalida farebbe
+            // scattare la scadenza su un suono che non c'e' mai stato, con una riga di avviso che accusa
+            // la rete per un problema di catalogo.
+            if (dashSoundInstance.isValid())
+                dashSoundStartedAt = Time.unscaledTime;
+        }
+
+        /// <summary>
+        /// Spegne il suono della scivolata. SICURA DA CHIAMARE SEMPRE, anche a vuoto: `StopEvent` del gioco
+        /// comincia con `if (eventInstance.isValid())`, e un'istanza mai accesa non e' valida.
+        ///
+        /// ⚠️ `clearHandle()` e' dentro `StopEvent` (verificato), e senza di essa l'istanza resterebbe
+        /// "valida" dopo `release()`: la scadenza la troverebbe valida e la fermerebbe una seconda volta.
+        /// Un `EventInstance` e' uno STRUCT, quindi azzerarlo e' comunque l'unico stato sicuro in cui
+        /// lasciarlo.
+        /// </summary>
+        private void StopPeerDashSound()
+        {
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+            {
+                dashSoundInstance = default(FMOD.Studio.EventInstance);
+                return;
+            }
+
+            audio.StopEvent(ref dashSoundInstance);
+            dashSoundInstance = default(FMOD.Studio.EventInstance);
+        }
+
+        /// <summary>
+        /// LA PULIZIA SU DISCONNESSIONE, ed e' la ragione per cui questa riga esiste.
+        ///
+        /// ⚠️ COSA SUCCEDE SE IL PEER SI DISCONNETTE MENTRE LA SCIVOLATA E' ACCESA. L'istanza dell'evento
+        /// NON appartiene all'avatar: e' registrata dentro FMOD, e distruggere un GameObject non ferma
+        /// nulla di cio' che FMOD sta suonando. Senza questa riga il `PenitentDash` del peer resterebbe
+        /// acceso per sempre, e nessun pacchetto successivo potrebbe piu' spegnerlo - perche' il suo
+        /// mittente non c'e' piu'.
+        ///
+        /// ⚠️ E' UN PUNTO DI PULIZIA GARANTITO, e non per caso: `OtherPlayerManager.RemoveAllActivePlayers`
+        /// e `RemoveActivePlayer` distruggono il GameObject in OGNI percorso - `Multiplayer.OnDisconnect`,
+        /// il cambio scena (`LevelLoaded`), e il `ReceiveLeaveScene`. `OnDestroy` li copre tutti.
+        ///
+        /// La scadenza in `PlayEffectAnimation` copre il caso che `OnDestroy` NON copre: un pacchetto di
+        /// STOP perso mentre la connessione e' ancora viva.
+        /// </summary>
+        private void OnDestroy()
+        {
+            StopPeerDashSound();
+        }
+
         private static void PlayPeerSound(EffectType effect, Vector2 position)
         {
             // A5.1 - IL PASSO HA UNA STRADA SUA. E' l'unico dei sette suoni che il gioco suona con
