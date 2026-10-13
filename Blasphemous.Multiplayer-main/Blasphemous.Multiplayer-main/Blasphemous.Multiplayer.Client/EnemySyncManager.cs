@@ -2219,6 +2219,92 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// The stand-in for the other player that the GAME's own aggro can see (voice 35b).
+        ///
+        /// The game has exactly ONE aggro target: a single GameObject on Enemy.Target, and every site that
+        /// writes it names the LOCAL Penitent. The other player is a bare GameObject with no collider and no
+        /// Entity, so the game's own checks cannot see them at all - which is why an enemy owned by one
+        /// machine only ever notices that machine's player and stands idle while the other player is right
+        /// next to it.
+        ///
+        /// This proxy closes that gap without touching the damage: it is a plain object on the "Penitent"
+        /// layer, so the vision check finds the layer it insists on and the distance check measures to it,
+        /// but it carries no Entity and no IDamageable - so nothing can be hurt through it. The damage stays
+        /// exactly as it was: every machine wounds its OWN Penitent through the game's normal pipeline.
+        /// </summary>
+        private static GameObject _remoteTargetProxy;
+
+        private static GameObject RemoteTargetProxy()
+        {
+            if (_remoteTargetProxy != null)
+                return _remoteTargetProxy;
+
+            _remoteTargetProxy = new GameObject("_coop_remote_target");
+            UnityEngine.Object.DontDestroyOnLoad(_remoteTargetProxy);
+
+            int penitentLayer = LayerMask.NameToLayer("Penitent");
+            if (penitentLayer >= 0)
+                _remoteTargetProxy.layer = penitentLayer;
+
+            BoxCollider2D collider = _remoteTargetProxy.AddComponent<BoxCollider2D>();
+            collider.size = new Vector2(1.2f, 2.4f);
+            collider.isTrigger = true;
+
+            return _remoteTargetProxy;
+        }
+
+        /// <summary>
+        /// Points an OWNED enemy at whichever player is closer, so its own AI can engage the other player.
+        ///
+        /// This runs only for the machine that simulates the enemy, and only that machine's decision matters:
+        /// the AI then chases and attacks as it normally would, the position and animation are already synced
+        /// to the other machine, and the other player takes damage through the game's local pipeline. No
+        /// protocol, no server, and the damage path is untouched.
+        ///
+        /// The proxy is positioned here, in the same pass, so the vision linecast tests a collider that is
+        /// where the other player actually is.
+        /// </summary>
+        private static void ApplyAggroTarget(Enemy enemy, string id)
+        {
+            if (enemy == null || enemy.gameObject == null)
+                return;
+
+            Penitent local = Core.Logic.Penitent;
+            if (local == null)
+                return;
+
+            Vector2 remotePos = Vector2.zero;
+            bool hasRemote = false;
+            foreach (KeyValuePair<string, Vector2> entry in _remotePositions)
+            {
+                if (!IsRemotePositionFresh(entry.Key))
+                    continue;
+
+                remotePos = entry.Value;
+                hasRemote = true;
+                break;
+            }
+
+            GameObject wanted = local.gameObject;
+
+            if (hasRemote)
+            {
+                GameObject proxy = RemoteTargetProxy();
+                proxy.transform.position = new Vector3(remotePos.x, remotePos.y, local.transform.position.z);
+
+                float localDistance = Vector2.Distance(enemy.transform.position, local.transform.position);
+                float remoteDistance = Vector2.Distance(enemy.transform.position, remotePos);
+                if (remoteDistance < localDistance)
+                    wanted = proxy;
+            }
+
+            // Only write when it really changes: Target is a property, and assigning it every pass would
+            // be a write per enemy per pass for nothing.
+            if (enemy.Target != wanted)
+                enemy.Target = wanted;
+        }
+
+        /// <summary>
         /// Periodic snapshot of what each machine sees, for comparing the two sides by hand.
         ///
         /// This exists because the remaining problems (animations, aggro, the handover) cannot be reasoned
@@ -3140,12 +3226,14 @@ namespace Blasphemous.Multiplayer.Client
                     if (previous.OwnedByLocal)
                     {
                         ResumeEnemy(enemy);
+                        ApplyAggroTarget(enemy, id);
                     }
                     else if (!IsHost && !previous.OwnershipKnown)
                     {
                         previous.OwnedByLocal = true;
                         AdoptLastKnownPosition(enemy, id);
                         ResumeEnemy(enemy);
+                        ApplyAggroTarget(enemy, id);
                     }
                     else
                     {
