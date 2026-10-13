@@ -51,25 +51,41 @@ namespace Blasphemous.Multiplayer.Client.Players
             // own generator belongs to the local player and cannot be lent out.
             GhostTrail = gameObject.AddComponent<GhostTrailGenerator>();
 
+            // ⚠️ WITHOUT AN EntityOwner THIS GENERATOR IS INERT, AND IT SAYS SO ITSELF.
+            //
+            // The game logs "GhostTrailGenerator has no Entity. Traits won't execute." the moment this avatar is
+            // created - one line, in the audio log, right after the avatar appears - and that line is the whole
+            // story. Trait.Awake fills EntityOwner from GetComponentInParent<Entity>(); this avatar is a bare
+            // GameObject with no Entity on it, and BOTH halves of the generator are guarded on that field:
+            // Trait.Start skips OnStart, so _currentLevel stays null, and Trait.Update skips OnUpdate, so the
+            // InvokeRepeating that would generate the ghosts is never even scheduled. Setting EnableGhostTrail
+            // therefore did nothing at all - nothing reads it until the generator is actually running.
+            //
+            // This must come right after AddComponent: the component's Awake runs immediately, but its Start is
+            // deferred to the end of the frame, so the owner is in place in time for Start to take the good path.
+            // The penitent's own Entity is the right owner, and it is what the local generator points at too.
+            if (Core.Logic.Penitent != null)
+                GhostTrail.EntityOwner = Core.Logic.Penitent;
+
             // MANDATORY - see SetGhostTrail for what happens otherwise.
             GhostTrail.followOrientation = false;
 
-            // Copied from the penitent's generator rather than written here, because the colour and the material
-            // live in the prefab: they are not constants anyone can read out of the code.
+            // The look is copied from the penitent's generator rather than written here, because the colour and
+            // the material live in the prefab and are not constants anyone can read out of the code.
             GhostTrailGenerator local = Core.Logic.Penitent == null
                 ? null
                 : Core.Logic.Penitent.GetComponentInChildren<GhostTrailGenerator>();
 
-            if (local != null)
-            {
-                GhostTrail.TimeStep = local.TimeStep;
-                GhostTrail.AlphaStep = local.AlphaStep;
-                GhostTrail.InitialGhostTrailAlpha = local.InitialGhostTrailAlpha;
-                GhostTrail.TrailColor = local.TrailColor;
-                GhostTrail.customMaterial = local.customMaterial;
-                GhostTrail.followRotation = local.followRotation;
-                GhostTrail.followScale = local.followScale;
-            }
+            // ⚠️ TrailColor and TimeStep have NO initialiser of their own - they default to (0,0,0,0) and to 0 -
+            // so copying nothing would leave a trail that cannot be seen and a repeat interval of zero. Hence
+            // the fallback chain: the local generator's values when it exists, sane ones when it does not.
+            GhostTrail.TrailColor = local != null ? local.TrailColor : Color.white;
+            GhostTrail.TimeStep = local != null && local.TimeStep > 0f ? local.TimeStep : 0.05f;
+            GhostTrail.AlphaStep = local != null ? local.AlphaStep : 0.1f;
+            GhostTrail.InitialGhostTrailAlpha = local != null ? local.InitialGhostTrailAlpha : 0.6f;
+            GhostTrail.customMaterial = local != null ? local.customMaterial : null;
+            GhostTrail.followRotation = local != null && local.followRotation;
+            GhostTrail.followScale = local != null && local.followScale;
 
             GhostTrail.EnableGhostTrail = false;
         }
