@@ -362,6 +362,18 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly HashSet<string> _announcedDeaths = new HashSet<string>();
 
         /// <summary>
+        /// The enemies this machine has announced as REVEALED, so a player who joins later still gets them.
+        ///
+        /// The birth announcement reaches whoever is connected at that moment - the server relays it to
+        /// everyone but the sender, with no memory of its own - so without this a late joiner would keep
+        /// seeing the hidden copy of an enemy that is already in play for everybody else: exactly the defect
+        /// the birth channel fixes, just moved to the joiner. It is the twin of _announcedDeaths, on the same
+        /// channel with the same reasoning, and it is cleared wherever that one is.
+        /// </summary>
+        private static readonly HashSet<string> _announcedBirths = new HashSet<string>();
+
+
+        /// <summary>
         /// Enemies already reported as dead by the diagnostic snapshot, so each death is logged once.
         ///
         /// The kill detection used to live only inside the send loop, which returns early when there is no
@@ -1224,7 +1236,21 @@ namespace Blasphemous.Multiplayer.Client
             _treeStateLogged[id] = key;
 
             Vector3 p = enemy.transform.position;
+
+            // sprite and collider are reported because they are how the "hidden but present" family shows
+            // itself, and reading them beats deducing them (voice 53). For the WaxCrawler - the mud crawlers
+            // among them - the enemy is never inactive: the reveal turns SpriteRenderer.enabled on, sets the
+            // Animator to speed 1 and switches the damage collider on. Without these two fields a log cannot
+            // tell a revealed enemy from a hidden one, and the whole family has to be inferred from the
+            // animation clips instead of read.
+            SpriteRenderer sprite = enemy.GetComponentInChildren<SpriteRenderer>();
+            Collider2D damageCollider = enemy.EntityDamageArea == null
+                ? null
+                : enemy.EntityDamageArea.DamageAreaCollider;
+
             ModLog.Info($"[EnemyTree] {FullId(id)} enabled={enabled} isRunning={running} esito={esito} " +
+                        $"sprite={(sprite == null ? "n/d" : sprite.enabled.ToString())} " +
+                        $"collider={(damageCollider == null ? "n/d" : damageCollider.enabled.ToString())} " +
                         $"pos=({p.x:F1},{p.y:F1}) vita={enemy.CurrentLife:F0} " +
                         $"mia={(IsHost ? "host" : "client")}");
         }
@@ -1635,6 +1661,7 @@ namespace Blasphemous.Multiplayer.Client
             _pendingDeaths.Clear();
             _killLogged.Clear();
             _announcedDeaths.Clear();
+            _announcedBirths.Clear();
 
             // Always logged, not only when something was forgotten.
             //
@@ -1694,6 +1721,7 @@ namespace Blasphemous.Multiplayer.Client
             }
 
             _announcedDeaths.Clear();
+            _announcedBirths.Clear();
             _pendingDeaths.Clear();
             _killLogged.Clear();
 
@@ -2329,6 +2357,7 @@ namespace Blasphemous.Multiplayer.Client
                 if (real && !state.WasReal)
                 {
                     state.WasReal = true;
+                    _announcedBirths.Add(id);
 
                     if (Main.Multiplayer.NetworkManager.IsConnected)
                         Main.Multiplayer.SendEnemyDeathGlobal(BirthPrefix + id);
@@ -2340,6 +2369,7 @@ namespace Blasphemous.Multiplayer.Client
                     // Back to not-in-play - a respawn puts it back to sleep. Clearing the latch is what lets
                     // the NEXT reveal be announced again instead of being swallowed as a duplicate.
                     state.WasReal = false;
+                    _announcedBirths.Remove(id);
                 }
             }
         }
@@ -2892,7 +2922,14 @@ namespace Blasphemous.Multiplayer.Client
             for (int i = 0; i < ids.Count; i++)
                 Main.Multiplayer.SendEnemyDeathGlobal(ids[i]);
 
-            ModLog.Info($"[EnemyJoin] annunciate {ids.Count} morti precedenti al nuovo giocatore " +
+            // And the REVEALED enemies, for the same reason deaths are replayed: the birth announcement has
+            // no memory on the server, so a joiner who was not there when it went out would keep seeing the
+            // hidden copy of an enemy that is in play for everybody else.
+            foreach (string born in _announcedBirths)
+                Main.Multiplayer.SendEnemyDeathGlobal(BirthPrefix + born);
+
+            ModLog.Info($"[EnemyJoin] annunciate {ids.Count} morti e {_announcedBirths.Count} nascite " +
+                        $"precedenti al nuovo giocatore " +
                         $"({sceneIds.Count} dalla scena, {ids.Count - sceneIds.Count} dalla memoria)");
         }
 
