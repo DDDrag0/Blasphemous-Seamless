@@ -2153,18 +2153,26 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// True when at least one other machine is reporting a position we still trust.
+        /// True when another player is HERE, in the same scene as this machine.
         ///
-        /// This is the "is there anybody out there" test, and it is what stops the position wait from
-        /// stranding an enemy. If no remote position is fresh, the other machine is not here: it cannot own
-        /// this enemy, nothing will ever transmit the enemy's position, and waiting for it would leave the
-        /// enemy paused for the whole visit.
+        /// This is the room check the position wait needs, and the freshness of a remote POSITION is not a
+        /// substitute for it: positions travel on their own channel and keep arriving whatever scene the
+        /// other player is in, so "the other player is reporting a position" is true even when they are two
+        /// rooms away and cannot possibly own the enemies here. The SCENE is what says whether waiting is
+        /// meaningful - and PlayerStatus.CurrentScene is already maintained for exactly this kind of test.
         /// </summary>
-        private static bool AnyRemotePositionFresh()
+        private static bool OtherPlayerInMyScene()
         {
-            foreach (KeyValuePair<string, Vector2> entry in _remotePositions)
+            string myScene = Core.LevelManager.currentLevel == null
+                ? null
+                : Core.LevelManager.currentLevel.LevelName;
+
+            if (string.IsNullOrEmpty(myScene))
+                return false;
+
+            foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
             {
-                if (IsRemotePositionFresh(entry.Key))
+                if (player.CurrentScene == myScene)
                     return true;
             }
 
@@ -2176,9 +2184,10 @@ namespace Blasphemous.Multiplayer.Client
         ///
         /// The rule is deliberately three-sided, because each side of it was a real failure:
         ///   - the position is already here => nothing to wait for, take it now;
-        ///   - nobody is reachable => nothing to receive FROM, so waiting would strand the enemy paused
-        ///     (this is the regression that froze 22 enemies when only the host walked in);
-        ///   - the wait has run past POSITION_WAIT_GRACE => even a reachable peer may never send it (a
+        ///   - NOBODY IS IN THIS ROOM => there is no other owner to receive the position from, so waiting
+        ///     would strand the enemy paused for the whole visit - which is exactly what froze 22 enemies
+        ///     when the host walked into a room alone;
+        ///   - the wait has run past POSITION_WAIT_GRACE => even a player who is here may never send it (a
         ///     stationary enemy is skipped by the change-gated send), so take it where it stands.
         /// </summary>
         private static bool ShouldWaitForPosition(Enemy enemy, EnemyState state)
@@ -2186,7 +2195,7 @@ namespace Blasphemous.Multiplayer.Client
             if (_remoteTargets.ContainsKey(IdOf(enemy)))
                 return false;
 
-            if (!AnyRemotePositionFresh())
+            if (!OtherPlayerInMyScene())
                 return false;
 
             return Time.time - state.OwnerSince < POSITION_WAIT_GRACE;
