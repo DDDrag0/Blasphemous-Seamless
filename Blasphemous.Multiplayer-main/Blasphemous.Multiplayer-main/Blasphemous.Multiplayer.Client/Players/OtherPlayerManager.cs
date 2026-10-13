@@ -237,9 +237,25 @@ namespace Blasphemous.Multiplayer.Client.Players
         // Finds a specified player in the scene
         public OtherPlayerScript FindActivePlayer(string name)
         {
+            // A DESTROYED Unity object is not C# null: it compares equal to null, and touching it throws.
+            //
+            // This is the second half of the same defect the FMOD storm exposed. A scene change destroys the
+            // player objects while callers keep asking for them, and reading .name on a destroyed one throws
+            // from inside the packet handler - which is the worst possible place, because ProcessQueue clears
+            // its queue only after the loop, so the same packet is handed to it again on the next frame and
+            // the mod stops updating altogether. The guard costs one comparison and the purge keeps the list
+            // from filling up with corpses.
+            for (int i = activePlayers.Count - 1; i >= 0; i--)
+            {
+                if (activePlayers[i] == null)
+                    activePlayers.RemoveAt(i);
+            }
+
+            string wanted = "_" + name;
+
             for (int i = 0; i < activePlayers.Count; i++)
             {
-                if (activePlayers[i].name == "_" + name)
+                if (activePlayers[i].name == wanted)
                     return activePlayers[i];
             }
 
