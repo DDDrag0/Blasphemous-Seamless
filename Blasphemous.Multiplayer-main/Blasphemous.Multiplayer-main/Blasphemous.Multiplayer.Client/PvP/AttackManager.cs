@@ -53,11 +53,24 @@ namespace Blasphemous.Multiplayer.Client.PvP
 
         public void ReceiveEffect(string playerName, EffectType effect)
         {
+            ReceiveEffect(playerName, effect, false, Vector2.zero);
+        }
+
+        /// <summary>
+        /// Replays an effect the other player produced (A3 trails, A4 ground impact and slide dust).
+        ///
+        /// hasPosition is its own flag rather than a "zero means none" convention, because the origin is a
+        /// place an effect can legitimately happen at - the level's coordinates start there - and a convention
+        /// that quietly means two things is how an effect ends up drawn at the wrong end of the map.
+        /// </summary>
+        public void ReceiveEffect(string playerName, EffectType effect, bool hasPosition, Vector2 position)
+        {
             // Logged because this channel used to be completely SILENT on arrival, and that silence made the
             // whole effect path unverifiable: an effect that never arrived and an effect that arrived and did
             // nothing looked EXACTLY the same in the logs. One line per effect tells them apart, and every
             // effect fix (trails, ground hits, slide dust) has to be verified through it.
-            ModLog.Info($"[Effect] {effect} per {playerName}");
+            ModLog.Info($"[Effect] {effect} per {playerName}" +
+                        (hasPosition ? $" ({position.x:F1},{position.y:F1})" : string.Empty));
 
             OtherPlayerScript other = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(playerName);
             if (other == null)
@@ -66,7 +79,7 @@ namespace Blasphemous.Multiplayer.Client.PvP
                 return;
             }
 
-            other.OtherPlayerAttack.PlayEffectAnimation(effect, other.IsFacingRight);
+            other.OtherPlayerAttack.PlayEffectAnimation(effect, other.IsFacingRight, hasPosition, position);
         }
 
         private void DamagePlayer(AttackType attack, byte damageAmount, GameObject attacker)

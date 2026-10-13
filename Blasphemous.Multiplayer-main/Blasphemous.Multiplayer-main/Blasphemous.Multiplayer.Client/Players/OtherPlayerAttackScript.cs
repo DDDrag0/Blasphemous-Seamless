@@ -42,6 +42,15 @@ namespace Blasphemous.Multiplayer.Client.Players
         // When receiving an attack from another player, make their character play the sword/prayer animation
         public void PlayEffectAnimation(EffectType effect, bool facingRight)
         {
+            PlayEffectAnimation(effect, facingRight, false, Vector2.zero);
+        }
+
+        /// <summary>
+        /// Replays an effect on the avatar. The position is only read by the effects that happen SOMEWHERE -
+        /// the ground impact and the slide's dust (A4) - and hasPosition says whether it means anything.
+        /// </summary>
+        public void PlayEffectAnimation(EffectType effect, bool facingRight, bool hasPosition, Vector2 position)
+        {
             SwordRenderer.flipX = !facingRight;
 
             switch (effect)

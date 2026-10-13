@@ -454,12 +454,40 @@ namespace Blasphemous.Multiplayer.Client.Network
             QueueMesssage(new byte[] { (byte)effectType }, NetworkType.Effect);
         }
 
+        /// <summary>
+        /// Sends an effect that needs a PLACE as well as a kind - the ground impact and the slide's dust (A4).
+        ///
+        /// This is an overload rather than a new packet type on purpose: the receiver reads the effect byte and
+        /// stops, so anything past it is ignored by every existing build, and a payload that grows is not a
+        /// protocol change. That keeps the version at 11 and the server untouched.
+        /// </summary>
+        public void SendEffect(EffectType effectType, Vector2 position)
+        {
+            byte[] payload = new byte[9];
+            payload[0] = (byte)effectType;
+            Buffer.BlockCopy(BitConverter.GetBytes(position.x), 0, payload, 1, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(position.y), 0, payload, 5, 4);
+
+            QueueMesssage(payload, NetworkType.Effect);
+        }
+
         private void ReceiveEffect(byte[] data)
         {
             int startIdx = ExtractNameFromData(data, out string playerName);
             EffectType effectType = (EffectType)data[startIdx];
 
-            Main.Multiplayer.AttackManager.ReceiveEffect(playerName, effectType);
+            // The position is OPTIONAL, and the length check is what lets both shapes share one channel:
+            // the effects that stand on their own carry no coordinates, the ones that happen somewhere do.
+            bool hasPosition = data.Length > startIdx + 1 + 8;
+            Vector2 position = Vector2.zero;
+
+            if (hasPosition)
+            {
+                position.x = BitConverter.ToSingle(data, startIdx + 1);
+                position.y = BitConverter.ToSingle(data, startIdx + 5);
+            }
+
+            Main.Multiplayer.AttackManager.ReceiveEffect(playerName, effectType, hasPosition, position);
         }
 
         // Ping
