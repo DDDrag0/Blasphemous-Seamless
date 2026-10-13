@@ -593,6 +593,48 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
+    // ============================================================================================
+    // A5 - PROBE DI SOLO LOG (zero SendEffect). DA RIMUOVERE dopo il test.
+    // ============================================================================================
+    //
+    // PERCHE' ESISTONO. Tre domande di A5 non sono decidibili ne' dall'IL ne' dai log, perche' i nomi
+    // degli AnimationEvent stanno nei CLIP, negli asset: (1) quale suono fa il QUARTO colpo di una combo,
+    // (2) se lo "sguaino" dell'attacco aereo-a-terra e' `PenitentIdleSword` o il CARICAMENTO, (3) quanto
+    // spesso suona `PlayIdleSword` a penitent fermo (se e' anche il suono dell'idle, coprirlo sarebbe
+    // rumore di fondo continuo).
+    //
+    // Queste cinque patch NON mandano niente e NON cambiano comportamento: scrivono una riga e basta.
+    // Il test dice quale delle tre strade prendere, invece di scommettere su tre fix.
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHit")]
+    class ComboHitProbe_Patch
+    {
+        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] ComboHit"); }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHitUp")]
+    class ComboHitUpProbe_Patch
+    {
+        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] ComboHitUp"); }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHitDown")]
+    class ComboHitDownProbe_Patch
+    {
+        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] ComboHitDown"); }
+    }
+
+    [HarmonyPatch(typeof(PenitentMoveAnimations), "PlayIdleSword")]
+    class IdleSwordProbe_Patch
+    {
+        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] IdleSword"); }
+    }
+
+    [HarmonyPatch(typeof(StartChargingAttackBehaviour), "OnStateEnter")]
+    class ChargingProbe_Patch
+    {
+        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] LoadingCharged"); }
+    }
+
     // A4 - the slide's dust and its sound.
     //
     // Sent from the place the game performs the slide, and as a POSTFIX so the ability itself is untouched. The
