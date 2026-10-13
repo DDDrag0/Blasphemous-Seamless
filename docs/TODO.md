@@ -45,15 +45,15 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **4** | **Falò: RESPAWN e REFILL** — §3 | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 4 —")* |
 | **5** | **Sangue e flash nel feedback del colpo** — §12.1 *(`§5c` NON esiste)* | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 5 —")* |
 | **6** | **Oggetti distruttibili** — §4 | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 6 —")* |
-| **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | 🟢 **ottimizzazione, non un difetto misurato di recente** | ⏳ **il picco da 84,5 ms è reale come misura, ma `stalls100=0` e `fps 55-59` nei test recenti dicono che oggi non si manifesta.** ⚠️ **Attenzione**: `stalls100` conta solo i frame **>100 ms**; il probe **non registra i 50-99 ms**, quindi *"84,5 ms"* **può ancora accadere senza comparire**. **Se si vuole sapere se esiste ancora, si legge `frameMs_max` da un log recente** *(è in ogni riga `[Probe]`)*. **Il lavoro è piccolo**: `FindObjectsOfType` ogni 0,5 s → `RESCAN_INTERVAL` a 2-3 s lo riduce di 4-6×, rischio quasi nullo |
-| **8** | **Boss impazziscono coi target** — §2b | 🟡 **in gran parte SUPERATA** | **L'utente, 2026-10-12**: *"la 8 sembra risolta, perché va con il nuovo sistema di target dei nemici adesso, quindi risulta molto fluida"*. ⚠️ **E la proposta di questa voce — un `targetTime` minimo ~0,85 s — è superata**: il referto ha verificato che **`EnemyBehaviour.GetTarget()` non spegne l'IA** e che il problema vero era **la proprietà**, non il bersaglio. ⇒ **Da "sistemare" a "verificare"**: *il comportamento varia da boss a boss (solo `PietyMonsterBehaviour` ferma l'albero sul `PlayerDead`), quindi **test boss per boss** resta il modo giusto — ma non è più una voce da fixare.* Vedi voce 18 |
+| **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | ✅ CHIUSA — non si manifesta | CHIUSA — integrale in fondo *(cerca "Voce 7 —")* |
+| **8** | **Boss impazziscono coi target** — §2b | ✅ CHIUSA — superata | CHIUSA — integrale in fondo *(cerca "Voce 8 —")* |
 | **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 |
-| **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | 🟢 | ⏳ **declassato**: allocazione sì, stallo no. **Cosa sono**: `ProcessQueue` = il ciclo che svuota la coda dei messaggi in arrivo *(alloca una `List<byte>` per messaggio)*; `IdOf` = costruisce l'id di un nemico *(stringa da scena+nome+posizione, alloca ogni volta)*. **Sono due pezzi VIVI e centrali, non residui**: l'ottimizzazione è di secondo ordine |
-| **11** | **Il gioco disfa la pausa sul non-proprietario** — ma **il testo della voce era SBAGLIATO a metà** | 🟢 **da MISURARE, e da RISCRIVERE prima** | ⚠️ **NON è la stessa cosa della voce 26**, e il fix 26 l'ha resa **più rilevante, non meno**: **26 = "non abbiamo mai messo in pausa"**, **11 = "il gioco ci toglie dalla pausa"**. 🔴 **CORREZIONE VERIFICATA IN IL**: i **8 tipi** citati sono corretti **per `StartBehaviour()`** *(CrossCrawler.Update, ExplodingEnemy.OnUpdate, Firethrower.Update, Fool.OnUpdate, Lesmes.Update, Nun.OnUpdate, RangedBoomerang.Update, ShieldMaiden.Update — esattamente 8)*, **ma NESSUNO di quei 16 tipi chiama `EnablePhysics` (zero su tutte le 16 classi)**. **Gli 8 call-site reali di `Entities.Enemy::EnablePhysics` sono ALTRI**: `PietyMonster::EnablePiety`, `Acolyte::OnUpdate` (×2), `BellCarrier::OnUpdate`, `Bishop::OnUpdate`, `Flagellant::OnUpdate` (×2), `Menina::OnUpdate` ⇒ **tipi veri: Acolyte, BellCarrier, Bishop, Flagellant, Menina, PietyMonster**. ⚠️ **E questo importa**: **il fix proposto in questa voce** *(agganciare `<Enemy>::OnUpdate` / `EnablePhysics`)* **sarebbe sul METODO SBAGLIATO** *— e `EnablePhysics` è definito da **72** classi.* ⭐ **NAMESPACE**: dei 7 nemici + `Lesmes`, **solo `Lesmes` è nel namespace dei boss** *(`Gameplay.GameControllers.Bosses.Lesmes`; gli altri in `Gameplay.GameControllers.Enemies.*`; i boss in `Gameplay.GameControllers.Bosses.*`)*. **Coroutine di intro dei boss: NON verificate.** ⭐ **E NEI LOG NON SI VEDE**: `orientFlip=0`, `orientSkip=0`, `gameOrient=0`, `animRestart=0`, `animRepeat=0` in ogni `[Probe]`, e `IMPRONTA DIVERSA`=0 ⇒ **"da misurare, e da riscrivere prima di agganciare qualsiasi cosa"**. ⚠️ **E va tenuto distinto dalla voce 49**: *sono **speculari e indipendenti** (la 11 = il gioco sveglia il puppet; la 49 = noi dimentichiamo il puppet) ⇒ un fix NON copre l'altro.* Vedi §14 |
+| **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | ✅ CHIUSA — non si manifesta | CHIUSA — integrale in fondo *(cerca "Voce 10 —")* |
+| **11** | **Il gioco disfa la pausa sul non-proprietario** — ma **il testo della voce era SBAGLIATO a metà** | ✅ CHIUSA — il testo era sbagliato | CHIUSA — integrale in fondo *(cerca "Voce 11 —")* |
 | **12** | **Camminata troncata** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 12 —")* |
 | **13** | **La migrazione host non riarbitra** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 13 —")* |
 | **14** | **`IMPRONTA DIVERSA`** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 14 —")* |
-| **15** | **Deploy: `Common.dll` va copiato su ENTRAMBE, nella versione giusta per ciascuna** | 🟢 **procedura** | ⏳ **`Modding\data` è net35 (gioco), `SERVER-COOP` è net8.0 (server): gli hash DIFFERISCONO per costruzione, quindi vanno confrontati SEMANTICAMENTE, non per hash.** Se non si copia quello giusto, **il join viene rifiutato con `RefusalType::Protocol`** *(è già successo)*. ✅ **verificato automaticamente da `tools\verify-deploy.ps1`.** ⚠️ **`PROTOCOL_VERSION = 11` NON sta in `Common.dll`**: è una costante **duplicata** in `Client\Network\NetworkManager.cs` e `Server\Server.cs`, confrontata **solo all'handshake** *(`Common.dll` contiene solo l'enum `NetworkType`)* |
+| **15** | **Deploy: `Common.dll` va copiato su ENTRAMBE, nella versione giusta per ciascuna** | ✅ CHIUSA — procedura coperta | CHIUSA — integrale in fondo *(cerca "Voce 15 —")* |
 | **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 16 —")* |
 | **17** | **I nemici che restano fermi (`pos_distinte=1`)** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 17 —")* |
 | **18** | **Boss: test boss per boss** | 🟡 | ⏳ l'unica cosa non prevedibile |
@@ -74,14 +74,14 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **33** | **`BreakSync`: l'hook non dipinge la rottura** *(memoria dei vasi)* | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 33 —")* |
 | **34** | **La dedup del server scarta i ri-annunci** *(di qualunque oggetto persistente)* | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 34 —")* |
 | **35** | 🟡 **L'AI sul non-proprietario è IN PAUSA per disegno ⇒ niente aggro spontaneo e parate che non escono** | ✅ RISOLTA | CHIUSA — integrale in fondo *(cerca "Voce 35 —")* |
-| **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | 🟢 **operativa — da avvertire SEMPRE** | **Il percorso dei salvataggi è costruito così** *(IL del gioco)*: `persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamUser.GetSteamID().ToString() : "") + "/"`. ⇒ **avviare il gioco SENZA Steam sposta silenziosamente ogni salvataggio in `Savegames\` invece che in `Savegames\<steamid>\`.** **E con Steam Cloud abilitato le due cartelle DIVERGONO**: una sessione iniziata senza Steam **sembra** aver corrotto o perso i salvataggi — **non erano corrotti: erano da un'altra parte.** **Intermittente e dipendente dalla macchina**, quindi **facile da scambiare per un bug della mod**. ⚠️ **E la struttura "anomala" che aveva allarmato** *(cartelle vuote `savegame_0\`, `savegame_0_backup\`, contenitore `76561199216304572\` vuoto)* **è NORMALE: le crea il GIOCO** *(`PersistentManager.CreateAndGetSaveGameInternalDir` + `BackupSlot`→`FileTools.DirectoryCopy`)* **e convivono coi file anche su un'installazione sana.** **La mod NON c'entra**: scrive **un solo file** *(`savegame_N_modded.save`)* e **il gioco non lo legge mai** *(solo `.save`/`.save_backup`; nessuna `Directory.GetFiles` sulla cartella)*. **RACCOMANDAZIONE OPERATIVA, da ripetere SEMPRE**: *(1)* **avviare SEMPRE Steam prima del gioco**, oppure *(2)* **disattivare Steam Cloud per Blasphemous**, e *(3)* **backup a mano di `Savegames` prima delle sessioni di test.** ✅ **Ora reso VISIBILE**: la mod logga all'avvio `[Path] Steam inizializzato: … · cartella salvataggi in uso: …` e **avverte se Steam manca**. Vedi §12 |
+| **36** | ⚠️ **DOCUMENTAZIONE: i salvataggi cambiano cartella se Steam non è avviato** | ✅ CHIUSA — documentata | CHIUSA — integrale in fondo *(cerca "Voce 36 —")* |
 | **37** | 🔴 **L'ECO INFINITA: un'annuncio applicato veniva ri-annunciato** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 37 —")* |
 | **38** | ⚠️ **Il log del SERVER non esisteva su disco** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 38 —")* |
 | **39** | ⚠️ **La doppia animazione dei vasi all'ingresso in stanza** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 39 —")* |
-| **40** | 🟡 **`ReapplyCurrentScene` gira due volte per caricamento di livello** | 🟢 **nota tecnica — innocua con la guardia** | **Due invocazioni**: *(1)* il postfix di `PersistentManager.LoadSnapShot` *(il fix vero)*; *(2)* **la "seconda possibilità"** `MultiplayerLateUpdate_Patch`, armata da `Multiplayer.OnLevelLoaded` *(⚠️ **era strumentazione temporanea mia, aggiunta per misurare quale delle due dipingesse** — il log ha detto che dipingono **entrambe**)*. **Con la guardia della voce 39 è innocua** *(la seconda passata trova gli oggetti già rotti e non fa nulla)*, **quindi è stata TENUTA di proposito**: rimuoverla sarebbe stato un secondo azzardo nello stesso momento, **e le due non scattano nello stesso istante** *(la prima può girare mentre gli oggetti si stanno ancora costruendo)*. **Se un giorno si vuole semplificare, è un candidato**, con la raccomandazione di farlo **dopo** aver verificato che la prima passata basti da sola. Vedi §12 |
+| **40** | 🟡 **`ReapplyCurrentScene` gira due volte per caricamento di livello** | ✅ CHIUSA — non osservabile | CHIUSA — integrale in fondo *(cerca "Voce 40 —")* |
 | **41** | 🔴 **`ProgressManager.Update` è senza `try/catch` né `finally`: UNA eccezione UCCIDEVA la sincronizzazione PER SEMPRE** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 41 —")* |
 | **42** | **`AddInteractedObject` senza dedup** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 42 —")* |
-| **43** | 🟢 **`if (!localIsHost) return false;` in `DecideOwnership` è probabilmente codice MORTO** | 🟢 **opzionale — PULIZIA, non un fix** | **Il gate esiste per un motivo storico**: *"only the arbiter decides; this method is never the peer's path"*. **E con il disegno attuale è coerente**: **il peer NON PUBBLICA un token** *(`ReceiveEnemyOwnership` ritorna subito `if (IsHost) return;`)* **e APPLICA quello dell'host** ⇒ **qualsiasi decisione del peer verrebbe sovrascritta.** **Quindi il gate non cambia nulla di osservabile.** ⚠️ **Non è un difetto e non c'è fretta**: **rimuoverlo sarebbe una semplificazione, e va fatta SOLO dopo aver verificato che la PRIMA ASSEGNAZIONE SIMMETRICA** *(`state.OwnedByLocal = wants \|\| (!peerCloser && localIsHost);`)* **basti da sola** — *il ramo dei cambi successivi serve oggi solo all'host, che lo esegue con `localIsHost = true`*. ⚠️ **E il test in gioco NON può deciderla**: *"il non-host si muove"* è **il comportamento del PASSO 1** *(il peer simula `!OwnershipKnown`)*, **e succede sia col gate sia senza**. **Serve un'analisi dei percorsi nel codice, non una sessione.** Vedi §12 |
+| **43** | 🟢 **`if (!localIsHost) return false;` in `DecideOwnership` è probabilmente codice MORTO** | ✅ CHIUSA — scheletro rimosso | CHIUSA — integrale in fondo *(cerca "Voce 43 —")* |
 | **44** | **La MORTE di un giocatore respawnava i nemici SOLO per chi muore, e lasciava le due macchine DIVERGENTI** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 44 —")* |
 | **45** | 🔴 **`_ids` è appeso dal rescan SOLO sull'host ⇒ il peer NON PUÒ RISCRESCERE, e le due macchine divergono** | ✅ RISOLTA (col fix 45) | CHIUSA — integrale in fondo *(cerca "Voce 45 —")* |
 | **46** | 🔴 **Dopo un falò i due mondi possono restare `5` contro `4`** | ✅ RISOLTA (col fix 45) | CHIUSA — integrale in fondo *(cerca "Voce 46 —")* |
@@ -4796,4 +4796,44 @@ falò (già verificato) per un ordine cosmetico sarebbe un rischio senza benefic
 **La scoperta**: il MudCrawler e' la famiglia **WaxCrawler** — l'oggetto esiste GIA' su entrambe le macchine, attivo ma INVISIBILE e col collider pilotato dall'Animator. Quindi niente `SetActive`: il segnale giusto e' il **COLLIDER del danno** (`DamageAreaCollider.enabled` false→true), e la replica usa il punto d'ingresso del gioco, **`WaxCrawlerBehaviour.Rise()`**.
 
 **Il fix**: `EnemyState.WasReal` + `DetectReveals()` (ogni frame, prima del gate di connessione) → `nato|<id>` sul canale esistente (6° prefisso), gated su `OwnedByLocal`; ramo `nato|` in `ReceiveEnemyDeathGlobal` PRIMA di `_pendingDeaths.Add`; `ReceiveBirth()`; `_announcedBirths` per chi entra dopo; `sprite=`/`collider=` nel log `[EnemyTree]`.
+
+
+### Voce 8 — i boss coi target (superata; il lavoro vero e' la voce 18, test boss per boss)
+
+**Verdetto:** ✅ CHIUSA — superata
+
+
+### Voce 40 — ReapplyCurrentScene gira due volte
+
+**Verdetto:** ✅ CHIUSA — non osservabile
+
+
+### Voce 7 — RegisterEnemies 84,5 ms
+
+**Verdetto:** ✅ CHIUSA — non si manifesta
+
+
+### Voce 10 — ProcessQueue + IdOf
+
+**Verdetto:** ✅ CHIUSA — non si manifesta
+
+
+### Voce 43 — codice morto in DecideOwnership
+
+**Verdetto:** ✅ CHIUSA — scheletro rimosso
+
+
+### Voce 11 — la pausa che il gioco disfa
+
+**Verdetto:** ✅ CHIUSA — il testo era sbagliato
+
+
+### Voce 36 — i salvataggi senza Steam (vedi BUG-NOTI)
+
+**Verdetto:** ✅ CHIUSA — documentata
+
+
+### Voce 15 — Common.dll su entrambe (deploy + verify-deploy)
+
+**Verdetto:** ✅ CHIUSA — procedura coperta
 
