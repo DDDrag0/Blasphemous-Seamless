@@ -2718,16 +2718,20 @@ namespace Blasphemous.Multiplayer.Client
                 state.OwnedByLocal = wants || (!peerCloser && localIsHost);
                 state.OwnerSince = Time.time;
 
-                // THE OTHER HALF OF VOICE 51: this first-take was missing the position adopt. It is the
-                // common case - a player walks into a room and takes the enemies on first sight - and its
-                // local copies are at the spawn point while the enemy was actually moved by the previous
-                // owner. Without this, the newly-owning machine started simulating from spawn and broadcast
-                // that back, which is the exact "slide to spawn" the other player saw.
-                //
-                // _remoteTargets[id] holds the last position the previous owner transmitted, and it keeps
-                // being written by the receive path regardless of who owns, so it is the truth at this
-                // moment. If the record does not exist yet (the enemy was never seen), the adopt is skipped
-                // and the local copy stands - there is no better answer.
+                // VOICE 51, the real residual: hold off taking when this machine is the CLOSER player but
+                // does not yet know where the enemy actually is. _remoteTargets is emptied by LevelLoaded,
+                // so in the instant a player walks into a room it is empty, and taking then would resume the
+                // enemy at its spawn copy and broadcast that stale position - before any corrective adopt
+                // could run. The current owner keeps transmitting until the handover token, so by the next
+                // scan the position is here and the take lands on the correct spot. The host fallback
+                // (!peerCloser && localIsHost) is exempt: an enemy nobody is closer to must not be left
+                // unowned just because its position is not known yet.
+                bool take = wants || (!peerCloser && localIsHost);
+                if (wants && !_remoteTargets.ContainsKey(IdOf(enemy)))
+                    take = false;
+
+                state.OwnedByLocal = take;
+
                 if (state.OwnedByLocal)
                     AdoptLastKnownPosition(enemy, IdOf(enemy));
                 return false;
@@ -2768,10 +2772,16 @@ namespace Blasphemous.Multiplayer.Client
             // only transmits the enemies it owns, so it could never claim the enemy it was trying to take.
             if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
-                state.OwnedByLocal = true;
-                state.OwnerSince = Time.time;
-                AdoptLastKnownPosition(enemy, IdOf(enemy));
-                changed = true;
+                // Same defer as the first-time branch: do not take until the enemy's position is known,
+                // otherwise the take resumes the spawn copy and broadcasts it. The peer keeps owning and
+                // transmitting, so the position arrives and the take lands on the next scan.
+                if (_remoteTargets.ContainsKey(IdOf(enemy)))
+                {
+                    state.OwnedByLocal = true;
+                    state.OwnerSince = Time.time;
+                    AdoptLastKnownPosition(enemy, IdOf(enemy));
+                    changed = true;
+                }
             }
             else if (peerCloser && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
