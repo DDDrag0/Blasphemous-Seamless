@@ -4,6 +4,7 @@ using UnityEngine;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Enemies.Framework.Damage;
 using Gameplay.GameControllers.Penitent;
+using Gameplay.GameControllers.Penitent.Audio;
 using Gameplay.GameControllers.Penitent.Attack;
 using Gameplay.GameControllers.Enemies.Framework.IA;
 using Gameplay.GameControllers.Enemies.WaxCrawler;
@@ -4533,6 +4534,21 @@ namespace Blasphemous.Multiplayer.Client
                 DontSpawnBlood = (flags & HIT_FLAG_DONT_SPAWN_BLOOD) != 0,
                 Unparriable = (flags & HIT_FLAG_UNPARRIABLE) != 0,
                 Unblockable = (flags & HIT_FLAG_UNBLOCKABLE) != 0,
+
+                // THE SOUND, which used to travel as an empty string and therefore never played.
+                //
+                // Entity.Damage(amount, hitSoundId) skips its positional EventOneShotPanned when the id is
+                // null or whitespace - a guard verified in IL - and this Hit is rebuilt from the wire, which
+                // carries the damage type but not the sound. So every relayed blow landed SILENTLY, and the
+                // comment further down claiming "the sound is heard on both machines today" was only true
+                // for the types that play something regardless of the id.
+                //
+                // The fix costs nothing: the game picks the very same two constants from the damage type, so
+                // the type that already travels is enough to choose the right one. Heavy keeps its own sound;
+                // everything else gets the light one.
+                HitSoundId = ((DamageArea.DamageType)damageType) == DamageArea.DamageType.Heavy
+                    ? PenitentAudio.HeavyEnemyHitEventKey
+                    : PenitentAudio.SimpleEnemyHitEventKey,
 
                 AttackingEntity = Core.Logic.Penitent != null ? Core.Logic.Penitent.gameObject : null
             };
