@@ -2691,6 +2691,19 @@ namespace Blasphemous.Multiplayer.Client
                 // arbiter has no need to favour itself.
                 state.OwnedByLocal = wants || (!peerCloser && localIsHost);
                 state.OwnerSince = Time.time;
+
+                // THE OTHER HALF OF VOICE 51: this first-take was missing the position adopt. It is the
+                // common case - a player walks into a room and takes the enemies on first sight - and its
+                // local copies are at the spawn point while the enemy was actually moved by the previous
+                // owner. Without this, the newly-owning machine started simulating from spawn and broadcast
+                // that back, which is the exact "slide to spawn" the other player saw.
+                //
+                // _remoteTargets[id] holds the last position the previous owner transmitted, and it keeps
+                // being written by the receive path regardless of who owns, so it is the truth at this
+                // moment. If the record does not exist yet (the enemy was never seen), the adopt is skipped
+                // and the local copy stands - there is no better answer.
+                if (state.OwnedByLocal)
+                    AdoptLastKnownPosition(enemy, IdOf(enemy));
                 return false;
             }
 
