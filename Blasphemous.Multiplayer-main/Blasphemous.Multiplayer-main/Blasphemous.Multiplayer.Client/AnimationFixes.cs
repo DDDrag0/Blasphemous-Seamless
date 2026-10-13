@@ -263,9 +263,18 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator)
         {
             if (animator.name == "Body")
+            {
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.TrailOff);
+                return true;
+            }
 
-            return true;
+            // ⚠️ NOT the body animator: return FALSE, which is what the original one-liner did and what every
+            // other patch in this file does. Returning true unconditionally - which is what a careless rewrite
+            // of `=> animator.name == "Body"` produces - lets the game's real OnStateExit run for the SWORD
+            // animator too, and it throws a NullReferenceException there. That is a patch that reads correctly
+            // and behaves differently from the line it replaced: the whole point of the one-liner was the
+            // return VALUE, not the guard.
+            return false;
         }
     }
 
