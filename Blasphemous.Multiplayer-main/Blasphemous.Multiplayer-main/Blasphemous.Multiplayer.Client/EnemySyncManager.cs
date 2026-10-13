@@ -4542,6 +4542,22 @@ namespace Blasphemous.Multiplayer.Client
                 Unparriable = (flags & HIT_FLAG_UNPARRIABLE) != 0,
                 Unblockable = (flags & HIT_FLAG_UNBLOCKABLE) != 0,
 
+                // THE SOUND, and it has to be the full bank PATH - not the catalog key.
+                //
+                // This was tried once with PenitentAudio.SimpleEnemyHitEventKey, which is "PenitentSimpleEnemyHit",
+                // and it took the mod down: Entity.Damage calls RuntimeManager.CreateInstance with whatever is in
+                // here, that call requires a bank path, and the exception it threw fired BEFORE the health was
+                // subtracted. Every relayed blow dealt ZERO damage, the exception escaped through OnLateUpdate -
+                // which has try/finally and no catch - so ProcessQueue never reached its queue-clearing line and
+                // the same packet was reprocessed forever. 2934 errors and a frozen mod, from one string.
+                //
+                // Those two paths below are not guessed: both appear in the game's own audio log as events it
+                // plays, so they are known-good bank paths. The key would only resolve through the catalog
+                // (AudioManager.CreateCatalogEvent), which is a different door entirely.
+                HitSoundId = ((DamageArea.DamageType)damageType) == DamageArea.DamageType.Heavy
+                    ? "event:/SFX/Penitent/Damage/PenitentHeavyEnemyHit"
+                    : "event:/SFX/Penitent/Damage/PenitentSimpleEnemyHit",
+
                 AttackingEntity = Core.Logic.Penitent != null ? Core.Logic.Penitent.gameObject : null
             };
 
