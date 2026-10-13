@@ -6,6 +6,7 @@ using Gameplay.GameControllers.Enemies.Framework.Damage;
 using Gameplay.GameControllers.Penitent;
 using Gameplay.GameControllers.Penitent.Attack;
 using Gameplay.GameControllers.Enemies.Framework.IA;
+using Gameplay.GameControllers.Enemies.WaxCrawler;
 using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
@@ -116,7 +117,22 @@ namespace Blasphemous.Multiplayer.Client
             /// already claimed, and the two machines fought over the position.
             /// </summary>
             public bool OwnedByRemote;
-            public bool RemoteEverClaimed;        }
+            public bool RemoteEverClaimed;
+
+            /// <summary>
+            /// Whether this enemy has already been seen TRULY IN PLAY, so its reveal can be announced once.
+            ///
+            /// "In play" is read from the damage collider, not from the GameObject being active, and that is
+            /// the whole point (voice 53). A whole family of enemies - the WaxCrawler and everything that
+            /// reuses it, the mud crawlers among them - is spawned at level load on BOTH machines and left
+            /// ACTIVE but hidden: the behaviour does SpriteRenderer.enabled = false and parks the Animator at
+            /// speed 0, and the game's own reveal (WaxCrawlerBehaviour.Rise) flips the sprite back on, sets
+            /// the speed to 1 and plays "Appear". Nothing ever calls SetActive, so `activeInHierarchy` never
+            /// changes and a poll on it would see nothing. The collider is what turns on with the reveal, so
+            /// the collider is the signal that means "this enemy is now real".
+            /// </summary>
+            public bool WasReal;
+        }
 
         /// <summary>
         /// Minimum time an owner keeps an enemy before the role can move again.
@@ -2262,6 +2278,133 @@ namespace Blasphemous.Multiplayer.Client
             return go == _remoteTargetProxy || go.transform.IsChildOf(_remoteTargetProxy.transform);
         }
 
+        /// <summary>Marks a birth announcement on the enemy-death channel - the sixth prefix of the series.</summary>
+        private const string BirthPrefix = "nato|";
+
+        /// <summary>
+        /// Announces the instant an enemy becomes TRULY IN PLAY, so the other machine can reveal its own copy
+        /// (voice 53).
+        ///
+        /// WHY THIS IS NEEDED AT ALL. A whole family of enemies is spawned at level load on BOTH machines and
+        /// then hidden - the game's own reveal is what puts them in play - but that reveal is a LOCAL event:
+        /// only the machine that triggered it (a player stepping into the mud, an arena trigger, a scripted
+        /// beat) ever runs it. On the other machine the enemy stays invisible, and the logs show the player
+        /// there runs into something they cannot see that still counts for the room. It is not a desync - the
+        /// enemy is not differently alive on the two sides - it is an enemy that only one side can see.
+        ///
+        /// WHY THE DAMAGE COLLIDER AND NOT activeInHierarchy. For this family nothing ever calls SetActive:
+        /// the object is already active, and the reveal is SpriteRenderer.enabled going true, the Animator
+        /// speed going to 1 and the damage collider switching on. A poll on activeInHierarchy would therefore
+        /// see no edge at all - and it would be noisy besides, because a DEAD enemy is also inactive on one
+        /// machine and active on the other. The collider is the one signal that means "this enemy is real
+        /// now", and it is generic enough to hold for the families that do use SetActive too.
+        ///
+        /// WHY IT IS GATED ON OWNERSHIP. Only the machine whose GAME performed the reveal announces it. On the
+        /// other machine the collider is driven by the state we impose, so it would flip for our reasons and
+        /// the announcement would echo back and forth.
+        /// </summary>
+        private static void DetectReveals()
+        {
+            if (_ids.Count == 0)
+                return;
+
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                string id = _ids[i];
+
+                EnemyState state;
+                if (!_lastSent.TryGetValue(id, out state))
+                    continue;
+
+                if (!state.OwnedByLocal)
+                    continue;
+
+                Enemy enemy = ResolveEnemy(id);
+                if (enemy == null || enemy.gameObject == null || enemy.EntityDamageArea == null)
+                    continue;
+
+                Collider2D collider = enemy.EntityDamageArea.DamageAreaCollider;
+                bool real = collider != null && collider.enabled;
+
+                if (real && !state.WasReal)
+                {
+                    state.WasReal = true;
+
+                    if (Main.Multiplayer.NetworkManager.IsConnected)
+                        Main.Multiplayer.SendEnemyDeathGlobal(BirthPrefix + id);
+
+                    ModLog.Info($"[Nascita] {FullId(id)} rivelato: annunciato al peer");
+                }
+                else if (!real)
+                {
+                    // Back to not-in-play - a respawn puts it back to sleep. Clearing the latch is what lets
+                    // the NEXT reveal be announced again instead of being swallowed as a duplicate.
+                    state.WasReal = false;
+                }
+            }
+        }
+
+        /// <summary>True when this id is a birth announcement rather than a death, a break or a bonfire.</summary>
+        private static bool IsBirthId(string id)
+        {
+            return !string.IsNullOrEmpty(id) && id.StartsWith(BirthPrefix, StringComparison.Ordinal);
+        }
+
+        /// <summary>Reads the enemy id out of a birth announcement. Null for anything malformed.</summary>
+        private static string BirthIdOf(string id)
+        {
+            if (!IsBirthId(id))
+                return null;
+
+            string enemyId = id.Substring(BirthPrefix.Length);
+            return string.IsNullOrEmpty(enemyId) ? null : enemyId;
+        }
+
+        /// <summary>
+        /// Wakes this machine's copy of an enemy whose game the other machine just revealed (voice 53).
+        ///
+        /// It uses the game's OWN entry point rather than switching the object on, and for the family that
+        /// matters here that is not a detail: the WaxCrawler - and the mud crawlers reuse it - is NEVER
+        /// inactive. Its behaviour parks it with the sprite off and the Animator at speed 0, and the game's
+        /// reveal is `WaxCrawlerBehaviour.Rise()`, which turns the sprite back on, sets the speed to 1 and
+        /// plays "Appear". Nothing else reproduces that, and `SetActive(true)` would be a no-op on an object
+        /// that never stopped being active.
+        ///
+        /// The generic branch is the fallback for the families that really do use SetActive, and it mirrors
+        /// the game's own code there: activate, refill the health, clear the dead flag.
+        ///
+        /// The id is dropped from _pendingDeaths because a spawn point already marked consumed must not keep
+        /// suppressing an enemy that has just been put back in play.
+        /// </summary>
+        private static void ReceiveBirth(string id)
+        {
+            if (string.IsNullOrEmpty(id))
+                return;
+
+            _pendingDeaths.Remove(id);
+
+            Enemy enemy = ResolveEnemyById(id);
+            if (enemy == null || enemy.gameObject == null)
+                return;
+
+            if (enemy is WaxCrawler crawler && crawler.Behaviour != null)
+            {
+                crawler.Behaviour.Rise();
+            }
+            else if (!enemy.gameObject.activeSelf)
+            {
+                enemy.gameObject.SetActive(true);
+                enemy.Stats.Life.Current = enemy.Stats.Life.Base;
+                enemy.Status.Dead = false;
+            }
+
+            EnemyState state;
+            if (_lastSent.TryGetValue(id, out state))
+                state.WasReal = true;
+
+            ModLog.Info($"[Nascita] {FullId(id)} rivelato dal peer");
+        }
+
         /// <summary>
         /// Points an OWNED enemy at whichever player is closer, so its own AI can engage the other player.
         ///
@@ -3091,6 +3234,11 @@ namespace Blasphemous.Multiplayer.Client
             // Every frame, so an attack shorter than the snapshot interval is still recorded. Writes only
             // when the state actually changes.
             LogAnimationChanges();
+
+            // Every frame on BOTH machines, and deliberately before the connection gate below: the reveal of
+            // an enemy is a fact about the world, not about the network, and the latch has to advance even
+            // while nobody is connected or the first reveal after a reconnect would go unannounced.
+            DetectReveals();
 
             // Both machines receive: the owner to follow the authoritative state, the non-owner to apply
             // it. Receiving is what tells a machine whether it should be simulating a given enemy, so it
@@ -4084,6 +4232,20 @@ namespace Blasphemous.Multiplayer.Client
                 if (who != null)
                     PlayerDeathSync.ApplyRemoteState(who, died);
 
+                return;
+            }
+
+            // A BIRTH, and it MUST be recognised here - BEFORE the line below, which consumes the id as a
+            // death.
+            //
+            // This channel carries free-form strings and the project already uses it that way: "sp|" for
+            // deaths, "brk|" for lamps, "falo|" for bonfires and "pdead|"/"palive|" for players. "nato|" is
+            // the sixth of the series - the sender's game has just REVEALED an enemy, and this machine has to
+            // wake its own copy. Left unrecognised the id would fall through to _pendingDeaths.Add and the
+            // enemy would be marked dead at the very moment it was born.
+            if (IsBirthId(enemyId))
+            {
+                ReceiveBirth(BirthIdOf(enemyId));
                 return;
             }
 
