@@ -632,46 +632,14 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     // ============================================================================================
-    // A5 - PROBE DI SOLO LOG (zero SendEffect). DA RIMUOVERE dopo il test.
-    // ============================================================================================
+    // A5 - LE PROBE SONO STATE RIMOSSE. Avevano un solo scopo: dire QUALE suono il gioco suona
+    // davvero per il quarto colpo, per lo sguaino e per l'attacco aereo-a-terra, invece di
+    // scommettere su tre fix. Hanno risposto (`ComboHit` si', `ComboHitUp/Down` mai, `IdleSword`
+    // raro, `LoadingCharged` si'), i fix sono al loro posto, e il test ha confermato.
     //
-    // PERCHE' ESISTONO. Tre domande di A5 non sono decidibili ne' dall'IL ne' dai log, perche' i nomi
-    // degli AnimationEvent stanno nei CLIP, negli asset: (1) quale suono fa il QUARTO colpo di una combo,
-    // (2) se lo "sguaino" dell'attacco aereo-a-terra e' `PenitentIdleSword` o il CARICAMENTO, (3) quanto
-    // spesso suona `PlayIdleSword` a penitent fermo (se e' anche il suono dell'idle, coprirlo sarebbe
-    // rumore di fondo continuo).
-    //
-    // Queste cinque patch NON mandano niente e NON cambiano comportamento: scrivono una riga e basta.
-    // Il test dice quale delle tre strade prendere, invece di scommettere su tre fix.
-    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHit")]
-    class ComboHitProbe_Patch
-    {
-        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] ComboHit"); }
-    }
-
-    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHitUp")]
-    class ComboHitUpProbe_Patch
-    {
-        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] ComboHitUp"); }
-    }
-
-    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHitDown")]
-    class ComboHitDownProbe_Patch
-    {
-        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] ComboHitDown"); }
-    }
-
-    [HarmonyPatch(typeof(PenitentMoveAnimations), "PlayIdleSword")]
-    class IdleSwordProbe_Patch
-    {
-        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] IdleSword"); }
-    }
-
-    [HarmonyPatch(typeof(StartChargingAttackBehaviour), "OnStateEnter")]
-    class ChargingProbe_Patch
-    {
-        public static void Postfix() { Blasphemous.ModdingAPI.ModLog.Info("[Probe] LoadingCharged"); }
-    }
+    // Se servisse di nuovo una di quelle risposte, sono cinque righe:
+    //     [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHit")]
+    //     class X { public static void Postfix() { ModLog.Info("[Probe] ComboHit"); } }
 
     // A4 - the slide's dust and its sound.
     //
