@@ -1,6 +1,7 @@
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Data;
 using Blasphemous.Multiplayer.Client.PvP.Models;
+using Framework.FrameworkCore;
 using Framework.Managers;
 using Gameplay.GameControllers.Entities;
 using Gameplay.GameControllers.Effects.Player.GhostTrail;
@@ -20,6 +21,16 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         /// <summary>The avatar's own ghost trail generator (A3). See SetGhostTrail.</summary>
         private GhostTrailGenerator GhostTrail { get; set; }
+
+        /// <summary>
+        /// The surrogate Entity the ghost trail reads its direction from (voice 61).
+        ///
+        /// It exists only to be that owner. The generator applies the owner's facing to every ghost it spawns,
+        /// so pointing it at the penitent made the ghosts wear the LOCAL player's direction - a slide to the
+        /// left drew ghosts looking right. It has to be its own GameObject rather than the avatar itself,
+        /// because an Entity registers among the level's living entities and this avatar is not one of them.
+        /// </summary>
+        private Entity ghostTrailOwner { get; set; }
 
         public OtherPlayerAttackScript OtherPlayerAttack { get; private set; }
 
@@ -63,12 +74,20 @@ namespace Blasphemous.Multiplayer.Client.Players
             //
             // This must come right after AddComponent: the component's Awake runs immediately, but its Start is
             // deferred to the end of the frame, so the owner is in place in time for Start to take the good path.
-            // The penitent's own Entity is the right owner, and it is what the local generator points at too.
-            if (Core.Logic.Penitent != null)
-                GhostTrail.EntityOwner = Core.Logic.Penitent;
+            //
+            // ⭐ AND IT IS NOT THE PENITENT. Handing the generator Core.Logic.Penitent made the trail work but
+            // face the wrong way, because the ghost's direction is read straight off this owner
+            // (`flipX = EntityOwner.Status.Orientation == Left`) and the penitent carries the LOCAL player's
+            // facing, not the avatar's: sliding left drew ghosts looking right. Hence a surrogate Entity that
+            // exists only to face the way the avatar faces - see ghostTrailOwner.
+            GameObject trailOwner = new GameObject("_coop_trail_owner");
+            trailOwner.transform.SetParent(transform);
+            ghostTrailOwner = trailOwner.AddComponent<Entity>();
+            GhostTrail.EntityOwner = ghostTrailOwner;
 
-            // MANDATORY - see SetGhostTrail for what happens otherwise.
-            GhostTrail.followOrientation = false;
+            // MANDATORY as well: with followOrientation the generator applies the owner's facing to every
+            // ghost, which is exactly what the surrogate is for.
+            GhostTrail.followOrientation = true;
 
             // The look is copied from the penitent's generator rather than written here, because the colour and
             // the material live in the prefab and are not constants anyone can read out of the code.
@@ -104,6 +123,12 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             if (GhostTrail == null)
                 return;
+
+            // The direction is decided HERE, when the trail starts. A dash, a plunge or a slide does not turn
+            // around halfway through, so reading the avatar's facing once is enough - and it keeps us off the
+            // per-frame path, which is where a generator like this one is easiest to get wrong.
+            if (on && ghostTrailOwner != null)
+                ghostTrailOwner.SetOrientation(IsFacingRight ? EntityOrientation.Right : EntityOrientation.Left);
 
             GhostTrail.EnableGhostTrail = on;
         }
