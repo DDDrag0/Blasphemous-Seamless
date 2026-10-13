@@ -1904,32 +1904,6 @@ namespace Blasphemous.Multiplayer.Client
             return string.Empty;
         }
 
-        /// <summary>
-        /// Announces that the LOCAL player just parried an enemy, so the machine that OWNS that enemy can
-        /// play the parry reaction on its authoritative copy. Without this the reaction only fired on the
-        /// parrying player's own machine, and when that machine was not the owner the authoritative copy
-        /// never reacted - the two screens disagreed and the enemy did not visibly "stun".
-        ///
-        /// It travels on the enemy-death channel with the "parry|" prefix, exactly like the bonfire's
-        /// "falo|": no protocol bump, and the server relays it to everyone but the sender verbatim. The
-        /// sender is skipped on purpose - its own copy already played the reaction locally, so echoing it
-        /// back would run it twice.
-        /// </summary>
-        public static void BroadcastParry(Enemy enemy)
-        {
-            if (enemy == null || enemy.gameObject == null)
-                return;
-
-            if (!Main.Multiplayer.NetworkManager.IsConnected)
-                return; // single player: nobody to tell
-
-            string id = IdOf(enemy);
-            if (string.IsNullOrEmpty(id))
-                return;
-
-            Main.Multiplayer.SendEnemyDeathGlobal(ParrySync.Prefix + id);
-        }
-
         private static bool IsRegistered(Enemy enemy)        {
             return _registered.Contains(enemy);
         }
@@ -4057,22 +4031,6 @@ namespace Blasphemous.Multiplayer.Client
                 if (who != null)
                     PlayerDeathSync.ApplyRemoteState(who, died);
 
-                return;
-            }
-
-            // A parry: the other player parried an enemy this machine owns. Replicate the reaction on the
-            // authoritative copy so both screens agree. Recognised here, before _pendingDeaths.Add, for the
-            // same reason as the bonfire: a "parry|" id must never reach the death memory.
-            //
-            // The guard is !IsPuppet, not IsHost: ownership is per-enemy, and only the enemy's OWNER has a
-            // live behaviour tree, so only it can run Enemy.Parry() into the real parry reaction. On a
-            // puppet the call would be a redundant local animation that the owner's stateHash then
-            // overwrites, so it is skipped.
-            if (ParrySync.IsParryId(enemyId))
-            {
-                Enemy parried = ResolveEnemy(ParrySync.EnemyIdOf(enemyId));
-                if (parried != null && !IsPuppet(parried))
-                    parried.Parry();
                 return;
             }
 
