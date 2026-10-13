@@ -65,4 +65,9 @@ public enum EffectType
     // EffectType travels as a single byte, so nothing about the protocol has to change.
     TrailOn = 70,
     TrailOff = 71,
+
+    // A4 - the effects that HAPPEN SOMEWHERE. These travel with a position in the payload, and that position
+    // is optional by construction: the receiver reads the effect byte and stops, so a longer payload is
+    // invisible to the older shapes and no protocol version has to move.
+    SlideDust = 80,
 }

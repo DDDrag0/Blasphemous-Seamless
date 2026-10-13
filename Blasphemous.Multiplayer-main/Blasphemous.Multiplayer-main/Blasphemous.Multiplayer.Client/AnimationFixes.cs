@@ -367,6 +367,26 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
+    // A4 - the slide's dust and its sound.
+    //
+    // Sent from the place the game performs the slide, and as a POSTFIX so the ability itself is untouched. The
+    // position is the penitent's own, which is where the game takes it from too.
+    //
+    // ⚠️ The receiving machine must NOT call OnCastStart: that would CAST THE ABILITY there. This end only says
+    // WHERE it happened; the other end reads GuardSlide's two public fields and reproduces the effect itself.
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.GuardSlide), "OnCastStart")]
+    class GuardSlideEffect_Patch
+    {
+        public static void Postfix()
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            Main.Multiplayer.NetworkManager.SendEffect(
+                EffectType.SlideDust,
+                Framework.Managers.Core.Logic.Penitent.transform.position);
+        }
+    }
     // Vertical attack landing
     [HarmonyPatch(typeof(VerticalAttackLandingBehaviour), "OnStateEnter")]
     class VerticalAttackLandingBehaviourEnter_Patch
