@@ -2352,7 +2352,24 @@ namespace Blasphemous.Multiplayer.Client
                     continue;
 
                 Collider2D collider = enemy.EntityDamageArea.DamageAreaCollider;
-                bool real = collider != null && collider.enabled;
+                SpriteRenderer sprite = enemy.GetComponentInChildren<SpriteRenderer>();
+
+                // THE COLLIDER ALONE IS NOT THE TRUTH, and the reason is subtle enough to be worth writing
+                // down. The damage collider of this family is switched BY THE ANIMATOR:
+                // WaxCrawlerMeltingBehaviour.OnStateEnter sets
+                //     DamageAreaCollider.enabled = animator.GetCurrentAnimatorStateInfo(0).IsName("Appear")
+                // so the collider turns on for ANY entry into "Appear" - including the one the MOD ITSELF
+                // forces when it replays the owner's animation on this machine. Reading the collider alone
+                // therefore mistook our own replay for a reveal, announced a birth, and the peer ran Rise()
+                // on an enemy its game had never revealed: the sprite flashed up, its own tree put it back
+                // down, and the next ownership change started the whole thing again. The logs counted 45
+                // announcements for 22 enemies, and crawlers flickering in a rise they never earned.
+                //
+                // The sprite is what tells the two apart: the real reveal is
+                // WaxCrawlerAnimatorInyector.EnableSpriteRenderer, so an enemy that is genuinely in play has
+                // BOTH the sprite and the collider on, while our replay leaves the sprite off.
+                bool real = collider != null && collider.enabled &&
+                            sprite != null && sprite.enabled;
 
                 if (real && !state.WasReal)
                 {
