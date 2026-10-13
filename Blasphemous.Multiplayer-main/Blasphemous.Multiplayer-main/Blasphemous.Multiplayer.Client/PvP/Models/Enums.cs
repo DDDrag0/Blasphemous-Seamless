@@ -86,4 +86,16 @@ public enum EffectType
     LandingImpact2 = 83,
     LandingImpact3 = 84,
     LandingImpact3Beam = 85,
+
+    // A5 - la polvere della SCIVOLATA DI MOVIMENTO (Dash).
+    //
+    // DUE membri, non uno, perche' il gioco ha DUE prefab distinti con due campi serializzati diversi -
+    // `startDashDustPrefab` e `stopDashDustPrefab`, entrambi private [SerializeField] - e due posizioni
+    // diverse: la polvere di PARTENZA nasce sulla trasform del penitent, quella di ARRESTO a terra,
+    // fuori dal DamageArea di 0.2 secondo l'orientamento. Un solo byte non puo' dire quale delle due.
+    //
+    // Il byte arriva a 255 e l'ultimo valore usato e' 85, quindi 86 e 87 sono liberi: nessun bump di
+    // protocollo e nessuna modifica al server, che inoltra il payload INTERO e PREFISSATO col nome.
+    DashDustStart = 86,
+    DashDustStop = 87,
 }

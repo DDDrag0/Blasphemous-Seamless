@@ -13,6 +13,27 @@ namespace Blasphemous.Multiplayer.Client.Players
         private const float DEBLA_DURATION = 1.2f;
         private const float VERDIALES_DURATION = 2f;
 
+        // A5 - i due prefab della polvere del dash (DashDustGenerator.startDashDustPrefab e
+        // stopDashDustPrefab). Sono `private [SerializeField]` e NON esiste alcun accessore pubblico:
+        // l'elenco COMPLETO dei membri pubblici di DashDustGenerator e' StopDustSpawnOffsetPos,
+        // GetStartDashDust, i due GetStopDashDust e GetDashDustPosition (verificato nella metadata).
+        // Quindi si leggono per RIFLESSIONE, una volta sola e tenuti da parte: GetField e' una ricerca per
+        // stringa e questo codice gira sul percorso degli effetti. E' la stessa tecnica che
+        // EnemySyncManager usa gia' per i campi privati del gioco.
+        //
+        // Se la ricerca restituisce null l'effetto degrada a "nessuna polvere" e lo dice, invece di
+        // lanciare: questo codice gira DENTRO il gestore dei pacchetti, dove un'eccezione fa ri-presentare
+        // lo stesso pacchetto a ogni frame e ferma l'aggiornamento della mod.
+        private static readonly System.Reflection.FieldInfo StartDashDustField =
+            typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator).GetField(
+                "startDashDustPrefab",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        private static readonly System.Reflection.FieldInfo StopDashDustField =
+            typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator).GetField(
+                "stopDashDustPrefab",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
         private SpriteRenderer SwordRenderer { get; set; }
         private Animator SwordAnim { get; set; }
         private BoxCollider2D DamageArea { get; set; }
@@ -98,6 +119,24 @@ namespace Blasphemous.Multiplayer.Client.Players
                         PlaySlideDust(position);
                     break;
                 }
+                // A5 - la polvere della SCIVOLATA DI MOVIMENTO (Dash), nel punto in cui il mittente e'
+                // scivolato.
+                //
+                // DUE case e non uno perche' il gioco ha DUE prefab: quello di PARTENZA
+                // (startDashDustPrefab, sulla trasform del penitent) e quello di ARRESTO
+                // (stopDashDustPrefab, a terra davanti o dietro di loro). Il ricevente non puo' dedurre
+                // quale dei due serve, quindi lo dice il byte.
+                //
+                // hasPosition e' CONTROLLATO e non dato per scontato, come per SlideDust: un byte senza
+                // posizione disegnerebbe la polvere nell'origine, che in questo gioco e' una coordinata
+                // legittima - cioe' dall'altra parte del livello.
+                case EffectType.DashDustStart:
+                case EffectType.DashDustStop:
+                {
+                    if (hasPosition)
+                        PlayDashDust(effect == EffectType.DashDustStart, position);
+                    break;
+                }
                 // A4 - the ground impact: the dust, the beam and the landing sound. The five members are the
                 // five shapes VerticalAttack.InstantiateExplosion can take, and the sender is the machine that
                 // decided which one it was (it is the one that saw the fall height and its own skill).
@@ -172,6 +211,78 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             if (!string.IsNullOrEmpty(slide.GuardSlideSoundFx))
                 Core.Audio.EventOneShotPanned(slide.GuardSlideSoundFx, world);
+        }
+
+        /// <summary>
+        /// La polvere della SCIVOLATA DI MOVIMENTO (Dash), presa dal DashDustGenerator LOCALE.
+        ///
+        /// ⚠️ NON e' la scivolata qui sopra. GuardSlide e' la scivolata che esce dalla guardia; questa e'
+        /// il dash. Sono due componenti diversi con due prefab diversi.
+        ///
+        /// ⚠️ I DUE PREFAB SONO CAMPI PRIVATI, al contrario del GuardSlideImpactEffect pubblico di
+        /// GuardSlide, e non c'e' modo di raggiungerli se non per riflessione: l'elenco COMPLETO dei membri
+        /// pubblici di DashDustGenerator e' StopDustSpawnOffsetPos, GetStartDashDust, i due
+        /// GetStopDashDust e GetDashDustPosition.
+        ///
+        /// ⚠️ GetStartDashDust/GetStopDashDust del gioco NON vengono chiamate, per due motivi distinti.
+        /// Primo: mettono la polvere sul penitent LOCALE - GetStartDashDust legge _penitent.transform.position
+        /// e GetStopDashDust legge GetDashDustPosition(), che legge _penitent.DamageArea e
+        /// _penitent.Status - quindi alzerebbero polvere sul TUO personaggio invece che su quello del peer.
+        /// Secondo: sono i due metodi che il MITTENTE patcha, quindi chiamarli qui ri-trasmetterebbe.
+        /// </summary>
+        private static void PlayDashDust(bool isStart, Vector2 position)
+        {
+            if (Core.Logic.Penitent == null)
+                return;
+
+            Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator generator =
+                Core.Logic.Penitent.DashDustGenerator;
+            if (generator == null)
+            {
+                // Penitent.DashDustGenerator e' riempito da GetComponentInChildren: puo' essere null.
+                ModLog.Warn("[DashDust] il penitent locale non ha un DashDustGenerator");
+                return;
+            }
+
+            PoolManager pool = PoolManager.Instance;
+            if (pool == null)
+                return;
+
+            System.Reflection.FieldInfo field = isStart ? StartDashDustField : StopDashDustField;
+            if (field == null)
+            {
+                // Il nome vive nei dati serializzati dell'asset: se una build futura rinomina il campo la
+                // ricerca restituisce null. Dirlo una volta, invece di lanciare o di non disegnare nulla
+                // in silenzio.
+                ModLog.Warn("[DashDust] campo prefab non trovato in DashDustGenerator");
+                return;
+            }
+
+            GameObject prefab = field.GetValue(generator) as GameObject;
+            if (prefab == null)
+            {
+                // ⚠️ Il controllo NON e' decorativo: PoolManager.ReuseObject inizia con
+                // prefab.GetInstanceID(), quindi un prefab null lancia DENTRO il pool invece di non
+                // disegnare nulla. E il caso e' previsto dal gioco stesso: DashDustGenerator.OnStart
+                // guarda entrambi i prefab con `if (prefab)` prima di creare il pool.
+                ModLog.Warn("[DashDust] prefab della polvere del dash non assegnato su questa build");
+                return;
+            }
+
+            // La z arriva dal penitent LOCALE, come in PlaySlideDust: ObjectInstance.Reuse applica la z
+            // del Vector3 che riceve, e gli effetti del gioco nascono sulla posizione del penitent e ne
+            // ereditano la z. Ricostruirne una diversa potrebbe ordinarli male rispetto alla polvere
+            // del giocatore locale.
+            Vector3 world = EffectWorldPosition(position);
+
+            // createPoolIfNeeded resta FALSE e poolSize resta 1, come in PlaySlideDust e come nelle
+            // chiamate del gioco: l'OnStart del DashDustGenerator di QUESTA macchina ha gia' eseguito
+            // CreatePool(prefab, 5) per entrambi i prefab.
+            // ⚠️ Se il pool mancasse, ReuseObject restituirebbe null SENZA dire nulla e non comparirebbe
+            // alcuna polvere: vedi il passaggio di ritorno B in fondo al piano.
+            // Il risultato si SCARTA: cosi' il codice non dipende dall'accessibilita' di
+            // PoolManager.ObjectInstance.
+            pool.ReuseObject(prefab, world, Quaternion.identity, false, 1);
         }
 
         /// <summary>

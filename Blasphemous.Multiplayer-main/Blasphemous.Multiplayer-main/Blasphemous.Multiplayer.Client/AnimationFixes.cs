@@ -484,6 +484,73 @@ namespace Blasphemous.Multiplayer.Client
             return (bool)value;
         }
     }
+    // A5 - la polvere della SCIVOLATA DI MOVIMENTO (Dash), sull'ALTRA macchina.
+    //
+    // PERCHE' QUI E NON SU Dash.OnCastStart / Dash.OnCastEnd. Quei due sono GIA' patchati da A3 per il
+    // ghost trail, e questa funzione non deve dipendere da quella patch ne' disturbarla. I due metodi
+    // patchati sotto sono i punti in cui il GIOCO crea la polvere del dash, e sono raggiunti da OGNI
+    // percorso che la crea (verificato nel IL di Assembly-CSharp.dll):
+    //
+    //   GetStartDashDust()    - UN SOLO chiamante in tutto l'assembly: Dash.OnCastStart.
+    //   GetDashDustPosition() - UN SOLO chiamante in tutto l'assembly: GetStopDashDust(), che a sua
+    //                           volta e' raggiunto da PenitentMoveAnimations.RaiseStopDust (un EVENTO DI
+    //                           ANIMAZIONE, che quindi non ha alcun chiamante nel IL) e dai QUATTRO punti
+    //                           con GetStopDashDust(float) di DashBehaviour (tre in OnStateUpdate, uno in
+    //                           Crouch) attraverso DelayStopDash.
+    //                           Una sola patch copre quindi TUTTE E CINQUE le emissioni di arresto.
+    //
+    // ⚠️ GetStopDashDust NON si patcha: e' SOVRACCARICO (esistono GetStopDashDust() e
+    // GetStopDashDust(System.Single)). Un [HarmonyPatch(typeof(X), "GetStopDashDust")] senza lista di
+    // argomenti e' una ricerca PER SOLO NOME che deve scegliere fra due metodi - e il verificatore dei
+    // bersagli non lo vedrebbe, perche' indicizza i metodi per nome. GetDashDustPosition non e'
+    // sovraccarico, ha un solo chiamante, e il suo VALORE DI RITORNO e' la posizione esatta che il gioco
+    // passa a PoolManager.ReuseObject: cosi' non va riscritto un solo carattere dell'aritmetica del
+    // gioco, compresa la mutazione `StopDustSpawnOffsetPos *= +-1` che quel metodo compie.
+    //
+    // ⚠️ Sono POSTFIX: il metodo del gioco gira per primo e resta INTATTO. Nessun valore di ritorno
+    // toccato, nessun effetto collaterale cambiato: i Prefix di questo file - il cui VALORE DI RITORNO
+    // e' il punto, e la cui riscrittura ha gia' causato 12 NRE - non vengono sfiorati.
+    //
+    // ⚠️ Scattano SOLO per il penitent LOCALE: l'avatar remoto e' un GameObject nudo costruito da
+    // OtherPlayerManager.AddActivePlayer e non porta alcun DashDustGenerator, quindi nulla torna indietro.
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator), "GetStartDashDust")]
+    class DashDustStart_Patch
+    {
+        // La posizione NON e' inventata: GetStartDashDust restituisce l'istanza appena riusata dal pool,
+        // e ObjectInstance.Reuse(position, rotation) le ha appena assegnato ESATTAMENTE
+        // `_penitent.transform.position`, che e' il valore che il gioco legge dentro quel metodo.
+        public static void Postfix(UnityEngine.GameObject __result)
+        {
+            if (__result == null)
+                return;
+
+            UnityEngine.Vector3 at = __result.transform.position;
+
+            // PROVA LATO MITTENTE, e ragione per cui questa riga esiste: la riga [Effect] e' scritta SOLO
+            // dal RICEVENTE (AttackManager.ReceiveEffect) e NetworkManager.QueueMesssage esce in silenzio
+            // mentre e' disconnesso, quindi oggi "questo Postfix non e' mai girato" e "il pacchetto non e'
+            // mai arrivato" sono INDISTINGUIBILI in entrambi i log. Questa e' l'unica riga che li separa.
+            // ModLog e' scritto per esteso perche' questo file non ha `using Blasphemous.ModdingAPI;`:
+            // le altre chiamate a ModLog che contiene fanno lo stesso.
+            Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] DashDustStart ({at.x:F1},{at.y:F1})");
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashDustStart, at);
+        }
+    }
+
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator), "GetDashDustPosition")]
+    class DashDustStop_Patch
+    {
+        // __result E' la posizione: GetStopDashDust() passa questo valore di ritorno diritto a
+        // PoolManager.ReuseObject, quindi e' il punto esatto in cui la polvere di arresto del gioco nasce.
+        public static void Postfix(UnityEngine.Vector3 __result)
+        {
+            Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] DashDustStop ({__result.x:F1},{__result.y:F1})");
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashDustStop, __result);
+        }
+    }
+
     // Vertical attack landing
     [HarmonyPatch(typeof(VerticalAttackLandingBehaviour), "OnStateEnter")]
     class VerticalAttackLandingBehaviourEnter_Patch
