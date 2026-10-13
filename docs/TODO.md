@@ -93,7 +93,7 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **52** | 🔴 **Il PROMPT DI ESECUZIONE non condivide l'animazione ai due giocatori** | 🟡 **NUOVA — segnalata dall'utente** | **Parole sue**: *"il prompt dell'esecuzione quando esiste, non condivide l'animazione ad entrambi"*. ⇒ *quando un giocatore esegue un nemico, l'altro non vede l'animazione.* **Da verificare**: *se l'animazione viene trasmessa, e su quale macchina vive il nemico eseguito.* **⚠️ Collegata alla voce 54**: *il prompt è ciò che innesca il blocco.* |
 | **53** | 🔴 **I nemici creati DOPO il caricamento (evento locale) non si condividono** — il peer non li vede né li può colpire | ✅ RISOLTA (col fix 45) | CHIUSA — integrale in fondo *(cerca "Voce 53 —")* |
 | **54** | 🔴🔴 **BLOCCO TOTALE DEL GIOCO dopo un'esecuzione** — 516 eccezioni non gestite | ✅ RISOLTA | CHIUSA — integrale in fondo *(cerca "Voce 54 —")* |
-| **55** | 🔴 **Al falò l'annuncio parte PRIMA del reset locale** — il ricevente azzera il mondo prima del mittente | 🟡 **SOSPESA — cosmetico con la 45 in piedi** | **Il referto**: *"la divergenza è causata dalla 45, non dall'ordine"*. Con la 45 il peer ricresce su `_ids` al rescan (entro 0,5 s), quindi la finestra "annuncio prima del reset" si auto-risana. **Il fix è RISCHIOSO** *(tocca il flusso del falò verificato, e richiede di distinguere il falò locale da PE02 e dalla replica)* **e non vale il beneficio finché un test non dimostri che serve.** **Da riattivare solo se il desync persiste dopo la 45.** |
+| **55** | 🔴 **Al falò l'annuncio parte PRIMA del reset locale** — il ricevente azzera il mondo prima del mittente | ✅ CHIUSA — non è un problema | CHIUSA — integrale in fondo *(cerca "Voce 55 —")* |
 | **56** | ⚠️ **MANCANO 5 MARKER per poter confrontare per-nemico** — senza di essi ogni diagnosi futura resta aggregata | 🟡 **NUOVA — strumentazione** | **Trovati dal referto, e sono il motivo per cui il confronto per-nemico oggi NON è possibile**: *(1)* **`ShortId` butta via `parts[0]`** ⇒ *tutti i nemici stampano `D01Z01S03@SPAWN`, e **l'unica componente discriminante è persa** (1999/1903 tick, 3917/4431 tree, 54/52 kill)* ⇒ **stampare l'id completo o la posizione dello spawn point**; *(2)* **nessun timestamp nei log** *(`Time.time` basta)*; *(3)* **`IMPRONTA DIVERSA` porta i conteggi SOLO locali** ⇒ *servono quelli del **peer** e **il primo id presente su un lato solo***; *(4)* ⭐ **una riga quando `ResolveByHandle`/`FindIdOfHandle` falliscono** — *è l'istante in cui l'aggiornamento viene **scartato in silenzio***; *(5)* **per il parry**, una riga per-nemico con `enabled`+`isRunning`+non-proprietario **all'uscita della parata**. **⇒ Il (3) e il (4) servono a verificare il fix della voce 45.** |
 | **57** | 🔴 **Il FANTASMA: la morte via SALUTE non disattivava il cadavere** — un nemico con prompt di esecuzione ucciso dall'altro diventava non colpibile | ✅ RISOLTA | CHIUSA — integrale in fondo *(cerca "Voce 57 —")* |
 
@@ -4750,4 +4750,15 @@ invisibile, `IsOnExecution` mai resettato, **blocker ON per sempre**.* **Prova**
 **ESITO:** `AdoptLastKnownPosition` posiziona il nemico sull'ultima posizione nota al momento
 della presa, nei tre punti (host-prende, peer-prende, self-heal). Marker `[Proprieta'] adotta
 la posizione`.
+
+
+### Voce 55 — l'annuncio parte prima del reset locale
+
+**Priorita':** ✅ CHIUSA — **non è un problema** *(confermato dall'utente)*
+
+**Perché è chiusa.** Il referto diceva: *"la divergenza è causata dalla 45, non dall'ordine"*.
+Con la 45 il peer ricresce su `_ids` al rescan, quindi la finestra "annuncio prima del reset" si
+auto-risana. E l'utente ha confermato col test: si è seduto più volte al falò senza problemi — il
+gap è di POCHI MILLISECONDI, e l'animazione di seduta al falò lo copre. **Toccare il flusso del
+falò (già verificato) per un ordine cosmetico sarebbe un rischio senza beneficio.**
 
