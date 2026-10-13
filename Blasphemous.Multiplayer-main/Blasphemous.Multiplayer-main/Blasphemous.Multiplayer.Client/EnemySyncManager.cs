@@ -3232,17 +3232,20 @@ namespace Blasphemous.Multiplayer.Client
                     if (!previous.OwnedByLocal)
                         continue;
 
-                    // Position and life are transmitted only for an enemy that is actually in play.
+                    // Position and life are transmitted for an enemy that is tracked and owned, whether or not
+                    // it is currently ACTIVE - and that reversed a real decision.
                     //
-                    // The token above is published for EVERY tracked enemy, including one that is currently
-                    // deactivated, and that order is deliberate. The game never deactivates an enemy for being
-                    // off camera (verified: every SetActive(false) on an enemy belongs to a death, an execution
-                    // or a dispose), so this gate only catches enemies that are not in play yet - a boss waiting
-                    // for its cutscene, or one spawned with SpawnEnabledEnemy false. Publishing the token first
-                    // means the peer still learns who owns each enemy, instead of being left without an owner
-                    // and freezing that enemy for the rest of the scene.
-                    if (!enemy.gameObject.activeInHierarchy)
-                        continue;
+                    // There used to be a gate here: `if (!enemy.gameObject.activeInHierarchy) continue;`,
+                    // justified by a comment claiming the game never deactivates an enemy for being off
+                    // camera. The comment above this method says the opposite, and the logs settle it: the
+                    // enemies that failed to transfer were the ones OUTSIDE the view. Whatever the reason an
+                    // enemy is inactive - waiting for its cutscene, or simply off camera behind the owner -
+                    // its TRANSFORM still holds the truth, and that truth is exactly what the other machine
+                    // needs at a handover. Skipping it there is what left the other machine with no position
+                    // at all, so it fell back to its own copy, which is the spawn point.
+                    //
+                    // An enemy that is not in play yet has a position too - its spawn - so transmitting it
+                    // costs a packet and tells the truth.
 
                     if (!fullSweep && hasPrevious)
                     {
