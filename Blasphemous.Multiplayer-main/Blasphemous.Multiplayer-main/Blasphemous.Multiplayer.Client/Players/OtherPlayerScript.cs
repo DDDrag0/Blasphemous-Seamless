@@ -1,8 +1,9 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Data;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
 using Gameplay.GameControllers.Entities;
+using Gameplay.GameControllers.Effects.Player.GhostTrail;
 using System.Linq;
 using Tools.Level.Interactables;
 using UnityEngine;
@@ -16,6 +17,9 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         private SpriteRenderer CharacterRenderer { get; set; }
         private Animator CharacterAnim { get; set; }
+
+        /// <summary>The avatar's own ghost trail generator (A3). See SetGhostTrail.</summary>
+        private GhostTrailGenerator GhostTrail { get; set; }
 
         public OtherPlayerAttackScript OtherPlayerAttack { get; private set; }
 
@@ -42,6 +46,50 @@ namespace Blasphemous.Multiplayer.Client.Players
             sword.transform.SetParent(transform);
             OtherPlayerAttack = sword.AddComponent<OtherPlayerAttackScript>();
             OtherPlayerAttack.SetupAttack();
+
+            // Ghost trail (A3). Built here, where the avatar is born, because it has to be OURS: the penitent's
+            // own generator belongs to the local player and cannot be lent out.
+            GhostTrail = gameObject.AddComponent<GhostTrailGenerator>();
+
+            // MANDATORY - see SetGhostTrail for what happens otherwise.
+            GhostTrail.followOrientation = false;
+
+            // Copied from the penitent's generator rather than written here, because the colour and the material
+            // live in the prefab: they are not constants anyone can read out of the code.
+            GhostTrailGenerator local = Core.Logic.Penitent == null
+                ? null
+                : Core.Logic.Penitent.GetComponentInChildren<GhostTrailGenerator>();
+
+            if (local != null)
+            {
+                GhostTrail.TimeStep = local.TimeStep;
+                GhostTrail.AlphaStep = local.AlphaStep;
+                GhostTrail.InitialGhostTrailAlpha = local.InitialGhostTrailAlpha;
+                GhostTrail.TrailColor = local.TrailColor;
+                GhostTrail.customMaterial = local.customMaterial;
+                GhostTrail.followRotation = local.followRotation;
+                GhostTrail.followScale = local.followScale;
+            }
+
+            GhostTrail.EnableGhostTrail = false;
+        }
+
+        /// <summary>
+        /// Shows or hides this avatar's ghost trail - the wisps behind a dash, a plunge or a lunge (A3).
+        ///
+        /// followOrientation MUST stay false, and that is not a preference: GhostTrailGenerator.GetGhostTrail
+        /// ends with `spriteRenderer.flipX = EntityOwner.Status.Orientation == EntityOrientation.Left`, and
+        /// Trait fills EntityOwner from GetComponentInParent&lt;Entity&gt;(). This avatar is a bare GameObject
+        /// with no Entity on it, so EntityOwner stays NULL and the default (true) makes every single trail
+        /// generation throw. This is how the whole feature fails if the flag is forgotten: with a
+        /// NullReferenceException inside the effect path, not with a missing trail.
+        /// </summary>
+        public void SetGhostTrail(bool on)
+        {
+            if (GhostTrail == null)
+                return;
+
+            GhostTrail.EnableGhostTrail = on;
         }
 
         public Vector2 CurrentPosition

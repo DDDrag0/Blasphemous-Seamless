@@ -1,4 +1,4 @@
-﻿
+
 namespace Blasphemous.Multiplayer.Client.PvP.Models;
 
 public enum ConditionType
@@ -60,4 +60,9 @@ public enum EffectType
 
     Debla = 40,
     Verdiales = 60,
+
+    // A3 - the ghost trail. Two members instead of a payload: the values above leave 61..255 free, and
+    // EffectType travels as a single byte, so nothing about the protocol has to change.
+    TrailOn = 70,
+    TrailOff = 71,
 }

@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Projectiles;
@@ -67,6 +67,16 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.Debla:
                     StartCoroutine(DisplayDebla());
                     break;
+                // A3: the ghost trail belongs to the avatar, not to the sword, so this reaches up to it.
+                // Both cases share the body because the only difference is the flag passed on.
+                case EffectType.TrailOn:
+                case EffectType.TrailOff:
+                {
+                    OtherPlayerScript owner = GetComponentInParent<OtherPlayerScript>();
+                    if (owner != null)
+                        owner.SetGhostTrail(effect == EffectType.TrailOn);
+                    break;
+                }
                     //case EffectType.Verdiales:
                     //    StartCoroutine(DisplayVerdiales());
                     //    break;

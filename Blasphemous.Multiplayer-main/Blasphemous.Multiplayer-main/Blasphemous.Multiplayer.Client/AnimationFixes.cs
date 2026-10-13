@@ -247,6 +247,11 @@ namespace Blasphemous.Multiplayer.Client
                 // A2: the lunge, which is the attack that carries the penitent forward - the one whose absence
                 // is most obvious on the other screen, because the avatar stays put while the player lunges.
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
+
+                // A3: and the trail, which on this attack comes from the same state. Two sends rather than one
+                // because the packet carries a single byte - doubling a byte on the wire is cheaper than
+                // widening a payload for the sake of tidiness.
+                Main.Multiplayer.NetworkManager.SendEffect(EffectType.TrailOn);
                 return true;
             }
             return false;
@@ -255,7 +260,54 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(LungeAttackBehaviour), "OnStateExit")]
     class LungeAttackBehaviourExit_Patch
     {
-        public static bool Prefix(Animator animator) => animator.name == "Body";
+        public static bool Prefix(Animator animator)
+        {
+            if (animator.name == "Body")
+                Main.Multiplayer.NetworkManager.SendEffect(EffectType.TrailOff);
+
+            return true;
+        }
+    }
+
+    // A3 - the other three places that turn the penitent's ghost trail on and off.
+    //
+    // Each is patched where the GAME itself decides, rather than in one place of our own, so the receiving
+    // machine follows the same decisions instead of a guess about them. They fire only for the LOCAL penitent:
+    // the remote avatar is a bare GameObject and carries none of these components, so nothing echoes back.
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastStart")]
+    class DashGhostTrailEnter_Patch
+    {
+        public static void Postfix()
+        {
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.TrailOn);
+        }
+    }
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastEnd")]
+    class DashGhostTrailExit_Patch
+    {
+        public static void Postfix()
+        {
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.TrailOff);
+        }
+    }
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack), "ShowGhostTrail")]
+    class VerticalAttackGhostTrail_Patch
+    {
+        // The game calls this with the state it wants, so the flag is passed straight through: no need to
+        // infer when the plunge's trail starts or ends.
+        public static void Postfix(bool show)
+        {
+            Main.Multiplayer.NetworkManager.SendEffect(show ? EffectType.TrailOn : EffectType.TrailOff);
+        }
+    }
+    [HarmonyPatch(typeof(Framework.Inventory.IncreaseSpeedSwordHeartEffect), "ApplyGhostingEffect")]
+    class IncreaseSpeedSwordHeartEffectGhosting_Patch
+    {
+        // The sword heart - the "enhanced" hits. Same idea: the flag is the game's own decision.
+        public static void Postfix(bool enable)
+        {
+            Main.Multiplayer.NetworkManager.SendEffect(enable ? EffectType.TrailOn : EffectType.TrailOff);
+        }
     }
     // Parry riposte
     [HarmonyPatch(typeof(ParryRepostBehaviour), "OnStateEnter")]
