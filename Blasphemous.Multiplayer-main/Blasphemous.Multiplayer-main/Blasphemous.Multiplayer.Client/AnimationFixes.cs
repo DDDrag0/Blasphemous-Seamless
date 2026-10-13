@@ -1,4 +1,4 @@
-﻿using Blasphemous.Multiplayer.Client.PvP.Models;
+using Blasphemous.Multiplayer.Client.PvP.Models;
 using Gameplay.GameControllers.AnimationBehaviours.Player.Attack;
 using Gameplay.GameControllers.AnimationBehaviours.Player.ClimbClifLede;
 using Gameplay.GameControllers.AnimationBehaviours.Player.ClimbLadder;
@@ -109,7 +109,18 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(ChargedAttackBehaviour), "OnStateEnter")]
     class ChargedAttackBehaviourEnter_Patch
     {
-        public static bool Prefix(Animator animator) => animator.name == "Body";
+        public static bool Prefix(Animator animator)
+        {
+            if (animator.name == "Body")
+            {
+                // A2: this state used to return true and tell the other machine NOTHING, so the charged attack
+                // existed only on the machine that performed it - the remote avatar simply stood there. Every
+                // other attack already announces itself on this channel; these four were the ones left out.
+                Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
+                return true;
+            }
+            return false;
+        }
     }
     [HarmonyPatch(typeof(ChargedAttackBehaviour), "OnStateUpdate")]
     class ChargedAttackBehaviourUpdate_Patch
@@ -125,7 +136,16 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(ChargedAttackEffectBehaviour), "OnStateEnter")]
     class ChargedAttackEffectBehaviourEnter_Patch
     {
-        public static bool Prefix(Animator animator) => animator.name == "Body";
+        public static bool Prefix(Animator animator)
+        {
+            if (animator.name == "Body")
+            {
+                // A2: the charged attack's own effect state, which is where the swing is actually visible.
+                Main.Multiplayer.NetworkManager.SendEffect(EffectType.UpwardsGrounded);
+                return true;
+            }
+            return false;
+        }
     }
     [HarmonyPatch(typeof(ChargedAttackEffectBehaviour), "OnStateUpdate")]
     class ChargedAttackEffectBehaviourUpdate_Patch
@@ -220,7 +240,17 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(LungeAttackBehaviour), "OnStateEnter")]
     class LungeAttackBehaviourEnter_Patch
     {
-        public static bool Prefix(Animator animator) => animator.name == "Body";
+        public static bool Prefix(Animator animator)
+        {
+            if (animator.name == "Body")
+            {
+                // A2: the lunge, which is the attack that carries the penitent forward - the one whose absence
+                // is most obvious on the other screen, because the avatar stays put while the player lunges.
+                Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
+                return true;
+            }
+            return false;
+        }
     }
     [HarmonyPatch(typeof(LungeAttackBehaviour), "OnStateExit")]
     class LungeAttackBehaviourExit_Patch
