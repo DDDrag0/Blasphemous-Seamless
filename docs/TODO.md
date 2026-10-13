@@ -4838,3 +4838,21 @@ falò (già verificato) per un ordine cosmetico sarebbe un rischio senza benefic
 
 **Verdetto:** ✅ CHIUSA — procedura coperta
 
+
+### A3 (le SCIE) — API VERIFICATE, pronte per l'implementazione
+
+**⚠️ LA TRAPPOLA (verificata in IL, e va rispettata)**: `GhostTrailGenerator.GetGhostTrail()` finisce con `spriteRenderer.flipX = base.EntityOwner.Status.Orientation == EntityOrientation.Left`, e `Trait` valorizza `EntityOwner = GetComponentInParent<Entity>()`. **L'avatar remoto e' un `new GameObject` SENZA `Entity`** ⇒ `EntityOwner` resta **null** ⇒ **con `followOrientation` al default (true) OGNI generazione di scia lancia `NullReferenceException`**. **⇒ `followOrientation = false` NON E' NEGOZIABILE.** *(E' il modo in cui questa strada fallisce: con un'eccezione, non con un'assenza.)*
+
+**API VERIFICATE sul binario del gioco** *(`Gameplay.GameControllers.Effects.Player.GhostTrail.GhostTrailGenerator`)*:
+
+```
+campi PUBBLICI: customMaterial (Material) · AlphaStep (float) · InitialGhostTrailAlpha (float)
+                TimeStep (float) · TrailColor (Color) · followRotation (bool)
+                followScale (bool) · followOrientation (bool) · EnableGhostTrail (bool)
+                AreGhostTrailsAllowed (bool)
+metodi:         DoEnableTrail() · DoDisableTrail() · DrainGhostTrailPool()
+base:           Trait -> MonoBehaviour   (quindi AddComponent<GhostTrailGenerator>())
+```
+
+**Il piano (dal referto)**: emittenti = patch su `Dash.OnCastStart`/`OnCastEnd`, `VerticalAttack.ShowGhostTrail(show)`, `LungeAttackBehaviour.OnStateEnter/Exit`, `IncreaseSpeedSwordHeartEffect.ApplyGhostingEffect`; ricettore = `OtherPlayerScript` (dove nasce l'avatar) con un `SetGhostTrail(bool)` che **copia i parametri dal generatore LOCALE** di `Core.Logic.Penitent` e li imposta su quello nuovo. **2 membri nuovi in `EffectType`** *(es. `TrailOn=70`, `TrailOff=71`; i valori in uso sono 0,1,10,11,20,30,40,60 e il byte arriva a 255)* ⇒ **nessun bump**.
+
