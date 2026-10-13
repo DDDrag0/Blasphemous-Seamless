@@ -4858,3 +4858,12 @@ base:           Trait -> MonoBehaviour   (quindi AddComponent<GhostTrailGenerato
 
 **Il piano (dal referto)**: emittenti = patch su `Dash.OnCastStart`/`OnCastEnd`, `VerticalAttack.ShowGhostTrail(show)`, `LungeAttackBehaviour.OnStateEnter/Exit`, `IncreaseSpeedSwordHeartEffect.ApplyGhostingEffect`; ricettore = `OtherPlayerScript` (dove nasce l'avatar) con un `SetGhostTrail(bool)` che **copia i parametri dal generatore LOCALE** di `Core.Logic.Penitent` e li imposta su quello nuovo. **2 membri nuovi in `EffectType`** *(es. `TrailOn=70`, `TrailOff=71`; i valori in uso sono 0,1,10,11,20,30,40,60 e il byte arriva a 255)* ⇒ **nessun bump**.
 
+
+### A4 — STATO (i VFX a terra e la scivolata)
+
+- ✅ **Passo 1 FATTO** *(commit 9eba600)*: il payload di `Effect` porta una **posizione OPZIONALE** (`<tipo:1><x:4><y:4>`). `SendEffect(EffectType, Vector2)` + `ReceiveEffect(..., bool hasPosition, Vector2)` + `PlayEffectAnimation(..., bool hasPosition, Vector2)`. ⭐ **NESSUN BUMP**: `ReceiveEffect` legge UN byte e si ferma, quindi il payload puo' crescere senza rompere nulla, e i pacchetti vecchi restano validi (`hasPosition` e' un flag, NON un "zero = assente": l'origine e' un posto legittimo).
+- ✅ **Campi della scivolata VERIFICATI in IL**: `GuardSlide.GuardSlideImpactEffect` *(public GameObject)* e `GuardSlide.GuardSlideSoundFx` *(public string)* — quindi si LEGGONO dal `GuardSlide` LOCALE e si riproducono alla posizione mandata.
+- ⚠️ **DA NON FARE**: chiamare `GuardSlide.OnCastStart()` sul ricevente — eseguirebbe l'ABILITA'. Idem per `VerticalAttack.InstantiateExplosion` senza guardie.
+- 📋 **RESTA**: *(a)* il membro `EffectType.SlideDust = 80`; *(b)* il patch su `GuardSlide.OnCastStart` che manda `SendEffect(SlideDust, posizione)`; *(c)* i `case` nel ricevente che fanno `PoolManager.ReuseObject(GuardSlideImpactEffect, posizione)` + il suono `GuardSlideSoundFx`; *(d)* la stessa cosa per l'impatto A TERRA (`HardLandingEffect`, `VerticalAttackBeam`, `VerticalLandingFxLevel*` — campi `[EventRef]` del prefab, **valori non leggibili dal codice** ⇒ si usano i campi del componente LOCALE, come per la scivolata).
+- ⚠️ **SIGNATURE DA PROBARE PRIMA**: `PoolManager.ReuseObject(...)` e `Core.Audio.EventOneShotPanned(...)` — non ancora verificate in IL.
+
