@@ -303,10 +303,19 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(Framework.Inventory.IncreaseSpeedSwordHeartEffect), "ApplyGhostingEffect")]
     class IncreaseSpeedSwordHeartEffectGhosting_Patch
     {
-        // The sword heart - the "enhanced" hits. Same idea: the flag is the game's own decision.
-        public static void Postfix(bool enable)
+        // ⚠️ THE PARAMETER NAME MUST MATCH THE GAME'S, CHARACTER FOR CHARACTER.
+        //
+        // Harmony binds a Postfix's arguments BY NAME, and the game's parameter here is called `apply`. This
+        // was first written as `enable` - a name that reads better and exists nowhere in the method - and
+        // Harmony threw "Parameter enable not found" while patching. That throw happens during patch
+        // APPLICATION, so it took the whole mod down: initialisation never finished, and everything after it
+        // reported a NullReferenceException. One parameter name, no mod at all.
+        //
+        // The deploy's target check cannot catch this: it verifies that the TYPE and the METHOD exist, not
+        // that the patch's own arguments line up. So the name is read off the assembly, not chosen.
+        public static void Postfix(bool apply)
         {
-            Main.Multiplayer.NetworkManager.SendEffect(enable ? EffectType.TrailOn : EffectType.TrailOff);
+            Main.Multiplayer.NetworkManager.SendEffect(apply ? EffectType.TrailOn : EffectType.TrailOff);
         }
     }
     // Parry riposte
