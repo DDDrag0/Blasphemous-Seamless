@@ -715,7 +715,17 @@ public class Server
 
     private void receivePlayerEffect(string playerIp, byte[] data)
     {
-        sendPlayerEffect(playerIp, data[0]);
+        // The payload is relayed AS IT ARRIVED, never rebuilt.
+        //
+        // It used to be reconstructed from a single byte - the player's name plus the effect - which quietly
+        // discarded everything after it. That was invisible for as long as an effect was one byte, and it ate
+        // the position the moment one was added: the client wrote nine bytes, the server sent two, and the
+        // receiver correctly concluded there was no position to read. The failure was silent at every step,
+        // which is what made it worth a comment rather than a fix.
+        //
+        // Relaying keeps the server as ignorant of the payload as it is everywhere else, and that ignorance is
+        // the whole reason a payload is allowed to grow without a protocol change.
+        relayToScene(playerIp, data, NetworkType.Effect);
     }
 
     private byte[] getEffectPacket(PlayerInfo player, byte effect)

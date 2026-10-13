@@ -478,7 +478,13 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             // The position is OPTIONAL, and the length check is what lets both shapes share one channel:
             // the effects that stand on their own carry no coordinates, the ones that happen somewhere do.
-            bool hasPosition = data.Length > startIdx + 1 + 8;
+            //
+            // ⚠️ The comparison is GREATER-OR-EQUAL, and the difference is the whole feature. The payload is
+            // exactly nine bytes - one for the effect, four for x, four for y - so the length here is
+            // startIdx + 9, and a strict `>` asked whether nine is greater than nine. It never was, so
+            // hasPosition was permanently false and the position was never read: the sender wrote it, the
+            // server relayed it, and this line threw it away without a word.
+            bool hasPosition = data.Length >= startIdx + 9;
             Vector2 position = Vector2.zero;
 
             if (hasPosition)
