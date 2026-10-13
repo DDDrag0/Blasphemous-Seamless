@@ -1160,22 +1160,25 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             }
 
-            // TEMPORARY (diagnostics): record whether this call actually restarted the tree.
+            // ⚠️ NO EARLY RETURN HERE, and that is the fix rather than a matter of style.
             //
-            // The asymmetry below is the suspect: PauseEnemy always calls PauseBehaviour, while this method
-            // returns early when the component is already enabled - and with the component disabled
-            // EnemyBehaviour.Update does not run, so the only thing that can call StartBehaviour is this
-            // method. If "earlyReturn" shows up while an enemy stands still next to a player, the pause is
-            // permanent and this is why. Logged only when the outcome changes, because this runs 20 times a
-            // second. Remove once the question is answered.
-            if (behaviour.enabled)
-            {
-                LogTreeState(enemy, behaviour, "resume:earlyReturn");
-                return;
-            }
-
+            // This used to return as soon as the component was already enabled, and the asymmetry was the
+            // whole bug: PauseEnemy ALWAYS calls PauseBehaviour, while this method skipped StartBehaviour
+            // whenever the component happened to be enabled - and an enemy can sit with its component ENABLED
+            // and its TREE STOPPED, a state the game itself produces. EnemyBehaviour.StartBehaviour only
+            // restarts `if (!BehaviourTree.isRunning)`, so calling it unconditionally is exactly right: it
+            // does the work when the tree is stopped and nothing at all when the tree is running.
+            //
+            // What the old shape left behind was permanent. With the component enabled, EnemyBehaviour.Update
+            // runs and would normally be the thing that restarts the tree - but this method is the ONLY caller
+            // of StartBehaviour in the whole project, so a stopped tree had nothing left to wake it. The enemy
+            // stood still for the rest of the session: the "enemies have no AI" that a player's death made
+            // visible. It was there before the death, at G1:1000, long before any of this.
+            //
+            // Idempotent in the game's own IL, so calling it on every resume costs one comparison.
             behaviour.enabled = true;
             behaviour.StartBehaviour();
+
             LogTreeState(enemy, behaviour, "resume:StartBehaviour");
         }
 
@@ -2479,6 +2482,20 @@ namespace Blasphemous.Multiplayer.Client
                 if (!IsRemotePositionFresh(entry.Key))
                     continue;
 
+                // ⚠️ A DEAD PLAYER IS NOT A TARGET.
+                //
+                // The corpse bug, and it was ours: a dead player stops sending positions, so their last one
+                // ages out of the freshness window - and the branch below then deliberately HOLDS the proxy
+                // where they fell, which is precisely where the enemy keeps swinging. EnemyBehaviour.GetTarget
+                // returns whatever sits in Enemy.Target without ever testing whether it is alive, so nothing in
+                // the game corrects this: this mod is the only writer of Target.
+                //
+                // The predicate already existed and had no call site at all. The dead are dropped here, and
+                // the stale branch below is gated on the same question, so the fallback is the living local
+                // player - which is what the enemy faced before that branch was added.
+                if (!PlayerDeathSync.IsRemotePlayerKnownAlive(entry.Key))
+                    continue;
+
                 remotePos = entry.Value;
                 hasRemote = true;
                 break;
@@ -2496,7 +2513,7 @@ namespace Blasphemous.Multiplayer.Client
                 if (remoteDistance < localDistance)
                     wanted = proxy;
             }
-            else if (_remoteTargetProxy != null && enemy.Target == _remoteTargetProxy)
+            else if (_remoteTargetProxy != null && enemy.Target == _remoteTargetProxy && AnyRemoteTargetAlive())
             {
                 // THE REMOTE IS ALREADY THIS ENEMY'S TARGET, AND THEIR POSITION HAS JUST GONE STALE.
                 //
@@ -2516,6 +2533,26 @@ namespace Blasphemous.Multiplayer.Client
             // be a write per enemy per pass for nothing.
             if (enemy.Target != wanted)
                 enemy.Target = wanted;
+        }
+
+        /// <summary>
+        /// True while at least one remote player is still worth facing - alive, that is.
+        ///
+        /// It gates the "hold the proxy while the position is stale" branch above, and without it that branch
+        /// outlives the player it was written for: a dead player's position is stale BY CONSTRUCTION, because
+        /// they stopped sending the moment they died, so the branch held the proxy on their corpse and the
+        /// enemy kept attacking it. Being alive is the one thing that makes a stale remote position still
+        /// worth trusting, so it is the one thing asked here.
+        /// </summary>
+        private static bool AnyRemoteTargetAlive()
+        {
+            foreach (string name in _remotePositions.Keys)
+            {
+                if (PlayerDeathSync.IsRemotePlayerKnownAlive(name))
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>
