@@ -593,6 +593,44 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
+    // A5.2 - I SUONI CONFERMATI DALLE PROBE (zero-argomenti, one-shot, tutti `PlaySfxOnCatalog` tranne
+    // `IdleSword` che e' categoria Motion -> sul ricevente passa dai 14 materiali del terreno).
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHit")]
+    class ComboHitSound_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.ComboHit, "ComboHit");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentMoveAnimations), "PlayIdleSword")]
+    class IdleSwordSound_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.IdleSword, "IdleSword");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayVerticalAttackStart")]
+    class VerticalStartSound_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.VerticalStart, "VerticalStart");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayVerticalAttackFalling")]
+    class VerticalFallingSound_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.VerticalFalling, "VerticalFalling");
+        }
+    }
+
     // ============================================================================================
     // A5 - PROBE DI SOLO LOG (zero SendEffect). DA RIMUOVERE dopo il test.
     // ============================================================================================

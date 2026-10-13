@@ -148,4 +148,18 @@ public enum EffectType
     ChargedRelease = 94,
     DashSoundStart = 95,
     DashSoundStop = 96,
+
+    // A5.2 - I SUONI CONFERMATI DALLE PROBE. Le probe di solo log hanno detto QUALE di questi il gioco
+    // suona davvero, invece di scommettere su tre fix:
+    //   · `ComboHit`      COMPARE (2 su G1, 12 su G2)  -> il QUARTO colpo di una combo e' lui
+    //   · `ComboHitUp`/`Down` NON compaiono mai        -> non si coprono
+    //   · `IdleSword`     COMPARE (3 e 4) ma RARO      -> non e' il rumore di fondo dell'idle: copribile
+    //   · `LoadingCharged` COMPARE (2 e 2)             -> e' il caricamento, SOSTENUTO: rimandato
+    //
+    // I numeri seguono la numerazione del piano (97..104) e non sono compatti: 98/99 restano liberi per
+    // `ComboHitUp`/`ComboHitDown` e 101/102 per il caricamento, cosi' un passo futuro non deve rinumerare.
+    ComboHit = 97,
+    IdleSword = 100,
+    VerticalStart = 103,
+    VerticalFalling = 104,
 }

@@ -193,6 +193,12 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.AirAttack2:
                 case EffectType.HeavyAttack:
                 case EffectType.ChargedRelease:
+                // A5.2 - i suoni confermati dalle probe: il quarto colpo di una combo, lo sguaino, e i due
+                // suoni dell'attacco aereo-a-terra (l'inizio e la caduta: il TONFO era gia' coperto da A4).
+                case EffectType.ComboHit:
+                case EffectType.IdleSword:
+                case EffectType.VerticalStart:
+                case EffectType.VerticalFalling:
                     PlayPeerSound(effect, position);
                     break;
                     //case EffectType.Verdiales:
@@ -245,6 +251,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.AirAttack2: return PenitentAudio.BasicAttack2EventKey;
                 case EffectType.HeavyAttack: return PenitentAudio.PenitentHeavyAttackEventKey;
                 case EffectType.ChargedRelease: return PenitentAudio.ReleaseChargedAttackEventKey;
+                case EffectType.ComboHit: return PenitentAudio.ComboHit;                  // "PenitentComboHit"
+                case EffectType.IdleSword: return PenitentAudio.IdleModeSword;            // "PenitentIdleSword"
+                case EffectType.VerticalStart: return PenitentAudio.VerticalAttackStart;  // "PenitentVerticalAttackStart"
+                case EffectType.VerticalFalling: return PenitentAudio.VerticalAttackFalling;
                 default: return null;
             }
         }
@@ -491,9 +501,8 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// piano fa fra i passi (con fusibile) e i fendenti (senza), per la stessa ragione: chi ha una
         /// proprieta' in piu' ha un posto suo, altrimenti quella proprieta' si perde nel codice condiviso.
         /// </summary>
-        private static void PlayPeerFootStep(Vector2 position)
+        private static void PlayPeerMotionSound(string key, Vector2 position)
         {
-            string key = PenitentAudio.FootStepEventKey;   // "PenitentFootStep", const verificata in IL
 
             // La spia (una volta per chiave): dice se la chiave non esiste su QUESTA macchina, che e' una
             // cosa diversa da "il pacchetto non e' arrivato". Si usa SOLO come guardia diagnostica.
@@ -558,7 +567,16 @@ namespace Blasphemous.Multiplayer.Client.Players
             // questo che il passo arrivava, si risolveva nel catalogo, e NON si sentiva.
             if (effect == EffectType.FootStep)
             {
-                PlayPeerFootStep(position);
+                PlayPeerMotionSound(PenitentAudio.FootStepEventKey, position);
+                return;
+            }
+
+            // ⚠️ Anche `IdleSword` e' categoria MOTION: il gioco lo suona con
+            // `PlayOneShotEvent("PenitentIdleSword", Motion)`, quindi soffre ESATTAMENTE del guasto dei
+            // passi e ha bisogno degli stessi 14 parametri del terreno. Cambia solo la chiave.
+            if (effect == EffectType.IdleSword)
+            {
+                PlayPeerMotionSound(PenitentAudio.IdleModeSword, position);
                 return;
             }
 
