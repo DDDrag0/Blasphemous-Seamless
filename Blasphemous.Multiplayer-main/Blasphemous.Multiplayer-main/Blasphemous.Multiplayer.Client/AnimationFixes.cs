@@ -382,9 +382,17 @@ namespace Blasphemous.Multiplayer.Client
             if (Framework.Managers.Core.Logic.Penitent == null)
                 return;
 
-            Main.Multiplayer.NetworkManager.SendEffect(
-                EffectType.SlideDust,
-                Framework.Managers.Core.Logic.Penitent.transform.position);
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+
+            // SENDER-SIDE PROOF, and the reason this line exists at all: the [Effect] line is written ONLY on
+            // ARRIVAL (AttackManager.ReceiveEffect) and NetworkManager.QueueMesssage returns silently while
+            // disconnected, so today "this Postfix never ran" and "the packet never arrived" are
+            // INDISTINGUISHABLE in both logs. This is the only line that tells them apart.
+            // ModLog is written out in full because this file has no `using Blasphemous.ModdingAPI;` - the
+            // other ModLog calls in it do the same.
+            Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] SlideDust ({at.x:F1},{at.y:F1})");
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.SlideDust, at);
         }
     }
 
@@ -451,6 +459,14 @@ namespace Blasphemous.Multiplayer.Client
 
             // The position is the penitent's own, which is where the game takes it from too: both
             // InstantiateExplosion and the landing audio read the penitent's transform.
+            //
+            // [Effect TX] for the same reason as the slide above: the arrival line is written on the OTHER
+            // machine, so without this one "the Postfix never ran" and "the packet never arrived" cannot be
+            // told apart - and the plunge has two gates of its own that can stop it before this point.
+            Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] {effect} " +
+                $"({Framework.Managers.Core.Logic.Penitent.transform.position.x:F1}," +
+                $"{Framework.Managers.Core.Logic.Penitent.transform.position.y:F1})");
+
             Main.Multiplayer.NetworkManager.SendEffect(
                 effect,
                 Framework.Managers.Core.Logic.Penitent.transform.position);
