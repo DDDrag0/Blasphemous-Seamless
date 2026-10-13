@@ -13,6 +13,13 @@ namespace Blasphemous.Multiplayer.Client.PvP
     {
         private readonly Dictionary<AttackType, AttackData> allAttacks;
 
+        /// <summary>
+        /// Quanti passi del peer sono arrivati. Serve SOLO al filtro del log (vedi ReceiveEffect): i passi
+        /// sono l'effetto piu' frequente del canale e una riga ciascuno renderebbe il log illeggibile.
+        /// Non e' uno stato di gioco: non decide nulla, non si azzera a un evento, e nessun altro lo legge.
+        /// </summary>
+        private int footStepArrivals;
+
         public AttackManager()
         {
             allAttacks = new Dictionary<AttackType, AttackData>();
@@ -69,8 +76,31 @@ namespace Blasphemous.Multiplayer.Client.PvP
             // whole effect path unverifiable: an effect that never arrived and an effect that arrived and did
             // nothing looked EXACTLY the same in the logs. One line per effect tells them apart, and every
             // effect fix (trails, ground hits, slide dust) has to be verified through it.
-            ModLog.Info($"[Effect] {effect} per {playerName}" +
-                        (hasPosition ? $" ({position.x:F1},{position.y:F1})" : string.Empty));
+            // A5 - IL FILTRO SUI SUONI FREQUENTI, ed e' obbligatorio, non un abbellimento.
+            //
+            // Questa riga e' l'unica prova che un effetto e' ARRIVATO, e per A3/A4 si legge tutta: gli
+            // effetti di A4 sono rari e uno per uno contano. I PASSI no: alla cadenza della falcata sono
+            // 4..5 al secondo, e in una sessione di dieci minuti sono ~2700 righe che non dicono nulla di
+            // nuovo e nascondono quelle che dicono qualcosa. Un log che si puo' leggere e' lo strumento;
+            // un log che non si puo' leggere e' la ragione per cui un guasto resta invisibile per giorni.
+            //
+            // ⚠️ SI CONTA E SI STAMPA IL PRIMO E POI UNO OGNI DIECI. Il primo e' quello che dice "il
+            // canale e' acceso", il decimo quello che dice "sta ancora andando". Il contatore e' PER
+            // EFFETTO e non globale: se i passi si fermano mentre i fendenti continuano, si vede subito.
+            if (effect == EffectType.FootStep)
+            {
+                footStepArrivals++;
+                if (footStepArrivals == 1 || footStepArrivals % 10 == 0)
+                {
+                    ModLog.Info($"[Effect] {effect} n.{footStepArrivals} per {playerName}" +
+                                (hasPosition ? $" ({position.x:F1},{position.y:F1})" : string.Empty));
+                }
+            }
+            else
+            {
+                ModLog.Info($"[Effect] {effect} per {playerName}" +
+                            (hasPosition ? $" ({position.x:F1},{position.y:F1})" : string.Empty));
+            }
 
             OtherPlayerScript other = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(playerName);
             if (other == null)

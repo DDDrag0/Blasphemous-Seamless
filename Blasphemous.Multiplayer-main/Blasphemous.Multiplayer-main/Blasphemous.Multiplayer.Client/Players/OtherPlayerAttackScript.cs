@@ -3,6 +3,12 @@ using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
 using Gameplay.GameControllers.Enemies.Projectiles;
 using Gameplay.GameControllers.Entities;
+// A5 - le `public const string` dei suoni del penitent (PenitentFootStep, PenitentAttack1, PenitentDash,
+// ...). Il namespace e' `Gameplay.GameControllers.Penitent.Audio`: la classe e'
+// `Gameplay.GameControllers.Penitent.Audio.PenitentAudio` e deriva da
+// `Gameplay.GameControllers.Entities.Audio.EntityAudio`. NON e' lo stesso namespace di
+// `Gameplay.GameControllers.Entities` che e' gia' importato sopra.
+using Gameplay.GameControllers.Penitent.Audio;
 using System.Collections;
 using UnityEngine;
 
@@ -150,10 +156,209 @@ namespace Blasphemous.Multiplayer.Client.Players
                         PlayLandingImpact(effect, position);
                     break;
                 }
+                // A5 - I SUONI che il peer non sente: i PASSI A TERRA e i FENDENTI A VUOTO.
+                //
+                // PERCHE' QUESTI SEI STANNO IN UN CASE SOLO E LA SCIVOLATA NO. Questi sei sono one-shot
+                // PURI: il suono parte e finisce da solo. La scivolata e' un evento di catalogo SOSTENUTO
+                // (LATCHED) e ha bisogno di ricordarsi un'istanza fra un pacchetto e l'altro: sta in un
+                // case suo, con lo stato in un campo suo, perche' e' l'unico pezzo di A5 che puo'
+                // "restare acceso".
+                //
+                // PERCHE' IL SUONO NON SI PUO' SUONARE CHIAMANDO IL METODO DEL GIOCO. La strada "sicura"
+                // di A4 - chiamare il metodo locale - QUI NON ESISTE: `PenitentAudio.PlayBasicAttack1()`
+                // e `PlayFootStep()` passano da `EntityAudio.PlayOneShotEvent`, che prende il PANNELLO
+                // dall'`Owner` del componente, cioe' dal PENITENT LOCALE. Chiamarle qui farebbe uscire il
+                // fendente del peer DALLA TUA POSIZIONE, che e' esattamente il difetto che A4 ha dovuto
+                // correggere per la polvere. E l'avatar non ha comunque un `EntityAudio` su cui
+                // chiamarle: `OtherPlayerScript.SetupPlayer` aggiunge solo SpriteRenderer, Animator,
+                // OtherPlayerAttackScript e GhostTrailGenerator. E' un GUSCIO.
+                //
+                // ⭐ E ALLORA COSA SI CHIAMA. `FMODAudioManager.PlayOneShotFromCatalog(string eventKey,
+                // Vector3 position)`: l'unico one-shot POSIZIONALE che risolve una CHIAVE DI CATALOGO.
+                // Verificato nel suo corpo IL: fa `FindSfxInCatalogs(eventKey)`, prende il `FMODKey` della
+                // clip e chiama `EventOneShotPanned(clip.FMODKey, position)` - cioe' passa a FMOD il
+                // PERCORSO e calcola il panning con `GetPanningValueByPosition(position)`, che legge SOLO
+                // `Camera.main`: non tocca il penitent.
+                //
+                // ⚠️ `EventOneShotPanned(chiave, pos)` NON si usa: pretende un PERCORSO DI BANCA e con una
+                // chiave di catalogo fa LANCiARE FMOD. E' l'errore che ha gia' causato danno-zero + mod
+                // congelata, e queste sette sono tutte chiavi di catalogo.
+                case EffectType.FootStep:
+                case EffectType.Attack1:
+                case EffectType.Attack2:
+                case EffectType.AirAttack1:
+                case EffectType.AirAttack2:
+                case EffectType.HeavyAttack:
+                case EffectType.ChargedRelease:
+                    PlayPeerSound(effect, position);
+                    break;
                     //case EffectType.Verdiales:
                     //    StartCoroutine(DisplayVerdiales());
                     //    break;
             }
+        }
+
+        /// <summary>
+        /// La CHIAVE DI CATALOGO del suono che questo `EffectType` rappresenta.
+        ///
+        /// ⚠️ IL VALORE NON E' SCRITTO QUI E NON VIAGGIA SUL FILO: e' letto dalle `public const string`
+        /// di `PenitentAudio`. Non e' pignoleria - e' la ragione per cui il payload e' UN BYTE. Se il
+        /// gioco cambiasse una chiave in una build futura, la mod la seguirebbe leggendo la costante,
+        /// mentre una stringa trasmessa la congelerebbe a quella vecchia.
+        ///
+        /// I valori attesi, verificati in IL sui campi `Literal`:
+        ///     FootStep       -> "PenitentFootStep"
+        ///     Attack1        -> "PenitentAttack1"
+        ///     Attack2        -> "PenitentAttack2"
+        ///     AirAttack1     -> "PenitentAirAttack1"
+        ///     AirAttack2     -> "PenitentAttack2"       <-- vedi sotto, NON e' un refuso
+        ///     HeavyAttack    -> "PenitentHeavyAttack"
+        ///     ChargedRelease -> "PenitentReleaseChargedAttack"
+        ///
+        /// ⚠️ `AirAttack2` USA `BasicAttack2EventKey`, E NON `BasicAirAttack2EventKey`. La costante
+        /// `PenitentAudio.BasicAirAttack2EventKey` vale "PenitentAirAttack2" e NON E' MAI USATA da nessun
+        /// metodo dell'assembly: in `PenitentAudio` non esiste alcun `PlayAirAttack2`, e il metodo del gioco
+        /// `PenitentAttackAnimations.PlayAirAttack2()` chiama `PlayBasicAttack2()` - cioe' suona
+        /// "PenitentAttack2" (verificato in IL: l'unico `call` nel suo corpo e' `PlayBasicAttack2`).
+        ///
+        ///   ⇒ La domanda giusta non e' "quale costante descrive meglio il colpo", ma "quale chiave suona
+        ///   DAVVERO quando il penitent fa quel colpo". Se qui si mettesse "PenitentAirAttack2", il
+        ///   `ResolveCatalogPath` non la troverebbe nel catalogo e il fendente in aria 2 del peer NON
+        ///   uscirebbe - con una riga di WARN che accusa il catalogo per una scelta sbagliata fatta qui.
+        ///
+        /// ⚠️ Questo NON cambia il byte trasmesso: `AirAttack2` (92) resta un membro distinto da `Attack2`
+        /// (90) e il mittente resta agganciato a `PenitentAttackAnimations.PlayAirAttack2`, che e' l'evento
+        /// giusto. Cambia solo QUALE suono il ricevente riproduce - ed e' lo stesso che ha suonato il
+        /// mittente. Se una build futura separasse davvero i due suoni, questa e' la riga da cambiare.
+        /// </summary>
+        private static string SoundKeyFor(EffectType effect)
+        {
+            switch (effect)
+            {
+                case EffectType.FootStep: return PenitentAudio.FootStepEventKey;
+                case EffectType.Attack1: return PenitentAudio.BasicAttack1EventKey;
+                case EffectType.Attack2: return PenitentAudio.BasicAttack2EventKey;
+                case EffectType.AirAttack1: return PenitentAudio.BasicAirAttack1EventKey;
+                case EffectType.AirAttack2: return PenitentAudio.BasicAttack2EventKey;
+                case EffectType.HeavyAttack: return PenitentAudio.PenitentHeavyAttackEventKey;
+                case EffectType.ChargedRelease: return PenitentAudio.ReleaseChargedAttackEventKey;
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// La spia: la chiave esiste in uno dei cataloghi che QUESTA macchina ha caricato?
+        ///
+        /// PERCHE' ESISTE, e perche' non e' un lusso. `PlayOneShotFromCatalog` tace quando non trova la
+        /// chiave: non lancia, non logga, non fa NULLA. Un suono che non si sente perche' la chiave non
+        /// c'e' e un suono che non si sente perche' il pacchetto non e' arrivato sarebbero di nuovo
+        /// INDISTINGUIBILI - e distinguerli e' meta' del lavoro fatto finora.
+        ///
+        /// `FMODAudioCatalog.GetSfx(string id)` e' PUBLIC e fa `_sfxDictionary.TryGetValue`. `_audioCatalogs`
+        /// e' PRIVATO, quindi la lettura passa dalla riflessione: la stessa tecnica che questo file usa gia'
+        /// per i due prefab di `DashDustGenerator`, che sono `private [SerializeField]` senza accessore.
+        ///
+        /// ⚠️ Si legge UNA VOLTA per chiave e si tiene da parte: e' una ricerca per stringa, e questo codice
+        /// gira sul percorso degli effetti. `null` in cache significa "non ancora deciso", la lista vuota
+        /// "deciso: non c'e'".
+        /// </summary>
+        private static readonly System.Collections.Generic.Dictionary<string, string> SoundPathCache =
+            new System.Collections.Generic.Dictionary<string, string>();
+
+        private static readonly System.Reflection.FieldInfo AudioCatalogsField =
+            typeof(Framework.Managers.FMODAudioManager).GetField(
+                "_audioCatalogs",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        /// <summary>
+        /// Il PERCORSO DI BANCA della chiave, se questa macchina ce l'ha; `null` se la chiave non esiste
+        /// (e in quel caso lo DICE, una volta per chiave). Vedi `PlayPeerSound` per l'uso.
+        /// </summary>
+        private static string ResolveCatalogPath(string key)
+        {
+            // ⚠️ IL VALORE IN CACHE PUO' ESSERE LEGITTIMAMENTE `null`, quindi non basta `TryGetValue`:
+            // quando `null` significa "gia' deciso: non c'e'", restituirlo e basta. Senza la seconda riga
+            // il fallimento verrebbe riprovato - e RI-LOGGATO - a ogni singolo passo del peer, che e' il
+            // modo piu' rapido di rendere inutile la riga che serve a diagnosticare il guasto.
+            string cached;
+            if (SoundPathCache.TryGetValue(key, out cached))
+                return cached;
+
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+                return null;
+
+            // ⚠️ `AudioCatalogsField` puo' essere null se una build futura rinomina il campo: in quel caso
+            // si degrada a "nessuna spia" e NON si blocca il suono. La spia e' un di piu', non una guardia.
+            Framework.Audio.FMODAudioCatalog[] catalogs = null;
+            if (AudioCatalogsField != null)
+                catalogs = AudioCatalogsField.GetValue(audio) as Framework.Audio.FMODAudioCatalog[];
+
+            string path = null;
+            if (catalogs != null)
+            {
+                for (int i = 0; i < catalogs.Length; i++)
+                {
+                    if (catalogs[i] == null)
+                        continue;
+
+                    Framework.Audio.FMODAudioCatalog.FMODIndexedClip clip = catalogs[i].GetSfx(key);
+                    if (clip == null)
+                        continue;
+
+                    // ⚠️ SI COPIA IL VALORE COSI' COM'E', senza "normalizzarlo". E' il PERCORSO che il
+                    // gioco passa a `RuntimeManager.CreateInstance` quando suona lo stesso suono: la
+                    // costante `[EventRef]` scritta a mano che a volte porta uno slash davanti e' un
+                    // dettaglio dell'inspector, e nulla nel percorso del gioco lo toglie - quindi toglierlo
+                    // qui sarebbe una differenza inventata, cioe' esattamente il modo in cui un suono
+                    // "quasi giusto" smette di suonare senza che nessuno possa dire perche'.
+                    path = clip.FMODKey;
+                    break;
+                }
+            }
+
+            if (path == null)
+            {
+                // ⚠️ Questa riga NON e' rumore: senza di essa la chiave assente e il pacchetto mancato
+                // restano identici nei log. Il fallimento viene memorizzato (`null` in cache), quindi la
+                // riga esce UNA VOLTA per chiave e non a ogni passo.
+                ModLog.Warn($"[Sound] la chiave di catalogo \"{key}\" non esiste su questa macchina: " +
+                            "il suono del peer NON uscira' (e non e' un problema di rete)");
+                SoundPathCache[key] = null;
+                return null;
+            }
+
+            ModLog.Info($"[Sound] chiave \"{key}\" -> percorso \"{path}\"");
+            SoundPathCache[key] = path;
+            return path;
+        }
+
+        /// <summary>
+        /// Suona uno dei sette SUONI non sostenuti di A5 nel punto in cui e' successo.
+        ///
+        /// ⚠️ PERCHE' NON `PlayOneShotFromCatalog`, che sarebbe la riga piu' corta.
+        /// Perche' quel metodo NON dice niente quando la chiave non c'e'. Con `ResolveCatalogPath` +
+        /// `EventOneShotPanned` si ottiene la stessa identica cosa - percorso risolto nel catalogo, panning
+        /// dalla posizione - con in piu' la riga che distingue "chiave assente" da "pacchetto mancato".
+        /// `EventOneShotPanned` prende il PERCORSO, che e' esattamente quello che `ResolveCatalogPath`
+        /// restituisce: nessun rischio di passargli una chiave.
+        /// </summary>
+        private static void PlayPeerSound(EffectType effect, Vector2 position)
+        {
+            string key = SoundKeyFor(effect);
+            if (string.IsNullOrEmpty(key))
+                return;
+
+            string path = ResolveCatalogPath(key);
+            if (string.IsNullOrEmpty(path))
+                return;
+
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+                return;
+
+            // La z arriva dal penitent LOCALE, come per la polvere di A4: vedere EffectWorldPosition.
+            audio.EventOneShotPanned(path, EffectWorldPosition(position));
         }
 
         /// <summary>

@@ -98,4 +98,54 @@ public enum EffectType
     // protocollo e nessuna modifica al server, che inoltra il payload INTERO e PREFISSATO col nome.
     DashDustStart = 86,
     DashDustStop = 87,
+
+    // A5 - I SUONI locali che il peer non sente: i PASSI, i FENDENTI A VUOTO e la SCIVOLATA.
+    //
+    // PERCHE' NON UN PAYLOAD. Questi byte NON portano musica: portano il NOME del suono da suonare, e i
+    // nomi sono GIA' su entrambe le macchine, perche' sono le `public const string` di PenitentAudio
+    // (stessa build, stesso assembly). Trasmettere una stringa sarebbe stato il modo di sbagliare - la
+    // lezione di A1 e' che una CHIAVE DI CATALOGO passata dove serve un PERCORSO DI BANCA fa LANCiARE
+    // FMOD, e l'eccezione scatta PRIMA della sottrazione della vita.
+    //
+    // PERCHE' VALORI ALTI E NON 88..97 COMPATTI. 88 e' libero (86/87 sono di A5-polvere), ma lo spazio
+    // NON e' infinito e A6 arrivera': il blocco 200.. e' riservato a chi vuole distinguere la VARIANTE
+    // di un suono (es. i due passi della falcata), 88..96 e' il blocco dei SUONI.
+    //
+    // ⚠️ UN SOLO byte per tipo: e' la stessa proprieta' su cui poggia tutto il canale Effect
+    // (SendEffect(EffectType) scrive UN byte) e per cui NON serve alcun bump di protocollo.
+    //
+    //   Valore  Suono che si sente             Chiave che lo suona DAVVERO
+    //   ------  -----------------------------  --------------------------
+    //   88      i passi a terra                 "PenitentFootStep"
+    //   89      fendente base 1                 "PenitentAttack1"
+    //   90      fendente base 2                 "PenitentAttack2"
+    //   91      fendente in aria 1              "PenitentAirAttack1"
+    //   92      fendente in aria 2              "PenitentAttack2"   <-- NON "PenitentAirAttack2"!
+    //   93      colpo pesante                   "PenitentHeavyAttack"
+    //   94      rilascio della carica           "PenitentReleaseChargedAttack"
+    //   95/96   la SCIVOLATA: e' un evento CATALOG SOSTENUTO, quindi ha DUE byte
+    //           (uno per ACCENDERE, uno per SPEGNERE) invece di uno: "PenitentDash"
+    //
+    // ⚠️ LA RIGA 92 NON E' UN REFUSO, ed e' l'unica cosa di A5 che si legge male. In `PenitentAudio` NON
+    // esiste un `PlayAirAttack2`, e `PenitentAttackAnimations.PlayAirAttack2()` - l'evento del colpo in
+    // aria 2 - chiama `PlayBasicAttack2()`. Verificato in IL: e' l'unico `call` del suo corpo. E la
+    // costante `BasicAirAttack2EventKey` vale "PenitentAirAttack2" ma NON E' LETTA DA NESSUN METODO
+    // dell'assembly: e' morta. ⇒ La chiave da risolvere e' "PenitentAttack2". Il BYTE resta distinto (92
+    // != 90) perche' l'evento e' distinto, ma il SUONO riprodotto e' lo stesso.
+    //
+    // ⚠️ COSA NON E' IN QUESTO ELENCO, E PERCHE'.
+    //   - Il caricamento della carica ("PenitentLoadingChargedAttack") e' un evento SOSTENUTO con altri
+    //     QUATTRO punti di spegnimento nel gioco: fuori portata, e il fendente del rilascio - che e' quello
+    //     che si sente - c'e' (94).
+    //   - Il dash IN ARIA: il gioco NON lo suona (AirDashBehaviour non chiama PlayDash e PlayDashSound ha
+    //     UN SOLO chiamante). Non si inventa un suono che il gioco non ha.
+    FootStep = 88,
+    Attack1 = 89,
+    Attack2 = 90,
+    AirAttack1 = 91,
+    AirAttack2 = 92,
+    HeavyAttack = 93,
+    ChargedRelease = 94,
+    DashSoundStart = 95,
+    DashSoundStop = 96,
 }

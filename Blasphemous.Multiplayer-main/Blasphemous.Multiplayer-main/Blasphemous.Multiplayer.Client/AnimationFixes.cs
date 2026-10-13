@@ -11,6 +11,9 @@ using Gameplay.GameControllers.AnimationBehaviours.Player.Prayer;
 using Gameplay.GameControllers.AnimationBehaviours.Player.RangeAttack;
 using Gameplay.GameControllers.AnimationBehaviours.Player.Run;
 using Gameplay.GameControllers.AnimationBehaviours.Player.SubStatesBehaviours;
+// A5 - i due punti di aggancio dei SUONI: `PenitentMoveAnimations.PlayFootStep()` (i passi) e i sei
+// `PenitentAttackAnimations.Play*` (i fendenti). Namespace letto dall'assembly, non indovinato.
+using Gameplay.GameControllers.Penitent.Animator;
 using HarmonyLib;
 using UnityEngine;
 
@@ -334,6 +337,54 @@ namespace Blasphemous.Multiplayer.Client
             Main.Multiplayer.NetworkManager.SendEffect(apply ? EffectType.TrailOn : EffectType.TrailOff);
         }
     }
+
+    /// <summary>
+    /// Il mittente condiviso dei SEI fendenti di A5 (base 1 e 2, aria 1 e 2, pesante, rilascio della
+    /// carica). Uno solo perche' i sei corpi sarebbero stati identici a meno di due parole, e sei copie
+    /// di una stessa riga sono sei posti in cui una puo' divergere.
+    ///
+    /// ⚠️ PERCHE' DUE DEGLI OTTO SUONI DI A5 NON PASSANO DA QUI. I passi hanno il loro blocco perche'
+    /// hanno un FUSIBILE DI FREQUENZA che gli altri non hanno; la scivolata ha il suo perche' e' un
+    /// evento SOSTENUTO con uno START e uno STOP separati. Gli altri sei sono one-shot puri: accendono,
+    /// suonano e si rilasciano da soli (`EventOneShotPanned` chiama `release()` subito dopo `start()`).
+    ///
+    /// ⚠️ E NON C'E' NESSUN FUSIBILE QUI, ed e' voluto: un fendente e' un'azione DELIBERATA del
+    /// giocatore, non un evento di animazione che si ripete da solo. Il massimo che un umano produce e'
+    /// la raffica di una combo, e ogni fendente della combo ha un suono DIVERSO: sopprimerne uno
+    /// significherebbe far sentire al peer una combo che non e' quella che sta guardando.
+    /// </summary>
+    static class LocalSoundSender
+    {
+        private static int sentCount;
+
+        /// <summary>
+        /// Spedisce il suono del fendente appena suonato DAL GIOCO su questa macchina, con la posizione
+        /// del penitent (che e' dove il gioco prende il panning: `EntityAudio.SetPanning` legge
+        /// `Owner.transform.position`).
+        ///
+        /// `what` serve SOLO al log: il payload e' un byte, e il nome del suono lo risolve il ricevente
+        /// dalla propria copia dei `const`. Non e' un dato trasmesso.
+        /// </summary>
+        public static void SendLocalSound(EffectType effect, string what)
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+
+            // PROVA LATO MITTENTE, con lo stesso filtro dei passi e per la stessa ragione: la riga
+            // `[Effect]` la scrive il RICEVENTE, e `QueueMesssage` esce in silenzio da disconnesso.
+            // Il primo e poi uno ogni dieci: un fendente e' raro, ma una combo lunga no.
+            sentCount++;
+            if (sentCount == 1 || sentCount % 10 == 0)
+            {
+                Blasphemous.ModdingAPI.ModLog.Info(
+                    $"[Sound TX] {what} n.{sentCount} ({at.x:F1},{at.y:F1})");
+            }
+
+            Main.Multiplayer.NetworkManager.SendEffect(effect, at);
+        }
+    }
     // Parry riposte
     [HarmonyPatch(typeof(ParryRepostBehaviour), "OnStateEnter")]
     class ParryRepostBehaviourEnter_Patch
@@ -367,6 +418,181 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
+    // ============================================================================================
+    // A5 - I PASSI A TERRA DEI PEER.
+    // ============================================================================================
+    //
+    // PERCHE' QUESTO METODO, E NON UN `Behaviour`. La catena del passo, verificata con una ricerca dei
+    // chiamanti su TUTTO l'assembly, e' questa - e ha UN SOLO punto in cui il gioco suona:
+    //
+    //     [evento di animazione dentro il clip]      <- non ha chiamanti nel IL: vive nei dati del clip
+    //       -> PenitentMoveAnimations.PlayFootStep()  <- QUESTO metodo, public, ZERO argomenti
+    //           -> _penitentAudio.PlayFootStep()
+    //               -> EntityAudio.PlayOneShotEvent("PenitentFootStep", FxSoundCategory.Motion)
+    //                   -> FMODAudioManager.CreateCatalogEvent("PenitentFootStep")
+    //
+    // Nessun Behaviour lo chiama e nessun input lo innesca: e' l'evento di animazione, e basta. Patchare
+    // QUI da' un mittente 1:1 con il suono che il gioco suona, senza inventare una condizione di
+    // movimento che il gioco non usa.
+    //
+    // ⭐ ED E' ANCHE LA FIRMA PIU' SICURA CHE ESISTA: `PlayFootStep()` non ha argomenti. Harmony lega i
+    // parametri dei patch PER NOME, e un nome sbagliato ha gia' IMPEDITO ALLA MOD DI AVVIARSI: con zero
+    // argomenti quel rischio non esiste.
+    //
+    // PERCHE' UN FUSIBILE. I passi sono l'effetto piu' frequente di tutto il canale Effect, e la loro
+    // cadenza non e' leggibile da qui: sta negli eventi dentro i clip di animazione, cioe' negli asset.
+    // La costante sotto e' un TETTO, non una limatura: a 0.08 s sono 12.5 al secondo, mentre la falcata
+    // del gioco emette un passo circa ogni 0.2 s (5/s), quindi in condizioni normali NON si scarta nulla.
+    // Se un giorno la cadenza crescesse, il fusibile tiene il traffico a ~250 byte/s invece di lasciarlo
+    // crescere in silenzio. Non si mette una taratura fine su una cosa che non si puo' misurare.
+    //
+    // ⚠️ SI SPEDISCE SOLO SE IL PENITENT E' A TERRA. Il clip della scala e quello dell'idle possono
+    // contenere lo stesso evento, e un passo su una scala non e' un passo a terra. La proprieta' e' letta
+    // dove vive davvero: `Penitent.Status` e' un CAMPO PUBLIC di `Entity` (base di `Penitent`) di tipo
+    // `Framework.FrameworkCore.EntityStatus`, e `IsGrounded` e' una sua PROPERTY public.
+    //
+    // ⚠️ E IL VALORE DI RITORNO NON SI TOCCA. Questa classe non ha `Prefix`: il suono del gioco resta
+    // esattamente quello di prima. I `Prefix` di questo file - il cui VALORE DI RITORNO e' il punto, e la
+    // cui riscrittura ha gia' causato 12 NRE - non vengono sfiorati.
+    [HarmonyPatch(typeof(PenitentMoveAnimations), "PlayFootStep")]
+    class PenitentFootStep_Patch
+    {
+        /// <summary>
+        /// Tetto di frequenza verso il peer. Vedi il commento sopra: e' un fusibile, non una taratura.
+        /// </summary>
+        private const float MIN_INTERVAL = 0.08f;
+
+        private static float lastSent = float.NegativeInfinity;
+        private static int sentCount;
+
+        // Postfix, e senza argomenti: il metodo del gioco gira per primo e resta INTATTO.
+        public static void Postfix()
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            // Solo a terra: il clip della scala e quello dell'idle possono contenere lo stesso evento, e un
+            // passo su una scala non e' un passo a terra.
+            if (Framework.Managers.Core.Logic.Penitent.Status == null ||
+                !Framework.Managers.Core.Logic.Penitent.Status.IsGrounded)
+                return;
+
+            // `Time.unscaledTime` e non `Time.time`: i suoni di FMOD non si fermano quando il gioco mette
+            // in pausa, quindi il metro di paragone dev'essere lo stesso orologio.
+            if (UnityEngine.Time.unscaledTime - lastSent < MIN_INTERVAL)
+                return;
+
+            lastSent = UnityEngine.Time.unscaledTime;
+
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+
+            // PROVA LATO MITTENTE, e ragione per cui esiste: la riga `[Effect]` e' scritta SOLO dal
+            // RICEVENTE (AttackManager.ReceiveEffect) e `NetworkManager.QueueMesssage` esce in silenzio
+            // mentre e' disconnesso, quindi senza questa riga "il Postfix non e' mai girato" e "il
+            // pacchetto non e' mai arrivato" restano INDISTINGUIBILI in entrambi i log.
+            //
+            // ⚠️ E QUI C'E' UN SECONDO FILTRO, che gli altri effetti non hanno: i passi arrivano a
+            // raffica, e una riga ciascuno affogherebbe il log. Si stampa il PRIMO (che e' quello che
+            // dice "il canale e' acceso") e poi uno ogni dieci (che e' quello che dice "sta ancora
+            // andando"). Se il contatore si ferma su un numero, si sa che si e' fermato DOPO quel passo.
+            sentCount++;
+            if (sentCount == 1 || sentCount % 10 == 0)
+            {
+                Blasphemous.ModdingAPI.ModLog.Info(
+                    $"[Sound TX] FootStep n.{sentCount} ({at.x:F1},{at.y:F1})");
+            }
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.FootStep, at);
+        }
+    }
+
+    // ============================================================================================
+    // A5 - I SUONI DEGLI ATTACCHI A VUOTO (il fendente).
+    // ============================================================================================
+    //
+    // COS'E' UN "ATTACCO A VUOTO". E' un fendente che non incontra nulla. E il suono che esce e' LO STESSO
+    // di un fendente che colpisce, perche' NON dipende dal colpo: e' un EVENTO DI ANIMAZIONE dentro il
+    // clip. Verificato: il corpo di `PenitentAttackAnimations.PlayBasicAttack1()` e' una sola chiamata a
+    // `_penitent.Audio.PlayBasicAttack1()`, e non legge ne' l'area d'attacco ne' `IsEnemyHit` (quelle le
+    // legge `ComboCameraShake`, che e' un evento diverso e ha un'altra guardia).
+    //   ⇒ Non serve sapere se il colpo e' andato a segno. Non serve un flag nel payload.
+    //
+    // CHI SUONA, PER OGNI UNO DEI SEI (ognuno con UN SOLO chiamante nel gioco, oltre all'evento di clip):
+    //     PenitentAttackAnimations.PlayBasicAttack1()      -> PenitentAudio.PlayBasicAttack1()
+    //     PenitentAttackAnimations.PlayBasicAttack2()      -> PenitentAudio.PlayBasicAttack2()
+    //     PenitentAttackAnimations.PlayAirAttack1()        -> PenitentAudio.PlayAirAttack1()
+    //     PenitentAttackAnimations.PlayAirAttack2()        -> PenitentAudio.PlayBasicAttack2()   <-- !
+    //     PenitentAttackAnimations.PlayHeavyAttack()       -> PenitentAudio.PlayHeavyAttack()
+    //     PenitentAttackAnimations.PlayReleaseChargeAttack()-> PenitentAudio.PlayReleaseChargedAttack()
+    //   ⚠️ `PlayAirAttack2` NON esiste in PenitentAudio: l'evento in aria 2 riusa `PlayBasicAttack2`, e
+    //   la costante `BasicAirAttack2EventKey` ("PenitentAirAttack2") non e' letta da NESSUN metodo
+    //   dell'assembly. ⇒ Il mittente e' comunque quello giusto (l'evento di clip esiste ed e' distinto),
+    //   e il byte trasmesso e' distinto (92); e' solo il RICEVENTE che deve risolvere sulla chiave che
+    //   suona davvero.
+    //
+    // LA NATURA DEL SUONO, ed e' la cosa che decide il METODO del ricevente: sono TUTTI E SEI chiavi di
+    // catalogo, con il valore in una `public const string` di `PenitentAudio`. NON sono campi `[EventRef]`
+    // di un prefab e NON sono percorsi di banca. ⇒ NON si trasmette alcuna stringa e NON si legge alcun
+    // campo serializzato: viaggia il solo byte, e il ricevente risolve la chiave nel PROPRIO catalogo.
+    //
+    // PERCHE' POSTFIX E SENZA ARGOMENTI. I sei metodi non hanno parametri. Col Postfix il suono del gioco
+    // parte comunque e resta intatto; senza argomenti non c'e' alcun nome di parametro da sbagliare. E
+    // sono tutti `public` su `PenitentAttackAnimations`, che e' un MonoBehaviour del penitent: l'avatar
+    // remoto non lo porta.
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayBasicAttack1")]
+    class AttackSound1_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.Attack1, "Attack1");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayBasicAttack2")]
+    class AttackSound2_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.Attack2, "Attack2");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayAirAttack1")]
+    class AirAttackSound1_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.AirAttack1, "AirAttack1");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayAirAttack2")]
+    class AirAttackSound2_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.AirAttack2, "AirAttack2");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayHeavyAttack")]
+    class HeavyAttackSound_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.HeavyAttack, "HeavyAttack");
+        }
+    }
+
+    [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayReleaseChargeAttack")]
+    class ChargedReleaseSound_Patch
+    {
+        public static void Postfix()
+        {
+            LocalSoundSender.SendLocalSound(EffectType.ChargedRelease, "ChargedRelease");
+        }
+    }
+
     // A4 - the slide's dust and its sound.
     //
     // Sent from the place the game performs the slide, and as a POSTFIX so the ability itself is untouched. The
