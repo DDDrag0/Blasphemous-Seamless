@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Data;
 using Framework.Managers;
 using UnityEngine;
@@ -13,6 +13,21 @@ namespace Blasphemous.Multiplayer.Client.Players
         private bool lastDirection;
 
         private readonly float positionCutoff = 0.03f;
+
+        /// <summary>
+        /// How often the position is re-sent even when the player has NOT moved, in seconds.
+        ///
+        /// The send below is gated on the position CHANGING, which is right for bandwidth and wrong for
+        /// everyone who needs to LOCATE this player. The receivers treat a position older than
+        /// REMOTE_POSITION_MAX_AGE (0.3 s) as unknown - EnemySyncManager.IsRemotePositionFresh - so a player
+        /// standing still simply stopped existing for the enemy aggro: enemies went idle a couple of units
+        /// away and only noticed again once the player took a step and a packet happened to go out. This
+        /// heartbeat sits comfortably inside that window, so "standing still" is a state the other machine
+        /// can always see, not a state in which the player disappears.
+        /// </summary>
+        private const float PositionHeartbeat = 0.2f;
+        private float lastPositionSentAt;
+
         private readonly float totalTimeBeforeSendAnimation = 0.5f;
         private float currentTimeBeforeSendAnimation = 0;
 
@@ -20,12 +35,16 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             if (Main.Multiplayer.NetworkManager.IsConnected && Core.Logic.Penitent != null)
             {
-                // Check & send updated position
+                // Check & send updated position - on a move, or on the heartbeat so a standing player stays
+                // locatable.
                 Vector2 newPosition = CurrentPosition;
-                if (Mathf.Abs(newPosition.x - lastPosition.x) > positionCutoff || Mathf.Abs(newPosition.y - lastPosition.y) > positionCutoff)
+                bool moved = Mathf.Abs(newPosition.x - lastPosition.x) > positionCutoff ||
+                             Mathf.Abs(newPosition.y - lastPosition.y) > positionCutoff;
+                if (moved || Time.time - lastPositionSentAt >= PositionHeartbeat)
                 {
                     Main.Multiplayer.NetworkManager.SendPosition(newPosition);
                     lastPosition = newPosition;
+                    lastPositionSentAt = Time.time;
                 }
 
                 // Check & send updated animation clip
