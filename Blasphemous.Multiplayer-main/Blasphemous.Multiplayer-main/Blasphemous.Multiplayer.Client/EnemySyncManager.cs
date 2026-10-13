@@ -2285,6 +2285,21 @@ namespace Blasphemous.Multiplayer.Client
                 if (remoteDistance < localDistance)
                     wanted = proxy;
             }
+            else if (_remoteTargetProxy != null && OtherPlayerInMyScene())
+            {
+                // THE OTHER PLAYER IS HERE, BUT THEIR POSITION HAS JUST GONE STALE.
+                //
+                // Their sender is gated on change (|dx| or |dy| > 0.03), so a player who is STANDING STILL
+                // sends nothing at all - and the freshness window is only 0.3 s. Falling back to the local
+                // player in that moment is what lost the remote the instant they stopped moving: the enemy
+                // turned away from a player who was still standing right there, and only turned back when
+                // they took a step and a packet arrived.
+                //
+                // The proxy still holds the last position they reported, which is where they still are, so
+                // it keeps being the better answer. When a fresh position arrives the distance comparison
+                // above resumes on its own.
+                wanted = _remoteTargetProxy;
+            }
 
             // Only write when it really changes: Target is a property, and assigning it every pass would
             // be a write per enemy per pass for nothing.
