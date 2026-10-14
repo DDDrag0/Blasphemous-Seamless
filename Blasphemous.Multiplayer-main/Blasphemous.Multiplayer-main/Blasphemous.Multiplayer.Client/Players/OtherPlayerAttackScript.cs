@@ -1,6 +1,8 @@
 using Blasphemous.ModdingAPI;
+using Blasphemous.Multiplayer.Client;              // UnityReferences (il ripiego di A6)
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
+using Gameplay.GameControllers.Combat;             // EntityExecution (il ripiego di A6)
 using Gameplay.GameControllers.Enemies.Projectiles;
 using Gameplay.GameControllers.Entities;
 // A5.1 - `EntityAudio`: le etichette dei 14 parametri FMOD del materiale del terreno, i campi che ne
@@ -744,6 +746,41 @@ namespace Blasphemous.Multiplayer.Client.Players
         private void OnDestroy()
         {
             StopPeerDashSound();
+        }
+
+        /// <summary>
+        /// Il controller del fantasma che recita l'esecuzione, letto dal PREFAB - cioe' senza istanziare
+        /// NULLA. Vedi il ripiego in `PlayExecutionAnimation` per il perche' e il quando.
+        ///
+        /// ⚠️ NON SI CERCA `FindObjectOfType<Execution>()`, ed e' la differenza che rende questo metodo
+        /// utile: la prop NON ESISTE finche' qualcuno non esegue qualcosa, e quando esiste e' a meta'
+        /// cutscene. Il prefab invece e' sempre raggiungibile dal nemico, che il ricevente HA GIA' risolto
+        /// (`ApplyRemoteExecution`).
+        ///
+        /// ⚠️ E NON SERVE SAPERE L'INDICE DEL FIGLIO: si prende il PRIMO Animator del prefab che abbia un
+        /// controller. Le altre vie (l'indice del figlio) dipendono da un numero che vive nell'asset e che
+        /// nessuno puo' leggere da qui.
+        /// </summary>
+        public static RuntimeAnimatorController ResolveExecutionController()
+        {
+            Enemy enemy = EnemySyncManager.LastExecutedEnemy;
+            if (enemy == null || enemy.gameObject == null)
+                return null;
+
+            // `includeInactive: true` perche' il prefab e' quasi certamente inattivo finche' la prop non e'
+            // in uso: senza il flag la ricerca non lo troverebbe e il ripiego fallirebbe in silenzio.
+            EntityExecution entityExecution = enemy.GetComponentInChildren<EntityExecution>(true);
+            if (entityExecution == null || entityExecution.ExecutionPrefab == null)
+                return null;
+
+            Animator[] animators = entityExecution.ExecutionPrefab.GetComponentsInChildren<Animator>(true);
+            for (int i = 0; i < animators.Length; i++)
+            {
+                if (animators[i] != null && animators[i].runtimeAnimatorController != null)
+                    return animators[i].runtimeAnimatorController;
+            }
+
+            return null;
         }
 
         private static void PlayPeerSound(EffectType effect, Vector2 position)

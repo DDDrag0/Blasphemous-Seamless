@@ -120,15 +120,35 @@ namespace Blasphemous.Multiplayer.Client.Players
             // Cioe': "lo stato non c'e' nel controller" e "l'animazione e' partita e non si vede" sarebbero
             // lo stesso evento, in silenzio.
             //
-            //   ⭐ E QUESTA RIGA E' ANCHE LA PROBE: che il controller del fantasma di `ExecutionPrefab` sia
-            //   quello del penitent e' l'unica cosa che l'IL non poteva leggere (il prefab e' un asset).
-            //   `HasState` e' public, non lancia, e risponde. La PRIMA esecuzione in gioco chiude la
-            //   questione in un verso o nell'altro.
+            //   ⭐ E QUESTA RIGA E' ANCHE LA PROBE, ed e' GIA' SCATTATA: in gioco lo stato "USED" NON e' nel
+            //   controller dell'avatar. ⇒ si applica il RIPIEGO: si prende il controller del FANTASMA DELLA
+            //   PROP, che lo stato ce l'ha per definizione - e' su quello che il gioco fa `SetTrigger("USED")`.
+            //
+            // ⚠️⚠️ E IL PREFAB NON SI ISTANZIA. Si LEGGE. `ExecutionPrefab` e' un campo `public GameObject` di
+            // `EntityExecution`, e leggere un prefab non esegue `Awake`, non crea GameObject, non fa partire
+            // alcun `Update` - cioe' NON puo' accendere l'input blocker, che e' la voce 54.
             if (!CharacterAnim.HasState(0, ExecutionStateHash))
             {
-                ModLog.Warn("[ExecAnim RX] lo stato \"USED\" NON e' nel controller dell'avatar: " +
-                            "l'animazione non esce (e NON e' un problema di rete)");
-                return;
+                RuntimeAnimatorController controller = OtherPlayerAttackScript.ResolveExecutionController();
+                if (controller == null)
+                {
+                    ModLog.Warn("[ExecAnim RX] lo stato \"USED\" NON e' nel controller dell'avatar, e il " +
+                                "controller del fantasma non si e' risolto: l'animazione non esce " +
+                                "(e NON e' un problema di rete)");
+                    return;
+                }
+
+                CharacterAnim.runtimeAnimatorController = controller;
+
+                if (!CharacterAnim.HasState(0, ExecutionStateHash))
+                {
+                    // Se manca ANCHE qui, l'ipotesi e' falsa del tutto e va saputo: si rimette subito il
+                    // controller giusto e si esce.
+                    CharacterAnim.runtimeAnimatorController = UnityReferences.PlayerAnimator;
+                    ModLog.Warn("[ExecAnim RX] lo stato \"USED\" NON e' nemmeno nel controller del fantasma " +
+                                "della prop: l'ipotesi e' falsa, l'animazione non esiste");
+                    return;
+                }
             }
 
             CharacterAnim.Play(ExecutionStateHash);
@@ -169,6 +189,14 @@ namespace Blasphemous.Multiplayer.Client.Players
             // `GetCurrentAnimatorStateInfo(0)` lo stato di morte - cioe' un avatar che non muore piu'
             // visivamente.
             CharacterAnim.Play(0);
+
+            // ⚠️ IL RIPRISTINO DEL CONTROLLER, E DOPO IL RIPIEGO E' OBBLIGATORIO E NON UNA COMODITA'.
+            // Il ripiego INSTALLA il controller del fantasma della prop: senza questa riga l'avatar
+            // resterebbe con quel controller, cioe' rotto del tutto (animazioni del penitent assenti), e
+            // `Play(0)` presupporrebbe uno stato di riposo che non e' il suo.
+            // Quando invece lo stato "USED" era gia' nel controller dell'avatar, questa assegnazione e'
+            // idempotente: rimette lo stesso riferimento che c'e' gia'.
+            CharacterAnim.runtimeAnimatorController = UnityReferences.PlayerAnimator;
 
             // ⚠️ IL RIPRISTINO DEL CONTROLLER STA QUI, E SOLO SE SERVE. Su questa strada il controller non e'
             // MAI stato cambiato: e' gia' quello del penitent, ed e' quello che `Play(0)` presuppone.

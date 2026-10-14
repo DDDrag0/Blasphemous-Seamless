@@ -4431,6 +4431,8 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
+        internal static Enemy LastExecutedEnemy;
+
         /// <summary>
         /// Riproduce su QUESTA macchina il suono che la macchina esecutrice ha sentito nel momento in cui
         /// il nemico e' diventato eseguibile.
@@ -4462,6 +4464,7 @@ namespace Blasphemous.Multiplayer.Client
             try
             {
                 Enemy enemy = ResolveEnemy(id);
+                LastExecutedEnemy = enemy;      // A6: serve al solo ripiego del controller.
                 bool here = enemy != null && enemy.gameObject != null;
 
                 ModLog.Info($"[Exec RX] {id} nemico_in_scena={(here ? "si" : "no")}");
