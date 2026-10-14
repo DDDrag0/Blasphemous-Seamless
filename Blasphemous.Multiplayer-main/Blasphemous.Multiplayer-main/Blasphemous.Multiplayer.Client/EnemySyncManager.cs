@@ -1265,7 +1265,25 @@ namespace Blasphemous.Multiplayer.Client
             //
             // Now only the state decides, and the reason is reported as what it is: context for the change
             // that was actually observed.
-            string key = enabled + "|" + running;
+            // GOTPARRY IS PART OF THE STATE, and it is the reason this field exists.
+            //
+            // A WheelCarrier has NO behaviour tree - its AI is its own private Update() - and that Update
+            // returns at its third instruction when GotParry is true: it does not chase, does not attack, and
+            // does not even call Idle(), so the animator simply stays on its last state and the enemy looks
+            // ASLEEP. Nothing in the other fields says so: for a Wheel isRunning is null (there is no tree to
+            // run - see ReadTreeRunning) and enabled stays true. Without this field a latched GotParry is
+            // invisible in the log.
+            //
+            // And the latch is the whole point: GotParry is cleared only by WheelCarrier.Damage(Hit) or by
+            // WheelCarrierBehaviour.Alive(), which has NO caller in C# anywhere in the assembly - it is an
+            // animation event of the clip. So if the parry/execution reaction never plays to its end, the flag
+            // stays true for the rest of the session, and the mod can neither read it nor clear it.
+            //
+            // Unlike BehaviourTree, this one IS a public property (verified in IL: getter and setter both
+            // public), so it is read directly and NOT through ReadTreeRunning.
+            bool gotParry = behaviour != null && behaviour.GotParry;
+
+            string key = enabled + "|" + running + "|" + gotParry;
 
             string previous;
             if (_treeStateLogged.TryGetValue(id, out previous) && previous == key)
@@ -1286,7 +1304,8 @@ namespace Blasphemous.Multiplayer.Client
                 ? null
                 : enemy.EntityDamageArea.DamageAreaCollider;
 
-            ModLog.Info($"[EnemyTree] {FullId(id)} enabled={enabled} isRunning={running} esito={esito} " +
+            ModLog.Info($"[EnemyTree] {FullId(id)} enabled={enabled} isRunning={running} " +
+                        $"gotParry={gotParry} esito={esito} " +
                         $"sprite={(sprite == null ? "n/d" : sprite.enabled.ToString())} " +
                         $"collider={(damageCollider == null ? "n/d" : damageCollider.enabled.ToString())} " +
                         $"pos=({p.x:F1},{p.y:F1}) vita={enemy.CurrentLife:F0} " +
