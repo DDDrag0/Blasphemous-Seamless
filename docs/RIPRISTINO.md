@@ -78,6 +78,13 @@ atteso"*, il deploy non è quello che credi — e un test lì non misurerebbe le
 - **🛠 Due strumenti nuovi**: `tools\verify-patch-targets.ps1` controlla **tutti i 235 bersagli**
   delle patch Harmony, ed è **eseguito dal deploy** — *perché un nome sbagliato in `[HarmonyPatch]`
   compila e poi **aborta `PatchAll`**, uccidendo la mod a runtime. È già successo.*
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — il numero «235» era vecchio di giorni.** Al momento di
+  > questa nota il verifier riporta **263 bersagli** *(`scratch\REFERTO-SPAM-LOG.md:12`: «263 bersagli controllati,
+  > tipo assente 0, METODO assente 0 … baseline 263 confermata», e `scratch\REFERTO-PEER-INVISIBILE.md` lo
+  > riconferma sulla DLL deployata)*. **Il campo si è mosso due volte in pochi giorni**: `5021f23` dichiara
+  > **255** *(«A5: rimosse le 5 probe … 255 target»)* e il completamento di A5/A6/A7 lo ha riportato a **263**.
+  > **La lezione**: *questo è un numero che va letto dal verifier, non copiato* — **il valore buono è quello che
+  > `verify-patch-targets.ps1` stampa nell'ultimo deploy**, e nessuna nota storica lo sostituisce.
 
 **Cosa NON contiene / limiti noti**
 - **I bug difficili da riprodurre sono dichiarati in `docs\BUG-NOTI.md`.** Fra questi: il **desync
@@ -88,11 +95,34 @@ atteso"*, il deploy non è quello che credi — e un test lì non misurerebbe le
   conteggi degli spawn point coincidono)*.
 - **La voce 51 è aperta**: al passaggio di proprietà si comunica **chi** simula, **non dove si trova**
   il nemico — *e il nuovo proprietario impone la sua copia.*
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — la voce 51 è CHIUSA e verificata dall'utente.** La cura
+  > è arrivata in cinque tentativi, e **la causa vera era un gate di attività**: l'invio della posizione era
+  > condizionato ad `activeInHierarchy`, quindi un nemico **fuori dalla visuale del proprietario non veniva mai
+  > trasmesso** e l'altra macchina ripiegava sullo SPAWN *(`df45f72f`, più `3f5ce69`, `a41e7b6`, `4433d70`)*.
+  > L'utente: *"abbiamo risolto entrambe la 35 e lo spawn"*. **Vedi `docs\TODO.md`, `### Voce 51`.**
 - **La voce 11 è aperta e va RISCRITTA prima di agganciare qualcosa**: il testo indicava
   `EnablePhysics` fra i tipi coinvolti, e **nessuno di quei 16 la chiama** — gli 8 call-site reali sono
   altri. *Un fix costruito sul nome sbagliato è il tipo di errore già costato una sessione.*
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — la voce 11 è CHIUSA, ed è chiusa PROPRIO perché il testo
+  > era sbagliato a metà** *(`a60e1df` / `c55d80e`: «il testo era sbagliato»; il TODO ha al riguardo la sezione
+  > «E LA VOCE 11 ERA SCRITTA MALE A METÀ — corretto, verificato in IL», riga 4120)*. **⇒ Non c'è niente da
+  > riscrivere prima di agganciare qualcosa: la riscrittura è stata fatta, e la diagnosi corretta è quella.**
 - **Le voci 7, 9, 10, 15, 18, 35, 36, 40, 43, 45, 52, 53** sono aperte: ottimizzazioni, procedure e
   difetti minori. Le vedi tutte nella lista iniziale del TODO.
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — di quelle dodici, ne restano aperte DUE.** Erano
+  > **già chiuse** 7 e 10 *(prestazioni: non si manifestano, `c55d80e`)*, 15 *(deploy: procedura coperta)*,
+  > 35 *(l'aggro sul non-proprietario: il PROXY, `a307a4c`, confermato dall'utente)*, 36 *(i salvataggi senza
+  > Steam: documentata)*, 40 *(non osservabile)*, 43 *(codice morto: scheletro rimosso)*, 45 *(il rescan che
+  > appende a `_ids`: `e4269fd`)*, 52 *(A1–A4: `8286d11`, `e6eb9c1`, `b46c651`, `b1e21f8`, `060480b`)* e
+  > 53 *(i nemici rivelati da un evento locale: `139a1b5`)*.
+  > **RESTANO APERTE SOLO LA 9 E LA 18** — e **la 9 per una ragione diversa da quella che questa riga lasciava
+  > intendere**: il **livello di stato** dello spettatore è stato costruito *(`PlayerDeathSync.cs`:
+  > `pdead|`/`palive|`, `IsEveryoneDead`, `CountDeadPlayers`)*, mentre **camera sul compagno e body invisibile
+  > NON esistono** e nessun referto li verifica in gioco. **La 18** *(boss per boss)* è **verificata aperta**:
+  > l'unico boss esercitato nei referti è **`ElderBrother`**. **E c'è una voce che questo elenco non nomina: la
+  > 58** *(le cutscene perse da chi entra dopo)*, aperta con la strada già scritta ma il fix non fatto.
+  > **La lezione**: questo elenco è invecchiato **mentre le voci venivano chiuse** — *un elenco di "cose aperte"
+  > è la cosa che marcisce più in fretta in un documento vivo.*
 
 ---
 
