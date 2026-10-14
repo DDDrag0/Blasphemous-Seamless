@@ -287,6 +287,69 @@ namespace Blasphemous.Multiplayer.Client.Players
                     // condizione. Fermare qualcosa che non c'e' non fa nulla.
                     StopPeerParryHitSound();
                     break;
+                // A7-bis - IL SUONO DELLA PARATA RIUSCITA, CIOE' IL PEZZO CHE MANCAVA.
+                //
+                // ⚠️⚠️ QUESTO `case` NON C'ERA, E IL SUONO NON SI SENTIVA PER QUESTA RAGIONE - non per la
+                // rete, e non perche' la chiave fosse sbagliata. Il mittente il byte lo manda da A7-bis
+                // (`AnimationFixes.PenitentParryAttackSound_Patch`, postfix su `PenitentAudio.PlayParryAttack`),
+                // e il log del RICEVENTE lo prova, riga per riga:
+                //     [Effect] ParryAttack per G2 (-541.6,10.0)    <- ARRIVATO (riga di AttackManager.ReceiveEffect)
+                // e sotto NON c'era NESSUNA riga di suono: ne' `[Sound] chiave "PenitentParry" -> percorso ...`,
+                // ne' `[Sound RX]`. Il byte arrivava e lo `switch` lo lasciava cadere nel vuoto, perche' uno
+                // `switch` senza `case` e senza `default` non fa nulla E NON LO DICE.
+                //   ⭐ E `SoundKeyFor` la chiave la conosceva gia' (`case EffectType.ParryAttack: return
+                //   PenitentAudio.ParryEventKey`): ma `SoundKeyFor` viene chiamata SOLO da `PlayPeerSound`, e
+                //   senza questo `case` nessuno la chiamava. Mezzo fix gia' scritto, e irraggiungibile.
+                //
+                // ⭐ ED E' IL SUONO DEL FLASH, per quanto l'IL puo' dire - e l'IL qui e' esplicito. E' l'unico
+                // suono che il gioco accende NEL PUNTO ESATTO della parata riuscita, dal CODICE e non da un
+                // evento di clip:
+                //     Penitent.Damage(Hit) -> Parry.CheckParry(hit) -> Parry.ParrySuccess(true)   (Parry.cs:166-178)
+                //         -> EntityOwner.GetComponentInChildren<PenitentAudio>().PlayParryAttack()
+                //         -> PenitentAudio.PlayParryAttack() -> PlaySfxOnCatalog("PenitentParry")
+                // cioe' nella STESSA chiamata che porta `SuccessParry` a true, che fa partire il flash, e che
+                // avvia il fermo-immagine del gioco (`Core.Logic.ScreenFreeze.Freeze`, Parry.cs:137-141).
+                //   ⚠️ E NON E' UN DOPPIONE: `PenitentParry` non e' ne' `ParryStart` (la guardia, 109) ne'
+                //   `ParryHit` (il clang, 107) ne' `PenitentStartParry` (111). E' un TERZO evento, e sul
+                //   ricevente non lo suonava nessuno.
+                //
+                // ⚠️ LA NATURA: UNA CHIAVE DI CATALOGO PURA (`PlaySfxOnCatalog`, come i sei fendenti di A5).
+                // One-shot: nessuna istanza da ricordare, nessuno STOP, nessun fusibile, niente da distruggere.
+                // `PlayPeerSound` la risolve nel PROPRIO catalogo (`ResolveCatalogPath` -> `EventOneShotPanned`),
+                // quindi la riga `[Sound] chiave "PenitentParry" -> percorso ...` e' il marker del ricevente.
+                //
+                // ⚠️ E LA POSIZIONE SI CONTROLLA, come per `ParryHit`: il fendente del parry deve uscire DA
+                // DOVE E' SUCCESSO, e l'origine del mondo e' una coordinata legittima di questo gioco - cioe'
+                // dall'altra parte del livello. Senza posizione NON si suona, e la riga lo DICE, invece di
+                // lasciare indistinguibili "non arrivato" e "arrivato senza coordinate".
+                case EffectType.ParryAttack:
+                {
+                    if (!hasPosition)
+                    {
+                        ModLog.Info("[Sound RX] parry riuscito del peer, ma il pacchetto non porta una " +
+                                    "posizione: non lo suono (non lo metto nell'origine)");
+                        break;
+                    }
+
+                    // PROVA LATO RICEVENTE, obbligatoria come per ogni altro effetto: la riga `[Effect]` dice
+                    // che il byte e' ARRIVATO, questa dice che e' stato ESEGUITO. Senza di essa "arrivato e
+                    // scartato" e "arrivato e suonato" restano indistinguibili - che e' esattamente il guasto
+                    // che questo `case` chiude, e che nei log era invisibile per costruzione.
+                    ModLog.Info($"[Sound RX] parry riuscito del peer ({position.x:F1},{position.y:F1})");
+                    PlayPeerSound(effect, position);
+                    break;
+                }
+                // ⚠️ E `ParryStartCatalog` (111) RESTA SENZA `case` DI PROPOSITO, e non e' una dimenticanza
+                // come quella qui sopra. Il mittente lo manda a OGNI guardia alzata, INSIEME a `ParryStart`
+                // (109): nel log del ricevente i due arrivano appaiati, 6 e 6 in una sessione. E le due
+                // chiavi finiscono sullo STESSO evento - `ParryStart` legge `Parry.ParryGuardFx`, il cui
+                // valore risolto e' `event:/SFX/Penitent/Attack/PenitentStartParry`, e `ParryStartCatalog`
+                // risolve `PenitentAudio.StartParryEventKey` = "PenitentStartParry".
+                //   ⇒ Accendere anche 111 farebbe suonare LA STESSA GUARDIA DUE VOLTE sul peer. La guardia
+                //   gia' si sente (confermato dall'utente), quindi la riga giusta e' NON aggiungerla: un fix
+                //   che raddoppia un suono e' peggio di un byte inerte. Se un giorno si volesse la fedelta'
+                //   totale (sul MITTENTE il gioco li accende entrambi), basta aggiungere
+                //   `case EffectType.ParryStartCatalog:` accanto a `ParryStart`, nell'elenco dei one-shot.
                 // A6 - L'ESECUZIONE. Il primo dei due byte ACCENDE l'animazione sull'avatar, il secondo la
                 // SPEGNE. Nessuna posizione: l'animazione si suona dove l'avatar e', e dove l'avatar e' lo
                 // decide gia' il canale Position, che gira da sempre.
