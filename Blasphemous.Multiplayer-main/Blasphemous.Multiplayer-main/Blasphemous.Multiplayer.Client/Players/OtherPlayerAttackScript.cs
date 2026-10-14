@@ -895,13 +895,42 @@ namespace Blasphemous.Multiplayer.Client.Players
                 return null;
 
             Animator[] animators = entityExecution.ExecutionPrefab.GetComponentsInChildren<Animator>(true);
+
+            int executionState = Animator.StringToHash("USED");
+
+            // ⚠️⚠️ NON SI PRENDE "IL PRIMO CHE HA UN CONTROLLER", ed e' il difetto che il primo test ha
+            // rivelato: il prefab ha PIU' di un Animator, e il primo non e' quello che recita. Preso il
+            // primo, il log diceva `lo stato "USED" NON e' nemmeno nel controller del fantasma della prop`
+            // - cioe' un controller c'era, ma era QUELLO SBAGLIATO, e il suono dell'esecuzione (che viaggia
+            // gia') restava l'unica cosa che si vedeva.
+            //   ⇒ Si prende quello che HA LO STATO. `Animator.HasState(layer, hash)` e' il test esatto, e
+            //   chiederlo qui invece di scommettere su un ordine e' l'unica scelta che non dipende da un
+            //   asset che nessuno puo' leggere.
+            RuntimeAnimatorController first = null;
             for (int i = 0; i < animators.Length; i++)
             {
-                if (animators[i] != null && animators[i].runtimeAnimatorController != null)
+                if (animators[i] == null || animators[i].runtimeAnimatorController == null)
+                    continue;
+
+                if (first == null)
+                    first = animators[i].runtimeAnimatorController;
+
+                if (animators[i].HasState(0, executionState))
+                {
+                    // Osservabilita': dice QUALE animator ha vinto e su quanti si e' scelto. Senza questa
+                    // riga, "il prefab ha un solo Animator" e "ne ha cinque e ho indovinato" restano
+                    // indistinguibili.
+                    ModLog.Info($"[ExecAnim RX] controller del fantasma risolto: animator {i + 1} di " +
+                                $"{animators.Length} (e' quello che ha lo stato \"USED\")");
                     return animators[i].runtimeAnimatorController;
+                }
             }
 
-            return null;
+            // Nessuno ha lo stato. Si torna comunque il primo controller valido, cosi' il chiamante puo'
+            // FARE il tentativo e riportare l'esito con la sua riga - che e' piu' precisa di questa.
+            ModLog.Warn($"[ExecAnim RX] nessuno dei {animators.Length} Animator del prefab ha lo stato " +
+                        "\"USED\": il controller del fantasma non e' identificabile");
+            return first;
         }
 
         private static void PlayPeerSound(EffectType effect, Vector2 position)
