@@ -20,36 +20,32 @@ namespace Blasphemous.Multiplayer.Client.Players
         private Animator CharacterAnim { get; set; }
 
         // ============================================================================================
-        // A6 - L'ESECUZIONE SULL'AVATAR. Suonare uno stato, non istanziare una prop.
+        // A6 - L'ESECUZIONE. SI ISTANZIA IL PREFAB, SI TIENE IL FANTASMA, SI DISTRUGGE IL RESTO.
         // ============================================================================================
         //
-        // ⭐ LA SCOPERTA CHE RENDE QUESTO POSSIBILE, in una riga: l'animazione dell'esecuzione NON e' un
-        // asset da caricare, e' uno STATO DI ANIMATOR chiamato "USED", e vive in un fantasma che il gioco
-        // suona con `interactorAnimator.SetTrigger("USED")`. Quel fantasma e' un clone del penitent guidato
-        // dal controller DEL PENITENT - e la prova sta nel fatto che lo STESSO campo `interactorAnimator`
-        // suona le animazioni in ginocchio di PrieDieu (`KNEE_START`), che sono animazioni del penitent.
+        // ⭐⭐ PERCHE' NON SI SUONA PIU' UNO STATO SULL'AVATAR. E' la versione precedente, ed e' quella che
+        // l'utente ha visto NON funzionare: "solo il flash della parte iniziale dell'animazione" e poi
+        // l'avatar invisibile. La ragione e' scritta in `Execution.OnUse` (`Execution.cs:150-178`):
         //
-        // ⭐⭐ E QUEL CONTROLLER E' GIA' ADDOSSO A QUESTO AVATAR: `SetupPlayer` gli assegna
-        // `UnityReferences.PlayerAnimator`, che e' il `runtimeAnimatorController` del penitent LOCALE.
-        //   ⇒ Non serve ottenerlo, non serve cambiarlo, non serve `Resources.Load`, non serve riflessione:
-        //   serve il `Play` dell'hash di "USED".
+        //     Core.Input.SetBlocker("EXECUTION", true);
+        //     interactableAnimator.gameObject.SetActive(false);
+        //     ShowPlayer(false);                       <-- IL PENITENT LOCALE VIENE NASCOSTO
+        //     ExecutedEntity.KillEntity();
+        //     interactorAnimator.SetTrigger("USED");
         //
-        // ⭐ E LA MOD LO FA GIA'. `PlaySpecialAnimation` installa sull'avatar il controller del fantasma di
-        // un interactable e per il PETTO suona LETTERALMENTE `SetTrigger("USED")`. Questa non e' una tecnica
-        // nuova: e' la stessa, sullo stesso stato, senza il cambio di controller (che per PrieDieu e petto
-        // serve solo perche' li' lo stato NON e' nel controller del penitent).
+        // ⭐ IL PENITENT NON HA UN'ANIMAZIONE DI ESECUZIONE: viene NASCOSTO. L'unica cosa che si vede in
+        // un'esecuzione e' IL FANTASMA (`interactorAnimator`, un clone del penitent, figlio della prop), e
+        // quella clip e' disegnata per STARE AL POSTO del penitent, non per essere su di lui.
+        //   ⇒ Si istanzia il prefab, si STACCA il fantasma (`SetParent(null)`, cosi' sopravvive), si distrugge
+        //   tutto il resto, e si preme su di lui lo STESSO trigger che preme il gioco.
         //
-        // ⚠️ PERCHE' NON SI ISTANZIA LA PROP. Perche' la prop porta un `MonoBehaviour` il cui `Update()`
-        // legge l'input LOCALE:
-        //     Interactable.Update -> Execution.OnUpdate -> ReInput.players.GetPlayer(0).GetButtonDown(8)
-        // Cioe': se la prop esiste su questa macchina, QUESTA macchina puo' premerci sopra e far partire
-        // `Execution.OnUse` - che accende `Core.Input.SetBlocker("EXECUTION", true)` e lo spegne solo
-        // all'ultima riga. Quella e' la voce 54. E neutralizzarla non e' gratis: `enabled = false` fermerebbe
-        // anche `Start()`, lasciando `Penitent`/`_cameraZoom`/`_currentLevel` a null e trasformando
-        // `Execution.Damage` in un NRE.
-        //   ⇒ LA NEUTRALIZZAZIONE PIU' SICURA DI UN COMPONENTE E' NON CREARLO. Qui non si crea nulla, e il
-        //   blocker non e' "improbabile": e' IMPOSSIBILE, perche' non c'e' alcun `Update` che possa
-        //   chiamarlo.
+        // ⭐ E LA NEUTRALIZZAZIONE DELLA PROP E' PERFETTA, non "improbabile": `Execution.OnUse` NON ESISTE su
+        // questa strada. Nessuno accende `SetBlocker`, nessuno tocca `TimeScale` o la camera, nessuno sposta
+        // il penitent locale - perche' la neutralizzazione piu' sicura di un componente e' non crearlo.
+        //   ⚠️ `Awake()` GIRA comunque sull'istanza (Unity lo chiama dentro `Instantiate`), quindi la prop
+        //   registra i suoi sensori e si aggancia a `SpawnManager.OnPlayerSpawn`. Ma e' `OnUpdate` che legge
+        //   l'input, e `OnUpdate` gira al PRIMO `Update` successivo: distruggendo il resto NELLO STESSO FRAME,
+        //   quell'`Update` non arriva mai. Vedi `PlayExecutionAnimation`, dove l'ordine e' argomentato.
         //
         // ⚠️ E COSA NON SI FA, CHE LA PROP INVECE FA. Non si tocca la camera (`CenterCamera` centra sul
         // penitent LOCALE), non si tocca lo slow-motion (`DoSlowmotion` scrive `_currentLevel.TimeScale`
@@ -93,7 +89,7 @@ namespace Blasphemous.Multiplayer.Client.Players
         private const float ExecutionTimeoutSeconds = 12f;
 
         /// <summary>
-        /// Accende o spegne l'animazione dell'esecuzione su QUESTO avatar.
+        /// Accende o spegne l'esecuzione su QUESTO avatar.
         ///
         /// ⚠️ E' UN METODO D'ISTANZA. Chi lo chiama e' `OtherPlayerAttackScript.PlayEffectAnimation`, che
         /// risale all'avatar dal padre esattamente come fa gia' per la scia. Nessuna ricerca per nome, nessun
@@ -103,83 +99,129 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             if (!start)
             {
-                // La FINE. `RestoreExecutionAvatar` si arrende da sola se non c'e' nulla da fare.
+                // La FINE. `RestoreExecutionAvatar` uccide il fantasma e rimette l'avatar, e si arrende da
+                // sola se non c'e' nulla da fare.
                 RestoreExecutionAvatar("byte di fine");
                 return;
             }
 
             // ⚠️ UNA SECONDA ESECUZIONE NON SI ACCAVALLA: si riparte. Se una e' gia' in corso (il byte di
             // fine precedente e' andato perso, o il peer ha eseguito due nemici di fila) il tempo si
-            // riazzera invece di sommare. Senza questo, la seconda animazione erediterebbe il fusibile della
-            // prima e potrebbe essere tagliata a meta'.
+            // riazzera invece di sommare, e il fantasma vecchio muore invece di restare a girare.
+            if (ghost != null)
+            {
+                ModLog.Info("[ExecGhost RX] una seconda esecuzione arriva mentre la prima e' ancora in " +
+                            "scena: il fantasma vecchio muore adesso");
+                DestroyGhost("seconda esecuzione");
+            }
+
             ExecutionStartedAt = Time.unscaledTime;
 
-            // ⚠️⚠️ "USED" NON E' UNO STATO: E' UN TRIGGER. Ed e' la scoperta che chiude la questione.
-            //
-            // Il gioco fa `interactorAnimator.SetTrigger("USED")` (Execution.cs:166). "USED" e' un
-            // PARAMETRO dell'animator, e il trigger fa partire una TRANSIZIONE verso uno stato il cui nome
-            // puo' essere qualsiasi cosa.
-            //   ⇒ `Animator.Play(Animator.StringToHash("USED"))` non trova NULLA, e `HasState(0,"USED")`
-            //   risponde `false` ANCHE sul controller del fantasma che l'esecuzione la recita davvero - che
-            //   e' esattamente quello che dicevano i log.
-            //   ⇒ NON si suona uno stato: si preme lo STESSO trigger che preme il gioco.
-            //
-            // ⚠️ E IL CONTROLLER VA INSTALLATO, perche' il trigger vive nel controller del FANTASMA della
-            // prop (un clone del penitent), non in quello dell'avatar. E il fantasma e' raggiungibile SENZA
-            // ISTANZIARE NULLA: `Interactable.interactorAnimator` e' un campo del PREFAB, e leggere un prefab
-            // non esegue `Awake`, non crea GameObject, non fa partire alcun `Update` ⇒ NON puo' accendere
-            // l'input blocker, che e' la voce 54.
-            RuntimeAnimatorController controller = OtherPlayerAttackScript.ResolveExecutionController();
-            if (controller == null)
+            GameObject prefab = OtherPlayerAttackScript.ResolveExecutionPrefab();
+            if (prefab == null)
             {
-                ModLog.Warn("[ExecAnim RX] il controller del fantasma non si e' risolto: " +
-                            "l'animazione non esce (e NON e' un problema di rete)");
+                // Osservazione, non un verdetto: senza prefab non c'e' nulla da istanziare, e la riga dice
+                // che il guasto NON e' di rete.
+                ModLog.Warn("[ExecGhost RX] il prefab dell'esecuzione non si e' risolto (il nemico non e' " +
+                            "raggiungibile o non ha un EntityExecution): nessun fantasma, e NON e' un " +
+                            "problema di rete");
                 return;
             }
 
-            CharacterAnim.runtimeAnimatorController = controller;
-
-            // LA PROBE GIUSTA. Prima si chiedeva `HasState(0, "USED")`: la domanda sbagliata, che risponde
-            // `false` anche su un controller che FUNZIONA. Adesso si cerca il PARAMETRO trigger "USED" fra i
-            // parametri del controller, che e' la cosa che il gioco preme davvero.
+            // ⚠️⚠️ PERCHE' SI ISTANZIA IL PREFAB, E NON SI INSTALLA UN CONTROLLER SULL'AVATAR.
             //
-            // ⚠️ E SI PREME COMUNQUE, anche se il controllo non lo trova: `SetTrigger` con un trigger
-            // assente non lancia (logga un warning dell'engine), e un controllo che BLOCCA l'azione e' un
-            // modo di non far mai partire nulla per un falso negativo. La riga qui sotto e' la prova, non
-            // una condizione.
-            bool hasTrigger = HasTrigger(CharacterAnim, "USED");
-
-            CharacterAnim.SetTrigger(ExecutionStateHash);
-
-            // La durata REALE, dal controller invece che da una costante: una riga che tara il fusibile con
-            // un dato invece che con una scommessa.
-            ModLog.Info($"[ExecAnim RX] trigger USED su {name} parametri={CharacterAnim.parameterCount} " +
-                        $"trigger_trovato={hasTrigger} " +
-                        $"(durata={CharacterAnim.GetCurrentAnimatorStateInfo(0).length:F2}s)");
-        }
-
-        /// <summary>
-        /// Vero se il controller dell'animator dichiara un PARAMETRO di tipo trigger con questo nome.
-        ///
-        /// ⚠️ E' LA DOMANDA CHE PRIMA SI FACEVA MALE. `HasState(0, hash("USED"))` chiede se esiste uno STATO
-        /// chiamato "USED", e la risposta e' `false` anche sul controller del gioco, perche' "USED" e' un
-        /// TRIGGER che porta a uno stato dal nome diverso. Chiedere la cosa giusta e' la differenza fra una
-        /// probe che accusa il gioco e una che dice la verita'.
-        /// </summary>
-        private static bool HasTrigger(Animator animator, string triggerName)
-        {
-            if (animator == null)
-                return false;
-
-            AnimatorControllerParameter[] parameters = animator.parameters;
-            for (int i = 0; i < parameters.Length; i++)
+            // E' la strada che il referto dichiara giusta, e la ragione e' una sola: IL PENITENT NON HA
+            // UN'ANIMAZIONE DI ESECUZIONE. `Execution.OnUse` (`Execution.cs:150-178`) lo fa sparire:
+            //
+            //     Core.Input.SetBlocker("EXECUTION", true);
+            //     interactableAnimator.gameObject.SetActive(false);
+            //     ShowPlayer(false);                       <-- IL PENITENT LOCALE VIENE NASCOSTO
+            //     ExecutedEntity.KillEntity();
+            //     interactorAnimator.SetTrigger("USED");   <-- "USED" E' UN TRIGGER, NON UNO STATO
+            //     while (!base.Consumed) yield return lapse;
+            //
+            // e l'unica cosa che si vede in un'esecuzione e' IL FANTASMA: `interactorAnimator`, un clone
+            // del penitent, figlio della prop. Installare il SUO controller sull'avatar produce esattamente
+            // cio' che l'utente ha visto: "il flash della parte iniziale e poi l'invisibile" - perche'
+            // quella clip e' disegnata per STARE AL POSTO del penitent, non per essere su di lui.
+            //   ⇒ Si prende IL FANTASMA VERO.
+            GameObject prop = UnityEngine.Object.Instantiate(prefab, transform.position, transform.rotation);
+            if (prop == null)
             {
-                if (parameters[i].type == AnimatorControllerParameterType.Trigger &&
-                    parameters[i].name == triggerName)
-                    return true;
+                ModLog.Warn("[ExecGhost RX] l'istanza del prefab e' fallita: nessun fantasma");
+                return;
             }
 
-            return false;
+            // ⭐ IL FANTASMA E' IL FIGLIO DELLA PROP CHE PORTA IL CONTROLLER DELL'ESECUZIONE, e la via per
+            // prenderlo e' il campo che il GIOCO usa per recitare: `Interactable.interactorAnimator`
+            // (`Interactable.cs:65`), quello su cui `Execution.OnUse` preme `SetTrigger("USED")`.
+            //   ⚠️ `GetComponentInChildren<Execution>()` include i componenti del GameObject radice: se la
+            //   prop porta l'`Execution` sulla radice (come fa `EntityExecution.InstantiateExecution`),
+            //   questo e' un `GetComponent`. Se invece sta su un figlio, prende quella - che e' comunque
+            //   l'unica prop di questa istanza.
+            Execution execution = prop.GetComponentInChildren<Execution>(true);
+            Animator ghostAnimator = execution == null || OtherPlayerAttackScript.InteractorAnimatorField == null
+                ? null
+                : OtherPlayerAttackScript.InteractorAnimatorField.GetValue(execution) as Animator;
+
+            if (ghostAnimator == null)
+            {
+                ModLog.Warn("[ExecGhost RX] l'istanza non espone `interactorAnimator` " +
+                            $"(`Execution` trovata={execution != null}): il fantasma non si isola, la prop " +
+                            "viene distrutta e l'esecuzione non si vede");
+                UnityEngine.Object.Destroy(prop);
+                return;
+            }
+
+            // ⭐⭐ LO STACCO - ED E' UN `SetParent`, NON UNA COPIA. Un GameObject figlio segue il genitore
+            // nella distruzione: senza questa riga `Destroy(prop)` porterebbe via anche il fantasma, e la
+            // strada non esisterebbe. Con `worldPositionStays: true` la posizione nel mondo non cambia.
+            GameObject ghostObject = ghostAnimator.gameObject;
+            ghostObject.transform.SetParent(null, true);
+            ghostObject.SetActive(true);
+
+            // ⭐⭐ E QUI MUORE TUTTO IL RESTO, NELLO STESSO FRAME.
+            //
+            // `Execution.OnUse` NON ESISTE su questa strada: nessuno chiama `SetPlayer(false)`, nessuno
+            // accende `SetBlocker("EXECUTION")`, nessuno tocca `TimeScale` o la camera. La voce 54 non e'
+            // "improbabile": e' IMPOSSIBILE, perche' la neutralizzazione piu' sicura di un componente e'
+            // non crearlo.
+            //
+            // ⚠️ MA `Awake()` GIRA SULL'ISTANZA, perche' Unity lo chiama dentro `Instantiate`, e
+            // `Interactable.Awake` (`Interactable.cs:331-349`) registra i SENSORI, si aggancia a
+            // `SpawnManager.OnPlayerSpawn` e chiama `CheckAnimationEvents`. Questo e' verificato in IL e
+            // non si puo' evitare.
+            //   ⇒ E' `OnUpdate` che legge l'input:
+            //         Interactable.Update (`Interactable.cs:411-414`) -> `OnUpdate`
+            //         Execution.OnUpdate (`Execution.cs:194-212`) ->
+            //             `Penitent.PlatformCharacterInput.Attack` e `base.InteractionTriggered`
+            //             -> `ReInput.players.GetPlayer(0).GetButtonDown(8)`
+            //   ⇒ E `Update` gira al PRIMO fotogramma successivo all'istanza. `Object.Destroy` DIFFERISCE la
+            //   distruzione alla FINE DEL FRAME CORRENTE (`DestroyImmediate` sarebbe l'unica alternativa, e
+            //   farebbe girare `OnDestroy` in mezzo a questo metodo).
+            //   ⇒ DISTRUGGENDO IL RESTO NELLO STESSO FRAME, `OnUpdate` NON GIRA MAI, e l'unica riga che
+            //   potrebbe accendere il blocker dell'input non viene mai raggiunta.
+            //
+            // ⚠️ E L'ORDINE CON `AnimatorEvent` E' SICURO, verificato in IL. `AnimatorEvent` sta SUL
+            // FANTASMA (`Interactable.CheckAnimationEvents`, righe 351-365, lo prende con
+            // `interactorAnimator.GetComponent<AnimatorEvent>()`) e si e' iscritto a
+            // `Interactable.OnEventLaunched`. Quando la prop muore, `Interactable.OnDestroy` (righe
+            // 367-388) fa `AnimatorEvent.OnEventLaunched -= OnEventLaunched`. Da li' in avanti il fantasma
+            // ha un delegate verso un oggetto MORTO, e non e' un guasto: il delegate non lancia, e
+            // l'unica cosa che smette e' `"INTERACTION_END"` - cioe' la fine dell'esecuzione, che su questa
+            // macchina NON DEVE arrivare al gioco (la prop del gioco locale non esiste).
+            UnityEngine.Object.Destroy(prop);
+
+            ghost = ghostObject;
+            ghostAnimator.SetTrigger(ExecutionStateHash);
+
+            if (ExecutionGhostWatcher.Attach(this, ghost, ghostAnimator))
+                ModLog.Info($"[ExecGhost RX] fantasma istanziato su {name}: prop distrutta nello stesso " +
+                            $"frame, trigger USED premuto, durata clip=" +
+                            $"{ghostAnimator.GetCurrentAnimatorStateInfo(0).length:F2}s");
+            else
+                ModLog.Warn("[ExecGhost RX] fantasma istanziato ma il sorvegliante non si e' potuto " +
+                            "agganciare: resta il solo fusibile a 12s");
         }
 
         /// <summary>
@@ -199,34 +241,203 @@ namespace Blasphemous.Multiplayer.Client.Players
             // "su questo avatar non sta andando nulla": il byte di fine dopo il fusibile, o `OnDestroy` dopo
             // il byte di fine, escono qui senza toccare l'Animator e senza scrivere una seconda riga di log
             // che farebbe sembrare normale un doppio ripristino.
-            if (ExecutionStartedAt <= 0f)
+            //
+            // ⚠️ E LE DUE CONDIZIONI SONO `||` E NON UNA SOLA, perche' adesso c'e' UN SECONDO STATO DA
+            // RIPRISTINARE: il fantasma. Il fusibile azzera `ExecutionStartedAt` e uccide il fantasma nello
+            // stesso giro, quindi qui i due casi sono lo stesso caso - ma un avatar che avesse perso il
+            // fantasma senza perdere il tempo (o viceversa) deve comunque essere rimesso a posto.
+            if (ExecutionStartedAt <= 0f && ghost == null)
                 return;
 
             ExecutionStartedAt = 0f;
+            DestroyGhost(why);
 
-            // ⚠️ PERCHE' `Play(0)` E NON `SetTrigger`/`ResetTrigger`. Lo stato "USED" e' entrato con un `Play`
-            // esplicito, quindi si esce allo stesso modo: si torna allo stato 0 del layer 0, che e' lo stato
-            // di riposo del controller del penitent. Non si usa `Rebind()` ne' si spegne l'Animator:
-            // spegnerlo fermerebbe anche l'`Update` di questo stesso script, che ricava da
-            // `GetCurrentAnimatorStateInfo(0)` lo stato di morte - cioe' un avatar che non muore piu'
-            // visivamente.
-            CharacterAnim.Play(0);
+            // ⚠️⚠️ L'AVATAR NON HA MAI RECITATO NULLA, E NON SI TOCCA IL SUO ANIMATOR.
+            //
+            // Fino a ieri qui c'era `CharacterAnim.Play(0)`, perche' l'animazione la recitava l'AVATAR con
+            // il controller del fantasma installato - ed e' la strada che produceva "un flash e poi
+            // l'invisibile". Adesso la recita il FANTASMA, che ha il SUO Animator e il SUO controller: il
+            // controller dell'avatar non e' stato toccato, e un `Play(0)` lo farebbe saltare allo stato 0
+            // proprio mentre G1 e' a meta' della sua cutscene.
+            //   ⇒ L'UNICA COSA DA RIMETTERE E' CIO' CHE SI ERA SPENTO: il renderer dell'avatar. Il
+            //   fantasma e' la sua faccia per tutta la durata dell'esecuzione, e alla fine la faccia torna
+            //   al suo posto.
+            //
+            // ⚠️ E NON SI USA `SetActive`, ne' sul GameObject ne' sull'`Animator`: spegnere l'`Update` di
+            // questo stesso script fermerebbe il fusibile (che deve poter scattare proprio quando i
+            // pacchetti non arrivano piu'), e spegnere l'`Animator` fermerebbe il rilevamento della morte,
+            // che e' l'altra cosa che questo `Update` fa.
+            if (CharacterRenderer != null)
+                CharacterRenderer.enabled = true;
 
-            // ⚠️ IL RIPRISTINO DEL CONTROLLER, E DOPO IL RIPIEGO E' OBBLIGATORIO E NON UNA COMODITA'.
-            // Il ripiego INSTALLA il controller del fantasma della prop: senza questa riga l'avatar
-            // resterebbe con quel controller, cioe' rotto del tutto (animazioni del penitent assenti), e
-            // `Play(0)` presupporrebbe uno stato di riposo che non e' il suo.
-            // Quando invece lo stato "USED" era gia' nel controller dell'avatar, questa assegnazione e'
-            // idempotente: rimette lo stesso riferimento che c'e' gia'.
-            CharacterAnim.runtimeAnimatorController = UnityReferences.PlayerAnimator;
+            ModLog.Info($"[ExecGhost RX] fine ({why}): fantasma ucciso, avatar {name} di nuovo visibile " +
+                        "(l'Animator dell'avatar non e' stato toccato in tutta l'esecuzione)");
+        }
 
-            // ⚠️ IL RIPRISTINO DEL CONTROLLER STA QUI, E SOLO SE SERVE. Su questa strada il controller non e'
-            // MAI stato cambiato: e' gia' quello del penitent, ed e' quello che `Play(0)` presuppone.
-            // Se lo stato "USED" non fosse nel controller, servirebbe la riga
-            //     CharacterAnim.runtimeAnimatorController = UnityReferences.PlayerAnimator;
-            // che e' esattamente quella che la mod usa gia' per tornare dall'animazione speciale.
+        /// <summary>
+        /// Uccide il fantasma dell'esecuzione di QUESTO avatar, se c'e'. E' L'UNICA RIGA CHE LO DISTRUGGE, ed
+        /// e' voluto: tre strade diverse possono chiamarla - il byte di fine, il fusibile, la fine della clip
+        /// - e se ognuna avesse la sua `Destroy` la prima che dimentica un pezzo lascerebbe in giro un
+        /// secondo penitent invisibile.
+        ///
+        /// ⚠️ NON E' SOLO IGIENE. `Interactable.Awake` ha registrato i SENSORI della prop su questo
+        /// GameObject, e `Interactable.OnDestroy` li deregistra - cosa che non e' mai girata, perche' la prop
+        /// e' stata distrutta mentre il fantasma era gia' stato staccato. Un fantasma che sopravvive e' un
+        /// oggetto che risponde ai trigger del livello con un `Interactable` morto dietro.
+        /// </summary>
+        private void DestroyGhost(string why)
+        {
+            if (ghost == null)
+                return;
 
-            ModLog.Info($"[ExecAnim RX] fine ({why}): avatar {name} ripristinato");
+            GameObject dying = ghost;
+            ghost = null;
+
+            // ⚠️ IL SORVEGLIANTE MUORE CON IL FANTASMA, e va spento PRIMA: e' lui che tiene il riferimento a
+            // questo avatar, e lasciarlo vivo significherebbe un `Update` che parla a un avatar che sta
+            // sparendo. Il fantasma viene distrutto per intero, quindi il componente se ne va comunque -
+            // ma l'ordine e' esplicito perche' non e' ovvio che sia quello giusto.
+            ExecutionGhostWatcher watcher = dying.GetComponent<ExecutionGhostWatcher>();
+            if (watcher != null)
+                watcher.enabled = false;
+
+            Animator dyingAnimator = dying.GetComponent<Animator>();
+            if (dyingAnimator != null)
+            {
+                // Si ferma PRIMA di distruggere, cosi' la posa congelata non viene disegnata per il
+                // fotogramma che resta fra la distruzione e la fine del frame.
+                dyingAnimator.StopPlayback();
+                dyingAnimator.enabled = false;
+            }
+
+            ModLog.Info($"[ExecGhost RX] fantasma ucciso ({why})");
+            UnityEngine.Object.Destroy(dying);
+        }
+
+        /// <summary>
+        /// IL FANTASMA DELL'ESECUZIONE IN CORSO SU QUESTO AVATAR, o null.
+        ///
+        /// ⚠️ E' UN CAMPO D'ISTANZA, come `ExecutionStartedAt`, e per la stessa ragione: in co-op DUE
+        /// esecuzioni insieme sono il caso normale, e un fantasma statico farebbe sparire quello del primo
+        /// avatar quando il secondo comincia.
+        ///
+        /// ⚠️ PUO' DIVENTARE UN OGGETTO MORTO, come `ExecutionSync.PendingExecution`: un GameObject Unity
+        /// distrutto si confronta uguale a null ma toccarlo lancia, quindi ogni uso e' guardato e
+        /// `DestroyGhost` lo azzera SEMPRE, prima di distruggere.
+        /// </summary>
+        private GameObject ghost;
+
+        /// <summary>
+        /// IL FUSIBILE DEL FANTASMA, ed e' un fusibile a DUE stadi perche' i modi di restare appesi sono due.
+        ///
+        /// 1. LA FINE DELLA CLIP. Si campiona `AnimatorStateInfo.normalizedTime` e si guarda se la clip e'
+        ///    arrivata in fondo. E' l'unico segnale disponibile su una prop che non esiste: `"INTERACTION_END"`
+        ///    e' un ANIMATION EVENT DENTRO LA CLIP, e su questa macchina nessuno lo ascolta piu' (il
+        ///    delegate del fantasma punta a un `Interactable` distrutto). E la fine vera la manda il
+        ///    mittente, che pero' puo' tacere.
+        ///    ⚠️ LA GUARDIA SUL TEMPO (2 s) E' OBBLIGATORIA E NON E' PIGNOLERIA: `normalizedTime` di una
+        ///    clip NON ANCORA INTRAPRESA vale 1 (e' il default di uno stato mai giocato), quindi senza la
+        ///    guardia il fantasma morirebbe nel frame stesso in cui nasce e non si vedrebbe NULLA.
+        /// 2. IL TEMPO MASSIMO, che e' il fusibile che c'era gia' (`ExecutionTimeoutSeconds`): se nemmeno la
+        ///    clip finisce - una clip in loop, un animator fermo - il fantasma muore lo stesso.
+        ///
+        /// ⚠️ E LOGGA, sempre: uno scatto del fusibile NON significa "l'esecuzione era lunga", significa che
+        /// il byte di fine si e' perso o che la clip non e' finita. Nasconderlo dietro una distruzione
+        /// silenziosa renderebbe indistinguibili "il pacchetto non e' arrivato" e "l'animazione non e' mai
+        /// partita".
+        /// </summary>
+        private sealed class ExecutionGhostWatcher : MonoBehaviour
+        {
+            /// <summary>Solo per la riga di prova: dice QUALE stato si sta guardando, invece di darlo per buono.</summary>
+            private static readonly int GhostStateHash = Animator.StringToHash("USED");
+
+            /// <summary>
+            /// Da quanto la clip e' in scena, e la soglia oltre la quale `normalizedTime` e' credibile.
+            /// Vedi il commento della classe: senza questa guardia il fusibile scatterebbe nel frame in cui
+            /// il fantasma nasce.
+            /// </summary>
+            private const float TrustClipAfterSeconds = 2f;
+
+            private OtherPlayerScript owner;
+            private GameObject watched;
+            private Animator animator;
+            private float bornAt;
+            private bool reportedStart;
+            private bool finished;
+
+            public static bool Attach(OtherPlayerScript avat, GameObject ghostObject, Animator ghostAnimator)
+            {
+                if (avat == null || ghostObject == null || ghostAnimator == null)
+                    return false;
+
+                ExecutionGhostWatcher watcher = ghostObject.AddComponent<ExecutionGhostWatcher>();
+                if (watcher == null)
+                    return false;
+
+                watcher.owner = avat;
+                watcher.watched = ghostObject;
+                watcher.animator = ghostAnimator;
+                watcher.bornAt = Time.unscaledTime;
+                return true;
+            }
+
+            private void Update()
+            {
+                // `finished` perche' `Destroy` e' differito: senza di esso questo `Update` potrebbe girare una
+                // seconda volta nello stesso frame su un fantasma gia' condannato.
+                if (finished || watched == null || animator == null || owner == null)
+                    return;
+
+                if (!reportedStart)
+                {
+                    reportedStart = true;
+                    AnimatorStateInfo first = animator.GetCurrentAnimatorStateInfo(0);
+                    ModLog.Info($"[ExecGhost RX] sorvegliante agganciato: hash={GhostStateHash} " +
+                                $"normalizedTime={first.normalizedTime:F3} loop={first.loop} " +
+                                $"lunghezza={first.length:F2}s");
+                }
+
+                AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+
+                // Strada 1 - la clip e' finita. ⚠️ SOLO DOPO `TrustClipAfterSeconds`, perche' una clip non
+                // ancora intrapresa riporta `normalizedTime = 1`.
+                if (Time.unscaledTime - bornAt > TrustClipAfterSeconds && state.normalizedTime >= 0.99f)
+                {
+                    // ⚠️ LA RIGA CHE AZZERA IL TEMPO E UCCIDE IL FANTASMA E' UNA SOLA, ed e' questa: se il
+                    // tempo restasse acceso, il fusibile a 12 s scatterebbe PIU' TARDI su un avatar che nel
+                    // frattempo ha gia' ripreso a camminare, e scriverebbe un falso "pacchetto perso".
+                    ModLog.Info($"[ExecGhost RX] la clip e' finita (normalizedTime={state.normalizedTime:F3} " +
+                                $"dopo {Time.unscaledTime - bornAt:F2}s, senza il byte di fine): " +
+                                "uccido il fantasma io");
+                    Finish("fine della clip");
+                    return;
+                }
+
+                // Strada 2 - il tempo massimo, il fusibile che c'era gia'.
+                if (Time.unscaledTime - bornAt <= ExecutionTimeoutSeconds)
+                    return;
+
+                ModLog.Warn($"[ExecGhost RX] ne' il byte di fine ne' la fine della clip entro " +
+                            $"{ExecutionTimeoutSeconds}s (normalizedTime={state.normalizedTime:F3}): " +
+                            "uccido il fantasma io (pacchetto perso?)");
+                Finish("fusibile");
+            }
+
+            private void Finish(string why)
+            {
+                finished = true;
+                if (owner != null)
+                    owner.OnExecutionGhostClipEnded(why);
+            }
+        }
+
+        /// <summary>
+        /// LA VIA DI USCITA DEL SORVEGLIANTE. Non uccide il fantasma direttamente: azzera lo stato con
+        /// `RestoreExecutionAvatar`, che e' l'unico posto in cui l'avatar torna visibile e il fantasma muore.
+        /// </summary>
+        private void OnExecutionGhostClipEnded(string why)
+        {
+            RestoreExecutionAvatar(why);
         }
 
         /// <summary>The avatar's own ghost trail generator (A3). See SetGhostTrail.</summary>
@@ -580,6 +791,12 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// </summary>
         private void OnDestroy()
         {
+            // ⚠️ E ADESSO C'E' UNA SECONDA COSA DA PORTARE VIA: IL FANTASMA. Prima di A6-fantasma questa
+            // riga non poteva lasciare nulla in scena, perche' l'unica cosa che l'esecuzione toccava era
+            // l'Animator di questo stesso avatar - che sparisce con lui. Il fantasma invece e' un GameObject
+            // STACCATO (`SetParent(null, true)`), quindi non e' figlio di nessuno: se questo avatar muore
+            // mentre l'esecuzione e' in scena, senza questa riga resterebbe un secondo penitent a girare per
+            // il livello, immortale e invisibile a tutti i controlli di questo script.
             RestoreExecutionAvatar("OnDestroy");
         }
 

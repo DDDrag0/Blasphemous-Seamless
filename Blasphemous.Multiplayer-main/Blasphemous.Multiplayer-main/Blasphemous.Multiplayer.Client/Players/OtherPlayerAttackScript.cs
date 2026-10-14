@@ -931,7 +931,7 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// qualcosa, e quando esiste e' a meta' cutscene. Il prefab invece e' sempre raggiungibile dal nemico,
         /// che il ricevente HA GIA' risolto.
         /// </summary>
-        public static RuntimeAnimatorController ResolveExecutionController()
+        public static GameObject ResolveExecutionPrefab()
         {
             // ⚠️⚠️ LA CACHE NON E' UN'OTTIMIZZAZIONE: E' LA CURA DI UNA CORSA VERA.
             //
@@ -941,10 +941,10 @@ namespace Blasphemous.Multiplayer.Client.Players
             //   ⇒ Fra l'arrivo di `ExecutionStart` e l'arrivo della MORTE c'e' una corsa, e se la morte
             //   vince il nemico e' gia' un oggetto morto: `enemy == null` e' VERO per un oggetto Unity
             //   distrutto, e la risoluzione fallirebbe su un'esecuzione che sta andando benissimo.
-            //   ⭐ E il controller del fantasma NON cambia mai durante la sessione: e' un asset. Una volta
-            //   risolto, resta valido per sempre - quindi la corsa si chiude CHIEDENDOLO UNA VOLTA SOLA.
-            if (cachedExecutionController != null)
-                return cachedExecutionController;
+            //   ⭐ E il PREFAB non cambia mai durante la sessione: e' un asset. Una volta risolto, resta
+            //   valido per sempre - quindi la corsa si chiude CHIEDENDOLO UNA VOLTA SOLA.
+            if (cachedExecutionPrefab != null)
+                return cachedExecutionPrefab;
 
             Enemy enemy = EnemySyncManager.LastExecutedEnemy;
             if (enemy == null || enemy.gameObject == null)
@@ -956,7 +956,21 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (entityExecution == null || entityExecution.ExecutionPrefab == null)
                 return null;
 
-            GameObject prefab = entityExecution.ExecutionPrefab;
+            cachedExecutionPrefab = entityExecution.ExecutionPrefab;
+            return cachedExecutionPrefab;
+        }
+
+        /// <summary>
+        /// Il CONTROLLER del fantasma dal prefab. SOPRAVVIVE come ripiego dichiarato: la strada del fantasma
+        /// vero lo rende inutile (l'animazione la recita l'Animator del fantasma, che ha il SUO controller),
+        /// non lo rende sbagliato - e resta l'unico modo di chiedere "esiste un controller che recita USED?"
+        /// a una macchina su cui il fantasma non e' ancora nato.
+        /// </summary>
+        public static RuntimeAnimatorController ResolveExecutionController()
+        {
+            GameObject prefab = ResolveExecutionPrefab();
+            if (prefab == null)
+                return null;
 
             // VIA 1 - il campo del gioco, su TUTTE le Interactable del prefab.
             Interactable[] interactables = prefab.GetComponentsInChildren<Interactable>(true);
@@ -974,8 +988,7 @@ namespace Blasphemous.Multiplayer.Client.Players
 
                 ModLog.Info($"[ExecAnim RX] controller del fantasma dal campo `interactorAnimator` di " +
                             $"{interactables[i].GetType().Name} (prefab: {interactables.Length} Interactable)");
-                cachedExecutionController = interactor.runtimeAnimatorController;
-                return cachedExecutionController;
+                return interactor.runtimeAnimatorController;
             }
 
             // VIA 2 (ripiego) - l'Animator che porta un `AnimatorEvent`: e' il predicato che
@@ -991,8 +1004,7 @@ namespace Blasphemous.Multiplayer.Client.Players
 
                 ModLog.Info($"[ExecAnim RX] controller del fantasma dall'Animator con AnimatorEvent " +
                             $"(animator {i + 1} di {animators.Length})");
-                cachedExecutionController = animators[i].runtimeAnimatorController;
-                return cachedExecutionController;
+                return animators[i].runtimeAnimatorController;
             }
 
             // VIA 3 - l'ultima spiaggia, tenuta SOLO come rete di sicurezza e DICHIARATA come tale.
@@ -1006,8 +1018,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                 {
                     ModLog.Info($"[ExecAnim RX] controller del fantasma da HasState(\"USED\") " +
                                 $"(animator {i + 1} di {animators.Length})");
-                    cachedExecutionController = animators[i].runtimeAnimatorController;
-                return cachedExecutionController;
+                    return animators[i].runtimeAnimatorController;
                 }
             }
 
@@ -1016,18 +1027,31 @@ namespace Blasphemous.Multiplayer.Client.Players
             return null;
         }
 
-        /// ⚠️ `interactorAnimator` e' `protected`: si legge per RIFLESSIONE, come questo file fa gia' per
-        /// `_audioCatalogs`, `DashDustGenerator` e `GuardSlide`.
         /// <summary>
-        /// Il controller del fantasma, risolto UNA VOLTA e tenuto. Vedi la cache in `ResolveExecutionController`:
-        /// e' la cura della corsa con la morte del nemico, non un'ottimizzazione.
+        /// `Interactable.interactorAnimator` per riflessione: e' `protected`, e prenderlo per riflessione e'
+        /// la stessa tecnica che questo file usa gia' per `_audioCatalogs`, `DashDustGenerator` e
+        /// `GuardSlide`.
+        ///
+        /// ⚠️ E' `public` PERCHE' ORA LO USA `OtherPlayerScript`, che e' l'unico posto in cui il fantasma
+        /// esiste: li' non si prende un controller, si prende IL GameObject del fantasma per staccarlo dalla
+        /// prop e distruggere il resto.
         /// </summary>
-        private static RuntimeAnimatorController cachedExecutionController;
-
-        private static readonly System.Reflection.FieldInfo InteractorAnimatorField =
+        public static readonly System.Reflection.FieldInfo InteractorAnimatorField =
             typeof(Tools.Level.Interactable).GetField(
                 "interactorAnimator",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        /// <summary>
+        /// Il prefab della prop dell'esecuzione, risolto UNA VOLTA e tenuto. Vedi `ResolveExecutionPrefab`:
+        /// la cache e' la cura della corsa con la morte del nemico, non un'ottimizzazione.
+        ///
+        /// ⚠️ NON E' UN CONTROLLER. Fino a ieri questa via serviva a prendere il `RuntimeAnimatorController`
+        /// del fantasma per installarlo sull'avatar - ed e' la strada che il referto dichiara SBAGLIATA:
+        /// quella clip e' disegnata per STARE AL POSTO del penitent, non per essere su di lui, e sull'avatar
+        /// produce "un flash e poi l'invisibile". Adesso si prende il PREFAB, e da li' si istanzia IL
+        /// FANTASMA VERO.
+        /// </summary>
+        private static GameObject cachedExecutionPrefab;
 
         /// <summary>
         /// A7 - LA GUARDIA DEL PEER. Il percorso lo legge dal PENITENT LOCALE, perche' il valore vive
