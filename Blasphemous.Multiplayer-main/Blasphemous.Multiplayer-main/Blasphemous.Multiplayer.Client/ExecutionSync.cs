@@ -1,7 +1,6 @@
 using System;
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.PvP.Models;    // EffectType
-using Gameplay.GameControllers.Combat;
 using Gameplay.GameControllers.Entities;
 using HarmonyLib;
 using Tools.Level.Interactables;                    // Execution
@@ -22,11 +21,16 @@ namespace Blasphemous.Multiplayer.Client
     /// PERCHE' NON C'E' ECO. Il server esclude il mittente, quindi l'annuncio non torna mai indietro. La
     /// guardia su IsApplyingRemoteDamage chiude l'unica porta che restava: un colpo con
     /// DamageType.OptionalStunt (MiriamPortalPrayerAttack.cs:60 - e' l'UNICO produttore di quel tipo in
-    /// tutto l'assembly) puo' arrivare a questa macchina GIA' relayato, e senza la guardia
-    /// InstantiateExecution girerebbe di nuovo qui e il SUONO tornerebbe al mittente, che l'ha gia'
-    /// sentito dal gioco. Il tipo Stunt, che e' quello che aprirebbe il gate in modo pulito, NON e'
-    /// prodotto da nessun attaccante del gioco (verificato: DamageType.Stunt compare solo dentro
-    /// Enemy.cs e LevelSleepTime.cs, mai come valore assegnato a un Hit).
+    /// tutto l'assembly) puo' arrivare a questa macchina GIA' relayato, e senza la guardia l'annuncio
+    /// girerebbe di nuovo qui e il SUONO tornerebbe al mittente, che l'ha gia' sentito dal gioco. Il tipo
+    /// Stunt, che e' quello che aprirebbe il gate in modo pulito, NON e' prodotto da nessun attaccante del
+    /// gioco (verificato: DamageType.Stunt compare solo dentro Enemy.cs e LevelSleepTime.cs, mai come
+    /// valore assegnato a un Hit).
+    ///
+    /// ⭐ E IL PUNTO DI PARTENZA E' `Execution.OnUse`, NON PIU' `EntityExecution.InstantiateExecution`.
+    /// La ragione intera sta nel commento di `Announce` e in quello della sua patch: il primo metodo
+    /// significa "il nemico e' DIVENTATO eseguibile" (e il giocatore puo' non premere mai), il secondo
+    /// significa "il giocatore HA PREMUTO". Solo il secondo e' un'esecuzione.
     /// </summary>
     public static class ExecutionSync
     {
@@ -58,23 +62,56 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Annuncia che QUESTO gioco ha appena messo un nemico in stato eseguibile.
+        /// Annuncia che QUESTO gioco ha appena ESEGUITO un nemico - cioe' che il giocatore ha premuto.
         ///
-        /// PERCHE' InstantiateExecution E NON Behaviour.Execution(). Il gioco ha SEDICI override di
-        /// Behaviour.Execution() - uno per tipo eseguibile - e TUTTI E SEDICI finiscono sullo stesso
-        /// metodo di EntityExecution. Patchare il choke point invece dei sedici chiamanti e' la
-        /// differenza fra una patch e sedici copie di una stessa riga, cioe' sedici posti in cui una
-        /// puo' divergere.
+        /// ⚠️⚠️ PERCHE' NON PIU' `EntityExecution.InstantiateExecution()`, e questa e' la correzione.
+        /// `InstantiateExecution()` NON significa "il giocatore esegue": e' chiamato da
+        /// `Enemy.Execution(Hit)` -> `Behaviour.Execution()` nel momento in cui il nemico DIVENTA
+        /// ESEGUIBILE (per prossimita', vita o stun). Da li' in poi il giocatore PUO' premere - e puo'
+        /// anche non premere MAI.
+        ///   ⇒ Annunciare li' significava dire al peer "si sta eseguendo un nemico" nel momento sbagliato,
+        ///   e i due sintomi misurati sono esattamente quelli:
+        ///     1. il peer fa partire il FANTASMA (l'animazione dell'esecuzione, con un penitent IN PIU' e
+        ///        con lo sprite del remoto) anche se nessuno ha premuto;
+        ///     2. su una macchina il nemico resta VIVO e sull'altra muore, perche' la morte arriva solo
+        ///        con `Execution.OnUse` -> `ExecutedEntity.KillEntity()`.
         ///
-        /// E InstantiateExecution() NON HA ARGOMENTI. Harmony lega i parametri delle patch PER NOME, e
-        /// un nome sbagliato ha gia' impedito alla mod di avviarsi: con zero argomenti quel rischio non
-        /// esiste.
+        /// ⭐ IL PUNTO GIUSTO E' `Execution.OnUse`, che e' il metodo in cui il gioco fa davvero
+        /// l'esecuzione:
+        ///     Core.Input.SetBlocker("EXECUTION", true);   // <-- da qui in poi si sta eseguendo
+        ///     interactableAnimator.gameObject.SetActive(false);
+        ///     ShowPlayer(false);
+        ///     ExecutedEntity.KillEntity();                // <-- la morte parte QUI
+        ///     interactorAnimator.SetTrigger("USED");
+        ///     while (!base.Consumed) yield return lapse;
+        ///
+        /// E NON E' UN METODO NUOVO DA SCEGLIERE: `Execution.OnUse` e' l'unico posto in cui l'esecuzione
+        /// comincia, ed e' anche il gemello esatto di `InteractionEnd` (la patch in fondo al file), che
+        /// l'esecuzione la chiude. Inizio e fine tornano a essere DUE METODI DELLA STESSA CLASSE, sullo
+        /// STESSO oggetto.
+        ///
+        /// ⚠️ E L'ITERATORE NON E' UN OSTACOLO: `OnUse` e' `IEnumerator`, quindi il suo corpo parte al
+        /// primo `MoveNext()` e non alla chiamata - ma il POSTFIX gira alla CHIAMATA, cioe' alla
+        /// creazione dell'iteratore. E quella chiamata avviene DENTRO il frame della pressione:
+        ///     Execution.OnUpdate -> Use() -> StartCoroutine(UseCorroutine())
+        ///       -> [primo MoveNext, immediato] ... yield return StartCoroutine(OnUse())
+        ///         -> OnUse()  <-- QUI GIRA IL POSTFIX, e il corpo di OnUse non e' ancora partito
+        /// La prova nel log di una sessione reale e' l'ordine delle righe: `Starting using: ...`
+        /// (scritta da `UseCorroutine` PRIMA di chiamare `OnUse`) precede `EXECUTION` blocker enabled
+        /// (scritta da `OnUse`). ⇒ L'annuncio ora cade FRA quelle due, e non prima di entrambe.
+        /// (E' la stessa forma gia' usata da `PrieDieuHelper`: un Postfix su un `OnUse` che e' una
+        /// coroutine.)
+        ///
+        /// ⚠️ ED E' IL MOMENTO CHE SERVE AL RICEVENTE. Il fantasma deve partire quando si preme, e il
+        /// nemico deve morire quando si preme: `KillEntity()` sta DUE righe sotto il punto in cui questo
+        /// postfix gira, quindi l'annuncio e la morte sono nello STESSO frame, e il peer non vede piu'
+        /// un'esecuzione su un nemico che cammina.
         /// </summary>
-        public static void Announce(EntityExecution execution)
+        public static void Announce(Execution prop)
         {
             try
             {
-                if (execution == null)
+                if (prop == null)
                     return;
 
                 if (!Main.Multiplayer.NetworkManager.IsConnected)
@@ -84,7 +121,20 @@ namespace Blasphemous.Multiplayer.Client
                 if (EnemySyncManager.IsApplyingRemoteDamage)
                     return;
 
-                Enemy enemy = execution.EntityOwner as Enemy;
+                // ⚠️ L'ENTITA' ESEGUITA, E IL CAMPO E' UN ALTRO RISPETTO A PRIMA. Fino a ieri la patch
+                // riceveva l'`EntityExecution` del NEMICO e leggeva `EntityOwner`; adesso riceve la PROP
+                // (`Execution`), e il nemico sta in `Execution.ExecutedEntity`:
+                //     public Enemy ExecutedEntity { get; set; }        (Execution.cs:101)
+                //     execution.GetComponentInChildren<Execution>().ExecutedEntity = base.EntityOwner as Enemy;
+                //                                         (EntityExecution.InstantiateExecution, riga 40)
+                //   ⇒ E' LO STESSO NEMICO: quel campo viene scritto con `base.EntityOwner as Enemy`, cioe'
+                //   ESATTAMENTE il valore che prima si leggeva dall'altra parte della catena. Non cambia
+                //   nulla nell'id, nella memoria delle morti, in `MarkSpawnPointConsumed` o nel ciclo che
+                //   abbatte il nemico presente: `TryGetEnemyId` vede lo stesso `Enemy`.
+                //   ⚠️ E `ExecutedEntity` e' GIA' VALORIZZATO quando si preme: lo scrive
+                //   `InstantiateExecution`, cioe' quando il nemico diventa eseguibile - prima della
+                //   pressione. Se fosse nullo, `TryGetEnemyId` uscirebbe con la sua riga di osservazione.
+                Enemy enemy = prop.ExecutedEntity;
 
                 string id;
                 if (!EnemySyncManager.TryGetEnemyId(enemy, out id))
@@ -105,28 +155,26 @@ namespace Blasphemous.Multiplayer.Client
 
                 Main.Multiplayer.SendEnemyDeathGlobal(ExecPrefix + id);
 
-                // A6 - IL FILO FRA INIZIO E FINE. `InstantiateExecution` (qui) e `InteractionEnd` (la patch in
-                // fondo al file) sono DUE metodi di DUE classi diverse, e l'oggetto che finisce non e' questo:
-                // e' la prop FIGLIA che `InstantiateExecution` ha appena istanziato.
-                //   ⚠️ SI PRENDE DAL MONDO, NON DALLA PROP. `__instance` e' l'`EntityExecution` del NEMICO;
-                //   l'`Execution` che ci interessa e' un componente della prop, e in questo istante la prop e'
-                //   GIA' STATA ISTANZIATA da `InstantiateExecution` (e' un postfix: il corpo del gioco e' gia'
-                //   girato per intero).
-                //   `FindObjectOfType` invece di una ricerca dentro la prop perche' la prop non e' raggiungibile
-                //   da `__instance` in modo pubblico. Ed e' legittimo proprio qui: in questo istante ce n'e' UNA
-                //   SOLA, quella appena nata. E' l'unico uso di `FindObjectOfType` in questo file.
-                PendingExecution = UnityEngine.Object.FindObjectOfType<Execution>();
+                // A6 - IL FILO FRA INIZIO E FINE, E ADESSO E' L'OGGETTO STESSO.
+                //
+                // ⚠️⚠️ QUI C'ERA `FindObjectOfType<Execution>()`, ED E' SPARITO PERCHE' NON SERVE PIU'.
+                // Prima si arrivava da `EntityExecution.InstantiateExecution` - un metodo del NEMICO - e la
+                // prop dell'esecuzione andava CERCATA nel mondo (con la nota che in quell'istante ce n'era
+                // una sola, quella appena nata, e che `FindObjectOfType` era l'unico modo di raggiungerla).
+                // Adesso `__instance` E' la prop: l'annuncio parte da `Execution.OnUse`, quindi il campo si
+                // scrive con l'oggetto che si ha in mano.
+                //   ⇒ Il filo fra inizio e fine non e' piu' "una prop trovata per somiglianza": e' la prop
+                //   che sta eseguendo, e sara' la STESSA che chiamera' `InteractionEnd` (la patch in fondo
+                //   al file, sullo stesso oggetto).
+                PendingExecution = prop;
 
-                // ⚠️ LA GUARDIA, E NON E' PIGNOLERIA. Se la prop non si e' trovata, l'inizio partirebbe e
-                // NESSUNO potrebbe fermarlo: `AnnounceEnd` uscirebbe alla prima riga per sempre, e l'unica via
-                // di ripristino resterebbe il fusibile. Cioe': si sceglierebbe di far partire un'animazione
-                // sapendo di non poterla spegnere. Con questa riga, invece, non parte.
-                if (PendingExecution == null)
-                {
-                    ModLog.Warn("[ExecAnim TX] la prop dell'esecuzione non si e' trovata: " +
-                                "l'animazione non parte (e non e' un problema di rete)");
-                    return;
-                }
+                // ⚠️ E LA GUARDIA CHE C'ERA QUI NON HA PIU' SENSO D'ESSERE, il che e' un guadagno e non una
+                // perdita. Prima serviva a non far partire l'inizio quando la prop non si trovava: senza di
+                // essa un inizio senza fine avrebbe lasciato l'animazione appesa al solo fusibile. Ma quella
+                // guardia esisteva SOLO perche' si stava guardando un altro oggetto: `prop` qui non puo'
+                // essere null (la prima riga di questo metodo esce se lo e'), e se e' vivo adesso lo e' anche
+                // quando `InteractionEnd` girera'. La via di uscita e' garantita dal fatto, non da un
+                // controllo.
 
                 // PROVA LATO MITTENTE, accanto a `[Exec TX]`: la riga `[Effect] ExecutionStart` la scrive il
                 // RICEVENTE. Senza questa, "il postfix non e' girato" e "il pacchetto non e' arrivato" restano
@@ -196,10 +244,12 @@ namespace Blasphemous.Multiplayer.Client
         /// L'esecuzione in corso su QUESTA macchina, o null.
         ///
         /// ⚠️ PERCHE' UN CAMPO STATICO E NON UN PARAMETRO. L'inizio e la fine sono DUE metodi del gioco
-        /// diversi, in DUE classi diverse (`EntityExecution.InstantiateExecution` e
-        /// `Execution.InteractionEnd`), e fra i due non c'e' alcuna pila che li tenga insieme: l'`Execution`
-        /// che finisce non e' lo stesso oggetto che ha chiamato `InstantiateExecution` - e' la prop FIGLIA che
-        /// quello ha istanziato. Il filo che li lega e' questo campo.
+        /// diversi (`Execution.OnUse` e `Execution.InteractionEnd`), e fra i due non c'e' alcuna pila che li
+        /// tenga insieme: `OnUse` e' una COROUTINE, e quando `InteractionEnd` gira la pila di `OnUse` e' gia'
+        /// stata smontata da decine di `yield`. Il filo che li lega e' questo campo.
+        ///   ⚠️ E adesso i due METODI sono della STESSA CLASSE e l'oggetto e' LO STESSO: il campo si scrive
+        ///   da `OnUse` (`PendingExecution = prop`) e si legge da `InteractionEnd`. Prima erano due classi
+        ///   diverse - il nemico e la sua prop - e questo campo era l'unica cosa che le tenesse insieme.
         ///
         /// ⚠️ E' UN RIFERIMENTO A UN GameObject, QUINDI PUO' DIVENTARE UN OGGETTO MORTO. Un oggetto Unity
         /// distrutto NON e' `null` in C#: si confronta uguale a null, e toccarlo lancia. Per questo ogni uso e'
@@ -212,19 +262,61 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// IL BERSAGLIO. EntityExecution.InstantiateExecution() e' il punto in cui il nemico diventa
-    /// eseguibile, ed e' UNO SOLO per tutti e sedici i tipi eseguibili del gioco.
+    /// ⭐ IL BERSAGLIO, E IL PERCHE' E' CAMBIATO.
+    ///
+    /// QUESTO ERA `EntityExecution.InstantiateExecution()`, E NON POTEVA ESSERE GIUSTO:
+    /// `InstantiateExecution()` e' chiamato da `Enemy.Execution(Hit)` -> `Behaviour.Execution()` quando il
+    /// nemico DIVENTA ESEGUIBILE - per prossimita', vita o stun - e da quel momento il giocatore PUO'
+    /// premere. Puo' anche NON premere mai. Annunciare li' il "si sta eseguendo" e' annunciare una
+    /// intenzione che nessuno ha ancora avuto, e i due sintomi dell'utente sono esattamente le sue
+    /// conseguenze: un fantasma in piu' (con lo sprite del remoto) che recita da solo, e un nemico vivo su
+    /// una macchina e morto sull'altra.
+    ///
+    /// ⭐ ADESSO E' `Execution.OnUse()`, cioe' il metodo che il gioco chiama QUANDO SI PREME:
+    ///     Execution.OnUpdate  ->  if (... base.InteractionTriggered ...) { ...; Use(); }
+    ///     Interactable.Use()  ->  StartCoroutine(UseCorroutine())
+    ///     UseCorroutine()     ->  ... yield return StartCoroutine(OnUse())   <-- la chiamata a OnUse
+    /// ed e' dentro `OnUse` che il gioco fa `SetBlocker("EXECUTION")`, `ShowPlayer(false)` e
+    /// `KillEntity()`.
+    ///
+    /// ⚠️⚠️ E' UNA COROUTINE, QUINDI VA DETTO CON PRECISIONE DOVE GIRA IL POSTFIX. `OnUse()` e' un
+    /// ITERATORE: il suo corpo non gira alla chiamata, gira al primo `MoveNext()`. Ma Harmony avvolge il
+    /// METODO, non l'iteratore, quindi il Postfix gira ALLA CHIAMATA - cioe' alla CREAZIONE
+    /// dell'iteratore, e il corpo di `OnUse` non e' ancora partito.
+    ///   Dove cade quella chiamata, nel tempo: `StartCoroutine` esegue il primo segmento IMMEDIATAMENTE,
+    /// quindi `UseCorroutine` arriva a `yield return StartCoroutine(OnUse())` nello STESSO frame di
+    /// `Use()`, che e' lo STESSO frame in cui `Execution.OnUpdate` ha letto la pressione del tasto.
+    ///   ⇒ Il postfix gira DENTRO il frame dell'azionamento, poche istruzioni PRIMA di
+    ///   `ExecutedEntity.KillEntity()`. E la prova e' nel log, nell'ordine delle righe:
+    ///       1. `Starting using: ACT_...Execution(Clone)`      <- scritta da `UseCorroutine` PRIMA di OnUse
+    ///       2. `[Exec TX] ...` / `[ExecAnim TX] START`        <- QUESTO postfix
+    ///       3. `The input blocker <EXECUTION> has been enabled` <- scritta da `OnUse`, riga 2 del suo corpo
+    ///   Se l'annuncio ricompare PRIMA della riga 1, il postfix non sta girando dove crediamo.
+    ///   (La stessa forma e' gia' usata in `PrieDieuHelper`: `[HarmonyPatch(typeof(PrieDieu), "OnUse")]`,
+    ///   con la nota che OnUse "only builds the coroutine and returns - so a postfix on it runs BEFORE the
+    ///   body does anything".)
+    ///
+    /// ⚠️ E `OnUse` e' `protected override`. Non e' un ostacolo: Harmony risolve il bersaglio per nome e
+    /// `PatchAll` non guarda la visibilita' - gia' verificato per `InteractionEnd()`, che e' protected
+    /// anche lui. L'override vive su `Execution` (non su `Interactable`), che e' il tipo dichiarato qui, e
+    /// `AccessTools.Method` cerca prima i metodi dichiarati nel tipo. Ed e' il TIPO che si patcha: e' anche
+    /// l'unico modo di non colpire gli altri `Interactable` del gioco (forziere, leva, PrieDieu...), che
+    /// hanno il loro `OnUse`.
     ///
     /// E' un POSTFIX, quindi il metodo del gioco e' gia' girato INTATTO: nessun valore di ritorno
     /// toccato, nessuno stato cambiato, nessun effetto collaterale alterato. La regola del progetto sui
     /// Prefix di AnimationFixes.cs - il cui VALORE DI RITORNO e' il punto, e la cui riscrittura ha gia'
     /// causato 12 NRE - non viene sfiorata, perche' qui non c'e' alcun Prefix.
+    ///
+    /// ⚠️ E NON CE N'E' UN ALTRO SU QUESTO METODO: nessuna classe del progetto patcha
+    /// `Tools.Level.Interactables.Execution.OnUse`. `InteractionEnd` resta l'unica altra patch su questa
+    /// classe, ed e' quella della FINE. I due metodi sono UNO L'INIZIO e UNO LA FINE dello stesso oggetto.
     /// </summary>
-    [HarmonyPatch(typeof(EntityExecution), "InstantiateExecution")]
-    class EntityExecutionInstantiate_Patch
+    [HarmonyPatch(typeof(Execution), "OnUse")]
+    class ExecutionOnUse_Patch
     {
         [HarmonyPostfix]
-        public static void Postfix(EntityExecution __instance)
+        public static void Postfix(Execution __instance)
         {
             ExecutionSync.Announce(__instance);
         }
