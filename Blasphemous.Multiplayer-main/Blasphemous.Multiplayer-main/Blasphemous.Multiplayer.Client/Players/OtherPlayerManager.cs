@@ -130,6 +130,12 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         #region Connected players
 
+        /// <summary>
+        /// Names whose absence has already been reported, so the warning of FindConnectedPlayer is written
+        /// once per name per session instead of once per packet. See that method.
+        /// </summary>
+        private readonly HashSet<string> _missingPlayersReported = new HashSet<string>();
+
         // Finds a specified player connected to the server
         public PlayerStatus FindConnectedPlayer(string name)
         {
@@ -139,7 +145,29 @@ namespace Blasphemous.Multiplayer.Client.Players
                     return connectedPlayers[i];
             }
 
-            ModLog.Warn("Couldn't find connected player: " + name);
+            // THE MISS IS WORTH ONE LINE, NOT ONE PER PACKET.
+            //
+            // Measured: 309 identical "Couldn't find connected player: *" lines in one session, and the
+            // count is not a coincidence - the log holds exactly 309 "Received new game progress" lines,
+            // one for each, because ReceiveProgress asks ProcessRecievedStat about the sender for EVERY
+            // progress entry, and ProcessRecievedStat asks this lookup.
+            //
+            // The name is the literal "*", and that is a SENTINEL, not a player who has not registered yet:
+            // the server stamps the whole initial sync with it (Server.cs, getProgressPacket("*", ...)),
+            // because those entries are TEAM data that nobody performed. No player is ever called "*", so
+            // this lookup could not have succeeded however long anyone waited. The caller knows it, too:
+            // ProcessRecievedStat returns on the null and the progress itself is applied on the line above,
+            // by ProgressManager.ReceiveProgress, which never asks this question. Nothing is discarded here.
+            //
+            // So the case is noise - the loudest kind, a warning that fires 309 times for one event that is
+            // expected - and it is silenced by repetition rather than by level: the first occurrence keeps
+            // its name, its wording and its timestamp, which is what a reader needs in order to tell "the
+            // registry is behind" from "no such player". Only the 308 copies go away, and the line says so,
+            // so nobody later mistakes the single line for a single call.
+            if (_missingPlayersReported.Add(name))
+                ModLog.Warn("Couldn't find connected player: " + name +
+                            " (una sola volta per nome in questa sessione)");
+
             return null;
         }
 
