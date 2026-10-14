@@ -4469,16 +4469,19 @@ namespace Blasphemous.Multiplayer.Client
 
                 ModLog.Info($"[Exec RX] {id} nemico_in_scena={(here ? "si" : "no")}");
 
-                // P4 - la notifica. E' la parte piu' piccola che rende GIUSTIZIA all'utente: il suono dice
-                // che qualcosa e' successo, questa riga dice COSA e A CHI. Non nomina il giocatore perche'
-                // NON E' POSSIBILE: EnemyDeathGlobal non porta il mittente (lo fa notare PlayerDeathSync:
-                // "ReceiveMessage discards the sender and ProcessQueue passes only the bytes"), quindi un
-                // nome qui sarebbe inventato. DisplayNotification logga da sola ("Notification: ...") e
-                // accetta stringhe grezze, quindi non serve localizzazione.
-                // SI PUO' TOGLIERE SENZA TOCCARE NULL'ALTRO: nessuno stato dipende da questa riga.
-                Main.Multiplayer.NotificationManager.DisplayNotification(
-                    "L'altro giocatore ha eseguito un nemico");
-
+                // ⚠️ QUI C'ERA UN `DisplayNotification("L'altro giocatore ha eseguito un nemico")`, ED E'
+                // STATA TOLTA SU RICHIESTA ESPLICITA DELL'UTENTE. Era una riga di debug, scritta quando il
+                // caso non era ancora chiaro: adesso il fantasma dell'esecuzione si vede a schermo
+                // (OtherPlayerScript.PlayExecutionAnimation), quindi la notifica non aggiunge nulla e
+                // resta solo un prompt in italiano in mezzo al gioco.
+                //
+                // ⚠️ TOLTA SOLO LEI. I marker `ModLog.Info("[Exec RX] ...")` qui sopra e qui sotto
+                // RESTANO: sono l'unica osservabilita' di questa strada, e senza di loro "il pacchetto non
+                // e' arrivato" e "e' arrivato e non ha suonato" tornano indistinguibili.
+                //
+                // ⚠️ E NON E' SOSTITUIBILE CON UNA NOTIFICA MIGLIORE: il mittente non viaggia su questo
+                // canale (EnemyDeathGlobal non lo porta, e ProcessQueue passa solo i byte), quindi
+                // qualunque testo con un NOME sarebbe inventato. Vedi la nota in PlayerDeathSync.
                 if (Core.Logic.Penitent == null || Core.Logic.Penitent.Audio == null)
                     return;
 
