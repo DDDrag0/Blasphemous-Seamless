@@ -362,6 +362,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.IdleSword: return PenitentAudio.IdleModeSword;            // "PenitentIdleSword"
                 case EffectType.VerticalStart: return PenitentAudio.VerticalAttackStart;  // "PenitentVerticalAttackStart"
                 case EffectType.VerticalFalling: return PenitentAudio.VerticalAttackFalling;
+                // A7-bis - GLI ALTRI DUE DELLA CATENA. Chiavi lette dalle `public const string` di
+                // `PenitentAudio`: non viaggiano sul filo, ogni macchina le risolve nel PROPRIO catalogo.
+                case EffectType.ParryAttack: return PenitentAudio.ParryEventKey;
+                case EffectType.ParryStartCatalog: return PenitentAudio.StartParryEventKey;
                 // A7 - LA GUARDIA: chiave letta dalla `public const string` di `PenitentAudio`.
                 // ⚠️ La categoria NON e' Motion: `PlayStartParry` fa `PlaySfxOnCatalog`, che non imposta un
                 default: return null;
@@ -836,6 +840,18 @@ namespace Blasphemous.Multiplayer.Client.Players
             // l'unico modo di non lasciare acceso un evento senza piu' un manico per fermarlo. Crearne due -
             // una per "testare" e una per "accendere" - lascerebbe la prima accesa per sempre.
             parryHitInstance = audio.CreateCatalogEvent(key, at);
+
+            // ⚠️⚠️ A7-bis - SI CAMBIA STRADA, E PER SEPARARE DUE VARIABILI. `EventOneShotPanned` e` la
+            // strada che la GUARDIA usa e che FUNZIONA (confermato dall'utente). La catena qui sopra
+            // (`CreateCatalogEvent` + `start()`) creava un'istanza VALIDA e non si sentiva lo stesso.
+            //   ⇒ Se ora si sente, il problema era la STRADA. Se non si sente ancora, e' IL SUONO
+            //   (`PenitentParryHit` non e' il clang) - e per questo si manda anche `ParryAttack`.
+            //
+            // `EventOneShotPanned` fa start E release da sola, quindi l'istanza non resta appesa e il
+            // fusibile qui sotto non serve piu` per questo suono: resta perche' non fa danno, e perche'
+            // `StopPeerParryHitSound` e` la via di pulizia dello STOP.
+            audio.EventOneShotPanned(ResolveCatalogPath(key), at);
+            parryHitStartedAt = Time.unscaledTime;
 
             if (parryHitInstance.isValid())
             {

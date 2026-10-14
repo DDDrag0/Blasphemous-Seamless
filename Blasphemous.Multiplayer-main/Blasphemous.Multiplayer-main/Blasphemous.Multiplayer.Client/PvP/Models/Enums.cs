@@ -194,4 +194,12 @@ public enum EffectType
     ParryHit = 107,
     ParryHitStop = 108,
     ParryStart = 109,
+
+    // A7-bis - GLI ALTRI DUE SUONI DELLA CATENA, per togliere il dubbio su QUALE sia il clang.
+    // Il dubbio e' dichiarato dal piano e non risolvibile in IL (dipende da quale clip porta quale
+    // AnimationEvent): si suonano TUTTI, e l'orecchio decide.
+    //   ParryAttack       110  `PenitentParry`       - il contrattacco (one-shot puro, `PlayParryAttack`)
+    //   ParryStartCatalog 111  `PenitentStartParry` - la chiave del metodo SENZA chiamanti C# (`PlayStartParry`)
+    ParryAttack = 110,
+    ParryStartCatalog = 111,
 }

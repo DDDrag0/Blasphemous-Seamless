@@ -846,6 +846,12 @@ namespace Blasphemous.Multiplayer.Client
 
             Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryStart ({at.x:F1},{at.y:F1}) path={path}");
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryStart, at);
+
+            // A7-bis - E SI MANDA ANCHE LA CHIAVE DEL METODO SENZA CHIAMANTI C# (`PenitentStartParry`).
+            // Non si patcha quel metodo (non lo chiama nessuno): si manda la SUA chiave da qui, che e'
+            // l'unico punto in cui sappiamo che una guardia e' appena salita. Cosi' l'utente sente TUTTI
+            // i suoni della catena e il dubbio si chiude con l'orecchio invece che con una deduzione.
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryStartCatalog, at);
         }
     }
 
@@ -1693,4 +1699,27 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
+    /// <summary>
+    /// A7-bis - IL CONTRATTACCO (`PenitentParry`), il secondo candidato al titolo di "clang".
+    ///
+    /// ⚠️ SI SUONA ANCHE SE IL PIANO LO AVEVA ESCLUSO, e la ragione e' onesta: su una parata riuscita
+    /// si accendono DUE eventi del penitent, e l'IL non puo' dire quale dei due sia il clang, perche'
+    /// la differenza sta in QUALE CLIP contiene QUALE AnimationEvent - e i clip sono negli asset.
+    ///   ⇒ Si suonano entrambi. Se ne senti UNO solo, quello e' il clang. Se ne senti due, il clang e'
+    ///   quello piu' forte. Se non ne senti nessuno dei due, il problema non e' il nome: e' la strada.
+    /// </summary>
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "PlayParryAttack")]
+    class PenitentParryAttackSound_Patch
+    {
+        public static void Postfix()
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+            Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryAttack ({at.x:F1},{at.y:F1})");
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryAttack, at);
+        }
+    }
 }
+
