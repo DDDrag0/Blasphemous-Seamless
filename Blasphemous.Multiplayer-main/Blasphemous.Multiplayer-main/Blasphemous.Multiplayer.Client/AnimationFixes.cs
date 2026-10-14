@@ -806,24 +806,45 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// LA GUARDIA (suono #2): `PenitentStartParry`, one-shot puro via `PlaySfxOnCatalog`.
+    /// LA GUARDIA (suono #2).
     ///
-    /// ⚠️ QUESTO SUONO NON E' "LA PARATA FALLITA": si sente a OGNI tentativo, riuscito o no. E' il suono
-    /// della GUARDIA CHE SALE, ed e' esattamente cio' che rende il tentativo del peer VISIBILE.
-    /// L'unico caso in cui un colpo viene davvero ASSORBITO e' la GuardSlide, che e' GIA' coperta da A4
-    /// (`PlaySlideDust` riproduce `GuardSlide.GuardSlideSoundFx` leggendolo dal componente LOCALE).
+    /// ⚠️⚠️ IL BERSAGLIO E' CAMBIATO, e la ragione e' in IL. `PenitentAudio.PlayStartParry` esiste, e'
+    /// `public`, ma il suo UNICO riferimento in tutto Assembly-CSharp e' `PenitentAttackAnimations.StartParry`
+    /// - cioe' un AnimationEvent. Se la clip non lo porta, il postfix non scatta MAI: **0 `[Sound TX] ParryStart`
+    /// su entrambi i log, con 4 parate reali**. Un patch su un metodo che nessuno chiama e' un patch muto.
+    ///
+    ///   ⭐ E IL SUONO DELLA GUARDIA E' UN ALTRO: `Parry.StartParry()` chiama
+    ///      `Core.Audio.EventOneShotPanned(this.ParryGuardFx, EntityOwner.transform.position)`.
+    ///      `ParryGuardFx` e' un campo `[EventRef] public string` sul componente LOCALE - la STESSA tecnica
+    ///      che A4 usa gia' per `GuardSlide.GuardSlideSoundFx`. E il valore vive nell'asset: l'unico modo di
+    ///      averlo e' leggerlo dal componente, non scriverlo a mano.
+    ///
+    /// ⚠️ E QUESTO SUONO NON E' "LA PARATA FALLITA": `StartParry` e' chiamato da `OnCastStart`, cioe' a OGNI
+    /// tentativo, riuscito o no. E' il suono della GUARDIA CHE SALE, ed e' esattamente cio' che rende il
+    /// tentativo del peer VISIBILE. L'unico caso in cui un colpo viene davvero ASSORBITO e' la GuardSlide,
+    /// gia' coperta da A4 - non si duplica.
     /// </summary>
-    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "PlayStartParry")]
-    class PenitentStartParrySound_Patch
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Parry), "OnCastStart")]
+    class ParryGuardSound_Patch
     {
-        public static void Postfix()
+        public static void Postfix(Gameplay.GameControllers.Penitent.Abilities.Parry __instance)
         {
-            if (Framework.Managers.Core.Logic.Penitent == null)
+            if (__instance == null || Framework.Managers.Core.Logic.Penitent == null)
                 return;
+
+            // ⚠️ La chiave NON e' piu' `PenitentStartParry` (una costante senza consumatori reali): si legge
+            // il campo dal componente LOCALE, ed e' il PERCORSO che il gioco ha appena suonato qui.
+            string path = __instance.ParryGuardFx;
+            if (string.IsNullOrEmpty(path))
+            {
+                Blasphemous.ModdingAPI.ModLog.Warn("[Sound TX] ParryStart: `Parry.ParryGuardFx` e' vuoto su " +
+                                                   "questa macchina - la guardia del peer non uscira'");
+                return;
+            }
 
             UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
 
-            Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryStart ({at.x:F1},{at.y:F1})");
+            Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryStart ({at.x:F1},{at.y:F1}) path={path}");
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryStart, at);
         }
     }

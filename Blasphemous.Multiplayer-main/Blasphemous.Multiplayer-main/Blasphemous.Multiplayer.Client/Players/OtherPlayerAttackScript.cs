@@ -16,6 +16,8 @@ using Gameplay.GameControllers.Entities.Audio;
 using Gameplay.GameControllers.Penitent.Audio;
 using System.Collections;
 using UnityEngine;
+using Framework.Util;                                  // AnimatorEvent (il predicato del fantasma)
+using Tools.Level;                                     // Interactable (il campo interactorAnimator)
 
 namespace Blasphemous.Multiplayer.Client.Players
 {
@@ -362,8 +364,6 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.VerticalFalling: return PenitentAudio.VerticalAttackFalling;
                 // A7 - LA GUARDIA: chiave letta dalla `public const string` di `PenitentAudio`.
                 // ⚠️ La categoria NON e' Motion: `PlayStartParry` fa `PlaySfxOnCatalog`, che non imposta un
-                // solo parametro. ⇒ NIENTE `PlayPeerMotionSound`, che pretenderebbe i 14 materiali.
-                case EffectType.ParryStart: return PenitentAudio.StartParryEventKey;
                 default: return null;
             }
         }
@@ -820,7 +820,36 @@ namespace Blasphemous.Multiplayer.Client.Players
             // nell'origine. Passare la posizione del PEER lo spazializza dove la parata e' avvenuta, che e'
             // lo scopo del fix. Se all'orecchio suonasse sbagliato, per essere fedeli al gioco basta passare
             // `Vector3.zero`: e' l'unica riga da cambiare.
-            audio.PlayEventWithCatalog(ref parryHitInstance, key, EffectWorldPosition(position));
+            // ⚠️⚠️ PERCHE' NON `PlayEventWithCatalog`. Il suo IL e' 18 istruzioni e comincia cosi':
+            //     if (eventInstance.isValid()) return;    // <-- esce SENZA creare, SENZA avviare, SENZA loggare
+            // E' un LATCH, non uno `start()`: il suono parte solo la PRIMA volta che il campo e' invalido.
+            // E il campo non si invalida da solo, perche' ne' `PlayEventWithCatalog` ne' `release()` toccano
+            // `handle` (`release()` fa solo `ldfld handle; call Release; ret`): l'unico che lo azzera e'
+            // `clearHandle()`, che sta dentro `FMODAudioManager.StopEvent`.
+            //   `StopPeerParryHitSound()` lo chiama gia' - ma la guardia va tolta lo stesso, perche' questa
+            //   riga deve creare SEMPRE un'istanza nuova, come fa il gioco:
+            //       EntityAudio.PlayEvent -> CreateCatalogEvent(eventKey) -> start()
+            Vector3 at = EffectWorldPosition(position);
+
+            // ⚠️ UNA SOLA `CreateCatalogEvent`, E IL CAMPO CI FINISCE DENTRO SUBITO. `StopPeerParryHitSound()`
+            // ha gia' fermato e azzerato l'istanza precedente: sovrascrivere il campo con un'istanza NUOVA e'
+            // l'unico modo di non lasciare acceso un evento senza piu' un manico per fermarlo. Crearne due -
+            // una per "testare" e una per "accendere" - lascerebbe la prima accesa per sempre.
+            parryHitInstance = audio.CreateCatalogEvent(key, at);
+
+            if (parryHitInstance.isValid())
+            {
+                parryHitInstance.start();
+                parryHitStartedAt = Time.unscaledTime;
+                ModLog.Info($"[Sound RX] clang acceso ({at.x:F1},{at.y:F1})");
+            }
+            else
+            {
+                // ⚠️ OSSERVABILITA': senza questa riga "il clang e' partito e non si sente" e "il clang e' stato
+                // SCARTATO dalla guardia" restano INDISTINGUIBILI, perche' `PlayEventWithCatalog` tace.
+                ModLog.Warn("[Sound RX] il clang NON e' partito: `CreateCatalogEvent(\"" + key +
+                            "\")` ha restituito un'istanza NON valida (chiave/catalogo, non rete)");
+            }
 
             if (parryHitInstance.isValid())
                 parryHitStartedAt = Time.unscaledTime;
@@ -869,18 +898,22 @@ namespace Blasphemous.Multiplayer.Client.Players
             StopPeerParryHitSound();
         }
 
-        /// <summary>
-        /// Il controller del fantasma che recita l'esecuzione, letto dal PREFAB - cioe' senza istanziare
-        /// NULLA. Vedi il ripiego in `PlayExecutionAnimation` per il perche' e il quando.
+        /// ⚠️ IL DIFETTO DELLA VERSIONE PRECEDENTE NON ERA "IL PRIMO E' SBAGLIATO": era che il controller che
+        /// recita l'esecuzione non e' raggiungibile chiedendo `HasState(0,"USED")` agli `<Animator>` del
+        /// prefab. Il log lo ha dimostrato su TUTTI (non solo sul primo): nessuno risponde `true`.
         ///
-        /// ⚠️ NON SI CERCA `FindObjectOfType<Execution>()`, ed e' la differenza che rende questo metodo
-        /// utile: la prop NON ESISTE finche' qualcuno non esegue qualcosa, e quando esiste e' a meta'
-        /// cutscene. Il prefab invece e' sempre raggiungibile dal nemico, che il ricevente HA GIA' risolto
-        /// (`ApplyRemoteExecution`).
+        /// ⭐ LA SCELTA GIUSTA NON E' UNA SCELTA: e' il campo che il GIOCO usa per recitare.
+        ///    `Tools.Level.Interactables.Interactable` dichiara:
+        ///        protected Animator interactableAnimator;   // la prop
+        ///        protected Animator interactorAnimator;     // il fantasma (il penitent clonato)
+        ///    ed e' su `interactorAnimator` che il gioco esegue
+        ///        Execution.cs:166   interactorAnimator.SetTrigger("USED");
+        ///    Quindi non si indovina fra N Animator: si prende quello che il gioco usa.
+        ///    ⚠️ Il valore e' nell'asset, ma la SCELTA no: questo e' l'unico punto che non dipende dall'asset.
         ///
-        /// ⚠️ E NON SERVE SAPERE L'INDICE DEL FIGLIO: si prende il PRIMO Animator del prefab che abbia un
-        /// controller. Le altre vie (l'indice del figlio) dipendono da un numero che vive nell'asset e che
-        /// nessuno puo' leggere da qui.
+        /// ⚠️ NON SI CERCA `FindObjectOfType<Execution>()`: la prop NON ESISTE finche' qualcuno non esegue
+        /// qualcosa, e quando esiste e' a meta' cutscene. Il prefab invece e' sempre raggiungibile dal nemico,
+        /// che il ricevente HA GIA' risolto.
         /// </summary>
         public static RuntimeAnimatorController ResolveExecutionController()
         {
@@ -894,43 +927,105 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (entityExecution == null || entityExecution.ExecutionPrefab == null)
                 return null;
 
-            Animator[] animators = entityExecution.ExecutionPrefab.GetComponentsInChildren<Animator>(true);
+            GameObject prefab = entityExecution.ExecutionPrefab;
 
+            // VIA 1 - il campo del gioco, su TUTTE le Interactable del prefab.
+            Interactable[] interactables = prefab.GetComponentsInChildren<Interactable>(true);
+            for (int i = 0; i < interactables.Length; i++)
+            {
+                if (interactables[i] == null)
+                    continue;
+
+                Animator interactor = InteractorAnimatorField != null
+                    ? InteractorAnimatorField.GetValue(interactables[i]) as Animator
+                    : null;
+
+                if (interactor == null || interactor.runtimeAnimatorController == null)
+                    continue;
+
+                ModLog.Info($"[ExecAnim RX] controller del fantasma dal campo `interactorAnimator` di " +
+                            $"{interactables[i].GetType().Name} (prefab: {interactables.Length} Interactable)");
+                return interactor.runtimeAnimatorController;
+            }
+
+            // VIA 2 (ripiego) - l'Animator che porta un `AnimatorEvent`: e' il predicato che
+            // `Interactable.CheckAnimationEvents` usa per riconoscere il fantasma. Non e' una scommessa
+            // sull'ordine: e' la stessa domanda che si fa il gioco.
+            Animator[] animators = prefab.GetComponentsInChildren<Animator>(true);
+            for (int i = 0; i < animators.Length; i++)
+            {
+                if (animators[i] == null || animators[i].runtimeAnimatorController == null)
+                    continue;
+                if (animators[i].GetComponent<AnimatorEvent>() == null)
+                    continue;
+
+                ModLog.Info($"[ExecAnim RX] controller del fantasma dall'Animator con AnimatorEvent " +
+                            $"(animator {i + 1} di {animators.Length})");
+                return animators[i].runtimeAnimatorController;
+            }
+
+            // VIA 3 - l'ultima spiaggia, tenuta SOLO come rete di sicurezza e DICHIARATA come tale.
             int executionState = Animator.StringToHash("USED");
-
-            // ⚠️⚠️ NON SI PRENDE "IL PRIMO CHE HA UN CONTROLLER", ed e' il difetto che il primo test ha
-            // rivelato: il prefab ha PIU' di un Animator, e il primo non e' quello che recita. Preso il
-            // primo, il log diceva `lo stato "USED" NON e' nemmeno nel controller del fantasma della prop`
-            // - cioe' un controller c'era, ma era QUELLO SBAGLIATO, e il suono dell'esecuzione (che viaggia
-            // gia') restava l'unica cosa che si vedeva.
-            //   ⇒ Si prende quello che HA LO STATO. `Animator.HasState(layer, hash)` e' il test esatto, e
-            //   chiederlo qui invece di scommettere su un ordine e' l'unica scelta che non dipende da un
-            //   asset che nessuno puo' leggere.
-            RuntimeAnimatorController first = null;
             for (int i = 0; i < animators.Length; i++)
             {
                 if (animators[i] == null || animators[i].runtimeAnimatorController == null)
                     continue;
 
-                if (first == null)
-                    first = animators[i].runtimeAnimatorController;
-
                 if (animators[i].HasState(0, executionState))
                 {
-                    // Osservabilita': dice QUALE animator ha vinto e su quanti si e' scelto. Senza questa
-                    // riga, "il prefab ha un solo Animator" e "ne ha cinque e ho indovinato" restano
-                    // indistinguibili.
-                    ModLog.Info($"[ExecAnim RX] controller del fantasma risolto: animator {i + 1} di " +
-                                $"{animators.Length} (e' quello che ha lo stato \"USED\")");
+                    ModLog.Info($"[ExecAnim RX] controller del fantasma da HasState(\"USED\") " +
+                                $"(animator {i + 1} di {animators.Length})");
                     return animators[i].runtimeAnimatorController;
                 }
             }
 
-            // Nessuno ha lo stato. Si torna comunque il primo controller valido, cosi' il chiamante puo'
-            // FARE il tentativo e riportare l'esito con la sua riga - che e' piu' precisa di questa.
-            ModLog.Warn($"[ExecAnim RX] nessuno dei {animators.Length} Animator del prefab ha lo stato " +
-                        "\"USED\": il controller del fantasma non e' identificabile");
-            return first;
+            ModLog.Warn($"[ExecAnim RX] nessuna delle {interactables.Length} Interactable e dei " +
+                        $"{animators.Length} Animator del prefab espone il fantasma: l'animazione non esiste");
+            return null;
+        }
+
+        /// ⚠️ `interactorAnimator` e' `protected`: si legge per RIFLESSIONE, come questo file fa gia' per
+        /// `_audioCatalogs`, `DashDustGenerator` e `GuardSlide`.
+        private static readonly System.Reflection.FieldInfo InteractorAnimatorField =
+            typeof(Tools.Level.Interactable).GetField(
+                "interactorAnimator",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        /// <summary>
+        /// A7 - LA GUARDIA DEL PEER. Il percorso lo legge dal PENITENT LOCALE, perche' il valore vive
+        /// nell'asset e non viaggia sul filo: un byte (109) dice "guardia", e ogni macchina risolve il
+        /// PROPRIO percorso.
+        ///
+        /// ⚠️ E SI USA `EventOneShotPanned`, non la catena del motion: questo suono NON passa da
+        /// `PlayOneShotEvent`, quindi non ha una `FxSoundCategory` e non imposta i 14 parametri del terreno.
+        /// Pretendere quelli (come per i passi) non servirebbe a nulla.
+        /// </summary>
+        private static void PlayPeerGuardSound(Vector2 position)
+        {
+            Gameplay.GameControllers.Penitent.Abilities.Parry parry =
+                Core.Logic.Penitent == null
+                    ? null
+                    : Core.Logic.Penitent.GetComponentInChildren<Gameplay.GameControllers.Penitent.Abilities.Parry>(true);
+
+            if (parry == null)
+                return;
+
+            string path = parry.ParryGuardFx;
+            if (string.IsNullOrEmpty(path))
+            {
+                ModLog.Warn("[Sound] `Parry.ParryGuardFx` e' vuoto su questa macchina: " +
+                            "la guardia del peer non esce (e NON e' un problema di rete)");
+                return;
+            }
+
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+                return;
+
+            // La spia dice una volta sola PERCORSO e origine, cosi' "il pacchetto non e' arrivato" e
+            // "il percorso non c'e'" restano distinguibili.
+            ModLog.Info($"[Sound] guardia del peer -> percorso \"{path}\"");
+            audio.EventOneShotPanned(path, EffectWorldPosition(position));
         }
 
         private static void PlayPeerSound(EffectType effect, Vector2 position)
@@ -951,6 +1046,21 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (effect == EffectType.IdleSword)
             {
                 PlayPeerMotionSound(PenitentAudio.IdleModeSword, position);
+                return;
+            }
+
+            // A7 - LA GUARDIA HA UNA STRADA SUA, e non passa da `SoundKeyFor`.
+            //
+            // ⚠️ PERCHE'. La chiave che il gioco usa per questo suono NON e' una costante leggibile dal
+            // codice: e' `Parry.ParryGuardFx`, un campo `[EventRef]` il cui valore vive nell'ASSET. La
+            // costante `PenitentAudio.StartParryEventKey` esiste, ma il metodo che la consuma
+            // (`PlayStartParry`) non ha alcun chiamante C# in tutto l'assembly: sarebbe la chiave di un
+            // suono che il gioco non suona mai.
+            //   ⇒ Si legge il campo dal componente LOCALE (entrambe le macchine hanno il penitent, quindi
+            //   la stessa stringa), esattamente come A4 fa per `GuardSlide.GuardSlideSoundFx`.
+            if (effect == EffectType.ParryStart)
+            {
+                PlayPeerGuardSound(position);
                 return;
             }
 
