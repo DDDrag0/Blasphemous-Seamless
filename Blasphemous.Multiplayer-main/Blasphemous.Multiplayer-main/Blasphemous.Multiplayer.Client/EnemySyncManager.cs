@@ -3206,10 +3206,74 @@ namespace Blasphemous.Multiplayer.Client
             // No hold time here, on purpose. OWNER_HOLD_SECONDS exists to stop two LIVING players trading
             // the same enemy many times a second; a corpse has nothing to stabilise, and waiting half a
             // second would be half a second of an unkillable boss.
+            //
+            // ⭐⭐ ③ - L'ORFANO: SI RILASCIA SOLO SE QUALCUNO E' QUI A PRENDERLI.
+            //
+            // QUESTA RIGA ERA `if (PlayerDeathSync.IsLocalPlayerDead() && state.OwnedByLocal)`, e la
+            // seconda condizione e' quella che produceva l'unico difetto NON cosmetico del giro.
+            //
+            // IL DIFETTO, passo per passo. Il rilascio e' UNILATERALE: questa macchina si toglie la
+            // proprieta' e PUBBLICA il token `SendEnemyOwnership(handle, ownedByReceiver: true)` dal ciclo
+            // di invio (riga ~3515, `LastPublishedOwnerIsMe != OwnedByLocal`). Sul peer
+            // `ReceiveEnemyOwnership` fa `state.OwnedByLocal = true` e chiama `ResumeEnemy`. Se il peer NON
+            // e' in questa scena, pero', quel nemico NON E' NELLA SUA `_ids`: `ResolveEnemy(id)` restituisce
+            // null, `ReceiveEnemyOwnership` esce alla riga `if (enemy == null) return;` e il record resta
+            // `OwnedByLocal = true` con un `OwnershipKnown = true` che il self-heal (l'unico altro modo di
+            // prendere un nemico: `!OwnershipKnown`) non puo' piu' scavalcare.
+            //   ⇒ Il nemico NON e' simulato da nessuno: io l'ho lasciato andare e il peer non ce l'ha. Non e'
+            //   cosmetico - e' un nemico che non cammina, non attacca e non si fa nemmeno spingere, perche'
+            //   `PauseEnemy` spegne il `PlatformCharacterController`.
+            //
+            // ⚠️ E IL RILASCIO NON E' COSMETICO NEMMENO PER ME, che e' la ragione per cui non si puo'
+            // semplicemente ignorare il caso: il commento qui sopra lo dice - `Entity.Damage()` scarta tutto
+            // mentre la vita del giocatore LOCALE e' zero. Quindi i colpi che l'altro giocatore porta a
+            // questo nemico arrivano, sulla mia macchina, e vengono BUTTATI. Da vivo il rilascio e' la cosa
+            // giusta: e' il caso "muoio accanto al boss e il sopravvissuto deve poterlo uccidere".
+            //   ⇒ Ma quando il peer e' in un'ALTRA SCENA non c'e' nessun sopravvissuto qui: non c'e' nessuno
+            //   che possa raccogliere quei nemici e nessuno che stia combattendo in questa stanza. Il
+            //   rilascio, in quel caso, non sposta il nemico verso chi puo' usarlo: lo lascia a nessuno.
+            //
+            // ⭐ LA DOMANDA 3 DEL REFERTO, che e' quella che decide se il fix e' giusto o se crea uno stallo
+            // PEGGIORE: se NON rilasciamo, chi possiede il nemico? RISPOSTA: RESTO IO, e continua a girare
+            // sulla mia macchina. `state.OwnedByLocal` non viene toccato, il gate del ciclo di invio
+            // (`if (!previous.OwnedByLocal) continue;`) continua a passare, e `ResumeEnemy`/`ApplyAggroTarget`
+            // girano come per qualunque nemico mio. Un nemico che gira sulla mia macchina e' MEGLIO di un
+            // nemico senza padrone: e' esattamente il confronto che il fix deve vincere, e lo vince.
+            //   ⚠️ E per la macchina che sta guardando NON cambia nulla: quando questo corpo si rialza
+            //   `ShouldOwnByProximity` torna a poter dire "sono piu' vicino io" e la proprieta' si ricompone
+            //   da sola (vedi la domanda 4).
+            //
+            // ⚠️ PERCHE' IL GATE E' `OtherPlayerInMyScene()` E NON UNA COSA PIU' FINE, tipo "il peer puo'
+            // davvero simulare". Perche' e' l'unica domanda che questa macchina puo' RISPONDERE con certezza:
+            // `PlayerStatus.CurrentScene` e' mantenuto dal canale di scena, mentre "il peer ha questo nemico
+            // in tabella" non e' osservabile da qui. E' la stessa domanda che `ShouldWaitForPosition` usa gia'
+            // per la stessa ragione, con lo stesso argomento scritto nella sua intestazione.
+            //
+            // ⚠️ E NON SI GATA IL RILASCIO PER PROSSIMITA' (`peerCloser`, riga ~3237), DI PROPOSITO: quello
+            // e' un TRADE fra due giocatori vivi, e `PeerIsCloser` pretende una posizione remota FRESCA (0.3 s)
+            // e un margine. Non e' la morte, non e' il caso del referto, e gatarlo cambierebbe il
+            // comportamento normale del gioco.
             if (PlayerDeathSync.IsLocalPlayerDead() && state.OwnedByLocal)
             {
+                if (!OtherPlayerInMyScene())
+                {
+                    // ⚠️ MARKER OBBLIGATORIO, ED E' IL PUNTO DELLA VOCE 5: senza questa riga "l'orfano e'
+                    // risolto" e "il nemico non gira piu'" restano INDISTINGUIBILI. Dice la decisione presa e
+                    // il motivo, e nomina il nemico, cosi' si puo' seguire QUELL'id per tutta la sessione.
+                    ModLog.Info($"[Proprieta'] {IdOf(enemy)}: sono morto ma NON lo rilascio - l'altro " +
+                                "giocatore non e' in questa scena, e rilasciarlo lo lascerebbe senza " +
+                                "padrone (nessuno lo simula: non e' nella sua lista). Resta mio e continua " +
+                                "a girare qui; lo rimettero' in gioco quando rientra.");
+                    return false;
+                }
+
                 state.OwnedByLocal = false;
                 state.OwnerSince = Time.time;
+
+                // L'altro ramo del marker: qui il rilascio AVVIENE, e la riga dice perche' e' lecito.
+                ModLog.Info($"[Proprieta'] {IdOf(enemy)}: morto, lo RILascio - l'altro giocatore e' in " +
+                            "questa scena e puo' prenderlo (il token gli arriva e lo simula lui)");
+
                 return true;
             }
 
