@@ -76,6 +76,17 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         PersistentStates.loadPersistentObjects();
         PlayerName = string.Empty;
         PlayerTeam = 1;
+
+        // TEMPORARY (CutsceneProbe): PROBE #2 - subscription to the PUBLIC Cinematics events. No patch,
+        // no behaviour: see CutsceneProbe.cs. If Core.Cinematics is not up yet it retries from LateUpdate.
+        CutsceneProbe.Subscribe();
+    }
+
+    // TEMPORARY (CutsceneProbe): the probe disarms itself on shutdown, so the events are never left
+    // subscribed on a dying object. Log only.
+    protected override void OnDispose()
+    {
+        CutsceneProbe.Unsubscribe();
     }
 
     protected override void OnRegisterServices(ModServiceProvider provider)
@@ -152,6 +163,12 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnLateUpdate()
     {
+        // TEMPORARY (CutsceneProbe): PROBE #0 - one log line ONLY when the CINEMATIC input blocker
+        // changes, read from two PUBLIC values (HasBlocker / InputBlocked). It reuses this per-frame
+        // loop on purpose: a probe does not deserve a MonoBehaviour of its own. It sits BEFORE the
+        // timer below so its own cost never lands inside the late-update measurement.
+        CutsceneProbe.Tick();
+
         // TEMPORARY (PerformanceProbe): the whole late-update pass is timed, because it holds the
         // packet processing, the player managers and the enemy sync together - that total is what the
         // frame actually pays. Remove with the probe.
