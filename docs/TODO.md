@@ -4876,3 +4876,13 @@ base:           Trait -> MonoBehaviour   (quindi AddComponent<GhostTrailGenerato
 - ⭐ **IL METODO DELLE PROBE**: tre domande **non erano decidibili** ne' in IL ne' dai log *(i nomi degli AnimationEvent stanno nei CLIP, negli asset)* ⇒ **5 patch di SOLO LOG** invece di scommettere su 3 fix. Hanno risposto: `ComboHit` **si'**, `ComboHitUp/Down` **mai**, `IdleSword` **raro** (copribile), `LoadingCharged` **si'**. Rimosse dopo il test.
 - 📋 **RESTA**: *(1)* **la SCIVOLATA** (`DashSoundStart/Stop` 95/96) — evento CATALOG **SOSTENUTO**, l'unico di A5 con STATO *(3 vie di sicurezza: STOP, `OnDestroy`, scadenza a 5 s che LOGGA)*; *(2)* **il CARICAMENTO** (`LoadingCharged` 101/102) — lo stesso pattern del dash, con **4 punti di spegnimento**; *(3)* `ComboHitUp/Down` (98/99) restano liberi e **non servono** (mai comparsi).
 
+
+### Il CARICAMENTO della carica (`LoadingCharged` 101/102) — NON SI FA, ed e' una SCELTA
+
+**Verdetto: ❌ NON SI FA — decisione dell'utente, non un buco.**
+
+> *"Saltiamola, perche' i suoni di charging mi piace che li abbiano solo i remoti, perche' e' un charging mentale del penitente alla fine."* — l'utente
+
+**Cosa sarebbe stato**: `PenitentLoadingChargedAttack` e' un evento CATALOG **SOSTENUTO**, con **QUATTRO punti di spegnimento** nel gioco (`AttackBehaviour`, `ChargedAttackEffectBehaviour`, `IdleAnimatonBehaviour`, `HurtSubStateBehaviour`) ⇒ lo stesso pattern della scivolata, ma con quattro uscite invece di una. I byte 101/102 restano liberi e documentati.
+**⭐ E la motivazione e' di DESIGN, non tecnica**: il suono del caricamento e' l'unico che l'utente vuole **SOLO sul lato di chi carica** — *"e' un charging mentale del penitente"*. ⇒ **non coprirlo e' la scelta giusta**, non una rinuncia.
+
