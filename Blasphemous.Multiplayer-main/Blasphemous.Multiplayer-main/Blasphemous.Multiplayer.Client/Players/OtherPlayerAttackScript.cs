@@ -247,6 +247,27 @@ namespace Blasphemous.Multiplayer.Client.Players
                     // farne una condizione. Fermare qualcosa che non c'e' non fa nulla.
                     StopPeerDashSound();
                     break;
+                // A6 - L'ESECUZIONE. Il primo dei due byte ACCENDE l'animazione sull'avatar, il secondo la
+                // SPEGNE. Nessuna posizione: l'animazione si suona dove l'avatar e', e dove l'avatar e' lo
+                // decide gia' il canale Position, che gira da sempre.
+                //
+                // ⚠️ E NON SI PASSA DA `hasPosition`: come per lo STOP della scivolata, non e' una
+                // condizione - questi due byte non portano coordinate, e pretenderle li scarterebbe tutti.
+                //
+                // ⚠️ L'AVATAR SI RISALE DAL PADRE, e non si riceve: `PlayEffectAnimation` e' un metodo di
+                // questo script, che vive sul GameObject "Sword", FIGLIO dell'avatar. E' la stessa tecnica
+                // gia' usata in questo stesso metodo per la scia. Ed e' per questo che lo STATO
+                // dell'esecuzione sta su `OtherPlayerScript` e non qui: un avatar per istanza, uno stato per
+                // avatar. Uno stato statico condiviso farebbe sovrascrivere a vicenda due esecuzioni - che in
+                // co-op sono il caso NORMALE.
+                case EffectType.ExecutionStart:
+                case EffectType.ExecutionEnd:
+                {
+                    OtherPlayerScript executionOwner = GetComponentInParent<OtherPlayerScript>();
+                    if (executionOwner != null)
+                        executionOwner.PlayExecutionAnimation(effect == EffectType.ExecutionStart);
+                    break;
+                }
                     //case EffectType.Verdiales:
                     //    StartCoroutine(DisplayVerdiales());
                     //    break;

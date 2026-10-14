@@ -19,6 +19,166 @@ namespace Blasphemous.Multiplayer.Client.Players
         private SpriteRenderer CharacterRenderer { get; set; }
         private Animator CharacterAnim { get; set; }
 
+        // ============================================================================================
+        // A6 - L'ESECUZIONE SULL'AVATAR. Suonare uno stato, non istanziare una prop.
+        // ============================================================================================
+        //
+        // ⭐ LA SCOPERTA CHE RENDE QUESTO POSSIBILE, in una riga: l'animazione dell'esecuzione NON e' un
+        // asset da caricare, e' uno STATO DI ANIMATOR chiamato "USED", e vive in un fantasma che il gioco
+        // suona con `interactorAnimator.SetTrigger("USED")`. Quel fantasma e' un clone del penitent guidato
+        // dal controller DEL PENITENT - e la prova sta nel fatto che lo STESSO campo `interactorAnimator`
+        // suona le animazioni in ginocchio di PrieDieu (`KNEE_START`), che sono animazioni del penitent.
+        //
+        // ⭐⭐ E QUEL CONTROLLER E' GIA' ADDOSSO A QUESTO AVATAR: `SetupPlayer` gli assegna
+        // `UnityReferences.PlayerAnimator`, che e' il `runtimeAnimatorController` del penitent LOCALE.
+        //   ⇒ Non serve ottenerlo, non serve cambiarlo, non serve `Resources.Load`, non serve riflessione:
+        //   serve il `Play` dell'hash di "USED".
+        //
+        // ⭐ E LA MOD LO FA GIA'. `PlaySpecialAnimation` installa sull'avatar il controller del fantasma di
+        // un interactable e per il PETTO suona LETTERALMENTE `SetTrigger("USED")`. Questa non e' una tecnica
+        // nuova: e' la stessa, sullo stesso stato, senza il cambio di controller (che per PrieDieu e petto
+        // serve solo perche' li' lo stato NON e' nel controller del penitent).
+        //
+        // ⚠️ PERCHE' NON SI ISTANZIA LA PROP. Perche' la prop porta un `MonoBehaviour` il cui `Update()`
+        // legge l'input LOCALE:
+        //     Interactable.Update -> Execution.OnUpdate -> ReInput.players.GetPlayer(0).GetButtonDown(8)
+        // Cioe': se la prop esiste su questa macchina, QUESTA macchina puo' premerci sopra e far partire
+        // `Execution.OnUse` - che accende `Core.Input.SetBlocker("EXECUTION", true)` e lo spegne solo
+        // all'ultima riga. Quella e' la voce 54. E neutralizzarla non e' gratis: `enabled = false` fermerebbe
+        // anche `Start()`, lasciando `Penitent`/`_cameraZoom`/`_currentLevel` a null e trasformando
+        // `Execution.Damage` in un NRE.
+        //   ⇒ LA NEUTRALIZZAZIONE PIU' SICURA DI UN COMPONENTE E' NON CREARLO. Qui non si crea nulla, e il
+        //   blocker non e' "improbabile": e' IMPOSSIBILE, perche' non c'e' alcun `Update` che possa
+        //   chiamarlo.
+        //
+        // ⚠️ E COSA NON SI FA, CHE LA PROP INVECE FA. Non si tocca la camera (`CenterCamera` centra sul
+        // penitent LOCALE), non si tocca lo slow-motion (`DoSlowmotion` scrive `_currentLevel.TimeScale`
+        // LOCALE: rallenterebbe TUTTO il gioco di chi guarda, mentre sta camminando), non si accende alcun
+        // input blocker, non si sposta il penitent locale. Non sono scelte di gusto: sono divieti.
+
+        /// <summary>
+        /// Lo stato di animator dell'esecuzione. UNO, e con la grafia esatta letta nel corpo IL del gioco
+        /// (`Execution.cs:166`: `interactorAnimator.SetTrigger("USED")`).
+        ///
+        /// ⚠️ UN HASH CALCOLATO UNA VOLTA: `Animator.StringToHash` e' una ricerca per stringa, e questo
+        /// codice gira sul percorso degli effetti. `static readonly` perche' non dipende dall'avatar.
+        /// </summary>
+        private static readonly int ExecutionStateHash = Animator.StringToHash("USED");
+
+        /// <summary>
+        /// Da quando l'esecuzione sta andando su QUESTO avatar, in `Time.unscaledTime`. Zero = nessuna.
+        ///
+        /// ⚠️ UN CAMPO D'ISTANZA, E NON UNO STATICO. Il fusibile deve poter essere letto PER L'AVATAR
+        /// GIUSTO: se lo stato fosse statico ci sarebbe UN solo tempo per tutta la mod, e due esecuzioni -
+        /// una per giocatore, che in co-op e' il caso NORMALE - si sovrascriverebbero a vicenda. Il primo
+        /// avatar a eseguire resterebbe in posa finche' il fusibile del secondo non scatta.
+        /// </summary>
+        private float ExecutionStartedAt;
+
+        /// <summary>
+        /// Quanto puo' durare l'animazione dell'esecuzione prima che il fusibile la chiuda da solo.
+        ///
+        /// ⚠️ PERCHE' UN FUSIBILE E NON SOLO IL BYTE DI FINE. Lo stesso argomento della scivolata, con
+        /// un'aggravante: li' un evento sostenuto che non si spegne "resta acceso"; qui un avatar che non
+        /// torna indietro RESTA IN POSA DI ESECUZIONE. Le due condizioni che lo producono sono note e non
+        /// rare: un pacchetto perso, e una disconnessione nel mezzo.
+        ///
+        /// ⚠️ ED E' UN VALORE DA TARARE, NON DA INDOVINARE: la durata reale in tempo reale NON e' quella
+        /// dell'editor, perche' il gioco manda l'esecuzione in slow-motion (`TimeScale` a 0.25 in 0.5 s) **e**
+        /// porta `_animator.speed` a 3. Le due cose si compongono in un modo che non si puo' calcolare da qui.
+        ///   ⇒ SI PARTE LARGHI (12 s) E SI STRINGE COI DATI: i marker `[ExecAnim TX] START`/`END` danno i due
+        ///   istanti esatti, e la loro differenza E' la durata. E `PlayExecutionAnimation` logga
+        ///   `GetCurrentAnimatorStateInfo(0).length`, cioe' la durata che il CONTROLLER dichiara.
+        /// </summary>
+        private const float ExecutionTimeoutSeconds = 12f;
+
+        /// <summary>
+        /// Accende o spegne l'animazione dell'esecuzione su QUESTO avatar.
+        ///
+        /// ⚠️ E' UN METODO D'ISTANZA. Chi lo chiama e' `OtherPlayerAttackScript.PlayEffectAnimation`, che
+        /// risale all'avatar dal padre esattamente come fa gia' per la scia. Nessuna ricerca per nome, nessun
+        /// caso "avatar non trovato", nessun pacchetto applicato all'avatar sbagliato.
+        /// </summary>
+        public void PlayExecutionAnimation(bool start)
+        {
+            if (!start)
+            {
+                // La FINE. `RestoreExecutionAvatar` si arrende da sola se non c'e' nulla da fare.
+                RestoreExecutionAvatar("byte di fine");
+                return;
+            }
+
+            // ⚠️ UNA SECONDA ESECUZIONE NON SI ACCAVALLA: si riparte. Se una e' gia' in corso (il byte di
+            // fine precedente e' andato perso, o il peer ha eseguito due nemici di fila) il tempo si
+            // riazzera invece di sommare. Senza questo, la seconda animazione erediterebbe il fusibile della
+            // prima e potrebbe essere tagliata a meta'.
+            ExecutionStartedAt = Time.unscaledTime;
+
+            // ⚠️⚠️ LA GUARDIA, ED E' LA RIGA PIU' IMPORTANTE.
+            //
+            // `Animator.Play` con uno stato ASSENTE **non lancia**: logga un warning dell'engine e non suona.
+            // Cioe': "lo stato non c'e' nel controller" e "l'animazione e' partita e non si vede" sarebbero
+            // lo stesso evento, in silenzio.
+            //
+            //   ⭐ E QUESTA RIGA E' ANCHE LA PROBE: che il controller del fantasma di `ExecutionPrefab` sia
+            //   quello del penitent e' l'unica cosa che l'IL non poteva leggere (il prefab e' un asset).
+            //   `HasState` e' public, non lancia, e risponde. La PRIMA esecuzione in gioco chiude la
+            //   questione in un verso o nell'altro.
+            if (!CharacterAnim.HasState(0, ExecutionStateHash))
+            {
+                ModLog.Warn("[ExecAnim RX] lo stato \"USED\" NON e' nel controller dell'avatar: " +
+                            "l'animazione non esce (e NON e' un problema di rete)");
+                return;
+            }
+
+            CharacterAnim.Play(ExecutionStateHash);
+
+            // La durata REALE, dal controller invece che da una costante: una riga che tara il fusibile con
+            // un dato invece che con una scommessa. `GetCurrentAnimatorStateInfo(0)` dopo il `Play` riferisce
+            // lo stato appena avviato.
+            ModLog.Info($"[ExecAnim RX] stato USED su {name} " +
+                        $"(durata={CharacterAnim.GetCurrentAnimatorStateInfo(0).length:F2}s)");
+        }
+
+        /// <summary>
+        /// Rimette QUESTO avatar come stava. SICURA DA CHIAMARE SEMPRE, anche a vuoto, e IDEMPOTENTE: il byte
+        /// di fine, il fusibile e `OnDestroy` possono chiamarla tutti e tre.
+        ///
+        /// ⚠️ CHI LA USA E PERCHE' SONO TRE. Il ripristino ha tre vie di uscita e servono tutte:
+        ///   1. il byte di fine (il caso normale, arriva subito);
+        ///   2. il fusibile (il byte di fine PERSO - un pacchetto perso non si puo' escludere);
+        ///   3. `OnDestroy` (la disconnessione / il cambio scena, dove i pacchetti non arrivano piu').
+        /// E' lo stesso schema della scivolata, con un'aggravante: qui non si "sente male", qui si VEDE un
+        /// personaggio bloccato in una posa.
+        /// </summary>
+        private void RestoreExecutionAvatar(string why)
+        {
+            // ⚠️ L'IDEMPOTENZA SI OTTIENE DALLO STATO, NON DA UN FLAG. `ExecutionStartedAt == 0` significa
+            // "su questo avatar non sta andando nulla": il byte di fine dopo il fusibile, o `OnDestroy` dopo
+            // il byte di fine, escono qui senza toccare l'Animator e senza scrivere una seconda riga di log
+            // che farebbe sembrare normale un doppio ripristino.
+            if (ExecutionStartedAt <= 0f)
+                return;
+
+            ExecutionStartedAt = 0f;
+
+            // ⚠️ PERCHE' `Play(0)` E NON `SetTrigger`/`ResetTrigger`. Lo stato "USED" e' entrato con un `Play`
+            // esplicito, quindi si esce allo stesso modo: si torna allo stato 0 del layer 0, che e' lo stato
+            // di riposo del controller del penitent. Non si usa `Rebind()` ne' si spegne l'Animator:
+            // spegnerlo fermerebbe anche l'`Update` di questo stesso script, che ricava da
+            // `GetCurrentAnimatorStateInfo(0)` lo stato di morte - cioe' un avatar che non muore piu'
+            // visivamente.
+            CharacterAnim.Play(0);
+
+            // ⚠️ IL RIPRISTINO DEL CONTROLLER STA QUI, E SOLO SE SERVE. Su questa strada il controller non e'
+            // MAI stato cambiato: e' gia' quello del penitent, ed e' quello che `Play(0)` presuppone.
+            // Se lo stato "USED" non fosse nel controller, servirebbe la riga
+            //     CharacterAnim.runtimeAnimatorController = UnityReferences.PlayerAnimator;
+            // che e' esattamente quella che la mod usa gia' per tornare dall'animazione speciale.
+
+            ModLog.Info($"[ExecAnim RX] fine ({why}): avatar {name} ripristinato");
+        }
+
         /// <summary>The avatar's own ghost trail generator (A3). See SetGhostTrail.</summary>
         private GhostTrailGenerator GhostTrail { get; set; }
 
@@ -318,12 +478,59 @@ namespace Blasphemous.Multiplayer.Client.Players
             {
                 playerDead = false;
             }
+
+            // A6 - IL FUSIBILE DELL'ESECUZIONE. Vedi `PlayExecutionAnimation` per il come e il perche'.
+            //
+            // ⚠️ PERCHE' QUI E NON DOVE STA IL RESTO DI A6. `OtherPlayerAttackScript` viene chiamato SOLO da
+            // un effetto in ARRIVO: se i pacchetti si fermano - che e' precisamente il caso che il fusibile
+            // deve coprire - quel codice non gira piu' e il fusibile non scatterebbe mai. Questo `Update` gira
+            // ogni fotogramma sull'avatar, ed e' l'unico posto che puo' accorgersi che il tempo e' passato
+            // senza che sia arrivato nulla.
+            //
+            // ⚠️ `Time.unscaledTime` E NON `Time.time`, come per la scivolata: il metro di paragone dev'essere
+            // un orologio che non si ferma quando il gioco mette in pausa - e l'esecuzione e' la cutscene che
+            // piu' facilmente porta il gioco in uno stato di tempo alterato (`_currentLevel.TimeScale`).
+            //
+            // ⚠️ E LO STATO E' D'ISTANZA, quindi il confronto e' su `this` e non su un avatar risolto per
+            // nome: due giocatori che eseguono insieme sono il caso normale in co-op, e ognuno ha il suo
+            // `ExecutionStartedAt`. Il fusibile del primo non tocca il secondo.
+            if (ExecutionStartedAt > 0f &&
+                Time.unscaledTime - ExecutionStartedAt > ExecutionTimeoutSeconds)
+            {
+                // ⚠️ SCATTA E LO DICE, ed e' la parte importante. Uno scatto NON significa "l'animazione era
+                // lunga": significa che il byte di fine si e' perso, oppure che questo avatar e' rimasto
+                // appeso. Nasconderlo dietro un ripristino silenzioso renderebbe di nuovo indistinguibili
+                // "il pacchetto non e' arrivato" e "l'animazione non e' mai partita".
+                ModLog.Warn($"[ExecAnim RX] il byte di fine non e' arrivato entro " +
+                            $"{ExecutionTimeoutSeconds}s: ripristino io l'avatar (pacchetto perso?)");
+                RestoreExecutionAvatar("fusibile");
+            }
         }
 
         private void SetDeathStatus(bool dead)
         {
             CharacterAnim.enabled = !dead;
             OtherPlayerAttack.SetHitboxStatus(!dead);
+        }
+
+        /// <summary>
+        /// A6 - LA TERZA VIA DI USCITA DEL RIPRISTINO, ed e' quella GARANTITA.
+        ///
+        /// `OtherPlayerManager.RemoveAllActivePlayers`/`RemoveActivePlayer` distruggono questo GameObject in
+        /// OGNI percorso - `Multiplayer.OnDisconnect`, il cambio scena (`LevelLoaded`) e il
+        /// `ReceiveLeaveScene` - quindi `OnDestroy` li copre tutti. E' la stessa garanzia su cui poggia
+        /// `StopPeerDashSound`.
+        ///
+        /// ⚠️ SENZA QUESTA RIGA NON SI ROMPE NULLA VISIBILMENTE, E E' PROPRIO IL PROBLEMA. L'avatar viene
+        /// distrutto, quindi non c'e' piu' nessuno in posa da guardare: quello che resterebbe e' il
+        /// `ExecutionStartedAt` di un oggetto morto - irraggiungibile, e quindi innocuo. La riga serve
+        /// perche' `RestoreExecutionAvatar` e' l'UNICO posto in cui lo stato si azzera, e lasciare una
+        /// seconda strada che lo azzera a mano e' il modo di farne divergere una. E perche' `OnDestroy` e'
+        /// l'unico punto che gira anche se tutto il resto tace.
+        /// </summary>
+        private void OnDestroy()
+        {
+            RestoreExecutionAvatar("OnDestroy");
         }
 
         // Finish a special animation when the event is received

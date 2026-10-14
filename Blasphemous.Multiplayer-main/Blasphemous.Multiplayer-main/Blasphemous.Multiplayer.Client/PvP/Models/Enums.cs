@@ -162,4 +162,19 @@ public enum EffectType
     IdleSword = 100,
     VerticalStart = 103,
     VerticalFalling = 104,
+
+    // A6 - L'ESECUZIONE SULL'AVATAR. Due membri, e NON un canale nuovo: `SendEffect(EffectType)` scrive UN
+    // byte e i valori sono liberi fino a 255. Nessun bump, nessuna modifica al server.
+    //
+    // PERCHE' DUE E NON UNO, UNO PER INIZIO E UNO PER FINE. Il ricevente deve sapere QUANDO rimettere
+    // l'avatar come stava. `Animator.Play` non offre un "quando finisce" ascoltabile da fuori: l'evento di
+    // fine esiste nel gioco - e' l'`AnimatorEvent` con id "INTERACTION_END" che `Interactable.OnEventLaunched`
+    // riceve - ma vive su un componente del FANTASMA DENTRO LA PROP, che qui non esiste. Il mittente invece
+    // lo sa, perche' la sua prop ce l'ha: `Execution.InteractionEnd()` e' il punto in cui la clip finisce.
+    //
+    // ⚠️ E IL BYTE DI FINE E' UNA COMODITA', NON UNA GARANZIA. Un pacchetto perso non si puo' escludere: la
+    // garanzia vera e' il FUSIBILE del ricevente (E1.4), come per la scivolata di A5. Il byte di fine serve a
+    // non dover ASPETTARE il fusibile nel caso normale - cioe' a rendere l'animazione lunga quanto deve.
+    ExecutionStart = 105,
+    ExecutionEnd = 106,
 }
