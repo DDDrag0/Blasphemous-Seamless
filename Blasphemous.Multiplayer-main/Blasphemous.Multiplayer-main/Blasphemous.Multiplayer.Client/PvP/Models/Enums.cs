@@ -177,4 +177,21 @@ public enum EffectType
     // non dover ASPETTARE il fusibile nel caso normale - cioe' a rendere l'animazione lunga quanto deve.
     ExecutionStart = 105,
     ExecutionEnd = 106,
+
+    // A7 - I SUONI DELLA PARATA DEL PENITENT.
+    //
+    // ⚠️ "IL SUONO FINALE" (il contrattacco) NON e' fra questi, e la ragione e' importante: quello che
+    // l'utente sente e' l'impatto del NEMICO (`Entity.Damage(float, string impactAudioId) ->
+    // EventOneShotPanned`), che suona SUL NEMICO - condiviso, col danno gia' relayato - e attraversa quindi
+    // la rete GIA' OGGI. `PenitentParry` non e' sincronizzato da nessuno, quindi non puo' essere quello.
+    //
+    //   ParryHit      107  il CLANG della parata riuscita: chiave di catalogo SOSTENUTA (`PlayEvent`)
+    //   ParryHitStop  108  il suo STOP: un evento sostenuto va spento, o resta acceso per sempre
+    //   ParryStart    109  la GUARDIA che sale: chiave di catalogo PURA (`PlaySfxOnCatalog`), one-shot
+    //
+    // ⚠️ `ParryStart` NON e' "la parata fallita": si sente a OGNI tentativo. L'unico colpo davvero
+    // ASSORBITO e' la GuardSlide, gia' coperta da A4 - non si duplica.
+    ParryHit = 107,
+    ParryHitStop = 108,
+    ParryStart = 109,
 }

@@ -701,6 +701,133 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
+    // ============================================================================================
+    // A7 - I SUONI DELLA PARATA DEL PENITENT: IL CLANG E LA GUARDIA.
+    // ============================================================================================
+    //
+    // PERCHE' QUESTI METODI, E NON UN `Behaviour`. Il suono non lo decide un Behaviour: lo decide un
+    // EVENTO DENTRO IL CLIP. I due eventi sono `PlayParryHit` e `StartParry`, e il loro unico punto di
+    // atterraggio in C# e' `PenitentAttackAnimations.PlayParryHit()` / `.StartParry()`, che a loro volta
+    // chiamano UN SOLO metodo di `PenitentAudio`.
+    //   ⇒ Si patcha il metodo di `PenitentAudio`: e' il punto in cui il suono STA PER PARTIRE, e' 1:1 con
+    //   esso, ed e' `public` e SENZA ARGOMENTI. Chi lo chiama non conta.
+    //
+    // ⭐ ED E' ANCHE LA FIRMA PIU' SICURA CHE ESISTA: zero argomenti ⇒ nessun nome di parametro da
+    // sbagliare, ed e' la stessa scelta dei sei fendenti di A5.
+    //
+    // ⚠️ PERCHE' NON SI PATCHA `ParrySuccessBehaviour.OnStateEnter`, che sarebbe il posto "ovvio".
+    // Perche' porta GIA' un `Prefix` (`=> animator.name == "Body"`) scritto in questo stesso file, e in
+    // HarmonyX un Postfix viene eseguito ANCHE quando un Prefix restituisce false: il mio Postfix girerebbe
+    // anche per l'animator "Slash" e manderebbe un clang che nessuno ha suonato.
+    //
+    // ⚠️ LE DUE NATURE SONO DIVERSE, e il ricevente lo sa:
+    //   · `PenitentParryHit` e' una CHIAVE DI CATALOGO consumata da `EntityAudio.PlayEvent` ed e' SOSTENUTA
+    //     ⇒ sul ricevente si usa `PlayEventWithCatalog`, perche' `PlayOneShotFromCatalog` farebbe
+    //     `release()` subito, lasciandola accesa per sempre e impossibile da fermare.
+    //   · `PenitentStartParry` e' una chiave di catalogo PURA (`PlaySfxOnCatalog`), one-shot.
+    //   · NESSUNA delle due passa da `PlayOneShotEvent` ⇒ NESSUNA ha una `FxSoundCategory` ⇒ NON imposta i
+    //     14 parametri del terreno ⇒ NON si usa `PlayPeerMotionSound`.
+    //
+    // ⚠️ NIENTE FUSIBILE QUI. Una parata e' un'azione DELIBERATA: il massimo che un umano produce e' una
+    // parata al secondo. Il fusibile dei passi esiste per la cadenza della falcata; qui non c'e' nulla da
+    // limare.
+    static class ParrySoundSender
+    {
+        /// <summary>
+        /// Vero fra lo START e lo STOP. Serve a UNA cosa sola: non spedire uno STOP che non ha mai avuto
+        /// il suo START.
+        ///
+        /// ⚠️ PERCHE' SERVE, E NON E' PIGNOLERIA. `PenitentAudio.PlayParryHit()` comincia con
+        /// `StopParryFx()`, e `Parry.StopParry()` chiama lo stesso metodo anche quando la parata FALLISCE.
+        /// Senza questa guardia, ogni parata a vuoto manderebbe un `ParryHitStop` al peer: un pacchetto che
+        /// non corrisponde a nulla, e una riga di log che accusa la rete per una parata che non c'e' mai stata.
+        /// </summary>
+        private static bool armed;
+
+        /// <summary>
+        /// Spedisce il CLANG con la posizione del penitent - che e' dove il suono nasce.
+        /// </summary>
+        public static void SendParryHit()
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+
+            // PROVA LATO MITTENTE, e la ragione e' quella dei passi: la riga `[Effect]` la scrive SOLO il
+            // RICEVENTE e `QueueMesssage` esce in silenzio da disconnesso. Senza questa riga, "il Postfix
+            // non e' mai girato" e "il pacchetto non e' mai arrivato" restano INDISTINGUIBILI.
+            Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryHit ({at.x:F1},{at.y:F1})");
+
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryHit, at);
+            armed = true;
+        }
+
+        /// <summary>
+        /// Spedisce lo STOP del clang. Senza posizione: fermare qualcosa non ha bisogno di sapere dove sta.
+        /// </summary>
+        public static void SendParryHitStop()
+        {
+            // Vedi `armed`: senza questa riga una parata FALLITA manderebbe uno STOP orfano.
+            if (!armed)
+                return;
+
+            armed = false;
+            Blasphemous.ModdingAPI.ModLog.Info("[Sound TX] ParryHitStop");
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryHitStop);
+        }
+    }
+
+    /// <summary>
+    /// IL CLANG DELLA PARATA RIUSCITA. Postfix, e senza argomenti: il suono del gioco parte comunque e resta
+    /// INTATTO, e non c'e' alcun nome di parametro da sbagliare.
+    /// </summary>
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "PlayParryHit")]
+    class PenitentParryHitSound_Patch
+    {
+        public static void Postfix()
+        {
+            ParrySoundSender.SendParryHit();
+        }
+    }
+
+    /// <summary>
+    /// LA FINE DEL CLANG. `Parry.StopParry()` chiama questo metodo alla fine della parata e
+    /// `PlayParryHit()` lo chiama come prima riga: entrambe le chiamate arrivano qui, e la guardia in
+    /// `SendParryHitStop` scarta quelle che non hanno un clang acceso da fermare.
+    /// </summary>
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "StopParryFx")]
+    class PenitentParryHitStop_Patch
+    {
+        public static void Postfix()
+        {
+            ParrySoundSender.SendParryHitStop();
+        }
+    }
+
+    /// <summary>
+    /// LA GUARDIA (suono #2): `PenitentStartParry`, one-shot puro via `PlaySfxOnCatalog`.
+    ///
+    /// ⚠️ QUESTO SUONO NON E' "LA PARATA FALLITA": si sente a OGNI tentativo, riuscito o no. E' il suono
+    /// della GUARDIA CHE SALE, ed e' esattamente cio' che rende il tentativo del peer VISIBILE.
+    /// L'unico caso in cui un colpo viene davvero ASSORBITO e' la GuardSlide, che e' GIA' coperta da A4
+    /// (`PlaySlideDust` riproduce `GuardSlide.GuardSlideSoundFx` leggendolo dal componente LOCALE).
+    /// </summary>
+    [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "PlayStartParry")]
+    class PenitentStartParrySound_Patch
+    {
+        public static void Postfix()
+        {
+            if (Framework.Managers.Core.Logic.Penitent == null)
+                return;
+
+            UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
+
+            Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryStart ({at.x:F1},{at.y:F1})");
+            Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryStart, at);
+        }
+    }
+
     // A5 - LE PROBE SONO STATE RIMOSSE. Avevano un solo scopo: dire QUALE suono il gioco suona
     // davvero per il quarto colpo, per lo sguaino e per l'attacco aereo-a-terra, invece di
     // scommettere su tre fix. Hanno risposto (`ComboHit` si', `ComboHitUp/Down` mai, `IdleSword`

@@ -102,6 +102,21 @@ namespace Blasphemous.Multiplayer.Client.Players
                 StopPeerDashSound();
             }
 
+            // A7 - LO STESSO FUSIBILE PER IL CLANG DELLA PARATA. Un evento SOSTENUTO che non viene mai
+            // fermato non "si sente male": RESTA ACCESO PER SEMPRE. Le due cause sono note e non rare - un
+            // pacchetto perso e una disconnessione nel mezzo; la seconda la copre OnDestroy, ma solo se
+            // l'oggetto viene distrutto.
+            //
+            // 4 secondi: la finestra di parata arriva al massimo a 1 s, e la parata finisce quando finisce
+            // la sua animazione. E' un FUSIBILE, non una durata: se scatta, si e' perso uno STOP.
+            if (parryHitInstance.isValid() &&
+                Time.unscaledTime - parryHitStartedAt > PARRY_HIT_TIMEOUT)
+            {
+                ModLog.Warn("[Sound] il clang della parata del peer non ha ricevuto lo STOP entro " +
+                            PARRY_HIT_TIMEOUT + "s: lo spengo io (pacchetto perso?)");
+                StopPeerParryHitSound();
+            }
+
             switch (effect)
             {
                 case EffectType.SidewaysGrounded:
@@ -218,6 +233,8 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.IdleSword:
                 case EffectType.VerticalStart:
                 case EffectType.VerticalFalling:
+                // A7 - la guardia del peer (suono #2), che `SoundKeyFor` risolve in "PenitentStartParry".
+                case EffectType.ParryStart:
                     PlayPeerSound(effect, position);
                     break;
                 // A5 - IL SUONO DELLA SCIVOLATA, l'UNICO evento SOSTENUTO (LATCHED) di A5, e l'unico che ha
@@ -248,6 +265,25 @@ namespace Blasphemous.Multiplayer.Client.Players
                     // ⚠️ NIENTE guardia su `hasPosition` QUI: lo STOP non porta posizione, e non deve
                     // farne una condizione. Fermare qualcosa che non c'e' non fa nulla.
                     StopPeerDashSound();
+                    break;
+                // A7 - IL CLANG DELLA PARATA DEL PEER. Due casi, come la scivolata, e per la stessa
+                // ragione: `PenitentParryHit` e' un evento SOSTENUTO. Il gioco lo spegne alla fine della
+                // parata (`Parry.StopParry` -> `Audio.StopParryFx`); senza il secondo byte il clang
+                // resterebbe acceso per sempre.
+                //
+                // ⚠️ hasPosition e' CONTROLLATO e non dato per scontato: il clang deve uscire DA DOVE E'
+                // SUCCESSO. Un byte senza coordinate lo metterebbe nell'origine, che in questo gioco e' una
+                // coordinata legittima - cioe' dall'altra parte del livello.
+                case EffectType.ParryHit:
+                {
+                    if (hasPosition)
+                        PlayPeerParryHitSound(position);
+                    break;
+                }
+                case EffectType.ParryHitStop:
+                    // ⚠️ NIENTE guardia su `hasPosition`: lo STOP non porta posizione e non deve farne una
+                    // condizione. Fermare qualcosa che non c'e' non fa nulla.
+                    StopPeerParryHitSound();
                     break;
                 // A6 - L'ESECUZIONE. Il primo dei due byte ACCENDE l'animazione sull'avatar, il secondo la
                 // SPEGNE. Nessuna posizione: l'animazione si suona dove l'avatar e', e dove l'avatar e' lo
@@ -324,6 +360,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.IdleSword: return PenitentAudio.IdleModeSword;            // "PenitentIdleSword"
                 case EffectType.VerticalStart: return PenitentAudio.VerticalAttackStart;  // "PenitentVerticalAttackStart"
                 case EffectType.VerticalFalling: return PenitentAudio.VerticalAttackFalling;
+                // A7 - LA GUARDIA: chiave letta dalla `public const string` di `PenitentAudio`.
+                // ⚠️ La categoria NON e' Motion: `PlayStartParry` fa `PlaySfxOnCatalog`, che non imposta un
+                // solo parametro. ⇒ NIENTE `PlayPeerMotionSound`, che pretenderebbe i 14 materiali.
+                case EffectType.ParryStart: return PenitentAudio.StartParryEventKey;
                 default: return null;
             }
         }
@@ -664,6 +704,24 @@ namespace Blasphemous.Multiplayer.Client.Players
         private const float DASH_SOUND_TIMEOUT = 5f;
 
         /// <summary>
+        /// A7 - L'ISTANZA DEL CLANG DELLA PARATA, una per avatar.
+        ///
+        /// ⚠️ PERCHE' UN CAMPO E NON UNA VARIABILE LOCALE, esattamente come per la scivolata: lo START e lo
+        /// STOP arrivano in DUE pacchetti diversi, a distanza di una parata, e fra i due non c'e' alcuna
+        /// pila che li tenga insieme. L'istanza e' l'unico filo che li lega.
+        /// </summary>
+        private FMOD.Studio.EventInstance parryHitInstance;
+
+        /// <summary>Da quando il clang sta suonando, in `Time.unscaledTime`. Serve al fusibile.</summary>
+        private float parryHitStartedAt;
+
+        /// <summary>
+        /// Oltre questo tempo il clang si spegne da solo, e lo DICE. Stesso fusibile della scivolata, stessa
+        /// ragione: un evento sostenuto senza STOP resta acceso per sempre.
+        /// </summary>
+        private const float PARRY_HIT_TIMEOUT = 4f;
+
+        /// <summary>
         /// Accende il suono della scivolata del peer nel punto in cui e' scivolato.
         ///
         /// La sequenza e' quella del gioco, non una inventata: `PenitentAudio.PlayDashSound()` fa
@@ -728,6 +786,65 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
+        /// A7 - IL CLANG DELLA PARATA DEL PEER, alla catena del gioco.
+        ///
+        /// PERCHE' UNA CATENA SUA E NON UN `case` IN PIU' IN `PlayPeerSound`: perche' questo evento e'
+        /// SOSTENUTO. `PlayPeerSound` finisce in `EventOneShotPanned`, che fa `start()` e subito `release()`:
+        /// su un evento che non si ferma da solo, il `release()` non lo spegne - lo lascia PARTITO e senza
+        /// piu' un manico per fermarlo.
+        ///
+        /// ⚠️⚠️ E LA CHIAVE, NON IL PERCORSO. `PlayEventWithCatalog(ref eI, key, pos)` chiama
+        /// `CreateCatalogEvent(key, pos)`, che fa `FindSfxInCatalogs(key)` e poi
+        /// `RuntimeManager.CreateInstance(clip.FMODKey)`. Passandole il PERCORSO risolto la ricerca
+        /// fallirebbe, `FMODKey` sarebbe null, e il clang resterebbe MUTO **con un log che dice che va tutto
+        /// bene**. La variabile qui sotto si chiama `key` proprio per non ripetere l'errore.
+        /// </summary>
+        private void PlayPeerParryHitSound(Vector2 position)
+        {
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+                return;
+
+            string key = PenitentAudio.ParryHitEventKey;   // "PenitentParryHit"
+
+            // La spia di A5: dice se la chiave non esiste su QUESTA macchina. Si consulta - e il suo valore
+            // di ritorno NON si passa a `PlayEventWithCatalog`, che vuole l'Id e non il percorso.
+            if (string.IsNullOrEmpty(ResolveCatalogPath(key)))
+                return;
+
+            // Come il gioco: PRIMA si spegne quello che c'e', POI si accende.
+            StopPeerParryHitSound();
+
+            // ⚠️ LA POSIZIONE E' UNA SCELTA DICHIARATA, NON UNA COPIA DEL GIOCO. `EntityAudio.PlayEvent`
+            // chiama `CreateCatalogEvent(eventKey)` SENZA posizione, quindi il gioco crea questo evento
+            // nell'origine. Passare la posizione del PEER lo spazializza dove la parata e' avvenuta, che e'
+            // lo scopo del fix. Se all'orecchio suonasse sbagliato, per essere fedeli al gioco basta passare
+            // `Vector3.zero`: e' l'unica riga da cambiare.
+            audio.PlayEventWithCatalog(ref parryHitInstance, key, EffectWorldPosition(position));
+
+            if (parryHitInstance.isValid())
+                parryHitStartedAt = Time.unscaledTime;
+        }
+
+        /// <summary>
+        /// Spegne il clang. SICURA DA CHIAMARE SEMPRE, anche a vuoto: `StopEvent` comincia con
+        /// `if (eventInstance.isValid())`, e un'istanza mai accesa non e' valida. E `clearHandle()` e' dentro
+        /// `StopEvent`, quindi l'istanza non resta "valida" dopo il `release()`.
+        /// </summary>
+        private void StopPeerParryHitSound()
+        {
+            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
+            if (audio == null)
+            {
+                parryHitInstance = default(FMOD.Studio.EventInstance);
+                return;
+            }
+
+            audio.StopEvent(ref parryHitInstance);
+            parryHitInstance = default(FMOD.Studio.EventInstance);
+        }
+
+        /// <summary>
         /// LA PULIZIA SU DISCONNESSIONE, ed e' la ragione per cui questa riga esiste.
         ///
         /// ⚠️ COSA SUCCEDE SE IL PEER SI DISCONNETTE MENTRE LA SCIVOLATA E' ACCESA. L'istanza dell'evento
@@ -746,6 +863,10 @@ namespace Blasphemous.Multiplayer.Client.Players
         private void OnDestroy()
         {
             StopPeerDashSound();
+            // A7 - E LA STESSA PULIZIA PER IL CLANG. La ragione e' quella della scivolata, parola per parola:
+            // l'istanza NON appartiene all'avatar, e' registrata dentro FMOD, e distruggere un GameObject non
+            // ferma nulla di cio' che FMOD sta suonando.
+            StopPeerParryHitSound();
         }
 
         /// <summary>
