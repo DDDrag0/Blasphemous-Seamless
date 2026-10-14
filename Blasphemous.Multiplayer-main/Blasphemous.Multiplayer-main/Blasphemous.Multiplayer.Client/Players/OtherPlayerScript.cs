@@ -114,50 +114,72 @@ namespace Blasphemous.Multiplayer.Client.Players
             // prima e potrebbe essere tagliata a meta'.
             ExecutionStartedAt = Time.unscaledTime;
 
-            // ⚠️⚠️ LA GUARDIA, ED E' LA RIGA PIU' IMPORTANTE.
+            // ⚠️⚠️ "USED" NON E' UNO STATO: E' UN TRIGGER. Ed e' la scoperta che chiude la questione.
             //
-            // `Animator.Play` con uno stato ASSENTE **non lancia**: logga un warning dell'engine e non suona.
-            // Cioe': "lo stato non c'e' nel controller" e "l'animazione e' partita e non si vede" sarebbero
-            // lo stesso evento, in silenzio.
+            // Il gioco fa `interactorAnimator.SetTrigger("USED")` (Execution.cs:166). "USED" e' un
+            // PARAMETRO dell'animator, e il trigger fa partire una TRANSIZIONE verso uno stato il cui nome
+            // puo' essere qualsiasi cosa.
+            //   ⇒ `Animator.Play(Animator.StringToHash("USED"))` non trova NULLA, e `HasState(0,"USED")`
+            //   risponde `false` ANCHE sul controller del fantasma che l'esecuzione la recita davvero - che
+            //   e' esattamente quello che dicevano i log.
+            //   ⇒ NON si suona uno stato: si preme lo STESSO trigger che preme il gioco.
             //
-            //   ⭐ E QUESTA RIGA E' ANCHE LA PROBE, ed e' GIA' SCATTATA: in gioco lo stato "USED" NON e' nel
-            //   controller dell'avatar. ⇒ si applica il RIPIEGO: si prende il controller del FANTASMA DELLA
-            //   PROP, che lo stato ce l'ha per definizione - e' su quello che il gioco fa `SetTrigger("USED")`.
-            //
-            // ⚠️⚠️ E IL PREFAB NON SI ISTANZIA. Si LEGGE. `ExecutionPrefab` e' un campo `public GameObject` di
-            // `EntityExecution`, e leggere un prefab non esegue `Awake`, non crea GameObject, non fa partire
-            // alcun `Update` - cioe' NON puo' accendere l'input blocker, che e' la voce 54.
-            if (!CharacterAnim.HasState(0, ExecutionStateHash))
+            // ⚠️ E IL CONTROLLER VA INSTALLATO, perche' il trigger vive nel controller del FANTASMA della
+            // prop (un clone del penitent), non in quello dell'avatar. E il fantasma e' raggiungibile SENZA
+            // ISTANZIARE NULLA: `Interactable.interactorAnimator` e' un campo del PREFAB, e leggere un prefab
+            // non esegue `Awake`, non crea GameObject, non fa partire alcun `Update` ⇒ NON puo' accendere
+            // l'input blocker, che e' la voce 54.
+            RuntimeAnimatorController controller = OtherPlayerAttackScript.ResolveExecutionController();
+            if (controller == null)
             {
-                RuntimeAnimatorController controller = OtherPlayerAttackScript.ResolveExecutionController();
-                if (controller == null)
-                {
-                    ModLog.Warn("[ExecAnim RX] lo stato \"USED\" NON e' nel controller dell'avatar, e il " +
-                                "controller del fantasma non si e' risolto: l'animazione non esce " +
-                                "(e NON e' un problema di rete)");
-                    return;
-                }
-
-                CharacterAnim.runtimeAnimatorController = controller;
-
-                if (!CharacterAnim.HasState(0, ExecutionStateHash))
-                {
-                    // Se manca ANCHE qui, l'ipotesi e' falsa del tutto e va saputo: si rimette subito il
-                    // controller giusto e si esce.
-                    CharacterAnim.runtimeAnimatorController = UnityReferences.PlayerAnimator;
-                    ModLog.Warn("[ExecAnim RX] lo stato \"USED\" NON e' nemmeno nel controller del fantasma " +
-                                "della prop: l'ipotesi e' falsa, l'animazione non esiste");
-                    return;
-                }
+                ModLog.Warn("[ExecAnim RX] il controller del fantasma non si e' risolto: " +
+                            "l'animazione non esce (e NON e' un problema di rete)");
+                return;
             }
 
-            CharacterAnim.Play(ExecutionStateHash);
+            CharacterAnim.runtimeAnimatorController = controller;
+
+            // LA PROBE GIUSTA. Prima si chiedeva `HasState(0, "USED")`: la domanda sbagliata, che risponde
+            // `false` anche su un controller che FUNZIONA. Adesso si cerca il PARAMETRO trigger "USED" fra i
+            // parametri del controller, che e' la cosa che il gioco preme davvero.
+            //
+            // ⚠️ E SI PREME COMUNQUE, anche se il controllo non lo trova: `SetTrigger` con un trigger
+            // assente non lancia (logga un warning dell'engine), e un controllo che BLOCCA l'azione e' un
+            // modo di non far mai partire nulla per un falso negativo. La riga qui sotto e' la prova, non
+            // una condizione.
+            bool hasTrigger = HasTrigger(CharacterAnim, "USED");
+
+            CharacterAnim.SetTrigger(ExecutionStateHash);
 
             // La durata REALE, dal controller invece che da una costante: una riga che tara il fusibile con
-            // un dato invece che con una scommessa. `GetCurrentAnimatorStateInfo(0)` dopo il `Play` riferisce
-            // lo stato appena avviato.
-            ModLog.Info($"[ExecAnim RX] stato USED su {name} " +
+            // un dato invece che con una scommessa.
+            ModLog.Info($"[ExecAnim RX] trigger USED su {name} parametri={CharacterAnim.parameterCount} " +
+                        $"trigger_trovato={hasTrigger} " +
                         $"(durata={CharacterAnim.GetCurrentAnimatorStateInfo(0).length:F2}s)");
+        }
+
+        /// <summary>
+        /// Vero se il controller dell'animator dichiara un PARAMETRO di tipo trigger con questo nome.
+        ///
+        /// ⚠️ E' LA DOMANDA CHE PRIMA SI FACEVA MALE. `HasState(0, hash("USED"))` chiede se esiste uno STATO
+        /// chiamato "USED", e la risposta e' `false` anche sul controller del gioco, perche' "USED" e' un
+        /// TRIGGER che porta a uno stato dal nome diverso. Chiedere la cosa giusta e' la differenza fra una
+        /// probe che accusa il gioco e una che dice la verita'.
+        /// </summary>
+        private static bool HasTrigger(Animator animator, string triggerName)
+        {
+            if (animator == null)
+                return false;
+
+            AnimatorControllerParameter[] parameters = animator.parameters;
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                if (parameters[i].type == AnimatorControllerParameterType.Trigger &&
+                    parameters[i].name == triggerName)
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>

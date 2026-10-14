@@ -917,6 +917,19 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// </summary>
         public static RuntimeAnimatorController ResolveExecutionController()
         {
+            // ⚠️⚠️ LA CACHE NON E' UN'OTTIMIZZAZIONE: E' LA CURA DI UNA CORSA VERA.
+            //
+            // Questa risoluzione dipende dal NEMICO: `LastExecutedEnemy` e il suo `EntityExecution`. Ma la
+            // morte del nemico viaggia PER CONTO SUO, e il ricevente la applica entro ~50 ms - con
+            // `SetActive(false)` e, nel caso peggiore, con un `Destroy`.
+            //   ⇒ Fra l'arrivo di `ExecutionStart` e l'arrivo della MORTE c'e' una corsa, e se la morte
+            //   vince il nemico e' gia' un oggetto morto: `enemy == null` e' VERO per un oggetto Unity
+            //   distrutto, e la risoluzione fallirebbe su un'esecuzione che sta andando benissimo.
+            //   ⭐ E il controller del fantasma NON cambia mai durante la sessione: e' un asset. Una volta
+            //   risolto, resta valido per sempre - quindi la corsa si chiude CHIEDENDOLO UNA VOLTA SOLA.
+            if (cachedExecutionController != null)
+                return cachedExecutionController;
+
             Enemy enemy = EnemySyncManager.LastExecutedEnemy;
             if (enemy == null || enemy.gameObject == null)
                 return null;
@@ -945,7 +958,8 @@ namespace Blasphemous.Multiplayer.Client.Players
 
                 ModLog.Info($"[ExecAnim RX] controller del fantasma dal campo `interactorAnimator` di " +
                             $"{interactables[i].GetType().Name} (prefab: {interactables.Length} Interactable)");
-                return interactor.runtimeAnimatorController;
+                cachedExecutionController = interactor.runtimeAnimatorController;
+                return cachedExecutionController;
             }
 
             // VIA 2 (ripiego) - l'Animator che porta un `AnimatorEvent`: e' il predicato che
@@ -961,7 +975,8 @@ namespace Blasphemous.Multiplayer.Client.Players
 
                 ModLog.Info($"[ExecAnim RX] controller del fantasma dall'Animator con AnimatorEvent " +
                             $"(animator {i + 1} di {animators.Length})");
-                return animators[i].runtimeAnimatorController;
+                cachedExecutionController = animators[i].runtimeAnimatorController;
+                return cachedExecutionController;
             }
 
             // VIA 3 - l'ultima spiaggia, tenuta SOLO come rete di sicurezza e DICHIARATA come tale.
@@ -975,7 +990,8 @@ namespace Blasphemous.Multiplayer.Client.Players
                 {
                     ModLog.Info($"[ExecAnim RX] controller del fantasma da HasState(\"USED\") " +
                                 $"(animator {i + 1} di {animators.Length})");
-                    return animators[i].runtimeAnimatorController;
+                    cachedExecutionController = animators[i].runtimeAnimatorController;
+                return cachedExecutionController;
                 }
             }
 
@@ -986,6 +1002,12 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         /// ⚠️ `interactorAnimator` e' `protected`: si legge per RIFLESSIONE, come questo file fa gia' per
         /// `_audioCatalogs`, `DashDustGenerator` e `GuardSlide`.
+        /// <summary>
+        /// Il controller del fantasma, risolto UNA VOLTA e tenuto. Vedi la cache in `ResolveExecutionController`:
+        /// e' la cura della corsa con la morte del nemico, non un'ottimizzazione.
+        /// </summary>
+        private static RuntimeAnimatorController cachedExecutionController;
+
         private static readonly System.Reflection.FieldInfo InteractorAnimatorField =
             typeof(Tools.Level.Interactable).GetField(
                 "interactorAnimator",
