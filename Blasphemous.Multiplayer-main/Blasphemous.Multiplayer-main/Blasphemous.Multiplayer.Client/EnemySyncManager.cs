@@ -1387,6 +1387,13 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, string> _treeStateLogged = new Dictionary<string, string>();
 
         /// <summary>
+        /// Last logged decision of the dead-owner branch of DecideOwnership (fix ③) per enemy, so the
+        /// [Proprieta'] marker is written when the DECISION changes and not on every evaluation.
+        /// Diagnostics only - see LogDeadOwnerDecision for why the reason is not part of the key.
+        /// </summary>
+        private static readonly Dictionary<string, string> _deadReleaseLogged = new Dictionary<string, string>();
+
+        /// <summary>
         /// Gives the enemy its own physics back, mirroring FreezePhysics.
         ///
         /// The gravity scale is restored from the value saved when the enemy was frozen, never assumed:
@@ -1517,6 +1524,7 @@ namespace Blasphemous.Multiplayer.Client
             _lastAnimSample.Clear();     // ditto
             _lastAnimChangeAt.Clear();   // ditto: the clock belongs to the scene being unloaded
             _treeStateLogged.Clear();    // diagnostics: keyed by id, meaningless in the next scene
+            _deadReleaseLogged.Clear();  // ditto: keyed by id, and ids do not survive a scene change
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
@@ -3260,10 +3268,11 @@ namespace Blasphemous.Multiplayer.Client
                     // ⚠️ MARKER OBBLIGATORIO, ED E' IL PUNTO DELLA VOCE 5: senza questa riga "l'orfano e'
                     // risolto" e "il nemico non gira piu'" restano INDISTINGUIBILI. Dice la decisione presa e
                     // il motivo, e nomina il nemico, cosi' si puo' seguire QUELL'id per tutta la sessione.
-                    ModLog.Info($"[Proprieta'] {IdOf(enemy)}: sono morto ma NON lo rilascio - l'altro " +
-                                "giocatore non e' in questa scena, e rilasciarlo lo lascerebbe senza " +
-                                "padrone (nessuno lo simula: non e' nella sua lista). Resta mio e continua " +
-                                "a girare qui; lo rimettero' in gioco quando rientra.");
+                    //
+                    // ⚠️ ED E' DEDUPLICATO (misurato: 1700 righe [Proprieta'] su una sola sessione, 84 per
+                    // nemico, perche' questo metodo gira a OGNI tick di invio). Il gate NON e' cambiato e la
+                    // decisione NON e' cambiata: e' cambiato solo QUANDO si scrive la riga.
+                    LogDeadOwnerDecision(enemy, false);
                     return false;
                 }
 
@@ -3271,11 +3280,16 @@ namespace Blasphemous.Multiplayer.Client
                 state.OwnerSince = Time.time;
 
                 // L'altro ramo del marker: qui il rilascio AVVIENE, e la riga dice perche' e' lecito.
-                ModLog.Info($"[Proprieta'] {IdOf(enemy)}: morto, lo RILascio - l'altro giocatore e' in " +
-                            "questa scena e puo' prenderlo (il token gli arriva e lo simula lui)");
+                LogDeadOwnerDecision(enemy, true);
 
                 return true;
             }
+
+            // IL MARKER NON SI APPLICA (sono vivo, o il nemico non e' mio): il suo stato viene DIMENTICATO,
+            // cosi' la PROSSIMA morte di questo giocatore riporta di nuovo la decisione invece di restare
+            // muta per tutta la sessione. E' l'unica differenza voluta rispetto a LogTreeState, e non
+            // riapre il buco del "motivo nella chiave": qui non si registra nulla, si cancella soltanto.
+            _deadReleaseLogged.Remove(IdOf(enemy));
 
             bool changed = false;
 
@@ -3306,6 +3320,57 @@ namespace Blasphemous.Multiplayer.Client
             }
 
             return changed;
+        }
+
+        /// <summary>
+        /// Writes the [Proprieta'] marker of the dead-owner branch, ONCE PER DECISION PER ENEMY.
+        ///
+        /// IT EXISTS BECAUSE THE MARKER WAS SPAM. DecideOwnership is called from the send loop for every
+        /// enemy, every tick, so the two ModLog.Info lines it used to hold wrote one line per enemy per
+        /// frame: measured 1700 lines of [Proprieta'] in a single session, 84 for EACH of the 20 enemies,
+        /// with the very same text and the same decision on all 84. The decision never changed - it was
+        /// only re-evaluated, which is what a per-tick arbiter does. The gate (OtherPlayerInMyScene) and
+        /// the decision are untouched; what changed is WHEN the line is written.
+        ///
+        /// THE KEY IS THE DECISION AND NOT THE REASON, and that is the whole trap. It is the third time
+        /// this project has met it: the comment on LogTreeState records the other two, where the reason
+        /// ("?" vs "remote owns") was part of the key and the value alternated forever, so every call
+        /// looked like a change and the deduplication was dead while the log filled up anyway. Here the
+        /// reasoning is the same shape: "l'altro giocatore non e' in questa scena" is a sentence that
+        /// happens to be true on many consecutive ticks, but a key holding it would be compared against a
+        /// DIFFERENT sentence every time the situation is reached from another place. Only "rilascio" or
+        /// "non-rilascio" is a state; the sentence that explains it is context for the change, and it is
+        /// reported - unchanged, verbatim - with the change it belongs to.
+        ///
+        /// The two opposite decisions therefore stay distinguishable in the log, and each enemy is
+        /// followed by id across the session.
+        /// </summary>
+        private static void LogDeadOwnerDecision(Enemy enemy, bool release)
+        {
+            string id = IdOf(enemy);
+            if (string.IsNullOrEmpty(id))
+                return;
+
+            string decision = release ? "rilascio" : "non-rilascio";
+
+            string previous;
+            if (_deadReleaseLogged.TryGetValue(id, out previous) && previous == decision)
+                return;
+
+            _deadReleaseLogged[id] = decision;
+
+            if (release)
+            {
+                ModLog.Info($"[Proprieta'] {id}: morto, lo RILascio - l'altro giocatore e' in " +
+                            "questa scena e puo' prenderlo (il token gli arriva e lo simula lui)");
+            }
+            else
+            {
+                ModLog.Info($"[Proprieta'] {id}: sono morto ma NON lo rilascio - l'altro " +
+                            "giocatore non e' in questa scena, e rilasciarlo lo lascerebbe senza " +
+                            "padrone (nessuno lo simula: non e' nella sua lista). Resta mio e continua " +
+                            "a girare qui; lo rimettero' in gioco quando rientra.");
+            }
         }
 
         /// <summary>
