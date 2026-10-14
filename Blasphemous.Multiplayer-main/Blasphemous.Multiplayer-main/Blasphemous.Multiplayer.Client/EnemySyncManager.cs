@@ -578,6 +578,41 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// The network ID STRING of an enemy, for the one channel that must reach a player in ANOTHER SCENE.
+        ///
+        /// WHY NOT THE HANDLE NEXT DOOR. TryGetEnemyHandle returns a 32-bit hash, and a handle is
+        /// deliberately SCENE-LOCAL: ResolveByHandle searches _ids, and _ids holds the enemies of the
+        /// loaded scene only. The execution announcement travels on EnemyDeathGlobal, which the server
+        /// relays to every player whatever scene they are in, so it must carry the id - the same reason
+        /// SendEnemyDeathGlobal takes a string and not a handle.
+        ///
+        /// The body mirrors TryGetEnemyHandle line for line, and for the same reason: it walks _ids
+        /// through ResolveEnemy, so the SPAWN POINT wins over the cache and a stale entry cannot be
+        /// announced. Read-only: it touches nothing, so it is safe to call from a Harmony postfix.
+        /// </summary>
+        public static bool TryGetEnemyId(Enemy enemy, out string id)
+        {
+            id = null;
+            if (enemy == null)
+                return false;
+
+            for (int i = 0; i < _ids.Count; i++)
+            {
+                Enemy tracked = ResolveEnemy(_ids[i]);
+                if (tracked == null)
+                    continue;
+
+                if (tracked == enemy || enemy.transform.IsChildOf(tracked.transform))
+                {
+                    id = _ids[i];
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// The wire handle for an id: a 32-bit hash of the id STRING, not its position in a list.
         ///
         /// Position indices proved unworkable. The host and the peer do not always hold lists of the same
@@ -4340,6 +4375,28 @@ namespace Blasphemous.Multiplayer.Client
                 return;
             }
 
+            // UN'ESECUZIONE, e va riconosciuta QUI - PRIMA della riga qui sotto, che consuma l'id come
+            // morte. Il prefisso sta accanto a "nato|" per la stessa ragione: tutto cio' che non e'
+            // riconosciuto finisce in _pendingDeaths.Add e fa MORIRE il nemico.
+            //
+            // ⚠️ IL PREFISSO SI TOGLIE, NON SI IGNORA. L'id che segue e' un id VERO di nemico
+            // ("sp|scena|SPAWN|x|y"), e viene rimesso in enemyId di proposito: cosi' TUTTO quello che
+            // segue - la memoria delle morti, MarkSpawnPointConsumed e il ciclo che abbatte il nemico
+            // qui presente - gira ESATTAMENTE come per una morte normale. Un nemico eseguito E' un
+            // nemico morto, il suo annuncio di morte viaggia per conto suo (il ciclo di invio lo
+            // intercetta entro ~50 ms, perche' Execution.OnUse chiama KillEntity() PRIMA di animare), e
+            // fare qui la stessa contabilita' e' IDEMPOTENTE: chiude la finestra in cui dei due annunci
+            // ne arrivasse uno solo.
+            if (ExecutionSync.IsExecutionId(enemyId))
+            {
+                string executed = ExecutionSync.IdOf(enemyId);
+                if (string.IsNullOrEmpty(executed))
+                    return;
+
+                ApplyRemoteExecution(executed);
+                enemyId = executed;
+            }
+
             _pendingDeaths.Add(enemyId);
             MarkSpawnPointConsumed(enemyId);
 
@@ -4352,6 +4409,71 @@ namespace Blasphemous.Multiplayer.Client
 
                 DestroyDeadEnemy(ResolveEnemy(enemyId));
                 return;
+            }
+        }
+
+        /// <summary>
+        /// Riproduce su QUESTA macchina il suono che la macchina esecutrice ha sentito nel momento in cui
+        /// il nemico e' diventato eseguibile.
+        ///
+        /// COSA QUESTO METODO NON E', ed e' la parte importante. Non istanzia la prop di esecuzione, non
+        /// nasconde il nemico, non tocca il penitent locale, la camera o l'input. La CUTSCENE
+        /// dell'esecuzione e' pilotata da Tools.Level.Interactables.Execution.OnUse(), ed e' saldata al
+        /// giocatore LOCALE: chiama Core.Logic.Penitent (nasconde lo sprite e disabilita la fisica),
+        /// Core.Input.SetBlocker("EXECUTION", true), sposta il penitent locale sulla prop e guida la
+        /// camera globale e il TimeScale. Chiamarla qui nasconderebbe IL GIOCATORE CHE NON STA ESEGUENDO,
+        /// gli bloccherebbe i tasti e - se qualcosa lanciasse prima dell'ultima riga - lascerebbe il
+        /// blocker acceso PER SEMPRE. Quella e' la voce 54. Questo metodo e' scritto perche' su questa
+        /// macchina il blocker non venga MAI acceso.
+        ///
+        /// PERCHE' VALE COMUNQUE LA PENA. La MORTE del nemico viaggia gia': OnUse chiama KillEntity()
+        /// prima di animare, Entity.Kill() porta la vita a zero, e il ciclo di invio annuncia sia
+        /// EnemyKill sia EnemyDeathGlobal entro ~50 ms. Quello che NON viaggia e' il SUONO: sta nel ramo
+        /// Behaviour.Execution(), che ESCE PRIMA di EnemyDamageArea.TakeDamage - e TakeDamage e' l'unico
+        /// punto su cui e' agganciato EnemyDamagePatch. Percio' il relay di A1 NON lo copre.
+        ///
+        /// ⚠️ GUARDATO DA UN CAPO ALL'ALTRO, E NON E' PIGNOLERIA. Questo codice gira dentro
+        /// NetworkManager.ProcessQueue, che Multiplayer.OnLateUpdate chiama dentro try/FINALLY - senza
+        /// catch. Un'eccezione qui esce PRIMA che la coda venga svuotata e PRIMA di SendQueue: lo stesso
+        /// pacchetto viene riprocessato per sempre e la mod smette di spedire. E' il guasto che e' costato
+        /// 2934 errori e una sessione congelata (vedi il commento di ApplyDamage).
+        /// </summary>
+        private static void ApplyRemoteExecution(string id)
+        {
+            try
+            {
+                Enemy enemy = ResolveEnemy(id);
+                bool here = enemy != null && enemy.gameObject != null;
+
+                ModLog.Info($"[Exec RX] {id} nemico_in_scena={(here ? "si" : "no")}");
+
+                // P4 - la notifica. E' la parte piu' piccola che rende GIUSTIZIA all'utente: il suono dice
+                // che qualcosa e' successo, questa riga dice COSA e A CHI. Non nomina il giocatore perche'
+                // NON E' POSSIBILE: EnemyDeathGlobal non porta il mittente (lo fa notare PlayerDeathSync:
+                // "ReceiveMessage discards the sender and ProcessQueue passes only the bytes"), quindi un
+                // nome qui sarebbe inventato. DisplayNotification logga da sola ("Notification: ...") e
+                // accetta stringhe grezze, quindi non serve localizzazione.
+                // SI PUO' TOGLIERE SENZA TOCCARE NULL'ALTRO: nessuno stato dipende da questa riga.
+                Main.Multiplayer.NotificationManager.DisplayNotification(
+                    "L'altro giocatore ha eseguito un nemico");
+
+                if (Core.Logic.Penitent == null || Core.Logic.Penitent.Audio == null)
+                    return;
+
+                // LA CHIAMATA VERBATIM DEL GIOCO, letta da tutti e sedici gli override di
+                // Behaviour.Execution: Core.Logic.Penitent.Audio.PlaySimpleHitToEnemy().
+                // E' un evento di CATALOGO ("PenitentSimpleEnemyHit", la public const
+                // PenitentAudio.SimpleEnemyHitEventKey), quindi si risolve sul catalogo DI QUESTA macchina:
+                // non viaggia alcuna chiave, alcun percorso di banca, alcuna stringa.
+                // E' anche GIA' usata dalla mod in due punti, quindi non e' una firma da indovinare.
+                Core.Logic.Penitent.Audio.PlaySimpleHitToEnemy();
+
+                if (!here)
+                    ModLog.Info($"[Exec RX] {id}: il nemico non e' in questa scena, ho suonato lo stesso");
+            }
+            catch (Exception e)
+            {
+                ModLog.Error("[Exec RX] riproduzione fallita: " + e.GetType().Name + " - " + e.Message);
             }
         }
 
