@@ -212,6 +212,100 @@ namespace Blasphemous.Multiplayer.Client.Players
             // macchina NON DEVE arrivare al gioco (la prop del gioco locale non esiste).
             UnityEngine.Object.Destroy(prop);
 
+            // ============================================================================================
+            // ⭐⭐ ②a - SI DISTRUGGE `ExecutionAnimationEvents` SUL FANTASMA. E' L'UNICO COMPONENTE CHE
+            // RILEGGE UN `Execution`, E QUEL `Execution` NON ESISTE PIU'.
+            // ============================================================================================
+            //
+            // ⭐ LA NRE, MISURATA. In G1, una riga dopo "fantasma istanziato" (1865):
+            //
+            //     1866 Ups! There was an unhandled exception: NullReferenceException
+            //     1867 Tools.Level.Interactables.ExecutionAnimationEvents.Start ()
+            //
+            // e in IL la ragione e' letterale, `ExecutionAnimationEvents.cs:20-29`:
+            //
+            //     private void Start() {
+            //         _execution = GetComponentInParent<Execution>();      // <-- NULL, e non e' un caso
+            //         _animator = GetComponent<Animator>();
+            //         execution.OnNormalTime = (Core.SimpleEvent)Delegate.Combine(...)   // <-- QUI si lancia
+            //         ...
+            //         CreateExecutionSoundEvent();                        // <-- MAI RAGGIUNTA
+            //     }
+            //
+            //     ⚠️ `GetComponentInParent<Execution>()` non trova nulla E NON PUO' TROVARE NULLA: la prop
+            //     (che porta l'`Execution`) e' distrutta due righe sopra, il fantasma e' stato STACCATO
+            //     (`SetParent(null, true)`, riga 180) e `GetComponentInParent` NON risale oltre la radice.
+            //     Le due righe che seguono leggono `execution` SENZA guardia `null`: la NRE e' garantita,
+            //     non probabile.
+            //
+            //     ⚠️ E `Start()` NON era ancora girato perche' `Instantiate` chiama solo `Awake`/`OnEnable`:
+            //     la NRE arriva quindi DOPO la distruzione della prop, cioe' quando il danno e' gia' fatto.
+            //
+            // ⭐⭐ E ALLORA PERCHE' DISTRUGGERLO INVECE DI TENERLO - la domanda vera, perche' il suono e' in
+            // gioco. LA RISPOSTA, verificata in IL: IL SUONO DELL'ESECUZIONE NON E' RAGGIUNGIBILE DA QUESTA
+            // STRADA, e non lo diventerebbe tenendo il componente. I suoi tre metodi di suono sono:
+            //
+            //     public void PlayExecutionSound()               { if (_executionSound.isValid()) _executionSound.start();   }
+            //     public void StopExecutionSound()               { if (_executionSound.isValid()) _executionSound.release(); }
+            //     public void UpdateExecutionSoundEventParam(float p) { if (_hitParam.isValid()) _hitParam.setValue(p); }
+            //
+            // e l'unica riga che li rende vivi e' dentro `Start()`:
+            //
+            //     private void CreateExecutionSoundEvent() {
+            //         _executionSound = Core.Audio.CreateEvent(_execution.ActivationSound);   // Execution.cs:99 => activationSound
+            //         _executionSound.getParameter("Hits", out _hitParam);
+            //     }
+            //
+            // cioe' L'EVENTO FMOD E' L'`ActivationSound` DELLA PROP, CHE E' STATA DISTRUTTA. Su questa strada
+            // `_execution` e' null PRIMA di quella riga: `_executionSound` resta un default (non valido) e i
+            // tre metodi sono no-op. Il suono dell'esecuzione non "si perde" distruggendo il componente: si
+            // e' gia' perso con la prop, e tenerlo in vita non lo recupera - aggiunge solo una NRE per ogni
+            // esecuzione remota.
+            //
+            // ⚠️ E NON SI FABBRICA UN `Execution` FITTIZIO, ne' un `SetParent` sulla prop per farglielo
+            // trovare: sarebbero STATO DEL GIOCO INVENTATO. Un `Execution` finto vorrebbe dire `OnUse` (o
+            // `Awake`/istanza) con `SetPlayer`, `SetBlocker("EXECUTION")`, TimeScale e camera dentro - e la
+            // prop VA distrutta, e' la ragione per cui il fantasma e' stato staccato.
+            //
+            // ⭐ E IL SUONO DELL'ESECUZIONE C'E' LO STESSO, PER UN'ALTRA VIA, GIA' VERIFICATA NEI LOG: e' il
+            // `Core.Logic.Penitent.Audio.PlaySimpleHitToEnemy()` di `ApplyRemoteExecution`, che la macchina
+            // esecutrice chiama per davvero in ogni `Behaviour.Execution()` del gioco. In G1 e' la riga 1855,
+            // "[TRACE][AUDIO] Playing audio hit. event:/SFX/Penitent/Damage/PenitentSimpleEnemyHit", e cade
+            // PRIMA del fantasma (1852-1853): il colpo dell'esecuzione si sente mentre l'esecuzione accade.
+            //   ⇒ Il silenzio che si aggiunge qui e' il solo `activationSound` della prop, non il suono
+            //   dell'esecuzione per chi guarda.
+            //
+            // ⚠️ E VALE LA REGOLA GENERALE, tanto piu' qui: OGNI COMPONENTE CHE CERCA UN `Execution` IN UN
+            // GENITORE E' ROTTO PER COSTRUZIONE SU QUESTO FANTASMA. Non e' "un componente da sistemare": il
+            // fantasma e' staccato (`SetParent(null)`) e la prop e' distrutta, quindi non esiste - e non puo'
+            // esistere - un `Execution` sopra di lui. Distruggere il componente e' l'unica cosa che toglie la
+            // NRE SENZA LASCIARE IN GIRO UN COMPONENTE CHE PUNTA A UN OGGETTO DISTRUTTO.
+            //
+            // ⚠️ SI USA `Destroy`, NON `DestroyImmediate`: `Destroy` differisce a fine frame, e un
+            // `DestroyImmediate` farebbe girare `OnDestroy` in mezzo a questo metodo (stessa ragione della
+            // riga 199-201). E la differenza NON riapre la NRE: `Start()` di un oggetto istanziato in questo
+            // frame gira al PRIMO `Update` successivo, cioe' DOPO la fine di questo frame - quindi il
+            // componente e' gia' distrutto quando `Start()` sarebbe stato chiamato.
+            //   ⚠️ `GetComponentsInChildren<...>()` INCLUDE il GameObject radice (stessa semantica gia' usata
+            //   per `Execution` alla riga 162), quindi si coprono sia il fantasma stesso sia un eventuale
+            //   figlio che la porta.
+            ExecutionAnimationEvents[] ghostEvents =
+                ghostObject.GetComponentsInChildren<ExecutionAnimationEvents>(true);
+            for (int i = 0; i < ghostEvents.Length; i++)
+            {
+                if (ghostEvents[i] == null)
+                    continue;
+
+                UnityEngine.Object.Destroy(ghostEvents[i]);
+            }
+
+            if (ghostEvents.Length > 0)
+                ModLog.Info($"[ExecGhost RX] distrutti {ghostEvents.Length} ExecutionAnimationEvents sul " +
+                            "fantasma: cercavano un `Execution` in un genitore che non esiste piu' (prop " +
+                            "distrutta + fantasma staccato), e `Start()` lanciava NRE. Il suono " +
+                            "dell'esecuzione per chi guarda e' PlaySimpleHitToEnemy, gia' suonato da " +
+                            "ApplyRemoteExecution: qui si perdeva solo l'`activationSound` della prop.");
+
             ghost = ghostObject;
             ghostAnimator.SetTrigger(ExecutionStateHash);
 

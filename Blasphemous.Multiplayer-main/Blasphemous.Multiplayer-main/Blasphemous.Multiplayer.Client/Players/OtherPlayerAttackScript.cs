@@ -104,21 +104,22 @@ namespace Blasphemous.Multiplayer.Client.Players
                 StopPeerDashSound();
             }
 
-            // A7 - LO STESSO FUSIBILE PER IL CLANG DELLA PARATA. Un evento SOSTENUTO che non viene mai
-            // fermato non "si sente male": RESTA ACCESO PER SEMPRE. Le due cause sono note e non rare - un
-            // pacchetto perso e una disconnessione nel mezzo; la seconda la copre OnDestroy, ma solo se
-            // l'oggetto viene distrutto.
+            // ⭐ ②b - QUI C'ERA IL FUSIBILE DEL CLANG, ED E' STATO RIMOSSO INSIEME AL SUO STATO.
             //
-            // 4 secondi: la finestra di parata arriva al massimo a 1 s, e la parata finisce quando finisce
-            // la sua animazione. E' un FUSIBILE, non una durata: se scatta, si e' perso uno STOP.
-            if (parryHitInstance.isValid() &&
-                Time.unscaledTime - parryHitStartedAt > PARRY_HIT_TIMEOUT)
-            {
-                ModLog.Warn("[Sound] il clang della parata del peer non ha ricevuto lo STOP entro " +
-                            PARRY_HIT_TIMEOUT + "s: lo spengo io (pacchetto perso?)");
-                StopPeerParryHitSound();
-            }
-
+            // Diceva: se `parryHitInstance.isValid()` e sono passati piu' di `PARRY_HIT_TIMEOUT` (4 s) dallo
+            // `start()`, il clang non ha ricevuto lo STOP -> "lo spengo io (pacchetto perso?)" e
+            // `StopPeerParryHitSound()`.
+            //
+            //   ⚠️ PERCHE' NON PUO' PIU' SCATTARE: la condizione era `parryHitInstance.isValid()`, e quel
+            //   campo non esiste piu' (lo assegnava solo la `CreateCatalogEvent` di A7-bis, che e' stata
+            //   rimossa). Il clang ora passa da `EventOneShotPanned`, che fa `start()` E `release()` da sola:
+            //   non c'e' nessun evento sostenuto che possa "restare acceso", quindi non c'e' nessun pacchetto
+            //   perso da coprire. Lasciarlo qui con un campo sempre invalido sarebbe stato codice morto
+            //   TRACCIATO - la forma peggiore, perche' si legge come una rete di sicurezza che non esiste.
+            //
+            // ⚠️ E IL FUSIBILE DELLA SCIVOLATA, SOPRA, RESTA: quello e' vero. `PlayPeerDashSound` usa ancora
+            // `PlayEventWithCatalog` + `dashSoundInstance` + `stop()`, quindi una scivolata puo' davvero
+            // restare accesa senza lo STOP. Non si tocca.
             switch (effect)
             {
                 case EffectType.SidewaysGrounded:
@@ -770,23 +771,15 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// </summary>
         private const float DASH_SOUND_TIMEOUT = 5f;
 
-        /// <summary>
-        /// A7 - L'ISTANZA DEL CLANG DELLA PARATA, una per avatar.
-        ///
-        /// ⚠️ PERCHE' UN CAMPO E NON UNA VARIABILE LOCALE, esattamente come per la scivolata: lo START e lo
-        /// STOP arrivano in DUE pacchetti diversi, a distanza di una parata, e fra i due non c'e' alcuna
-        /// pila che li tenga insieme. L'istanza e' l'unico filo che li lega.
-        /// </summary>
-        private FMOD.Studio.EventInstance parryHitInstance;
-
-        /// <summary>Da quando il clang sta suonando, in `Time.unscaledTime`. Serve al fusibile.</summary>
-        private float parryHitStartedAt;
-
-        /// <summary>
-        /// Oltre questo tempo il clang si spegne da solo, e lo DICE. Stesso fusibile della scivolata, stessa
-        /// ragione: un evento sostenuto senza STOP resta acceso per sempre.
-        /// </summary>
-        private const float PARRY_HIT_TIMEOUT = 4f;
+        // ⭐ ②b - QUI C'ERANO `parryHitInstance`, `parryHitStartedAt` E `PARRY_HIT_TIMEOUT`, E SONO STATI
+        // RIMOSSI. Erano il fusibile del clang: un `EventInstance` creato a mano, l'ora del suo `start()`, e
+        // una scadenza di 4 s per spegnerlo se lo STOP fosse andato perso.
+        //   ⚠️ PERCHE' RIMOSSI E NON LASCIATI INERTI: `EventOneShotPanned` fa `start()` E `release()` da
+        //   sola, quindi "lo STOP e' perso e l'evento resta acceso per sempre" non e' piu' uno stato
+        //   raggiungibile. Un fusibile che non puo' piu' scattare e' una bugia che qualcuno leggera' fra sei
+        //   mesi - e `parryHitInstance` sarebbe stato un campo chiamato "istanza del clang" che vale sempre
+        //   "nessuna", cioe' la stessa bugia in forma di campo. Vedi il commento in
+        //   `PlayPeerParryHitSound`, che e' dove la decisione e' argomentata.
 
         /// <summary>
         /// Accende il suono della scivolata del peer nel punto in cui e' scivolato.
@@ -855,16 +848,16 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// <summary>
         /// A7 - IL CLANG DELLA PARATA DEL PEER, alla catena del gioco.
         ///
-        /// PERCHE' UNA CATENA SUA E NON UN `case` IN PIU' IN `PlayPeerSound`: perche' questo evento e'
-        /// SOSTENUTO. `PlayPeerSound` finisce in `EventOneShotPanned`, che fa `start()` e subito `release()`:
-        /// su un evento che non si ferma da solo, il `release()` non lo spegne - lo lascia PARTITO e senza
-        /// piu' un manico per fermarlo.
+        /// ⭐ ②b - E' UN ONE-SHOT, E SI SUONA SU UNA STRADA SOLA: `EventOneShotPanned`. Vedi il corpo del
+        /// metodo per cosa e' stato rimosso e perche' (`CreateCatalogEvent` + `start()` era il residuo di
+        /// A7-bis, raddoppiava lo `start()` e non era il suono che mancava).
         ///
-        /// ⚠️⚠️ E LA CHIAVE, NON IL PERCORSO. `PlayEventWithCatalog(ref eI, key, pos)` chiama
-        /// `CreateCatalogEvent(key, pos)`, che fa `FindSfxInCatalogs(key)` e poi
-        /// `RuntimeManager.CreateInstance(clip.FMODKey)`. Passandole il PERCORSO risolto la ricerca
-        /// fallirebbe, `FMODKey` sarebbe null, e il clang resterebbe MUTO **con un log che dice che va tutto
-        /// bene**. La variabile qui sotto si chiama `key` proprio per non ripetere l'errore.
+        /// ⚠️ E NON C'E' PIU' UNA GESTIONE A ISTANZA DA QUI. Il commento che stava qui diceva il contrario -
+        /// che questo evento e' SOSTENUTO e che `EventOneShotPanned`, facendo `start()` e `release()`, lo
+        /// lascerebbe "partito e senza piu' un manico per fermarlo". Nei fatti `EventOneShotPanned` e' la
+        /// strada che SUONA (confermato dall'utente, ed e' quella della guardia), quindi la scelta e'
+        /// quella. `StopPeerParryHitSound()` resta come via di pulizia dello STOP ed e' INERTE, dichiarato:
+        /// senza un `EventInstance` non c'e' nulla da fermare, e non lo si finge.
         /// </summary>
         private void PlayPeerParryHitSound(Vector2 position)
         {
@@ -876,10 +869,16 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             // La spia di A5: dice se la chiave non esiste su QUESTA macchina. Si consulta - e il suo valore
             // di ritorno NON si passa a `PlayEventWithCatalog`, che vuole l'Id e non il percorso.
-            if (string.IsNullOrEmpty(ResolveCatalogPath(key)))
+            string path = ResolveCatalogPath(key);
+            if (string.IsNullOrEmpty(path))
                 return;
 
             // Come il gioco: PRIMA si spegne quello che c'e', POI si accende.
+            // ⚠️ MA CON `EventOneShotPanned` QUESTA RIGA NON SPEGNE PIU' NULLA, ed e' voluto: il clang e' un
+            // one-shot (fa `start()` e `release()` da sola) e non esiste piu' un `EventInstance` da fermare
+            // qui. La riga resta come nel gioco - l'ordine "prima spegni, poi accendi" - e perche' questo e'
+            // il punto in cui rimettere una gestione a istanza se un giorno il suono tornasse SOSTENUTO.
+            // Vedi `StopPeerParryHitSound` per la decisione completa.
             StopPeerParryHitSound();
 
             // ⚠️ LA POSIZIONE E' UNA SCELTA DICHIARATA, NON UNA COPIA DEL GIOCO. `EntityAudio.PlayEvent`
@@ -887,69 +886,75 @@ namespace Blasphemous.Multiplayer.Client.Players
             // nell'origine. Passare la posizione del PEER lo spazializza dove la parata e' avvenuta, che e'
             // lo scopo del fix. Se all'orecchio suonasse sbagliato, per essere fedeli al gioco basta passare
             // `Vector3.zero`: e' l'unica riga da cambiare.
-            // ⚠️⚠️ PERCHE' NON `PlayEventWithCatalog`. Il suo IL e' 18 istruzioni e comincia cosi':
-            //     if (eventInstance.isValid()) return;    // <-- esce SENZA creare, SENZA avviare, SENZA loggare
-            // E' un LATCH, non uno `start()`: il suono parte solo la PRIMA volta che il campo e' invalido.
-            // E il campo non si invalida da solo, perche' ne' `PlayEventWithCatalog` ne' `release()` toccano
-            // `handle` (`release()` fa solo `ldfld handle; call Release; ret`): l'unico che lo azzera e'
-            // `clearHandle()`, che sta dentro `FMODAudioManager.StopEvent`.
-            //   `StopPeerParryHitSound()` lo chiama gia' - ma la guardia va tolta lo stesso, perche' questa
-            //   riga deve creare SEMPRE un'istanza nuova, come fa il gioco:
-            //       EntityAudio.PlayEvent -> CreateCatalogEvent(eventKey) -> start()
             Vector3 at = EffectWorldPosition(position);
 
-            // ⚠️ UNA SOLA `CreateCatalogEvent`, E IL CAMPO CI FINISCE DENTRO SUBITO. `StopPeerParryHitSound()`
-            // ha gia' fermato e azzerato l'istanza precedente: sovrascrivere il campo con un'istanza NUOVA e'
-            // l'unico modo di non lasciare acceso un evento senza piu' un manico per fermarlo. Crearne due -
-            // una per "testare" e una per "accendere" - lascerebbe la prima accesa per sempre.
-            parryHitInstance = audio.CreateCatalogEvent(key, at);
-
-            // ⚠️⚠️ A7-bis - SI CAMBIA STRADA, E PER SEPARARE DUE VARIABILI. `EventOneShotPanned` e` la
-            // strada che la GUARDIA usa e che FUNZIONA (confermato dall'utente). La catena qui sopra
-            // (`CreateCatalogEvent` + `start()`) creava un'istanza VALIDA e non si sentiva lo stesso.
-            //   ⇒ Se ora si sente, il problema era la STRADA. Se non si sente ancora, e' IL SUONO
-            //   (`PenitentParryHit` non e' il clang) - e per questo si manda anche `ParryAttack`.
+            // ============================================================================================
+            // ⭐⭐ ②b - UNA SOLA STRADA, E QUESTA E' QUELLA CHE FUNZIONA (`EventOneShotPanned`).
+            // ============================================================================================
             //
-            // `EventOneShotPanned` fa start E release da sola, quindi l'istanza non resta appesa e il
-            // fusibile qui sotto non serve piu` per questo suono: resta perche' non fa danno, e perche'
-            // `StopPeerParryHitSound` e` la via di pulizia dello STOP.
-            audio.EventOneShotPanned(ResolveCatalogPath(key), at);
-            parryHitStartedAt = Time.unscaledTime;
-
-            if (parryHitInstance.isValid())
-            {
-                parryHitInstance.start();
-                parryHitStartedAt = Time.unscaledTime;
-                ModLog.Info($"[Sound RX] clang acceso ({at.x:F1},{at.y:F1})");
-            }
-            else
-            {
-                // ⚠️ OSSERVABILITA': senza questa riga "il clang e' partito e non si sente" e "il clang e' stato
-                // SCARTATO dalla guardia" restano INDISTINGUIBILI, perche' `PlayEventWithCatalog` tace.
-                ModLog.Warn("[Sound RX] il clang NON e' partito: `CreateCatalogEvent(\"" + key +
-                            "\")` ha restituito un'istanza NON valida (chiave/catalogo, non rete)");
-            }
-
-            if (parryHitInstance.isValid())
-                parryHitStartedAt = Time.unscaledTime;
+            // COS'ERA. Fino a ieri questo metodo faceva ENTRAMBE le cose: `audio.CreateCatalogEvent(key, at)`
+            // + `parryHitInstance.start()` (col marker "[Sound RX] clang acceso") E POI
+            // `audio.EventOneShotPanned(path, at)`. Era il residuo dell'esperimento A7-bis, scritto per
+            // separare due variabili ("se ora si sente, il problema era la STRADA").
+            //
+            // ⭐ LA MISURA, E SCIOGLIE L'ESPERIMENTO. Nei log G1 il marker c'e' - riga 1846,
+            // "[Sound RX] clang acceso (-545.6,10.0)", quindi la prima strada PARTIVA DAVVERO - ma il clang
+            // NON era il suono che mancava: quello era `PenitentParry` (il flash della parata riuscita), e
+            // A7-ter l'ha chiuso col suo `case EffectType.ParryAttack`. Il clang suonava, e suonava due
+            // volte: due `start()` dello stesso evento a un frame di distanza.
+            //
+            //   ⇒ SI TIENE `EventOneShotPanned`, che e' la strada della GUARDIA (gia' confermata
+            //   dall'utente) e che nel suo IL fa `start()` E `release()` da sola.
+            //
+            // ⚠️ E IL FUSIBILE DEL CLANG (`PARRY_HIT_TIMEOUT`), IL CAMPO `parryHitInstance`, IL CAMPO
+            // `parryHitStartedAt` E LA SUA SCADENZA IN `PlayEffectAnimation` SONO STATI RIMOSSI, NON LASCIATI
+            // INERTI. Erano un fusibile su un EVENTO SOSTENUTO: esistevano per il caso "lo STOP e' perso e
+            // l'evento resta acceso per sempre". `EventOneShotPanned` fa `release()` da sola, quindi quel
+            // caso NON PUO' PIU' ESISTERE - e un fusibile che non puo' piu' scattare e' una bugia che
+            // qualcuno leggera' fra sei mesi, leggendo un log che non comparira' mai.
+            //   ⚠️ `parryHitInstance` sarebbe rimasto un default per sempre (nessuno gliela assegnava piu'),
+            //   e un campo che si chiama "istanza del clang" e vale sempre "nessuna" e' la stessa bugia in
+            //   forma di campo.
+            //
+            // ⚠️ E COSA RIMANE DELLO STOP, che e' la parte del vincolo da rispettare. `case
+            // EffectType.ParryHitStop` e `StopPeerParryHitSound()` RESTANO, e NON sono un fusibile: sono la
+            // via di pulizia dello STOP, che continua ad arrivare dal mittente.
+            //   ⚠️ E `StopPeerParryHitSound()` e' OGGI INERTE, DICHIARATAMENTE: con la sola
+            //   `EventOneShotPanned` non esiste piu' un `EventInstance` da fermare, quindi non c'e' nulla da
+            //   pulire. Non si finge che serva: la sua intestazione lo dice. Le due chiamate restano perche'
+            //   il caso e' riconosciuto e osservato (la riga `[Effect] ParryHitStop` continua a dire che il
+            //   byte e' arrivato), e perche' rimettere qui una gestione a istanza, un giorno, e' una riga -
+            //   non una ricostruzione.
+            //
+            // ⚠️ E NON SI USA `CreateCatalogEvent` DA SOLO PER "NON PERDERE IL MARKER": il marker serve a
+            // distinguere "il byte e' arrivato e non ha suonato" da "e' arrivato e ha suonato", e la riga
+            // `[Effect] ParryHit` dice gia' che il byte e' arrivato. Il marker che si scrive qui sotto dice
+            // che il suono e' partito, ed e' sulla strada che SUONA.
+            audio.EventOneShotPanned(path, at);
+            ModLog.Info($"[Sound RX] clang acceso ({at.x:F1},{at.y:F1}) via EventOneShotPanned " +
+                        $"(unico start: niente istanza da fermare, nessun fusibile)");
         }
 
         /// <summary>
-        /// Spegne il clang. SICURA DA CHIAMARE SEMPRE, anche a vuoto: `StopEvent` comincia con
-        /// `if (eventInstance.isValid())`, e un'istanza mai accesa non e' valida. E `clearHandle()` e' dentro
-        /// `StopEvent`, quindi l'istanza non resta "valida" dopo il `release()`.
+        /// Spegne il clang. SICURA DA CHIAMARE SEMPRE, anche a vuoto - ⚠️ MA OGGI NON HA NULLA DA FARE, E LO
+        /// DICE INVECE DI FINGERE.
+        ///
+        /// ⭐ ②b - L'HA RESA INERTE LA SCELTA DI UNA STRADA SOLA. Il clang si suona con
+        /// `EventOneShotPanned`, che fa `start()` E `release()` da sola: non esiste piu' un `EventInstance`
+        /// tenuto da questo script, quindi non c'e' un manico da fermare. Prima questa riga fermava e
+        /// azzerava `parryHitInstance` con `FMODAudioManager.StopEvent` (che e' anche l'unico posto in cui
+        /// `clearHandle()` viene chiamato, e per questo il campo non restava "valido" dopo il `release()`).
+        ///
+        /// ⚠️ PERCHE' IL METODO RESTA, ALLORA: e' la via di pulizia dello STOP, e lo STOP continua ad
+        /// arrivare dal mittente (`case EffectType.ParryHitStop`, chiamato anche da `OnDestroy`). Il caso
+        /// resta riconosciuto e osservato - la riga `[Effect] ParryHitStop` dice che il byte e' arrivato - e
+        /// rimettere qui una gestione a istanza, un giorno, e' una riga: non una ricostruzione. Se il clang
+        /// tornasse a essere un evento SOSTENUTO, questo e' il posto in cui rimettere lo stop, e il commento
+        /// in `PlayPeerParryHitSound` dice esattamente cosa rimetterci.
         /// </summary>
         private void StopPeerParryHitSound()
         {
-            Framework.Managers.FMODAudioManager audio = Framework.Managers.Core.Audio;
-            if (audio == null)
-            {
-                parryHitInstance = default(FMOD.Studio.EventInstance);
-                return;
-            }
-
-            audio.StopEvent(ref parryHitInstance);
-            parryHitInstance = default(FMOD.Studio.EventInstance);
+            // NIENTE DA FARE, DI PROPOSITO. Non si tiene un `EventInstance` per il clang: vedi sopra.
         }
 
         /// <summary>
