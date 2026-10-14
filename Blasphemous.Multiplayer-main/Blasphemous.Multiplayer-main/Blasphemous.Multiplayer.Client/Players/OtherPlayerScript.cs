@@ -215,6 +215,15 @@ namespace Blasphemous.Multiplayer.Client.Players
             ghost = ghostObject;
             ghostAnimator.SetTrigger(ExecutionStateHash);
 
+            // ⭐⭐ E ORA L'AVATAR SPARISCE, CHE E' LA RICHIESTA DELL'UTENTE.
+            //
+            // ⚠️ E' L'ULTIMA COSA, E NON LA PRIMA, DI PROPOSITO: si nasconde l'avatar SOLO QUANDO IL FANTASMA
+            // ESISTE DAVVERO. Tutte le uscite anticipate qui sopra (prefab non risolto, `interactorAnimator`
+            // assente) NON nascondono nulla: senza fantasma non c'e' nessuna animazione da mostrare, e un
+            // avatar nascosto per un'esecuzione che non si vede sarebbe il difetto peggiore - invisibile e
+            // senza motivo. La richiesta e' "invisibile MENTRE l'animazione va", non "invisibile e basta".
+            HideAvatarForExecution();
+
             if (ExecutionGhostWatcher.Attach(this, ghost, ghostAnimator))
                 ModLog.Info($"[ExecGhost RX] fantasma istanziato su {name}: prop distrutta nello stesso " +
                             $"frame, trigger USED premuto, durata clip=" +
@@ -242,11 +251,17 @@ namespace Blasphemous.Multiplayer.Client.Players
             // il byte di fine, escono qui senza toccare l'Animator e senza scrivere una seconda riga di log
             // che farebbe sembrare normale un doppio ripristino.
             //
-            // ⚠️ E LE DUE CONDIZIONI SONO `||` E NON UNA SOLA, perche' adesso c'e' UN SECONDO STATO DA
-            // RIPRISTINARE: il fantasma. Il fusibile azzera `ExecutionStartedAt` e uccide il fantasma nello
-            // stesso giro, quindi qui i due casi sono lo stesso caso - ma un avatar che avesse perso il
-            // fantasma senza perdere il tempo (o viceversa) deve comunque essere rimesso a posto.
-            if (ExecutionStartedAt <= 0f && ghost == null)
+            // ⚠️ E LE TRE CONDIZIONI SONO `||` E NON UNA SOLA, perche' adesso ci sono TRE STATI DA
+            // RIPRISTINARE: il tempo, il fantasma e il renderer dell'avatar. Il fusibile azzera il tempo e
+            // uccide il fantasma nello stesso giro, quindi di solito i tre casi sono lo stesso caso - ma un
+            // avatar che avesse perso uno solo dei tre (o che sia stato nascosto senza che il tempo sia mai
+            // stato acceso) deve comunque essere rimesso a posto.
+            //
+            // ⚠️ `executionRendererHidden` E' NELLA GUARDIA, E NON E' PIGNOLERIA: e' l'UNICO dei tre stati che
+            // puo' lasciare un avatar INVISIBILE PER SEMPRE. Un `ExecutionStartedAt` rimasto acceso si
+            // spegne al primo `Update`; un fantasma rimasto in scena si distrugge; un renderer spento e mai
+            // riacceso non lo riaccende NESSUNO - e questo metodo e' l'unico posto in cui viene riacceso.
+            if (ExecutionStartedAt <= 0f && ghost == null && !executionRendererHidden)
                 return;
 
             ExecutionStartedAt = 0f;
@@ -263,14 +278,35 @@ namespace Blasphemous.Multiplayer.Client.Players
             //   fantasma e' la sua faccia per tutta la durata dell'esecuzione, e alla fine la faccia torna
             //   al suo posto.
             //
+            // ⚠️⚠️ E IL RENDERER TORNA AL VALORE CHE AVEVA, NON A `true`.
+            //
+            // Questa riga era `CharacterRenderer.enabled = true` ed era un difetto suo, oltre a quello che
+            // l'utente ha visto: l'esecuzione che finisce su un avatar che era GIA' SPENTO - dentro una porta
+            // (`FinishSpecialAnimation`), o non ancora vestito di skin - lo faceva COMPARIRE. Il ripristino
+            // deve rimettere lo stato salvato, e `executionRendererHidden` dice se c'e' davvero qualcosa da
+            // rimettere: se nessuno ha spento niente, qui non si scrive e non si logga - un avatar mai toccato
+            // non deve produrre una riga che fa sembrare normale un ripristino che non e' avvenuto.
+            //
             // ⚠️ E NON SI USA `SetActive`, ne' sul GameObject ne' sull'`Animator`: spegnere l'`Update` di
             // questo stesso script fermerebbe il fusibile (che deve poter scattare proprio quando i
             // pacchetti non arrivano piu'), e spegnere l'`Animator` fermerebbe il rilevamento della morte,
             // che e' l'altra cosa che questo `Update` fa.
-            if (CharacterRenderer != null)
-                CharacterRenderer.enabled = true;
+            if (CharacterRenderer != null && executionRendererHidden)
+            {
+                executionRendererHidden = false;
+                CharacterRenderer.enabled = executionRendererWasEnabled;
 
-            ModLog.Info($"[ExecGhost RX] fine ({why}): fantasma ucciso, avatar {name} di nuovo visibile " +
+                // ⚠️ DUE ESITI DIVERSI, E IL LOG LI DISTINGUE: "torna visibile" e "resta spento com'era"
+                // sono la stessa riga di codice ma due fatti opposti, e solo il valore salvato li separa.
+                string outcome = executionRendererWasEnabled
+                    ? "era VISIBILE prima dell'esecuzione, quindi torna visibile"
+                    : "era GIA' SPENTO prima dell'esecuzione (morte, porta o skin): resta spento com'era";
+
+                ModLog.Info($"[ExecGhost RX] avatar {name} ripristinato: SpriteRenderer.enabled " +
+                            $"False -> {CharacterRenderer.enabled} ({outcome})");
+            }
+
+            ModLog.Info($"[ExecGhost RX] fine ({why}): fantasma ucciso, avatar {name} ripristinato " +
                         "(l'Animator dell'avatar non e' stato toccato in tutta l'esecuzione)");
         }
 
@@ -326,6 +362,85 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// `DestroyGhost` lo azzera SEMPRE, prima di distruggere.
         /// </summary>
         private GameObject ghost;
+
+        /// <summary>
+        /// IL VALORE DI `CharacterRenderer.enabled` COME ERA **PRIMA** CHE L'ESECUZIONE LO SPEGNESSE.
+        ///
+        /// ⭐⭐ PERCHE' SI SALVA, E NON SI RIMETTE `true`. Il ripristino deve rimettere l'avatar **esattamente
+        /// come era**, e "come era" NON e' una costante: questo renderer viene spento da due percorsi che non
+        /// hanno niente a che vedere con l'esecuzione -
+        ///     `SetupPlayer` (`CharacterRenderer.enabled = false`, l'avatar nasce spento)
+        ///     `FinishSpecialAnimation` (porta 247/248/249: l'avatar resta spento dentro la porta)
+        /// - e viene riacceso da `ApplySkinTexture` (una volta sola, subito dopo la nascita dell'avatar).
+        ///   ⇒ Scrivere `true` nel ripristino e' un'indovinata: se il peer era DENTRO UNA PORTA o non aveva
+        ///   ancora ricevuto la sua skin, l'esecuzione lo avrebbe fatto COMPARIRE dal nulla - un difetto nuovo
+        ///   al posto di quello vecchio, e pure peggiore, perche' la posizione e' quella sbagliata.
+        ///   ⇒ Si salva il valore vero, e si rimette QUELLO. Vedi `HideAvatarForExecution`.
+        /// </summary>
+        private bool executionRendererWasEnabled;
+
+        /// <summary>
+        /// VERO SE E' STATO **QUESTO** SCRIPT A SPEGNERE IL RENDERER, cioe' se c'e' qualcosa da ripristinare.
+        ///
+        /// ⚠️ NON E' RIDONDANTE CON `ExecutionStartedAt`: quello dice che un'esecuzione e' in corso, questo dice
+        /// che il renderer e' stato toccato. Sono diversi proprio nei casi che contano - prefab non risolto
+        /// (`ExecutionStartedAt` acceso, renderer mai toccato), `OnDestroy` dopo un ripristino gia' avvenuto -
+        /// e senza questa distinzione il ripristino non saprebbe se il suo silenzio e' "non c'era niente da
+        /// fare" oppure "ho dimenticato di rimettere l'avatar".
+        ///
+        /// ⚠️ E SERVE ANCHE ALLA SECONDA ESECUZIONE: se una seconda esecuzione arriva mentre la prima e' in
+        /// scena, il valore da salvare e' quello di PRIMA DELLA PRIMA (il renderer e' gia' spento da noi:
+        /// salvarlo adesso salverebbe `false`, e alla fine l'avatar resterebbe invisibile per sempre).
+        /// </summary>
+        private bool executionRendererHidden;
+
+        /// <summary>
+        /// SPEgne il renderer dell'avatar per la durata dell'esecuzione, SALVANDO PRIMA com'era.
+        ///
+        /// ⭐ E' LETTERALMENTE CIO' CHE FA IL GIOCO SUL PENITENT CHE ESEGUE, e non e' un'analogia: `Execution.OnUse`
+        /// chiama `ShowPlayer(false)` (`Execution.cs:160`), e `ShowPlayer` e' questo (`Interactable.cs:492-496`):
+        ///
+        ///     Core.Logic.Penitent.SpriteRenderer.enabled = show;      <-- SI SPEGNE IL RENDERER, NON L'ANIMATOR
+        ///     Core.Logic.Penitent.DamageArea.enabled = show;
+        ///
+        /// cioe': durante l'esecuzione IL PENITENT CHE ESEGUE NON SI DISEGNA, e l'unica cosa disegnata e' il
+        /// fantasma (`interactorAnimator`, `Execution.cs:166`). Sulla macchina di chi guarda il penitent locale
+        /// non esiste, quindi l'unico che deve sparire e' QUESTO avatar: stessa riga, stesso effetto, e il
+        /// fantasma resta la sola faccia dell'esecuzione - che e' esattamente cio' che l'utente ha chiesto.
+        ///
+        /// ⚠️ E NON SI SPEGNE L'ANIMATOR DELL'AVATAR (`CharacterAnim`). E' la trappola dichiarata: `SetDeathStatus`
+        /// (`CharacterAnim.enabled = !dead`) e' un'ALTRA cosa, e spegnere l'Animator qui congelerebbe il
+        /// rilevamento della morte e lo stato dell'avatar invece di limitarsi a non disegnarlo. Il renderer e'
+        /// l'unica cosa che il gioco stesso spegne, e l'unica che si spegne qui.
+        /// </summary>
+        private void HideAvatarForExecution()
+        {
+            // Il renderer nasce in `SetupPlayer`, che precede qualunque pacchetto: se manca, non c'e' avatar da
+            // nascondere e non c'e' nulla da salvare.
+            if (CharacterRenderer == null)
+                return;
+
+            // ⚠️ SI SALVA SOLO LA PRIMA VOLTA. Vedi `executionRendererHidden`: alla seconda esecuzione il
+            // renderer e' gia' spento DA NOI, e risalvarlo archivierebbe `false` come se fosse lo stato
+            // originale - l'avatar non tornerebbe piu' visibile.
+            if (!executionRendererHidden)
+            {
+                executionRendererWasEnabled = CharacterRenderer.enabled;
+                executionRendererHidden = true;
+            }
+
+            CharacterRenderer.enabled = false;
+
+            // ⚠️ IL MARKER DICE TRE COSE, E SERVONO TUTTE: che e' stato spento, DA QUALE VALORE, e A QUALE
+            // valore va rimesso. Senza il valore di partenza "non si e' nascosto" e "si e' nascosto e non e'
+            // tornato" restano indistinguibili nel log - che e' il modo in cui questo difetto e' passato
+            // inosservato finora: il ripristino scriveva "di nuovo visibile" senza che nessuno avesse mai
+            // scritto il contrario.
+            ModLog.Info($"[ExecGhost RX] avatar {name} nascosto per l'esecuzione: SpriteRenderer.enabled " +
+                        $"{executionRendererWasEnabled} -> {CharacterRenderer.enabled} (era " +
+                        $"{executionRendererWasEnabled} PRIMA dell'esecuzione: e' il valore che il " +
+                        "ripristino rimettera')");
+        }
 
         /// <summary>
         /// IL FUSIBILE DEL FANTASMA, ed e' un fusibile a DUE stadi perche' i modi di restare appesi sono due.
