@@ -34,10 +34,16 @@ namespace Blasphemous.Multiplayer.Client.Players
     /// dell'esecuzione (`OtherPlayerScript.cs:148`), con la differenza che li' si istanzia un prefab e qui
     /// una gerarchia gia' in scena.
     ///
+    /// ⚠️ E IL CLONE NON BASTA, perche' **nasce al PRIMO frame di morte** (e' li' che `Status.Dead` diventa
+    /// vero) mentre l'animazione di morte deve ancora girare: da solo cristallizzerebbe **la prima posa
+    /// della caduta**. Non e' un'ipotesi, e' il difetto misurato dall'utente (*"e' rimasto IN PIEDI"*):
+    /// la copia va **inseguendo** la sorgente - sprite, colore **e posa** - finche' la sorgente non si
+    /// ferma. Vedi `UpdateCorpsePose`, `ClosePose` e `CORPSE_POSE_MAX_SECONDS`.
+    ///
     /// ⚠️ LA SNAPSHOT DI PIXEL E' STATA SCARTATA, e il perche' e' concreto: `ReadPixels` legge solo
     /// **dentro il viewport della camera**, quindi un cadavere a bordo schermo verrebbe tagliato; servirebbe
     /// una camera temporanea + `RenderTexture` + `Texture2D` + `Sprite.Create`, quattro API in piu' e una
-    /// texture da distruggere. Il clone non ha nessuno di quei problemi ed e' **esatto per costruzione**.
+    /// texture da distruggere. Il clone non ha nessuno di quei problemi: gli si copia il nodo visivo.
     ///
     /// ⭐⭐ LA FONTE DELLA POSIZIONE DA INSEGUIRE: L'AVATAR DEL PEER, NON IL PACCHETTO.
     /// (integrazione al mandato, e viene dall'utente: *"il morto potrebbe anche utilizzare le posizioni
@@ -103,6 +109,14 @@ namespace Blasphemous.Multiplayer.Client.Players
     /// d'errore dedicato: se il clone non nasce, **il Penitent NON si nasconde e NON si muove** (meglio
     /// un cadavere al posto giusto che un cadavere invisibile).
     ///
+    /// ⭐ E IL CLONE NASCE AL PRIMO FRAME DI MORTE, quindi nasce **a meta' caduta**: la posa va inseguita
+    /// finche' la sorgente non si ferma. Non e' un dettaglio, e' il difetto che l'utente ha visto
+    /// (*"ha fatto l'animazione di morte e poi e' rimasto IN PIEDI"*): vedi `CORPSE_POSE_MAX_SECONDS`,
+    /// `UpdateCorpsePose` e `ClosePose`. Il segnale di fine e' **del gioco**
+    /// (`Penitent.Animator.enabled == false`, scritto da `PlayerDeathAnimationBehaviour.OnStateUpdate:33-36`),
+    /// non un timer nostro: cosi' la copia e' esatta per costruzione e la durata dell'animazione - che
+    /// **non e' leggibile da nessun log** - smette di essere un numero da indovinare.
+    ///
     /// I DIVIETI, riga per riga.
     ///   - ⛔ `Core.Input.SetBlocker`: **zero occorrenze**. `CINEMATIC` si legge e basta.
     ///   - ⛔ `Core.Input.ResetManager()`: zero.
@@ -111,9 +125,11 @@ namespace Blasphemous.Multiplayer.Client.Players
     ///     Si **legge** il transform del suo avatar, non si scrive mai.
     ///   - ⛔ la camera: **zero occorrenze** di `ProCamera2D`/`CameraManager` in questo file. E' il pregio
     ///     di questa via, ed e' la ragione per cui e' stata scelta.
-    ///   - ⛔ `SetActive(false)`: zero. Si spegne **solo l'alpha** dello `SpriteRenderer` del Penitent.
+    ///   - ⛔ `SetActive(false)`: zero. Si spegne **solo l'alpha** dello `SpriteRenderer` del Penitent, e lo
+    ///     si riafferma a ogni frame finche' la finestra e' aperta (`KeepLocalCorpseHidden`).
     ///   - ⛔ `GetComponentsInChildren` nel ciclo per frame: **usato una volta per morte**, nella creazione
-    ///     del clone (alloca, e per questo non e' nel tick).
+    ///     del clone (alloca, e per questo non e' nel tick). Il ciclo per frame della posa **non alloca**:
+    ///     legge e scrive `Sprite`/`Color`/`localPosition`/`localRotation`/`localScale` di due oggetti.
     ///   - ✅ `try/catch` in ogni punto di ingresso: `Tick` e `Create` sono i due soli, e entrambi hanno
     ///     il loro - un'eccezione qui uscirebbe dentro `Multiplayer.OnLateUpdate`, che e' il guasto da
     ///     2934 errori.
@@ -158,23 +174,36 @@ namespace Blasphemous.Multiplayer.Client.Players
         private const float FUSE_SECONDS = 360f;
 
         /// <summary>
-        /// Per quanto tempo, dall'inizio della finestra, la copia **ricopia lo sprite** del Penitent.
+        /// IL TETTO DELLA "POSA DEL CADAVERE", in secondi NON scalati: oltre questo tempo la copia smette
+        /// di inseguire la posa del Penitent **comunque**, e il marker lo dice.
         ///
-        /// ⚠️ PERCHE' NON BASTA IL CLONE. Il morto diventa "morto" (`Status.Dead`) **all'inizio** della
-        /// caduta: `Penitent.OnUpdate` alza `DeathEventLaunched` e chiama `OnDead` al primo frame in cui
-        /// `Status.Dead` e' vero (`Penitent.cs:482-498`), mentre l'animazione di morte sta ancora girando.
-        /// Il gioco **ferma quell'animazione solo alla fine** (`PlayerDeathAnimationBehaviour.cs:33-36`:
-        /// `normalizedTime >= 0.95` -> `animator.enabled = false`).
-        ///   ⇒ Un clone fatto **al primo frame** cristallizzerebbe **la prima posa della caduta**, e il
-        ///     cadavere-copia mostrerebbe un corpo a meta' strada invece che a terra.
-        ///   ⇒ E la correzione e' quella che costa meno: **non si riclona niente** (la posizione del
-        ///     cadavere e' gia' quella giusta e **non deve muoversi**: e' il Penitent che si sposta, non la
-        ///     copia). Si ricopia **solo `Sprite` e `color`** per una finestra breve, e il risultato e'
-        ///     l'ultima posa - che e' esattamente quella che il gioco congela.
-        /// Il valore copre la caduta con margine, e dopo di che si smette di leggere: nessun costo a
-        /// regime, e **il cadavere si posa una volta sola**.
+        /// ⚠️ E' UN TETTO, NON UNA DURATA, ed e' la correzione del difetto "il morto resta IN PIEDI".
+        ///
+        /// IL DIFETTO, e perche' era qui. Il morto diventa "morto" (`Status.Dead`) **all'inizio** della
+        /// caduta (`Penitent.OnUpdate` -> `OnDead`, `Penitent.cs:482-498`), mentre l'animazione di morte sta
+        /// ancora girando: il gioco la **ferma solo alla fine**
+        /// (`PlayerDeathAnimationBehaviour.OnStateUpdate:33-36`: `normalizedTime >= 0.95` ->
+        /// `animator.enabled = false`). La copia nasce quindi **al primo frame di morte**, e la prima
+        /// versione di questo file copiava lo sprite **solo per 2,5 s fissi**: se l'animazione di morte dura
+        /// di piu' - e la sua durata **non e' leggibile da nessun log** - la copia si ferma **a meta'
+        /// caduta**, cioe' **in piedi**. Ed e' esattamente cio' che l'utente ha visto: *"ha fatto
+        /// l'animazione di morte e poi e' rimasto IN PIEDI"*.
+        ///
+        /// ⭐ LA CORREZIONE NON E' UN NUMERO PIU' GRANDE, E' UN ALTRO SEGNALE. Si smette di copiare quando
+        /// **la sorgente smette di cambiare**, cioe' quando il gioco stesso congela la posa:
+        /// `Penitent.Animator.enabled == false` (verificato in IL: e' `PlayerDeathAnimationBehaviour` a
+        /// scriverlo, ed e' la stessa riga per cui il cadavere vero non si muove). Cosi' la copia e' esatta
+        /// **per costruzione**, qualunque sia la durata dell'animazione:
+        ///   - se il segnale arriva, la copia ha **l'ultima posa** - la stessa del cadavere che il gioco
+        ///     tiene a terra;
+        ///   - se non arriva mai (l'animazione non passa da quel `Behaviour`, il Penitent e' morto in aria,
+        ///     o l'`Animator` e' gia' fermo), la copia si ferma **al tetto** e il `Warn` lo dice: si perde
+        ///     qualita' visiva, **non la funzione** (il Penitent e' nascosto e l'inseguimento continua).
+        /// ⚠️ E' una scelta ASIMMETRICA e voluta: aspettare **troppo** costa una copia che insegue ancora
+        /// (innocuo), fermarsi **troppo presto** ricrea il difetto. Il segnale del gioco puo' solo arrivare
+        /// tardi, mai prima del momento in cui la sorgente si ferma davvero.
         /// </summary>
-        private const float CORPSE_POSE_SECONDS = 2.5f;
+        private const float CORPSE_POSE_MAX_SECONDS = 8f;
 
         // ---- stato della finestra di morte. Nessuno di questi campi sopravvive a `Reset()`.
         private static bool _active;
@@ -182,10 +211,27 @@ namespace Blasphemous.Multiplayer.Client.Players
         private static Vector2 _deathPos;
         private static GameObject _copy;
         private static SpriteRenderer _copyRenderer;
+        /// <summary>
+        /// IL NODO VISIVO DELLA COPIA (il clone di `Body`), per copiarne anche la POSA e non solo lo sprite.
+        /// </summary>
+        private static Transform _copyBody;
         private static SpriteRenderer _body;
-        private static float _poseUntil;
         private static float _originalAlpha = 1f;
         private static bool _rendererHidden;
+
+        /// <summary>
+        /// Quanti frame la copia ha inseguito la posa del Penitent, e quante volte si e' dovuto
+        /// **riazzerare l'alpha** dopo averlo fatto (vedi `KeepLocalCorpseHidden`). Il secondo numero e' la
+        /// prova che qualcuno stava scrivendo sul colore del renderer: zero significa che nessuno l'ha
+        /// toccato, e non e' un dettaglio - e' l'unica misura che distingue "l'alpha tiene" da "l'alpha
+        /// viene riscritto e per un frame il corpo vero si rivede".
+        /// </summary>
+        private static int _poseFrames;
+        private static int _hiddenReasserts;
+
+        /// <summary>Se la posa del cadavere e' stata CHIUSA, e da cosa (il segnale del gioco o il tetto).</summary>
+        private static bool _poseClosed;
+        private static string _poseClosedWhy = "in corso";
 
         /// <summary>
         /// L'ultima riga di un guasto che si ripeterebbe identico a ogni frame. Il fusibile lo logga una
@@ -322,15 +368,25 @@ namespace Blasphemous.Multiplayer.Client.Players
 
                 // Da qui in avanti il Penitent puo' sparire: la copia e' in scena a reggere la posa.
                 // ⚠️ SI SPEGNE **SOLO L'ALPHA**, non `SetActive` e non `SpriteRenderer.enabled`: l'RGB
-                // resta intatto, cosi' il ripristino rimette un valore vero invece di indovinarlo.
-                Color hidden = body.color;
-                hidden.a = 0f;
-                body.color = hidden;
-                _rendererHidden = true;
-
+                // resta intatto, cosi' il ripristino rimette un valore **vero** invece di indovinarlo - ed e'
+                // anche la scelta piu' facile da disfare, perche' non tocca il flag che il GIOCO usa per
+                // nascondere il Penitent (`Interactable.ShowPlayer`, `Tools.Level.Interactable.cs:494`:
+                // `Core.Logic.Penitent.SpriteRenderer.enabled = show`, usato da `Execution`, `PrieDieu`,
+                // `Altar`, `Lever` e da `SpawnManager.CreatePlayer`). Vedi `KeepLocalCorpseHidden` per la
+                // riasserzione, e `HideLocalCorpse` per il marker obbligatorio.
+                //
+                // ⚠️ L'ORDINE CONTA, E NON E' PIGNOLERIA: **prima si apre la finestra, poi si nasconde.**
+                // Se l'ordine fosse l'inverso e la scrittura dell'alpha esplodesse, la finestra non si
+                // aprirebbe mai, `Close()` non verrebbe mai chiamato e il giocatore resterebbe **invisibile
+                // per sempre** - cioe' il guasto peggiore che questo intervento possa produrre. Cosi', il
+                // peggio che puo' succedere e' un cadavere visibile che si sposta (il difetto noto, non uno
+                // nuovo), perche' la finestra si chiude comunque e la chiusura rimette l'alpha.
                 _active = true;
                 _startedAt = Time.unscaledTime;
-                _poseUntil = _startedAt + CORPSE_POSE_SECONDS;
+                _poseClosed = false;
+                _poseClosedWhy = "in corso";
+                _poseFrames = 0;
+                _hiddenReasserts = 0;
                 _moves = 0;
                 _lastGap = 0f;
                 _pausedByCinematic = false;
@@ -338,14 +394,74 @@ namespace Blasphemous.Multiplayer.Client.Players
                 _repeatReported = false;
                 _teleportFailed = false;
 
+                HideLocalCorpse(body, "all'inizio della finestra (e' il cadavere-copia a restare a terra)");
+
                 ModLog.Info(MARK + " cadavere-copia creato: posMorte=" + V(_deathPos) +
                             " alphaPrima=" + F(_originalAlpha) + " copia=" + _copy.name +
-                            " · il Penitent e' INVISIBILE e seguira' il vivo (la camera e' legata a lui)");
+                            " · il Penitent e' " + (_rendererHidden ? "INVISIBILE" : "ANCORA VISIBILE " +
+                            "(la scrittura dell'alpha NON e' riuscita: vedi la riga sopra)") +
+                            " e seguira' il vivo (la camera e' legata a lui)");
             }
             catch (Exception e)
             {
                 Fail("Create", e);
             }
+        }
+
+        /// <summary>
+        /// ⭐ IL MARKER OBBLIGATORIO: **`cadavere locale nascosto (renderer=…)`**.
+        ///
+        /// ⚠️ PERCHE' SERVE, E NON E' PIGNOLERIA: senza questa riga *"non si e' nascosto"* e *"si e' nascosto
+        /// e non e' piu' tornato"* hanno lo stesso aspetto in un log, ed e' l'unica cosa che distingue il
+        /// difetto che stiamo correggendo da quello che questo fix potrebbe introdurre (un giocatore
+        /// invisibile per sempre). Per questo la riga porta **il valore prima E dopo** e **lo stato di
+        /// `enabled`**, non solo un verbo: se al prossimo test il corpo vero si vedesse lo stesso, la riga
+        /// dice se l'alpha e' a zero (allora e' il materiale/sprite a ignorarlo, e la riga da cambiare e'
+        /// `enabled`) oppure no.
+        /// </summary>
+        private static void HideLocalCorpse(SpriteRenderer body, string why)
+        {
+            // ⚠️ IL FLAG PRIMA DELLA SCRITTURA: `Close()` ripristina **solo se** `_rendererHidden` e' vero,
+            // quindi alzarlo per primo e' cio' che rende il ripristino vero anche nel caso in cui la
+            // scrittura sotto lanci a meta'. Al contrario (flag dopo) un'eccezione lascerebbe un alpha
+            // azzerato e nessuno che lo rimetta: un giocatore invisibile per sempre.
+            _rendererHidden = true;
+
+            float before = body.color.a;
+            Color hidden = body.color;
+            hidden.a = 0f;
+            body.color = hidden;
+
+            ModLog.Info(MARK + " cadavere locale nascosto (renderer=SpriteRenderer di " +
+                        (body.gameObject != null ? body.gameObject.name : "?") +
+                        " · sprite=" + (body.sprite != null ? body.sprite.name : "nessuno") +
+                        " · enabled=" + (body.enabled ? "True" : "False") +
+                        " · alpha " + F(before) + " -> " + F(body.color.a) + ") · " + why);
+        }
+
+        /// <summary>
+        /// ⚠️ L'ALPHA SI RIAFFERMA A OGNI FRAME mentre la finestra e' aperta, e costa due letture.
+        ///
+        /// PERCHE': l'alpha **non e' un nostro campo privato**, e' una proprieta' del renderer del Penitent
+        /// che qualunque cosa puo' riscrivere - l'animazione stessa se la clip ha una traccia sul colore, un
+        /// effetto di danno, un `DamageEffect`, o il gioco che accende/spegne la visibilita' del Penitent.
+        /// Una sola scrittura, all'inizio, affida l'invisibilita' a un fatto che non controlliamo: **una
+        /// riscrittura, e il corpo vero riappare in piedi mentre la copia e' a terra** - cioe' esattamente
+        /// il difetto da cui siamo partiti, con un cadavere in piu'. Riaffermarla e' l'unico modo di
+        /// renderlo impossibile invece che improbabile, e il contatore `_hiddenReasserts` dice se e' servito.
+        /// </summary>
+        private static void KeepLocalCorpseHidden()
+        {
+            if (!_rendererHidden || _body == null)
+                return;
+
+            Color current = _body.color;
+            if (current.a == 0f)
+                return;
+
+            current.a = 0f;
+            _body.color = current;
+            _hiddenReasserts++;
         }
 
         /// <summary>
@@ -384,6 +500,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                 // `GetComponent`, quindi non alloca, ma il punto vero e' che se il clone non avesse un
                 // `SpriteRenderer` **lo si scopre qui** e non due secondi dopo.
                 _copyRenderer = clone.GetComponent<SpriteRenderer>();
+                _copyBody = clone.transform;
                 _body = body;
                 return copyRoot;
             }
@@ -451,12 +568,13 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// </summary>
         private static void Follow(float now)
         {
-            // ---- 0. LA POSA DEL CADAVERE. Solo per i primi istanti: vedi `CORPSE_POSE_SECONDS`.
+            // ---- 0. LA POSA DEL CADAVERE. Fino a quando la SORGENTE smette di cambiare: vedi
+            // `CORPSE_POSE_MAX_SECONDS` e `UpdateCorpsePose`.
             // ⚠️ Prima di ogni altra cosa e **anche durante la cutscene**: la posa non sposta nessun
-            // collider e non tocca il Penitent - e' solo lo sprite della copia - quindi non ha nessuna
-            // delle ragioni per cui l'inseguimento si mette in pausa.
-            if (now < _poseUntil)
-                RefreshCorpseSprite();
+            // collider e non tocca il Penitent - e' solo lo sprite/il nodo visivo della copia - quindi non
+            // ha nessuna delle ragioni per cui l'inseguimento si mette in pausa.
+            if (!_poseClosed)
+                UpdateCorpsePose(now);
 
             // ---- 1. LA CUTSCENE. Il blocker si LEGGE, non si scrive.
             bool cinematic = false;
@@ -522,17 +640,84 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// Tiene lo sprite della copia allineato a quello del Penitent **finche' l'animazione di morte sta
-        /// girando**, cosi' il cadavere-copia si posa nella posa FINALE invece di restare a meta' caduta.
+        /// UN FRAME DI INSEGUIMENTO DELLA POSA, e la decisione di chiuderla.
         ///
-        /// ⚠️ NON SPOSTA NIENTE: copia **solo `Sprite` e `color`**. La posizione della copia e' fissata una
-        /// volta sola alla creazione ed e' quella del punto di morte - e **non deve cambiare**, perche' e' il
-        /// Penitent che si allontana. Il caso "il Penitent e' invisibile" e' innocuo: il suo `Sprite` resta
-        /// quello dell'ultima posa raggiunta, quindi si ricopia sempre un valore valido.
+        /// ⭐ LA REGOLA, in una riga: **si copia finche' la sorgente cambia, e ci si ferma quando il GIOCO
+        /// congela la sorgente.** Il segnale e' `Penitent.Animator.enabled == false`, cioe' la riga che
+        /// `PlayerDeathAnimationBehaviour.OnStateUpdate` (`:33-36`) esegue a `normalizedTime >= 0.95`
+        /// dell'animazione di morte - la stessa riga per cui il cadavere vero non si muove piu'.
+        ///   ⇒ **La copia e' esatta PER COSTRUZIONE**: nell'istante in cui la sorgente si ferma, la copia
+        ///     ha l'ultimo valore copiato, che e' quello che il gioco tiene a terra. Non c'e' nessun numero
+        ///     da indovinare, ed e' la ragione per cui questo fix non dipende dalla durata dell'animazione
+        ///     (che **non e' leggibile da nessun log**).
+        ///   - **se il segnale arriva**: riga `Info`, con la durata MISURATA - cosi' la prossima sessione ha
+        ///     il numero che oggi manca;
+        ///   - **se non arriva mai** (l'animazione non passa da quel `Behaviour`, il Penitent e' morto in
+        ///     aria, l'`Animator` e' gia' fermo o qualcosa l'ha riacceso): scatta `CORPSE_POSE_MAX_SECONDS`
+        ///     e si smette lo stesso. Si perde qualita' visiva, **non la funzione**, e il `Warn` lo dichiara
+        ///     invece di lasciarlo scoprire a schermo.
+        /// </summary>
+        private static void UpdateCorpsePose(float now)
+        {
+            RefreshCorpseSprite();
+            KeepLocalCorpseHidden();
+            _poseFrames++;
+
+            Penitent penitent = Core.Logic != null ? Core.Logic.Penitent : null;
+            UnityEngine.Animator animator = penitent != null ? penitent.Animator : null;
+
+            // ---- IL SEGNALE DEL GIOCO: la posa e' quella finale perche' e' il gioco ad averla fermata.
+            if (animator != null && !animator.enabled)
+            {
+                ClosePose("animazione di morte finita: il gioco ha spento l'Animator del Penitent e la posa " +
+                          "e' quella finale (PlayerDeathAnimationBehaviour)");
+                return;
+            }
+
+            if (now - _startedAt >= CORPSE_POSE_MAX_SECONDS)
+            {
+                ClosePose(null);
+            }
+        }
+
+        private static void ClosePose(string why)
+        {
+            _poseClosed = true;
+
+            if (why != null)
+            {
+                _poseClosedWhy = why;
+                ModLog.Info(MARK + " posa del cadavere chiusa dopo " + F(Time.unscaledTime - _startedAt) +
+                            "s e " + _poseFrames + " frame copiati · " + why);
+                return;
+            }
+
+            _poseClosedWhy = "TETTO di " + F(CORPSE_POSE_MAX_SECONDS) + "s: l'Animator del Penitent non si " +
+                             "e' mai fermato (l'animazione di morte non passa da `PlayerDeathAnimationBehaviour`, " +
+                             "oppure e' piu' lunga del tetto, oppure e' morto in aria) · la copia si ferma " +
+                             "sull'ultima posa copiata e l'inseguimento continua";
+            ModLog.Warn(MARK + " posa del cadavere chiusa dal TETTO dopo " + F(Time.unscaledTime - _startedAt) +
+                        "s e " + _poseFrames + " frame copiati · " + _poseClosedWhy);
+        }
+
+        /// <summary>
+        /// Copia sulla copia **lo sprite, il colore e la POSA** del nodo visivo del Penitent.
+        ///
+        /// ⚠️ ANZITUTTO LA POSA, che la prima versione non copiava ed e' l'altra meta' del difetto "resta in
+        /// piedi". Il clone nasce **al primo frame di morte** (vedi `CORPSE_POSE_MAX_SECONDS`), quindi porta
+        /// la posa di QUEL frame: se l'animazione di morte sposta o ruota il nodo visivo e non solo lo
+        /// sprite, un clone congelato la' resta **in piedi**. Copiare `localPosition`/`localRotation`/
+        /// `localScale` e' l'unico modo di essere esatti per costruzione, ed **e' locale e non mondiale**:
+        /// il nodo della copia sta sotto una radice ferma al punto di morte (il Penitent invece si
+        /// allontana, quindi copiare il mondo trascinerebbe la copia dietro di lui).
+        ///
+        /// ⚠️ E SI COPIA SOLO L'RGB, MAI L'ALPHA. Il Penitent e' gia' invisibile (`color.a = 0` da
+        /// `Create`), quindi copiare il colore **intero** renderebbe invisibile anche la copia - e non si
+        /// vedrebbe NESSUN cadavere. L'alpha della copia resta quello ORIGINALE.
         ///
         /// ⚠️ E IL CASO "NESSUNO SPRITE" E' DICHIARATO, non silenzioso: se a fine finestra lo sprite fosse
         /// ancora nullo, la copia disegnerebbe comunque qualcosa (il colore non lo si azzera mai), e la riga
-        /// lo dice invece di lasciarlo scoprire a schermo.
+        /// di chiusura porta il numero di frame copiati proprio per dire se la copia e' mai stata toccata.
         /// </summary>
         private static void RefreshCorpseSprite()
         {
@@ -543,11 +728,18 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (sprite != null && _copyRenderer.sprite != sprite)
                 _copyRenderer.sprite = sprite;
 
-            // ⚠️ E SI COPIA SOLO L'RGB, MAI L'ALPHA. Il Penitent e' gia' invisibile (`color.a = 0` da
-            // `Create`), quindi copiare il colore **intero** renderebbe invisibile anche la copia - e per
-            // 2,5 secondi non si vedrebbe NESSUN cadavere. L'alpha della copia resta quello ORIGINALE.
             Color theirs = _body.color;
             _copyRenderer.color = new Color(theirs.r, theirs.g, theirs.b, _originalAlpha);
+
+            // ---- LA POSA. Locale -> locale: la radice della copia e' il fotogramma del punto di morte.
+            Transform clone = _copyBody;
+            Transform source = _body.transform;
+            if (clone != null && source != null && clone != source)
+            {
+                clone.localPosition = source.localPosition;
+                clone.localRotation = source.localRotation;
+                clone.localScale = source.localScale;
+            }
         }
 
         /// <summary>
@@ -650,9 +842,15 @@ namespace Blasphemous.Multiplayer.Client.Players
         /// Al contrario il peggio e' un fotogramma con **due** cadaveri, che non si nota.
         ///
         /// ⚠️ E IL RIPRISTINO DEL RENDERER E' CONDIZIONATO A UN FATTO, non a una speranza: si rimette
-        /// l'alpha **solo se l'abbiamo azzerato noi** (`_rendererHidden`). Se il gioco l'ha ricostruito
-        /// (`SpawnManager.CreatePlayer` al load) il vecchio riferimento e' un oggetto distrutto, e
-        /// scriverci sopra sarebbe l'unico modo di far danni.
+        /// l'alpha **solo se l'abbiamo azzerato noi** (`_rendererHidden`).
+        ///
+        /// ⭐ E SI RIPRISTINA **IL RENDERER CHE ABBIAMO SPENTO**, non "quello del Penitent di adesso":
+        /// `_body` e' l'oggetto esatto su cui abbiamo scritto, e in Unity un riferimento distrutto e' "falso
+        /// null", quindi la guardia e' la stessa - ma il caso "il Penitent di adesso e' lo STESSO oggetto e
+        /// il suo `SpriteRenderer` e' momentaneamente nullo" (misurato in questa sessione: al respawn la mod
+        /// legge `renderer NON ripristinato` **e** `TryRealignNetwork` esplode su `CurrentDirection`, che
+        /// legge `Penitent.SpriteRenderer`) non lascerebbe piu' l'alpha a zero per sempre. Il ripiego sul
+        /// Penitent corrente resta, per il caso in cui `_body` sia davvero andato.
         /// </summary>
         private static void Close(string why)
         {
@@ -660,17 +858,40 @@ namespace Blasphemous.Multiplayer.Client.Players
             try
             {
                 Penitent penitent = Core.Logic != null ? Core.Logic.Penitent : null;
-                if (penitent != null && _rendererHidden && penitent.SpriteRenderer != null)
+
+                // ⭐ IL MARKER OBBLIGATORIO, nella direzione opposta a quello di `HideLocalCorpse`, e come
+                // riga PROPRIA: deve poter essere cercato per `[CorpseFollow] cadavere locale mostrato`, e
+                // dentro la riga di chiusura quel prefisso non ci sarebbe.
+                if (_rendererHidden && _body != null)
                 {
+                    float was = _body.color.a;
+                    Color restored = _body.color;
+                    restored.a = _originalAlpha;
+                    _body.color = restored;
+                    ModLog.Info(MARK + " cadavere locale mostrato (renderer=SpriteRenderer di " +
+                                (_body.gameObject != null ? _body.gameObject.name : "?") +
+                                " · enabled=" + (_body.enabled ? "True" : "False") +
+                                " · alpha " + F(was) + " -> " + F(_body.color.a) +
+                                ") · e' l'oggetto che avevamo spento");
+                }
+                else if (_rendererHidden && penitent != null && penitent.SpriteRenderer != null)
+                {
+                    float was = penitent.SpriteRenderer.color.a;
                     Color restored = penitent.SpriteRenderer.color;
                     restored.a = _originalAlpha;
                     penitent.SpriteRenderer.color = restored;
-                    report += " · renderer ripristinato (alpha=" + F(_originalAlpha) + ")";
+                    ModLog.Info(MARK + " cadavere locale mostrato (renderer=SpriteRenderer di " +
+                                (penitent.SpriteRenderer.gameObject != null
+                                    ? penitent.SpriteRenderer.gameObject.name : "?") +
+                                " · enabled=" + (penitent.SpriteRenderer.enabled ? "True" : "False") +
+                                " · alpha " + F(was) + " -> " + F(penitent.SpriteRenderer.color.a) +
+                                ") · RIPIEGO: il renderer che avevamo spento non esiste piu'");
                 }
                 else if (_rendererHidden)
                 {
-                    report += " · renderer NON ripristinato (il Penitent e' stato ricostruito: niente da " +
-                              "rimettere, ed e' il caso del respawn)";
+                    ModLog.Info(MARK + " cadavere locale NON mostrato (renderer=distrutto e Penitent " +
+                                "ricostruito: non c'e' niente da rimettere, ed e' il caso del respawn - il " +
+                                "Penitent NUOVO e' un altro oggetto e nasce visibile)");
                 }
             }
             catch (Exception e)
@@ -693,6 +914,16 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             float lasted = _startedAt > 0f ? Time.unscaledTime - _startedAt : 0f;
 
+            // ⚠️ SI LEGGE PRIMA DI AZZERARE, e questa riga e' un fix a se': nella sessione precedente la
+            // riga di chiusura stampava `invioPosizioneCongelato=no` **sempre**, perche' leggeva
+            // `_positionSendPaused` dopo averlo messo a `false` qui sotto. ⇒ quel `no` NON era la prova che
+            // la guardia di `MainPlayerManager` non era scattata: era un marker che non poteva dire altro.
+            bool sendPaused = _positionSendPaused;
+            int reasserts = _hiddenReasserts;
+            int poseFrames = _poseFrames;
+            bool poseClosed = _poseClosed;
+            string poseWhy = _poseClosedWhy;
+
             _active = false;
             _rendererHidden = false;
             _startedAt = 0f;
@@ -704,12 +935,18 @@ namespace Blasphemous.Multiplayer.Client.Players
             // che al respawn puo' essere gia' distrutto, e `RefreshCorpseSprite` lo legge. Azzerarli rende
             // impossibile che una finestra chiusa lasci uno stato letto dalla successiva.
             _copyRenderer = null;
+            _copyBody = null;
             _body = null;
-            _poseUntil = 0f;
+            _poseClosed = false;
+            _poseFrames = 0;
+            _hiddenReasserts = 0;
+            _poseClosedWhy = "in corso";
 
             ModLog.Info(MARK + " finestra chiusa: " + report + " · durata=" + F(lasted) +
                         "s spostamenti=" + _moves + " ultimaDistanza=" + F(_lastGap) +
-                        " invioPosizioneCongelato=" + (_positionSendPaused ? "si" : "no") +
+                        " invioPosizioneCongelato=" + (sendPaused ? "si" : "no") +
+                        " · posa=" + (poseClosed ? "chiusa" : "ancora aperta") + "(" + poseWhy + ")" +
+                        " framePosa=" + poseFrames + " riasserzioniAlpha=" + reasserts +
                         " · la copia e' distrutta");
 
             // ⭐ IL RIALLINEAMENTO DELLA RETE. Da morti non si e' spedito niente (vedi
@@ -734,7 +971,15 @@ namespace Blasphemous.Multiplayer.Client.Players
             }
             catch (Exception e)
             {
-                Fail("TryRealignNetwork", e);
+                // ⚠️ IL TIPO SI STAMPA, e non e' cosmetico: nella sessione precedente questa riga e' uscita
+                // con il messaggio VUOTO (`[CorpseFollow ERR] in TryRealignNetwork ... : `), quindi non
+                // diceva nemmeno che tipo di guasto fosse. `SendAllLocationData` legge
+                // `Core.Logic.Penitent.Animator` e `Core.Logic.Penitent.SpriteRenderer` (CurrentAnimation /
+                // CurrentDirection): al respawn, con il Penitent appena ricostruito, uno dei due puo' essere
+                // ancora nullo - ed e' la stessa cosa che ha fatto stampare `renderer NON ripristinato`.
+                // Il tipo (quasi sempre `NullReferenceException`) e' l'unica informazione disponibile qui.
+                ModLog.Error(MARK_FAIL + " in TryRealignNetwork (nessun effetto sul gioco): " +
+                             e.GetType().Name + " - " + e.Message);
             }
         }
 
