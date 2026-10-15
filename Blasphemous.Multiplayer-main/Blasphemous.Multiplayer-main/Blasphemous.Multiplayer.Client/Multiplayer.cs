@@ -169,6 +169,13 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // timer below so its own cost never lands inside the late-update measurement.
         CutsceneProbe.Tick();
 
+        // TEMPORARY (DeathScreenProbe): PASSO 0 - the death screen measurement. One line while the local
+        // player is down, plus a line entering and leaving that window. It reuses this per-frame loop for
+        // the same reason as the probe above: no new Harmony target (263 stays 263) and no new
+        // MonoBehaviour. Log only: it reads the camera, ProCamera2D's target and the death screen's own
+        // alpha, and writes nothing. See DeathScreenProbe.cs.
+        DeathScreenProbe.Tick();
+
         // TEMPORARY (PerformanceProbe): the whole late-update pass is timed, because it holds the
         // packet processing, the player managers and the enemy sync together - that total is what the
         // frame actually pays. Remove with the probe.
