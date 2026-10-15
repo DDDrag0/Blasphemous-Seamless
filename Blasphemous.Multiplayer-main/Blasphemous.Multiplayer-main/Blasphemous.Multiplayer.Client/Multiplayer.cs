@@ -87,6 +87,10 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     protected override void OnDispose()
     {
         CutsceneProbe.Unsubscribe();
+
+        // TEMPORARY (DeathCorpseFollow): the death window can be open when the mod shuts down, and the
+        // copy is a GameObject of its own - nothing else would ever take it away.
+        DeathCorpseFollow.Reset();
     }
 
     protected override void OnRegisterServices(ModServiceProvider provider)
@@ -101,6 +105,12 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     public void OnDisconnect()
     {
+        // TEMPORARY (DeathCorpseFollow): a disconnect can arrive while this machine is STILL DEAD, and in
+        // that moment IsLocalPlayerDead() stays true - the game knows nothing about the network - so the
+        // per-frame close in Tick() would never fire. Without this line a copy and a hidden renderer would
+        // stay in the scene with no living player left to follow. See DeathCorpseFollow.Reset().
+        DeathCorpseFollow.Reset();
+
         NotificationManager.DisplayNotification(LocalizationHandler.Localize("dcon"));
         ProgressManager.ResetProgressSentStatus();
         OtherPlayerManager.RemoveAllConnectedPlayers();
@@ -182,6 +192,13 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // which DOFade rewrites at DeadScreenWidget.cs:82 - so it does not fight the tween. The prompt
         // lives on ContinueGroup and is not touched. Same loop, still no new Harmony target (263).
         DeathScreenTransparency.Tick();
+
+        // TEMPORARY (DeathCorpseFollow): LA CAMERA DEL MORTO SEGUE IL COMPAGNO VIVO. Via (c): un
+        // cadavere-copia resta sul posto e il Penitent locale (invisibile) si sposta sull'avatar del
+        // compagno VIVO, che la mod ha gia' in scena - quindi la camera, legata al Penitent, lo segue da
+        // sola e questo file NON tocca la camera. E' anche il punto in cui si congela l'invio della
+        // posizione da morti. Same loop, still no new Harmony target (263). See DeathCorpseFollow.cs.
+        DeathCorpseFollow.Tick();
 
         // TEMPORARY (PerformanceProbe): the whole late-update pass is timed, because it holds the
         // packet processing, the player managers and the enemy sync together - that total is what the
