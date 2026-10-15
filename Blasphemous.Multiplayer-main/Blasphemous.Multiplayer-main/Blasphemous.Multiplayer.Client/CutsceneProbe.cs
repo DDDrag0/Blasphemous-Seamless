@@ -1,6 +1,5 @@
 using Blasphemous.ModdingAPI;
 using Framework.Managers;
-using HarmonyLib;
 using System;
 using System.Globalization;
 using Tools.DataContainer;
@@ -9,44 +8,35 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client
 {
     /// <summary>
-    /// PROBE DI SOLO LOG — CUTSCENE — 15 ottobre 2026. TEMPORANEA: SI TOGLIE IN UN PUNTO SOLO.
+    /// PROBE DI SOLO LOG — CUTSCENE. NON E' UNA PROBE ABBANDONATA: ne restano DUE, entrambe a costo ZERO
+    /// (nessuna patch Harmony). La terza — l'unica che costava una patch — e' stata TOLTA, e il perche' sta
+    /// in fondo a questo commento.
     ///
     /// NON CORREGGE NULLA, NON DECIDE NULLA, NON SBLOCCO NULLA. Serve al test dell'utente per
     /// costruire la tabella `flag -> nome scena` ESEGUENDO il gioco, invece di dedurla dagli asset
     /// (che su questa macchina non sono estraibili). Il referto del progetto e'
-    /// `scratch\STUDIO-CUTSCENE-CONDIVISA.md` §8; il referto d'uso e' `scratch\REFERTO-PROBE-CUTSCENE.md`.
+    /// `scratch\STUDIO-CUTSCENE-CONDIVISA.md` §8; il referto d'uso e' `scratch\REFERTO-PROBE-CUTSCENE.md`;
+    /// l'analisi che ha deciso COSA TENERE e COSA TOGLIERE e' `scratch\STUDIO-BOSSONE-MORTE-CAM.md`.
     ///
-    /// LE TRE PROBE, e perche' servono tutte e tre:
-    ///
-    ///   PROBE #1 (`[Cutscene]`, un Prefix su Cinematics.StartCutscene) — la CHIAMATA: nome della
-    ///     scena, tipo, fade, e `giaInCorso`, cioe' lo stato PRIMA di entrare. E' l'unico campo che
-    ///     distingue una partenza ACCETTATA da una RIFIUTATA dal gioco (`if (cinematicRunning) return;`
-    ///     sta a Cinematics.cs:115).
-    ///     PERCHE' UN PREFIX E NON UN POSTFIX — verificato in IL, non per stile: `StartCutscene` NON
-    ///     accende `cinematicRunning`; lo accende dopo, dentro `PlayVideo`. Per le Images con
-    ///     `fadeStart == 0` la coroutine `ShowImagesCutscene` gira SINCRONA fino al primo `yield`
-    ///     (:426) e `cinematicRunning = true` e' a :420 ⇒ un POSTFIX leggerebbe `true` su una
-    ///     partenza legittima e la misura sarebbe falsa.
-    ///     PERCHE' `void` — un `void Prefix` non puo' ritornare `false`, e solo un `bool Prefix` che
-    ///     ritorna `false` salta l'originale. La garanzia e' STRUTTURALE, non una promessa.
-    ///     PERCHE' `__0..__4` — Harmony lega per nome: un rename del parametro romperebbe la patch.
-    ///     Il binding posizionale sopravvive al rename.
+    /// LE DUE PROBE CHE RESTANO, e perche' servono ancora:
     ///
     ///   PROBE #0 (`[Cutscene BLK]`) — il CICLO DEL BLOCKER, a costo zero e senza patcha nulla.
     ///     Una riga SOLO QUANDO IL VALORE CAMBIA, con `HasBlocker("CINEMATIC")` (public, InputManager:210)
     ///     e `InputBlocked` (public, :23). Dice quando il blocker si accende e si spegne, e se alla fine
     ///     del test e' RIMASTO ACCESO — che e' il caso pericoloso di Cinematics.cs:134/:156/:343.
-    ///     ⭐ E DISTINGUE LE DUE ACCENSIONI: `CINEMATIC` ha DUE proprietari e NON e' refcounted —
-    ///     `Cinematics` (:134/:253) e `TresAngustiasMasterBehaviour` (:614/:639/:691). Una riga
-    ///     `CINEMATIC=True` SENZA la riga `[Cutscene]` della probe #1 e' il BOSS, non una cutscene.
+    ///     ⭐ E' LA MISURA CHE CONTA ADESSO, e per una ragione precisa: `CINEMATIC` ha DUE proprietari e
+    ///     NON e' refcounted — `Cinematics` (:134/:253) e `TresAngustiasMasterBehaviour` (:614/:639/:691) —
+    ///     e la riga di accensione e' **il primo segno della FSM di morte del boss**
+    ///     (`cutscene_block has been enabled` e' la stessa accensione vista dal gioco). Quindi questa probe
+    ///     dice se la catena di morte e' partita anche quando nessuna cutscene e' ancora nominata nel log:
+    ///     e' il rischio dichiarato di M3/M4 (`scratch\STUDIO-BOSSONE-MORTE-CAM.md` §1.4-bis).
     ///     Gli altri blocker (EXECUTION, MULTIPLAYER, DEAD_SCREEN) NON si loggano: si vedono solo
     ///     nella colonna `InputBlocked`, e servono solo come contesto. Il registro resta leggibile.
     ///
     ///   PROBE #2 (`[Cutscene EV]`) — gli EVENTI PUBBLICI, zero patch: `CinematicStarted`,
     ///     `CinematicEnded`, `VideoStarted`, `VideoEnded` sono `event` pubblici di `Cinematics`
     ///     (:85-91) ⇒ basta iscriversi.
-    ///     ⭐ `CinematicStarted` e' la verita' di "la chiamata e' ARRIVATA IN FONDO": se il prefix dice
-    ///     si' e questo evento NON arriva, la partenza e' morta prima ⇒ e' il caso pericoloso.
+    ///     ⭐ `CinematicStarted` e' la verita' di "la chiamata e' ARRIVATA IN FONDO".
     ///     ⚠️ MA `CinematicStarted` NON prova che il contenuto sia partito: viene invocato a :148-151
     ///     ANCHE quando `PlayVideo` e' morto dentro il `catch (NullReferenceException)` di :343-347 —
     ///     e in quel caso `cinematicRunning` resta `false` per sempre, `EndCutscene` diventa un no-op
@@ -54,14 +44,31 @@ namespace Blasphemous.Multiplayer.Client
     ///     partito davvero" e' `VideoStarted`, invocato da `OnVideoStart` (:396-405), che per i Video
     ///     arriva dal `player.started` e per Images/Animation da `OnVideoStart(null)` (:422/:456).
     ///     Per questo la probe #2 ascolta quattro eventi e non due.
+    ///     ⭐ E ADESSO E' L'UNICA COSA CHE DICE SE UNA SCENA E' IN CORSO, ora che la probe #1 non c'e' piu'.
     ///
-    /// COME SI TOGLIE: cancellare questo file e le tre righe marcate `TEMPORARY (CutsceneProbe)` in
+    /// LA PROBE TOLTA — era la #1 (`[Cutscene]`, un `Prefix` su `Cinematics.StartCutscene`), e NON e'
+    /// stata sostituita da un `Postfix`: la riga `[Cutscene] … StartCutscene nome="…"` NON esiste piu',
+    /// e se la si cerca in un log nuovo non si trova — e' voluto, non un guasto. Le ragioni, in ordine:
+    ///   1. ERA L'UNICA CHE COSTAVA UNA PATCH Harmony (264 -> 263 bersagli verificati da
+    ///      `tools\verify-patch-targets.ps1`): le altre due non patchano nulla e restano a costo zero.
+    ///   2. LA SUA DOMANDA E' CHIUSA: serviva a costruire la tabella `flag -> nome scena`, e l'utente ha
+    ///      deciso di NON fare il fix delle cutscene condivise. La tabella non serve piu' a nessuno.
+    ///   3. MISURAVA LA CHIAMATA, non l'esito: nome, tipo, fade e `giaInCorso` (lo stato PRIMA di entrare).
+    ///      L'esito lo dice gia' la probe #2 (`CinematicStarted`/`VideoStarted`), che resta.
+    /// ⚠️ NON RIMETTERE un `Prefix` su `StartCutscene` "per completezza": e' esattamente il bersaglio
+    /// che e' stato tolto, e ogni patch in piu' e' un bersaglio in piu' che puo' fallire a runtime.
+    ///
+    /// COME SI TOGLIE IL RESTO: cancellare questo file e le tre righe marcate `TEMPORARY (CutsceneProbe)` in
     /// `Multiplayer.cs` (OnInitialize, OnLateUpdate, OnDispose). Nessun'altra riga del progetto la cita.
     /// </summary>
     internal static class CutsceneProbe
     {
-        /// <summary>PROBE #1 — la chiamata a StartCutscene. E' la riga da cercare per la tabella.</summary>
-        private const string MARK_START = "[Cutscene]";
+        /// <summary>
+        /// PROBE #0/#2 — l'ultima riga di difesa quando una delle due fallisce.
+        /// ⚠️ Il marker NON e' `[Cutscene]`: quello era della probe #1 e se n'e' andato con lei. Un marker
+        /// distinto tiene separabili le righe di guasto dalle righe di misura.
+        /// </summary>
+        private const string MARK_FAIL = "[Cutscene ERR]";
 
         /// <summary>PROBE #0 — il ciclo del blocker CINEMATIC. Una riga per CAMBIO di valore.</summary>
         private const string MARK_BLOCKER = "[Cutscene BLK]";
@@ -244,37 +251,10 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         // ---- letture e formattazione
-
-        /// <summary>
-        /// Legge il campo PRIVATO `CinematicData.cinematicRunning` (:24) via Traverse — e' cio' che
-        /// distingue "PARTITA" da "RIFIUTATA": se era gia' `true`, il gioco esce subito a :115.
-        ///
-        /// ⚠️ SE IL CAMPO NON ESISTESSE, Traverse restituirebbe `false` in silenzio — e ogni riga
-        /// direbbe `giaInCorso=False`, cioe' la misura sarebbe falsa nel modo peggiore: plausibile.
-        /// Per questo `FieldExists()` e' controllato e il valore diventa `?campo-assente?`, che non si
-        /// puo' confondere con un booleano.
-        /// </summary>
-        internal static string CinematicRunning(Cinematics instance)
-        {
-            if (instance == null)
-                return "?istanza-nulla?";
-
-            Traverse field = Traverse.Create(instance).Field("cinematicRunning");
-            if (!field.FieldExists())
-            {
-                if (!_fieldMissingReported)
-                {
-                    _fieldMissingReported = true;
-                    ModLog.Error(MARK_START + " campo privato Cinematics.cinematicRunning NON trovato: " +
-                                 "giaInCorso non e' leggibile e la colonna va considerata non valida");
-                }
-                return "?campo-assente?";
-            }
-
-            return field.GetValue<bool>().ToString();
-        }
-
-        private static bool _fieldMissingReported;
+        // ⚠️ QUI C'ERANO `CinematicRunning` (leggeva il campo privato `Cinematics.cinematicRunning` via
+        // Traverse) e `Type` (il tipo della CutsceneData): esistevano SOLO per la probe #1 e sono stati
+        // tolti con lei, insieme al campo `_fieldMissingReported`. `Name` e `F` restano perche' li usa la
+        // probe #2, che e' viva.
 
         /// <summary>Nome della CutsceneData, con il `null` dichiarato invece che lanciato.</summary>
         internal static string Name(CutsceneData cutscene)
@@ -286,15 +266,6 @@ namespace Blasphemous.Multiplayer.Client
                 return "<null>";
 
             return cutscene.name;
-        }
-
-        /// <summary>Tipo della cutscene, senza cast: e' un enum del gioco (Video | Images | Animation).</summary>
-        internal static string Type(CutsceneData cutscene)
-        {
-            if (cutscene == null)
-                return "<null>";
-
-            return cutscene.cinematicType.ToString();
         }
 
         /// <summary>
@@ -316,49 +287,10 @@ namespace Blasphemous.Multiplayer.Client
         {
             try
             {
-                ModLog.Error(MARK_START + " probe fallita in " + where + " (nessun effetto sul gioco): " + e.Message);
+                ModLog.Error(MARK_FAIL + " probe fallita in " + where + " (nessun effetto sul gioco): " + e.Message);
             }
             catch
             {
-            }
-        }
-    }
-
-    /// <summary>
-    /// PROBE #1 — `Prefix` su `Cinematics.StartCutscene`. SOLO LOG (vedi CutsceneProbe).
-    ///
-    /// Firma verificata in IL (`scratch\_il\Framework.Managers\Cinematics.cs:113`):
-    ///     public void StartCutscene(CutsceneData cutscene, bool muteAudio, float fadeStart, float fadeEnd, bool useBackground)
-    /// `public`, UNA SOLA definizione in tutti i 2079 file decompilati (nessun overload), non virtual,
-    /// metodo d'istanza di `Cinematics : GameSystem` ⇒ Harmony la patcha senza cerimonie.
-    /// Il primo parametro si chiama `cutscene`, ma qui si lega per POSIZIONE (`__0`): piu' robusto.
-    ///
-    /// `void Prefix` ⇒ NON PUO' ritornare `false` ⇒ NON PUO' saltare l'originale.
-    /// Nessun argomento `ref`, nessuna scrittura, nessun blocker, nessuna chiamata in piu'.
-    /// </summary>
-    [HarmonyPatch(typeof(Framework.Managers.Cinematics), "StartCutscene")]
-    class Cinematics_StartCutscene_Probe
-    {
-        public static void Prefix(CutsceneData __0, bool __1, float __2, float __3, bool __4, Cinematics __instance)
-        {
-            try
-            {
-                // Formato richiesto dal referto §8.2, campo per campo. `tipo=` e' in fondo, in piu':
-                // il tipo decide QUALE dei tre percorsi di StartCutscene viene preso, e quindi quale
-                // finestra del blocker si apre (§8.4 griglia 1) - senza, la probe e' monca.
-                ModLog.Info(
-                    "[Cutscene] t=" + CutsceneProbe.F(Time.time) +
-                    " StartCutscene nome=\"" + CutsceneProbe.Name(__0) + "\"" +
-                    " mute=" + __1 +
-                    " fadeStart=" + CutsceneProbe.F(__2) +
-                    " fadeEnd=" + CutsceneProbe.F(__3) +
-                    " bg=" + __4 +
-                    " giaInCorso=" + CutsceneProbe.CinematicRunning(__instance) +
-                    " tipo=" + CutsceneProbe.Type(__0));
-            }
-            catch (Exception e)
-            {
-                CutsceneProbe.Fail("Prefix(Cinematics.StartCutscene)", e);
             }
         }
     }
