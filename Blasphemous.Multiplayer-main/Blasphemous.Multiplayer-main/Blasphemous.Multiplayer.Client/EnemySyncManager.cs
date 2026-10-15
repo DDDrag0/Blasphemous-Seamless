@@ -415,22 +415,63 @@ namespace Blasphemous.Multiplayer.Client
                 // su un boss che SULL'ALTRA macchina e' gia' morto: non si inventa niente.
                 boss.Kill();
 
+                bool died = boss.Status.Dead;
+
+                // ⭐⭐ FIX 2 - LA MORTE *SCRIPTATA* DEL BOSS, che `Kill()` NON esegue.
+                //
+                // ⚠️ LA CATENA, verificata in IL (`scratch\_il\`), e sono due strade DIVERSE:
+                //   (a) `Kill()`  -> `Entity.Damage(float,string)` -> `KillInstanteneously()`
+                //       -> `Status.Dead = true`, `Entity.Death` / `OnDeath` / `OnEntityDeath`, `ENTITY_DEAD`
+                //       -> `BossFightManager.OnDeathBoss` (Metrics + `onFinishBossFight`) ... e **basta**:
+                //          nessun ramo di questa catena chiama `Behaviour.Death()`;
+                //   (b) `<Boss>.Damage(Hit)` (l'overload del COLPO) -> `if (Status.Dead) Behaviour.Death()`
+                //       -> `StopAllCoroutines` / `StopBehaviour` / `AnimatorInyector.Death()`
+                //          (es. `ElderBrotherBehaviour.cs:319-327`, `ElderBrother.cs:94`).
+                // ⇒ con `Kill()` il boss resta **in piedi**, con la sua animazione di morte mai comandata e
+                //   l'albero di comportamento ancora vivo. E' il difetto che l'utente ha chiesto di chiudere:
+                //   *"dopo `Kill()` del boss, il boss attivi anche l'animazione di morte"*.
+                //
+                // ⭐ PERCHE' QUESTA CHIAMATA E' GENERICA E NON SEDICI VOLTE. `Death()` **non esiste su una
+                // base comune**: `EnemyBehaviour` (la base di TUTTI i behaviour dei boss, verificata con
+                // `GetComponent<XBehaviour>()` in ognuno dei 17 `<Boss>.OnAwake`) non ha `Death()`, e ogni
+                // classe concreta se lo dichiara da sola (`public void Death()`, zero argomenti, non
+                // `virtual`, non `override`). Cercarlo per TIPO sulla istanza che il boss stesso tiene come
+                // `Behaviour` e' quindi l'unica forma che copre tutte - ed e' **auto-limitante**, che e' la
+                // parte importante: dove il metodo NON c'e' vuol dire che la morte passa da un'altra strada
+                // gia' percorsa da `Kill()`. **Provato in IL**: `PietyMonsterBehaviour` non ha `Death()`,
+                // perche' fa la stessa cosa in `PietyMonsterOnEntityDie()` **sottoscritto a
+                // `_pietyMonster.OnDeath`** (`PietyMonsterBehaviour.cs:57` e `:207-212`) - cioe' una strada
+                // che `Kill()` **percorre**. Lo stesso vale per `BejeweledSaintBehaviour`
+                // (`Head.OnDeath += BossOnDeath`). ⇒ la chiamata aggiuntiva scatta **solo dove la catena e'
+                // rotta**, e dove non serve non fa niente e lo dice nel marker.
+                string scripted = died ? ApplyScriptedBossDeath(boss) : "saltata (Kill=nessun-effetto)";
+
                 // L'esito va scritto SEMPRE, altrimenti "l'annuncio non e' arrivato" e "e' arrivato e non
                 // ha fatto nulla" restano indistinguibili nel log - ed e' esattamente la differenza che
                 // questo test deve misurare.
-                bool died = boss.Status.Dead;
+                bool diedNow = boss.Status.Dead;
                 ModLog.Info($"[BossDeath RX] {FullId(id)} applicato (ero morto: si) via={via} " +
                             $"boss={isBoss} tipo={type} vitaPrima={lifeBefore:F0} " +
-                            $"vitaDopo={boss.CurrentLife:F0} StatusDead={died} " +
-                            $"Kill={(died ? "ok" : "nessun-effetto")}");
+                            $"vitaDopo={boss.CurrentLife:F0} StatusDead={diedNow} " +
+                            $"Kill={(diedNow ? "ok" : "nessun-effetto")} morteScriptata={scripted}");
 
-                if (!died)
+                if (!diedNow)
                 {
                     // Non deve succedere: `Kill()` e' la strada con cui il gioco uccide qualunque entita'.
                     // Se succede, e' la prova che su QUESTO boss l'uccisione passa altrove, e la seconda
                     // strada del piano (riaprire la guardia e mandare il colpo letale) diventa necessaria.
                     ModLog.Error($"[BossDeath RX] {FullId(id)} Kill() NON ha ucciso il boss: " +
                                  $"StatusDead=false vita={boss.CurrentLife:F0}");
+                }
+                else if (scripted == "nessun-metodo-Death" || scripted == "nessun-EnemyBehaviour" ||
+                         scripted.StartsWith("errore", StringComparison.Ordinal))
+                {
+                    // ⚠️ DICHIARATO, non silenzioso: qui il boss PUO' restare in piedi (e' il difetto che
+                    // FIX 2 chiude), oppure no perche' la sua morte passa da `OnDeath` (il caso di
+                    // `PietyMonsterBehaviour`). Il marker sopra dice gia' quale dei due, e questa riga dice
+                    // che e' un esito NOTO e non un guasto taciuto.
+                    ModLog.Warn($"[BossDeath RX] {FullId(id)} morte scriptata NON invocata ({scripted}): " +
+                                $"se il boss resta in piedi con il suo behaviour tree vivo, e' questo il motivo");
                 }
             }
             catch (Exception e)
@@ -441,6 +482,131 @@ namespace Blasphemous.Multiplayer.Client
                 ModLog.Error($"[BossDeath RX] {FullId(id)} eccezione in Kill(): {e.GetType().Name} - {e.Message}");
             }
         }
+
+        /// <summary>
+        /// ⭐⭐ FIX 2 - CHIAMA LA MORTE *SCRIPTATA* DEL BOSS, quella che `Kill()` non esegue.
+        ///
+        /// ⚠️ PERCHE' UNA RIFLESSIONE E NON UNA CHIAMATA DIRETTA. Verificato in IL: `Death()` **non e' su
+        /// una base comune**. `EnemyBehaviour` (`Enemies.Framework.IA\EnemyBehaviour.cs:10`, `abstract class`)
+        /// dichiara `Idle`/`Wander`/`Chase`/`Attack`/`Damage`/`StopMovement` come `abstract` e **NON ha
+        /// `Death()`**; e i 17 behaviour dei boss che ce l'hanno se lo scrivono da soli, tutti con la stessa
+        /// firma ma **senza `virtual`/`override`**:
+        ///   `ElderBrotherBehaviour:319` · `LesmesBehaviour:515` · `PontiffGiantBehaviour:928` ·
+        ///   `PontiffOldmanBehaviour:810` · `PontiffSwordBehaviour:314` · `PontiffHuskBossBehaviour:1638` ·
+        ///   `CrisantaBehaviour:1489` · `EsdrasBehaviour:811` · `PerpetuaBehaviour:537` · `IsidoraBehaviour:3114` ·
+        ///   `BurntFaceBehaviour:783` · `WickerWurmBehaviour:844` · `TresAngustiasMasterBehaviour:587` ·
+        ///   `SnakeBehaviour:2180` · `QuirceBehaviour:1018` · `AmanecidasBehaviour:7058` · `SingleAnguishBehaviour:522`.
+        /// ⇒ un fix "sedici volte" sarebbe sedici punti in cui una firma puo' divergere, e una lista di tipi
+        /// che invecchia a ogni aggiornamento del gioco. La ricerca per tipo, **sulla sola istanza che il boss
+        /// tiene come `Behaviour`**, copre tutte e non nomina nessuna.
+        ///
+        /// ⚠️ E SI CERCA **SOLO SUL GAME OBJECT DEL BOSS** (`GetComponents`, non `GetComponentsInChildren`), e
+        /// non e' un dettaglio: in IL ogni boss prende il proprio behaviour con
+        /// `Behaviour = GetComponent<XBehaviour>()` (`ElderBrother.cs:44`, `PontiffGiant.cs`,
+        /// `Amanecidas.cs`, `Snake.cs`, `Quirce.cs`, `PontiffHuskBoss.cs`, …), mentre i behaviour di **altre
+        /// entita'** possono stare nella gerarchia - `PontiffGiantBehaviour.Death()` chiama
+        /// `sword.PontiffSword.Kill()`, e la spada ha il SUO `PontiffSwordBehaviour.Death()` (`:314`). Con
+        /// `GetComponentsInChildren` si rischierebbe di chiamare la morte della SPADA al posto di quella del
+        /// gigante: il primo comportamento trovato sarebbe quello sbagliato.
+        ///
+        /// ⚠️ ED E' AUTO-LIMITANTE, che e' la proprieta' che rende il fix sicuro: se il tipo non ha `Death()`
+        /// **non si inventa niente** e lo si dichiara nel marker. E non e' un caso di scuola - e' il caso
+        /// `PietyMonsterBehaviour`, che la stessa cosa la fa in `PietyMonsterOnEntityDie()` sottoscritto a
+        /// `_pietyMonster.OnDeath` (`PietyMonsterBehaviour.cs:57`, corpo a `:207-212`), cioe' su una strada
+        /// che `Kill()` percorre. Stessa cosa `BejeweledSaintBehaviour` (`_bejeweledSaintHead.OnDeath +=
+        /// BossOnDeath`, `:177`). ⇒ la chiamata in piu' arriva **solo dove la catena e' rotta**, e dove non
+        /// serve non fa niente.
+        ///
+        /// ⚠️ NON DUPLICA EFFETTI, ed e' la domanda a cui il mandato chiede una risposta: `Kill()` non passa
+        /// MAI da `Behaviour.Death()` (la catena sta in `<Boss>.Damage(Hit)`, un overload diverso), quindi
+        /// quello che si chiama qui **non e' mai stato chiamato** su questa macchina. L'ordine e' quello del
+        /// gioco: `Damage(`*`Hit`*`)` fa `DamageArea.TakeDamage(hit)` e **poi**, `if (Status.Dead)`,
+        /// `Behaviour.Death()` (`ElderBrother.cs:85-94`) ⇒ prima la morte (`Kill()`), poi la sequenza
+        /// scriptata. E non si chiama due volte: `ApplyBossDeath` ha gia' le sue guardie
+        /// (`Status.Dead` + `_bossKillsApplied`), ed e' quello che serve perche' alcune `Death()` **non sono
+        /// idempotenti** - `AmanecidasBehaviour.Death()` fa `PlayMakerFSM.BroadcastEvent("BOSS DEAD")`, e due
+        /// eventi Playmaker per una morte sola sono un rischio che non vale la pena correre.
+        ///
+        /// ⚠️ E L'ECCEZIONE NON ESCE. Il chiamante sta dentro `ProcessQueue`, che gira in try/**finally**
+        /// senza catch: un throw qui farebbe riprocessare lo stesso pacchetto per sempre (il guasto da 2934
+        /// errori). L'esito torna come STRINGA e finisce nel marker.
+        /// </summary>
+        private static string ApplyScriptedBossDeath(Enemy boss)
+        {
+            try
+            {
+                EnemyBehaviour[] behaviours = boss.GetComponents<EnemyBehaviour>();
+                if (behaviours == null || behaviours.Length == 0)
+                    return "nessun-EnemyBehaviour";
+
+                for (int i = 0; i < behaviours.Length; i++)
+                {
+                    EnemyBehaviour behaviour = behaviours[i];
+                    if (behaviour == null)
+                        continue;
+
+                    Type behaviourType = behaviour.GetType();
+
+                    // ⚠️ LA CACHE E' PER TIPO, e il valore `null` e' un valore come un altro: `TryGetValue`
+                    // distingue "non ancora cercato" da "cercato e assente", quindi il tipo senza `Death()`
+                    // non paga una riflessione a ogni morte. E **non va azzerata con la memoria di scena**
+                    // (a differenza di `_bossIds` e `_bossKillsApplied`): le chiavi sono TIPI
+                    // dell'assembly, non istanze ne' id, quindi non possono diventare stantie a un cambio
+                    // livello.
+                    if (!_bossScriptedDeaths.TryGetValue(behaviourType, out MethodInfo death))
+                    {
+                        death = behaviourType.GetMethod("Death",
+                            BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                        _bossScriptedDeaths[behaviourType] = death;
+
+                        ModLog.Info($"[BossDeath RX] morte scriptata: {behaviourType.Name}.Death() " +
+                                    (death != null
+                                        ? "trovata (public, zero argomenti)"
+                                        : "ASSENTE su questo tipo: la sua morte passa da un'altra strada"));
+                    }
+
+                    if (death == null)
+                        continue;
+
+                    death.Invoke(behaviour, null);
+
+                    // Una riga SOLO alla prima morte di quel tipo per sessione: il `via`/`vitaDopo` sono
+                    // gia' nel marker del chiamante, e ripetere la stessa riga a ogni boss dello stesso
+                    // tipo sarebbe spam.
+                    // ⚠️ `HashSet.Add` ritorna TRUE quando l'elemento **non c'era**: la riga va stampata
+                    // **la prima volta**, quindi la condizione e' `Add(...)` - NON `!Add(...)`, che la
+                    // stamperebbe solo dalla seconda morte in poi (cioe' mai, nel caso che conta).
+                    if (_bossScriptedDeathLogged.Add(behaviourType))
+                    {
+                        ModLog.Info($"[BossDeath RX] morte scriptata INVOCATA: {behaviourType.Name}.Death() " +
+                                    "(sequenza di morte + `AnimatorInyector.Death()`: l'animazione di morte " +
+                                    "del boss finalmente comandata anche su questa macchina)");
+                    }
+
+                    return behaviourType.Name + ".Death()";
+                }
+
+                return "nessun-metodo-Death";
+            }
+            catch (Exception e)
+            {
+                return "errore:" + e.GetType().Name;
+            }
+        }
+
+        /// <summary>
+        /// I tipi per cui la riga "morte scriptata INVOCATA" e' gia' stata stampata in questa sessione. Non
+        /// si azzera con la memoria di scena di proposito: il marker serve a dire "questo tipo e' coperto",
+        /// e ripeterlo a ogni boss dello stesso tipo non aggiungerebbe niente.
+        /// </summary>
+        private static readonly HashSet<Type> _bossScriptedDeathLogged = new HashSet<Type>();
+
+        /// <summary>
+        /// Il `Death()` di ogni tipo di behaviour gia' cercato: `null` significa "cercato e ASSENTE",
+        /// distinto da "mai cercato" perche' `TryGetValue` guarda la CHIAVE. Vedi `ApplyScriptedBossDeath`.
+        /// </summary>
+        private static readonly Dictionary<Type, MethodInfo> _bossScriptedDeaths =
+            new Dictionary<Type, MethodInfo>();
 
         /// <summary>
         /// Risolve il boss da uccidere, e DICE DA DOVE l'ha preso (`via=`) perche' il marker lo mostri.
