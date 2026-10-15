@@ -176,6 +176,13 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // alpha, and writes nothing. See DeathScreenProbe.cs.
         DeathScreenProbe.Tick();
 
+        // TEMPORARY (DeathScreenTransparency): PASSO 1 - the death screen's background goes transparent
+        // while the local player is down, so the corpse can see the boss room, the fight and the boss's
+        // cutscene. It zeroes the alpha of the GRAPHIC CHILDREN of NormalGroup - never CanvasGroup.alpha,
+        // which DOFade rewrites at DeadScreenWidget.cs:82 - so it does not fight the tween. The prompt
+        // lives on ContinueGroup and is not touched. Same loop, still no new Harmony target (263).
+        DeathScreenTransparency.Tick();
+
         // TEMPORARY (PerformanceProbe): the whole late-update pass is timed, because it holds the
         // packet processing, the player managers and the enemy sync together - that total is what the
         // frame actually pays. Remove with the probe.
