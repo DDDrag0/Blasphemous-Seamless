@@ -47,7 +47,7 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **6** | **Oggetti distruttibili** — §4 | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 6 —")* |
 | **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | ✅ CHIUSA — non si manifesta | CHIUSA — integrale in fondo *(cerca "Voce 7 —")* |
 | **8** | **Boss impazziscono coi target** — §2b | ✅ CHIUSA — superata | CHIUSA — integrale in fondo *(cerca "Voce 8 —")* |
-| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 | ⏳ **APERTA — ma NON è più quella che questa voce descrive**: il **LIVELLO DI STATO è stato COSTRUITO** *(`Players/PlayerStatus.cs`, `PlayerDeathSync.cs`: `pdead\|`/`palive\|` sul canale `EnemyDeathGlobal` senza bump, `SetPlayerDead`, `CountDeadPlayers`, `IsEveryoneDead`, `AllConnectedPlayers`)* ⇒ **"chi è morto" e "sono tutti giù?" oggi hanno una risposta, che è il requisito della voce 44**. **RESTANO NON FATTI**: la camera sul compagno e il body invisibile. ⚠️ **NESSUN commit e NESSUN referto lo verificano in gioco** *(9 commit citano la parola "spettatore", nessuno lo chiude)*. **Audit 2026-10-12** |
+| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 | ⏳ **APERTA — ma NON è più quella che questa voce descrive**: il **LIVELLO DI STATO è stato COSTRUITO** *(`Players/PlayerStatus.cs`, `PlayerDeathSync.cs`: `pdead\|`/`palive\|` sul canale `EnemyDeathGlobal` senza bump, `SetPlayerDead`, `CountDeadPlayers`, `IsEveryoneDead`, `AllConnectedPlayers`)* ⇒ **"chi è morto" e "sono tutti giù?" oggi hanno una risposta, che è il requisito della voce 44**. **RESTANO NON FATTI**: la camera sul compagno e il body invisibile. ⚠️ **NESSUN commit e NESSUN referto lo verificano in gioco** *(9 commit citano la parola "spettatore", nessuno lo chiude)*. **Audit 2026-10-12** · ⚠️ **DESCRIZIONE CORRETTA il 2026-10-13** *(e le cose utili trovate dallo `STUDIO-BOSSONE-MORTE-CAM.md` per quando si fara')*: la voce resta **APERTA**, ma **questa cella diceva il vero sullo STATO e non su cio' che manca** ⇒ **vedi in fondo `## [2026-10-13 10:00]`, §4** |
 | **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | ✅ CHIUSA — non si manifesta | CHIUSA — integrale in fondo *(cerca "Voce 10 —")* |
 | **11** | **Il gioco disfa la pausa sul non-proprietario** — ma **il testo della voce era SBAGLIATO a metà** | ✅ CHIUSA — il testo era sbagliato | CHIUSA — integrale in fondo *(cerca "Voce 11 —")* |
 | **12** | **Camminata troncata** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 12 —")* |
@@ -97,7 +97,7 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **62** | 🔴 **La POLVERE della scivolata di MOVIMENTO (`Dash`) non si vede sul peer** | 🟡 **NUOVA — l'utente ha chiarito che è QUESTA la scivolata che intende** | **L'utente, alla domanda "quale scivolata?"**: *"La scivolata di MOVIMENTO (col tasto)"*. ⭐ **LA SCOPERTA CHE L'HA CHIARITO** *(esploratore, in IL)*: in questo gioco ci sono **DUE** scivolate — *(1)* **`Dash`** = quella di MOVIMENTO (col tasto), la cui SCIA è già coperta da **A3** ma la cui **POLVERE (`DashDustGenerator`) NON è coperta da A4**; *(2)* **`GuardSlide.OnCastStart`** = quella di **GUARDIA** (il contraccolpo di chi PARA un colpo pesante), la cui polvere **È** coperta da A4. **Un solo ingresso in IL per la guardia**: `Penitent.Damage(Hit)` → `CastSlide(Hit)` → `Ability.Cast()` → `OnCastStart()`, sotto `Parry.IsOnParryChance && !hit.Unblockable && (DamageType == Heavy \|\| forceGuardslide)`. **⇒ A4 resta VALIDO (è la scivolata di guardia) ma è un'ALTRA cosa.** **⚠️ E la patch di A4 è sul metodo GIUSTO e NON va spostata** *(le tre righe dell'effetto stanno davvero in `OnCastStart`; spostarla su `CastSlide` manderebbe polvere anche in cooldown, dove il gioco non la disegna)*. **⏳ IN LAVORAZIONE**: piano esecutivo dell'agente, con le 5 lezioni di oggi dentro *(mai trasmettere stringhe di suono · i nomi dei parametri Harmony · il valore di ritorno dei `Prefix` · mai chiamare le abilità sul ricevente · il server inoltra intero E prefissato)* + la riga `[Effect TX]` obbligatoria per l'osservabilità. **✅ CHIUSA — `5b44d7f`** *(la polvere della scivolata di MOVIMENTO: i due generatori `GetStartDashDust`/`GetDashDustPosition` patchati come **EMITTENTI**, e i `case EffectType.DashDustStart`/`DashDustStop` nel ricevente — `Enums.cs`, `OtherPlayerAttackScript.cs`)* **+ `0ce8194`** *(il verso della polvere: dash e scivolata di guardia)*. **Audit 2026-10-12** |
 
 | **53** | 🔴 **I nemici creati DOPO il caricamento (evento locale) non si condividono** — il peer non li vede né li può colpire | ✅ RISOLTA | CHIUSA — integrale in fondo *(cerca "Voce 53 —")* |
-| **58** | 🔴 **Le CUTSCENE si perdono per chi non entra in quel momento** — *e lo stesso fa perdere le cutscene dei BOSS se uno muore e torna al falò prima* | 🟡 **NUOVA — e la CAUSA e' chiara** | **Riscontrato dall'utente**: *"quando un giocatore entra in una cutscene (es. la prima volta nella stanza del falò), la cutscene viene PERSA da chi non entra in quel momento — però l'evento viene dichiarato in console"*. **⭐ LA CAUSA (chiarita dall'utente)**: *"la mod di BASE non sincronizza la cutscene: **REGISTRA che è avvenuta**, così evita di farla avvenire di nuovo a chi non l'ha triggerata"*. **⇒ E' ottimo per il PROGRESSO** *(boss · leve · porte · inventario/miglioramenti)* **ma UCCIDE l'ESPERIENZA** *(le cutscene)*. **⚠️ IL PRINCIPIO DA TENERE**: *alcuni eventi sono **PROGRESSO** (condiviso, va registrato), altri sono **ESPERIENZA** (locale, va lasciata staccata). La registrazione è giusta per i primi, sbagliata per i secondi.* **⇒ FIX**: *togliere la CUTSCENE dagli eventi registrati* (non la sincronizzazione: la REGISTRAZIONE), lasciando il resto com'è. **Stesso meccanismo per le cutscene dei BOSS** *(uno muore, torna al falò, e la perde)*. |
+| **58** | 🔴 **Le CUTSCENE si perdono per chi non entra in quel momento** — *e lo stesso fa perdere le cutscene dei BOSS se uno muore e torna al falò prima* | 🟡 **NUOVA — e la CAUSA e' chiara** | **Riscontrato dall'utente**: *"quando un giocatore entra in una cutscene (es. la prima volta nella stanza del falò), la cutscene viene PERSA da chi non entra in quel momento — però l'evento viene dichiarato in console"*. **⭐ LA CAUSA (chiarita dall'utente)**: *"la mod di BASE non sincronizza la cutscene: **REGISTRA che è avvenuta**, così evita di farla avvenire di nuovo a chi non l'ha triggerata"*. **⇒ E' ottimo per il PROGRESSO** *(boss · leve · porte · inventario/miglioramenti)* **ma UCCIDE l'ESPERIENZA** *(le cutscene)*. **⚠️ IL PRINCIPIO DA TENERE**: *alcuni eventi sono **PROGRESSO** (condiviso, va registrato), altri sono **ESPERIENZA** (locale, va lasciata staccata). La registrazione è giusta per i primi, sbagliata per i secondi.* **⇒ FIX**: *togliere la CUTSCENE dagli eventi registrati* (non la sincronizzazione: la REGISTRAZIONE), lasciando il resto com'è. **Stesso meccanismo per le cutscene dei BOSS** *(uno muore, torna al falò, e la perde)*. | ✅ **CHIUSA — PER DECISIONE il 2026-10-13** *(non per fix: **la mod base non si tocca**). **MA** il perche' e' cambiato strada facendo: **il danno non e' generale, e' CIRCOSCRITTO alle cutscene dei BOSS per chi muore nella bossroom** — perche' il boss e' **INVULNERABILE sulla macchina di chi e' a terra** *(`ElderBrother.cs:74-79`: `if (Status.Dead \|\| Core.Logic.Penitent.Stats.Life.Current <= 0f) return;`, **replicata su 16 classi di boss**)* ⇒ **non muore li' ⇒ la sua FSM di morte non parte ⇒ la cutscene non parte**. **La storia intera, con le prove e con il perche' della decisione, e' in fondo: `## [2026-10-13 10:00]`, §1.** ⇒ **e la morte del boss sulla macchina del morto ora VIAGGIA lo stesso: e' M1 (`afca6fe`), §2** |
 | **54** | 🔴🔴 **BLOCCO TOTALE DEL GIOCO dopo un'esecuzione** — 516 eccezioni non gestite | ✅ RISOLTA | CHIUSA — integrale in fondo *(cerca "Voce 54 —")* |
 | **55** | 🔴 **Al falò l'annuncio parte PRIMA del reset locale** — il ricevente azzera il mondo prima del mittente | ✅ CHIUSA — non è un problema | CHIUSA — integrale in fondo *(cerca "Voce 55 —")* |
 | **56** | ⚠️ **MANCANO 5 MARKER per poter confrontare per-nemico** — senza di essi ogni diagnosi futura resta aggregata | 🟡 **NUOVA — strumentazione** | **Trovati dal referto, e sono il motivo per cui il confronto per-nemico oggi NON è possibile**: *(1)* **`ShortId` butta via `parts[0]`** ⇒ *tutti i nemici stampano `D01Z01S03@SPAWN`, e **l'unica componente discriminante è persa** (1999/1903 tick, 3917/4431 tree, 54/52 kill)* ⇒ **stampare l'id completo o la posizione dello spawn point**; *(2)* **nessun timestamp nei log** *(`Time.time` basta)*; *(3)* **`IMPRONTA DIVERSA` porta i conteggi SOLO locali** ⇒ *servono quelli del **peer** e **il primo id presente su un lato solo***; *(4)* ⭐ **una riga quando `ResolveByHandle`/`FindIdOfHandle` falliscono** — *è l'istante in cui l'aggiornamento viene **scartato in silenzio***; *(5)* **per il parry**, una riga per-nemico con `enabled`+`isRunning`+non-proprietario **all'uscita della parata**. **⇒ Il (3) e il (4) servono a verificare il fix della voce 45.** **✅ CHIUSA — i 5 marker sono stati TUTTI implementati: (1) `FullId(id)` accanto a `ShortId` (`EnemySyncManager.cs:3144`; `[EnemyTick]`/`[EnemyTree]`/`[Nascita]` usano l'id completo) · (2) `t={Time.time:F1}` nei marker (`:687`, `:2908`) · (3) i conteggi del PEER · (4) la riga quando `FindIdOfHandle` fallisce (`:680`, `:3385`, `:3847`) · (5) i marker del parry. Prova: `dbcc9f4` ("MARKER 1, 2, 4, 5 — i quattro locali, con verifica nell'IL di ognuno") + `ff887a0`. **Audit 2026-10-12** |
@@ -138,8 +138,17 @@ cercare in fondo: il testo e' ancora nella riga.**
 
 ---
 
-Ultimo aggiornamento: **AUDIT DEL 2026-10-12** — la lista e' stata riallineata al vero. **CHIUSE in questo audit: 52, 56, 59, 60, 61, 62** *(prove nei commit)*, e **la COLPA e' stata promossa a voce 63**.
+Ultimo aggiornamento: **2026-10-13** — **M1, la morte del boss sulla macchina di chi e' a terra** *(implementato, **NON
+ancora verificato in gioco**)*: **voce 58 CHIUSA PER DECISIONE**, **voce 9 con la descrizione CORRETTA**, **voce 63 con la
+formulazione dell'utente**, **probe ridotte da 3 a 2**. Tutto in fondo: `## [2026-10-13 10:00]`.
+Ultimo aggiornamento precedente: **AUDIT DEL 2026-10-12** — la lista e' stata riallineata al vero. **CHIUSE in questo audit: 52, 56, 59, 60, 61, 62** *(prove nei commit)*, e **la COLPA e' stata promossa a voce 63**.
 ~~**Restano**: la voce 33 *(misura)*, il passo 2 dell'arbitraggio *(voce 32)*, il falò *(voce 4 + 29/30/31)*, lo spettatore *(9)*, i boss *(8/18)*.~~ **⇒ QUESTA RIGA ERA VECCHIA DI CINQUE GIORNI E CONTRADDICEVA LA PROPRIA TABELLA**: 33, 32, 4, 29, 30, 31 e 8 **erano già chiuse in tabella** *(rispettivamente `f736cc3`, `9941eb9`, `6154863`, idem, idem, idem, `416fada`)*. **Restano davvero**: lo **spettatore (9)**, i **boss (18)**, le **CUTSCENE (58)**, la **COLPA (63)** e i **5 marker (56 → chiusa in questo audit)**.
+
+⚠️ **AGGIORNAMENTO DEL 2026-10-13** *(la riga sopra **resta**, come storia)*: delle cinque elencate li', **due NON sono piu' aperte** —
+la **58** e' **CHIUSA PER DECISIONE** *(§1 in fondo: il danno e' circoscritto alle cutscene dei boss per chi e' a terra, e la
+mod base non si tocca)* e la **56** e' **chiusa dall'audit del 2026-10-12** *(i 5 marker)*. **Restano davvero, e sono QUATTRO**:
+**9** *(corretta, §4)* · **18** *(+ il test di **M1**)* · **63** *(con la formulazione dell'utente, §3)* · **M1 in attesa di
+verifica in gioco** *(§2.9: **implementato**, non chiuso)*. **La lista operativa e' la §6 in fondo.**
 
 
 
@@ -5034,4 +5043,631 @@ d'ingresso alla bossfight**, che ha una soluzione a costo quasi nullo *(vedi il 
 
 **Stato della verifica** *(audit 2026-10-12)*: `git log --grep` su **colpa / guilt / spine** non trova **nessun commit**,
 e **nessun file del client implementa le spine**. ⇒ **voce APERTA, non fatta, e mai tracciata come voce.**
+
+**⭐ LA FORMULAZIONE DELL'UTENTE** *(2026-10-13 — e questa e' la definizione da usare, perche' dice **quando** la Colpa deve
+applicarsi e **quando no**)*:
+
+> *"la **grief sulla vita** in caso di **morte** e **non** seduta al falò"* — l'utente
+
+⇒ **Due condizioni, entrambe necessarie**: *(1)* si applica **morendo** *(non al falò: sedersi al falò NON deve aggiungere
+Colpa)*, e *(2)* colpisce **la VITA** *(`Stats.Life`)*, che e' il pezzo che il gioco **non** fa gia': `GuiltManager` chiama
+`set_MaxFactor` **sempre e solo su `Stats.Fervour`** *(punti 2 e 3 qui sopra)* ⇒ **estendere `GuiltManager` a `Life` E'
+il lavoro**, non riusarlo com'e'. **Le spine vanno DISEGNATE** *(punto 1)* perche' la barra si riscala. **Verificato al
+2026-10-13**: la voce esiste, e' leggibile, e il design qui sopra e' completo — **nessuna implementazione, nessun commit,
+e i due punti (la vita, non il Fervour · la morte, non il falò) sono il contenuto della voce, non un'aggiunta.**
+
+---
+
+## [2026-10-13 10:00] M1 — LA MORTE DEL BOSS ARRIVA SULLA MACCHINA DI CHI E' A TERRA, e la voce 58 si chiude PER DECISIONE
+
+**Catena dei commit di questa sessione** *(verificata con `git log --oneline -6`)*:
+`31f53ad` *(l'audit)* → `b86bd3f` *(le tre probe sulle cutscene, bersaglio #264)* → **`b6e1838`** *(via la sola probe #1:
+264 → **263**)* → **`afca6fe`** *(**M1**, l'unico intervento di gioco: +237 righe, **1 file**, **nessuna patch nuova**)*.
+**Albero pulito.** I referti sono in `scratch\`: `REFERTO-M1-MORTE-BOSS.md` *(il referto di M1)*,
+`STUDIO-BOSSONE-MORTE-CAM.md` *(l'analisi: le tre run, la guardia, la cam)*, `STUDIO-CUTSCENE-CONDIVISA.md` *(la voce 58)*,
+`PIANO-58-9.md`, `REFERTO-PROBE-CUTSCENE.md`, `REFERTO-SPAM-LOG.md`, `REFERTO-PEER-INVISIBILE.md`,
+`REFERTO-TRE-FIX.md`, `REFERTO-FANTASMA-ESECUZIONE.md`, `REFERTO-ANNUNCIO-E-FLASH.md`.
+
+**Perche' questa sezione esiste.** Per due giorni il lavoro e' andato in una direzione **che il documento non raccontava**:
+la **voce 58** (le cutscene) e' stata **chiusa per decisione** — e la decisione e' cambiata **perche' la diagnosi e'
+cambiata**, non perche' qualcuno abbia rinunciato; e la **voce 9** (lo spettatore) e' stata **corretta**, perche' la sua
+cella raccontava uno stato che non e' quello che c'e'. In mezzo c'e' **M1**, che e' il lavoro vero di questa sessione.
+**Niente e' stato cancellato**: le celle delle voci 58 e 9 sono state **marcate**, la voce 63 **estesa**, e la storia sta
+qui sotto.
+
+---
+
+### 1. ⭐ LA VOCE 58 — **CHIUSA PER DECISIONE** *(non per fix)*
+
+**La storia, per intero — e' una decisione, quindi va scritta.**
+
+**Cos'era la voce 58.** *"Le cutscene si perdono per chi non entra in quel momento"* — riscontrata dall'utente e
+diagnosticata da lui: **la mod di base non sincronizza la cutscene: REGISTRA il flag che la scena e' avvenuta**, cosi'
+evita di farla riaccadere a chi non l'ha triggerata. Il peer riceve il flag, lo applica con `Core.Events.SetFlag` e — poiche'
+i flag **vivono su disco** *(`ID_EVENT_MANAGER.flags` nel `.save`, `EventManager.GetCurrentPersistentState` / `SetCurrentPersistentState`)*
+— **la scena e' persa per sempre in quel salvataggio**: non si torna indietro dal menu e non si torna indietro
+riconnettendosi. L'unica via era `flag clear <ID>` dalla console *(`FlagCommand`, il cheat di test)*.
+
+**Cosa ha accertato lo STUDIO** *(`STUDIO-CUTSCENE-CONDIVISA.md`, `PIANO-58-9.md`)*:
+
+- il **"check"** non e' un `if` su una cutscene: e' **una tabella di id ammessi**, `Data\FlagStates.cs` —
+  il blocco letterale `// Cutscenes` *(9 id, righe 174-183: `DEOSGRACIAS_CUTSCENE_PLAYED`, `PONTIFF_ALBERO_EVENT`,
+  `PONTIFF_BRIDGE_EVENT`, `PONTIFF_ARCHDEACON1/2_EVENT`, `BROTHERS_EVENT1/2_COMPLETED`, `BROTHERS_GRAVEYARD_EVENT`,
+  `BROTHERS_WASTELAND_EVENT`)* **piu' 3 fuori blocco** nel blocco `// World states` — `DAGGER_CUTSCENE_FINISHED` *(163)*,
+  `MEACULPA_CUTSCENE_PLAYED` *(166)* e `BAPTISMAL_0*` *(165)*. **Chi tocca solo il blocco `// Cutscenes` lascia il bug a meta'.**
+- il **check in uscita** e' in `ProgressSync\Helpers\FlagHelper.cs`: il `Postfix` su `EventManager.SetFlag` *(`:31`)* fa
+  `if (FlagStates.getFlagState(formatted) != null)` *(`:37`)* → `SendProgress` *(`:40`)*; il **check in entrata**
+  *(`EventManagerIntro_Patch`, `:49`)* usa **lo stesso** `getFlagState` per il send-all al join.
+- **il fix minimo sarebbe stato TOGLIERE 11 ID** *(non 12: `BAPTISMAL_0*` e' un **wildcard** che copre `BAPTISMAL_01..06_USED`,
+  e per nome e' **una meccanica, non una scena** — toglierlo sarebbe stato il modo piu' rapido di perdere progresso in silenzio)*.
+  **Nessuna patch nuova: 263 bersagli restavano 263.** La forma consigliata era un **blocco di esclusione esplicito**
+  in `getFlagState` *(leggibile e annullabile in un punto solo)*, **piu' una riga `[FlagSync] … locale (escluso)` obbligatoria** —
+  senza, *"il flag e' arrivato"* e *"il flag non e' mai partito"* hanno lo **stesso aspetto** nel log.
+- ⛔ **E lo studio ha anche chiuso il rischio opposto, che era il rischio VERO**: `StartCutscene` **non guarda nessun flag**
+  *(`Cinematics.cs:113-152`: gli unici controlli sono `if (cinematicRunning) return;` `:115` e `SearchReferences()` `:122`)*
+  ⇒ **il RISCHIO 4 del piano non esiste**. Ma ne esiste uno **peggiore, ed e' un bug del GIOCO**: il blocker
+  `CINEMATIC` viene acceso a `:134` **prima** che `cinematicRunning` diventi `true`, e `EndCutscene` esce subito se
+  `!cinematicRunning` *(`:156`)* ⇒ se il `VideoPlayer` non prepara mai il video *(clip mancante, NRE catturata a `:343-347`,
+  che fa `Log.Error("…Forcing ending")` e **non chiude niente**)*, **il blocker resta acceso e la tastiera non risponde piu'
+  fino al riavvio**. La rete di sicurezza esiste ed e' verificata *(`SetBlocker`/`HasBlocker` sono `public`)*, ma e'
+  **una rete**, non una strada.
+- ✅ **E la misura che ha ridimensionato il danno** *(`STUDIO-CUTSCENE-CONDIVISA.md` §4.2)*: il salvataggio ha **698 flag**,
+  e la **maggior parte dei flag "a forma di cutscene" NON e' in `FlagStates`** *(`SANTOS_INGAME_CUTSCENE`,
+  `SANTOS_LAUDES_CUTSCENE_PLAYED`, `SANTOS_CTS102/103_PLAYED`, `CANDELARIA_1014_PLAYED`, `MIRIAM_INGAME_CUTSCENE`,
+  `PONTIFF_CUTSCENE_PLAYED`, `BROTHERHOOD_CUTSCENE1/2_DONE`, `PENITENCE_EVENT_FINISHED`, `ZONE_NAME_OF_D01Z02_DISPLAYED` — tutte ❌)*
+  ⇒ **il gioco ha molte piu' cutscene di quelle in tabella, e quelle fuori tabella NON si perdono**: restano `false` sul peer,
+  che le vedra' quando ci arriva. **Il danno era limitato ai 12 id registrati** — non un danno generale.
+
+**⭐ E POI E' EMERSO IL FATTO CHE HA CAMBIATO TUTTO** *(`STUDIO-BOSSONE-MORTE-CAM.md`)*.
+
+Dall'analisi delle **tre run** sulla bossroom di `D17Z01S11` (`ElderBrother`), con i log di entrambe le macchine
+allineati sul `ServerOutput.log`:
+
+| Run | Chi uccide il boss | Bossroom | Cutscene `CTS02-Bloody Baptism` |
+|---|---|---|---|
+| **1** | G1 (G2 contribuisce) | **tutti e due vivi** | ✅ **parte su ENTRAMBE** *(G1:2721, G2:2603)* |
+| **2** | G2 | G1 morto, poi **torna al falo'** | ❌ **persa da G1** *(0 `CTS02`)*, ✅ G2:2917 |
+| **3** | G2 | G1 morto **e ancora nella stanza** | ❌ **persa da G1** *(0 `CTS02`)*, ✅ R3-G2:2814 |
+
+Il **conteggio per macchina** *(`STUDIO-BOSSONE-MORTE-CAM.md` §1.4-bis)* si legge in una riga:
+*la macchina su cui il boss non emette `[EnemyKill]` / `vita=0` e' **esattamente** la macchina su cui non compare
+`cutscene_block` e non compare `CTS02`.*
+
+| Run / macchina | `[EnemyKill] …ElderBrother…MORTO` | `ElderBrother_Death` | `vita=0` | `cutscene_block` | `Boss fight Nº 1 was successful` | `CTS02` |
+|---|---|---|---|---|---|---|
+| **R1-G1** *(vivo, uccide)* | 1 | 1 | 1 | **2** | ✅ | ✅ 2 |
+| **R1-G2** *(vivo, aiuta)* | 0 | 0 | 0 | **2** | ✅ | ✅ 2 |
+| **R2-G1** *(morto)* | **0** | **0** | **0** | **0** | ❌ | ❌ 0 |
+| **R2-G2** *(uccide)* | 1 | 0 | 0 | 2 | ✅ | ✅ 2 |
+| **R3-G1** *(morto, in stanza)* | **0** | **0** | **0** | **0** | ❌ | ❌ 0 |
+| **R3-G2** *(uccide)* | 1 | 0 | 0 | 2 | ✅ | ✅ 2 |
+
+**⇒ IL FATTO: il danno e' CIRCOSCRITTO alle cutscene dei BOSS, per chi muore nella bossroom.** E la causa, in una riga di IL:
+
+```csharp
+// Gameplay.GameControllers.Bosses.ElderBrother\ElderBrother.cs:74-79   ← la GUARDIA
+public void Damage(Hit hit)
+{
+    if (Status.Dead || Core.Logic.Penitent.Stats.Life.Current <= 0f)
+        return;                       // ← con il giocatore LOCALE a terra non entra NIENTE
+```
+
+⇒ **il boss e' INVULNERABILE sulla macchina di chi e' a terra** ⇒ **non muore li'** ⇒ **la sua FSM di morte non parte**
+⇒ **`Boss.OnDeath` non scatta** ⇒ **nessun `BossFightMetrics.EndBossFight`, nessun `onFinishBossFight`** ⇒
+**la cutscene non parte**. **Misurato in R3-G1**: per **~24 s** il log stampa `[EnemyAnim] D17Z01S11@ElderBrother … vita=330`
+*(**330 = vita piena**, sempre)*, e il colpo letale dell'altro **arriva e viene scartato** *(riga `2734`
+`[Danno] relay  amount=331 … vitaPrima=330`, con **DUE SPAZI** dopo `relay`: quel formato e' `$"[Danno] relay {IdOf(enemy)} amount=…"`,
+quindi **l'id e' VUOTO** — `ReceiveEnemyKill` l'ha gia' tolto da `_enemies` prima di `ApplyDamage`, e un boss e' un **oggetto di scena**,
+senza spawn point)*. E la riga `[TRACE][METRICS] Boss fight Nº 1 was successful.` — che esce **solo** da
+`BossFightMetrics.EndBossFight()`, il cui **unico chiamante** e' `BossFightManager.OnDeathBoss` — **sul morto e' ASSENTE**.
+**La stanza non c'entra**: in run 3 il morto **era** in `D17Z01S11` quando e' arrivato il flag `D17Z01_BOSSDEAD`
+*(righe 2731/2735)*, ed e' uscito **dopo**, pigiando un tasto *(2767 FADE → 2778 `RestoreStored` → 2820 load)*.
+E il morto **non c'entra con la cutscene in generale**: in **R1-G2**, che **non** aveva ucciso lei il boss, la scena e'
+partita **completa** — **basta che il boss muoia in locale, in un modo qualunque.**
+
+**La guardia, verificata su 16 classi di boss** *(cercata per stringa in `scratch\_il\…\Bosses`)*: `Amanecidas`,
+`BejeweledSaintHead`, `WickerWurm`, `BurntFace`, `Crisanta`, `Esdras`, `Perpetua`, `ElderBrother`, `Isidora`,
+`PietyMonster`, `PontiffGiant`, `PontiffOldman`, `PontiffSword`, `Quirce`, `Snake`, `TresAngustiasMaster`.
+**Verificata per stringa in tutte e 16, ma valutata in esecuzione solo per `ElderBrother`.** E la mod **lo sapeva gia'** e
+lo scriveva: `EnemySyncManager.cs:3208` — *"because the boss's own `Damage()` discards everything while the LOCAL player's
+life is zero, every hit the survivor landed was thrown away"*.
+
+**✅ LA DECISIONE DELL'UTENTE: NON TOCCARE LA MOD BASE.** Le cutscene normali **funzionano** *(la misura §4.2 lo prova:
+le scene fuori tabella non si perdono)*, il danno e' **circoscritto** alle cutscene dei boss per chi e' a terra ⇒
+**la voce 58 si chiude come "documentata e accettata"**.
+
+**⚠️ E va scritto PERCHE' non si fa — non e' pigrizia, e non e' "non si puo' fare".**
+1. **Il fix minimo toccava una tabella COLLAUDATA** *(`Data\FlagStates.cs`, 181 id)* **per risolvere un caso che si risolve
+   dall'altra parte**: la registrazione del flag e' **giusta per il progresso** *(boss, leve, porte, inventario)*, e
+   `BAPTISMAL_0*` e' la prova che quella tabella **mischiata** non si lima a occhio senza rischiare progresso perso in silenzio.
+2. **Il caso che resta — la cutscene del boss persa dal morto — e' la morte del boss, non la cutscene.** ⇒ **si risolve
+   portando la MORTE sulla macchina del morto** *(M1, §2)*, e allora **la cutscene parte da sola per la strada nativa**,
+   **senza toccare ne' la tabella ne' `StartCutscene`**.
+3. **E la strada "far partire la scena all'altro" era, misurata, la piu' rischiosa delle tre** *(via (a) dello studio)*:
+   somma il rischio del **blocker che resta acceso per un guasto del video** *(bug del gioco, §sopra)* alla traduzione a
+   due salti `id → nome → CutsceneData` *(che funziona **solo nella scena caricata**)*. **E non serviva**: la via (b)
+   — non registrare — non perde progresso, e M1 copre il caso dei boss.
+
+**📌 E per la cronaca: la tabella id→scena che serviva a decidere la via (a) NON e' stata costruita, e non serve piu'.**
+Vedi §5.
+
+---
+
+### 2. ⭐⭐ M1 — LA MORTE DEL BOSS *(il lavoro vero)*
+
+**Commit `afca6fe`** — *"M1 - LA MORTE DEL BOSS ARRIVA ANCHE SULLA MACCHINA DI CHI E' A TERRA: annuncio bdead| +
+boss.Kill() sul morto"*. **+237 righe, 1 file** *(`EnemySyncManager.cs`)*, **nessuna patch Harmony nuova**.
+Referto: `scratch\REFERTO-M1-MORTE-BOSS.md`.
+
+**Il principio, in una riga**: **non si sincronizza la CUTSCENE — si sincronizza la MORTE DEL BOSS.** La cutscene e' gia'
+nativa, gia' locale, gia' corretta: parte da sola da `Boss.OnDeath` → `BossFightManager.OnDeathBoss` → `onFinishBossFight`
+→ FSM `CutscenePlay`. **Se il boss muore anche sulla macchina del morto, la scena del morto arriva per la strada di
+sempre.**
+
+#### 2.1 Il percorso della morte, dal vivo *(tutto in `EnemySyncManager.cs`)*
+
+| Passo | Dove | Cosa fa |
+|---|---|---|
+| 1. il gioco uccide il nemico | — | `Status.Dead = true`, vita 0 |
+| 2. il ciclo di invio lo vede | `:3768-3793` | **la morte e' controllata PRIMA dell'attivita'** *(`enemy.Dead \|\| enemy.CurrentLife <= 0f`)* ⇒ vale anche per un nemico spento fuori camera |
+| 3. annuncia | ivi | `SendEnemyKill(handle)` *(`:3783`)* · `SendEnemyDeathGlobal(id)` *(`:3785`)* · **`bdead\|`** *(`:3800`, M1)* |
+| 4. sul ricevente | `NetworkManager.cs:616` / `:640-648` | `EnemyDeath` → `ReceiveEnemyKill` · `EnemyDeathGlobal` → `ReceiveEnemyDeathGlobal` |
+| 5. `ReceiveEnemyKill` | `:5010` | `ResolveByHandle` → **toglie l'id da `_enemies`** *(`:5025`)* → `ApplyDamage(enemy, vita+1, …)` *(`:5036`)* |
+| 6. `ReceiveEnemyDeathGlobal` | `:4676` | catena di prefissi; **M1 si inserisce a `:4777`**, prima del fall-through |
+| 7. `ApplyDamage` | `:5067-5151` | `((IDamageable)enemy).Damage(hit)` *(`:5146-5148`)* ← **qui c'e' la GUARDIA dei boss** |
+
+**Il boss passa da tutti e sette i passi**, e **non c'e' nessun filtro `IsBoss` sull'annuncio**: `IsBoss` era usato **solo**
+per non scrivere la vita del boss *(`:4140-4163`)*, non per la morte. **Quello che non viaggiava era la parola "boss".**
+
+#### 2.2 Il fix — il mittente `[BossDeath TX]`
+
+Nel ramo di morte del ciclo di invio, **subito dopo** l'annuncio generico *(`:3798-3804`)*:
+
+```csharp
+if (IsBoss(enemy, id))
+{
+    Main.Multiplayer.SendEnemyDeathGlobal(BossDeathPrefix + id);   // "bdead|" + id
+    ModLog.Info($"[BossDeath TX] {FullId(id)} boss={enemy.GetType().Name} " +
+                $"vita={enemy.CurrentLife:F1} StatusDead={enemy.Status.Dead} " +
+                $"localeMorto={PlayerDeathSync.IsLocalPlayerDead()}");
+}
+```
+
+- **`BossDeathPrefix = "bdead|"`** *(`:315`)*: **l'ottavo prefisso** sul canale `EnemyDeathGlobal`, dopo `sp|` (nemici),
+  `brk|` (lampade), `falo|` (falo'), `pdead|`/`palive|` (giocatori), `nato|` (nascite), `exec|` (esecuzioni).
+  **Il server rilancia il payload verbatim: NESSUN bump di protocollo.**
+- ⚠️ **E' un annuncio IN PIU', non uno di meno**: `SendEnemyKill` e `SendEnemyDeathGlobal(id)` **restano dove sono** ⇒
+  **niente di cio' che esisteva cambia comportamento**, e chi non conosce il prefisso *(versione mista)* se lo trova in
+  `_pendingDeaths`, dove e' **inerte** — la stessa proprieta' gia' verificata in IL per `falo|` e `pdead|`.
+- **`IsBoss(enemy, id)`** *(`:273`)*: decide **per namespace** `Gameplay.GameControllers.Bosses`, con cache `_bossIds`.
+  ⚠️ **E NON si usa `BossFightManager.IsFightStarted`**, di proposito: risponde a una domanda **diversa** *("il combattimento
+  e' in corso ADESSO")*, richiede `FindObjectsOfType<BossFightManager>(true)` — una scansione di scena — ed e' **falso proprio
+  nel momento che ci interessa** *(`OnDeathBoss` lo mette a `false`)*.
+
+#### 2.3 Il fix — il ricevente `[BossDeath RX]`
+
+In `ReceiveEnemyDeathGlobal`, **dopo `exec|` e PRIMA del fall-through a `_pendingDeaths.Add`** *(`:4777-4783`)*,
+con lo stesso schema degli altri sei prefissi:
+
+```csharp
+if (IsBossDeathId(enemyId))
+{
+    string bossId = BossDeathIdOf(enemyId);
+    if (!string.IsNullOrEmpty(bossId))
+        ApplyBossDeath(bossId);
+    return;                       // ← NIENTE _pendingDeaths, NIENTE MarkSpawnPointConsumed
+}
+```
+
+**Perche' esce senza la contabilita' generica** *(e non e' pigrizia)*: `_pendingDeaths` non serve, perche' l'id nudo
+arriva per conto suo e fa la sua parte come ha sempre fatto; e **`MarkSpawnPointConsumed` su un boss sarebbe un DANNO NUOVO** —
+segnare consumato lo spawn di un boss puo' impedirgli di tornare in scena per un altro tentativo. ⇒ **il ramo fa una cosa
+sola: `Kill()` sul boss locale, e solo se serve.**
+
+#### 2.4 ⭐ Il punto del fix, una riga — `ApplyBossDeath` *(`:371`)*
+
+```csharp
+bool isBoss = IsBoss(boss, id);
+string type = boss.GetType().Name;
+float lifeBefore = boss.CurrentLife;
+
+boss.Kill();                       // ← L'UNICA SCRITTURA SUL GIOCO DI TUTTO M1
+```
+
+**Perche' `Kill()` e non un `Damage(HP+1)`** *(la ragione per cui il fix e' cosi' piccolo)*: `Entity.Kill()`
+*(`Entity.cs:312`, **`public virtual`**, e **nessun boss fra i 16 lo sovrascrive** — l'unico override in tutto l'assembly e'
+`SingleAnguish.Kill()`, che non e' fra i 16)* fa `Damage(Stats.Life.Current + Stats.Defense.Final, string.Empty)` →
+`Stats.Life.Current <= 0` → **`KillInstanteneously()`** *(`:317`)* → `Status.Dead = true`, vita 0 →
+**`Entity.Death` · `OnDeath` · `OnEntityDeath`** · `Core.Events.LaunchEvent("ENTITY_DEAD")`.
+**⭐ La guardia del morto NON e' sulla strada**: e' su **`Damage(Hit)`**, l'overload del **colpo**; `Kill()` usa
+**`Damage(float, string)`**. **E' l'unica ragione per cui M1 e' una riga.**
+
+**Le guardie, nell'ordine in cui sono valutate** *(`:379-408`)*:
+
+| # | Guardia | `motivo=` | Perche' |
+|---|---|---|---|
+| 1 | `boss == null` | `boss-non-in-scena` | fuori scena / livello ricaricato: **dichiara il limite** invece di fingere che il pacchetto sia perso |
+| 2 | `!PlayerDeathSync.IsLocalPlayerDead()` | `giocatore-locale-vivo` | ⭐ **M1.3**: su una macchina **viva** la morte arriva gia' per la strada di sempre *(R1-G2)* ⇒ **si interviene SOLO sul caso rotto** |
+| 3 | `boss.Status.Dead` | `boss-gia-morto` | `Status.Dead` = *"la sequenza di morte e' partita"*, la stessa domanda di `KillEnemyLocally` |
+| 4 | `!_bossKillsApplied.Add(id)` | `gia-applicata` | **una volta sola per id** |
+| 5 | tutto dentro `try/catch` | *(scrive un `ModLog.Error`)* | un'eccezione qui uscirebbe da `ProcessQueue`, che gira in try/**finally** senza catch: **la coda non si svuota e lo stesso pacchetto si riprocessa per sempre** — e' il guasto da **2934 errori** |
+
+**`_bossKillsApplied`** *(`:337`)* e' azzerato **con il resto della memoria di scena**: `:1727` in `LevelLoaded` e `:1989`
+in `OnDeathStateReset` ⇒ un boss della scena dopo e' di nuovo uccidibile, e al ritorno del mondo *(dopo una morte,
+`SuppressingWorldReset`)* anche.
+
+#### 2.5 ⭐ IL SECONDO GRADINO — `_enemyIds`, e perche' senza sarebbe stato un NO-OP SILENZIOSO
+
+`ResolveEnemyForBossDeath` *(`:460`)* prova **`ResolveEnemy(id)`** e, se tace, scende a **`_enemyIds`** *(istanza → id,
+`:182`)* — **l'unica mappa che `ReceiveEnemyKill` NON tocca** e che `ForgetEnemy` lascia intatta **di proposito**
+*(`:3996-4021`, "the instance keeps its id on purpose")*. Il marker stampa **`via=cache|istanza|nessuna`**.
+
+**Non e' prudenza: e' la misura di `amount=331`.** L'annuncio arriva **dopo** `ReceiveEnemyKill` *(pacchetto precedente
+dello stesso ciclo di invio)*, che toglie l'id da `_enemies` **prima** di applicare il danno; e **il boss non ha spawn
+point** *(il suo id e' `en|D17Z01S11|ElderBrother|-806|22`, non `sp|…`)*, mentre `ResolveEnemy` *(`:5040`)* interroga
+**prima lo spawn point** e **poi** la cache. ⇒ **senza questo gradino M1 sarebbe stato un no-op silenzioso, e il test non
+avrebbe misurato niente** *(esattamente la riga con **DUE SPAZI**: `[Danno] relay  amount=331`, dove l'id e' vuoto perche'
+`IdOf`, passando da `ResolveEnemy`, non trova piu' niente)*.
+✅ **E che gli id delle due macchine coincidano e' PROVATO, non sperato**: `HandleOf` e' un **FNV-1a della STRINGA**
+*(`:824`)*, e in R3-G1 `ReceiveEnemyKill(handle)` **ha risolto** il boss *(`amount=331` e' stato stampato)* ⇒ l'id del peer
+ha trovato la **stessa stringa** in `_ids` sul morto.
+
+#### 2.6 Il conteggio dei target: **263 → 263, e nessuna patch nuova**
+
+| | commit | build | deploy |
+|---|---|---|---|
+| **1. Pulizia probe #1** | `b6e1838` | `Build succeeded`, **0 errori** | bersagli **263** *(era **264**)*, tipo assente **0**, METODO assente **0** |
+| **2. M1 — morte del boss** | `afca6fe` | `Build succeeded`, **0 errori** | bersagli **263 → 263**, tipo assente **0**, METODO assente **0** |
+
+⚠️ **M1 NON alza il conteggio.** Non c'e' nessun `Prefix`/`Postfix` nuovo: e' codice dentro **un ciclo che girava gia'**
+*(il ciclo di invio)* e dentro **un metodo che girava gia'** *(`ReceiveEnemyDeathGlobal`)*.
+**E' la risposta onesta alla domanda "di quanto sale": di ZERO.** *(E il conteggio che doveva tornare a 263 e' tornato a
+263 per la **rimozione** della probe #1, non per M1.)* **Deploy verificato**: `bin\Debug\BlasClient.dll` e
+`Modding\plugins\BlasClient.dll` hanno lo **stesso hash** SHA256
+`2de61ee7973fcedfb2caeb0b7e2479cdfe071bee3c4acf07daddd0b37944fd36`.
+
+#### 2.7 ⚠️ I DIVIETI, riga per riga — come sono rispettati
+
+| Divieto | Come e' rispettato |
+|---|---|
+| ❌ **NON chiamare `StartCutscene`** | **Zero occorrenze** nel diff: la scena parte **da sola** da `Boss.OnDeath` → `BossFightManager.OnDeathBoss` → `onFinishBossFight` |
+| ❌ **NON toccare `SetFreeCamera`** | non citato ⇒ **MAI `FREECAMERA` acceso** |
+| ❌ **NON toccare `Core.Input.SetBlocker`** | **zero `SetBlocker`** nel diff, e **zero `ResetManager()`** *(`ResetManager` azzera TUTTI i blocker: `LevelManager.cs:355`)* |
+| ❌ **NON toccare `TimeScale`** | non citato *(e `DeadScreenWidget` usa `WaitForSecondsRealtime` apposta)* |
+| ❌ **NON toccare il `Penitent` dell'altro** | M1 tocca **il boss locale** e nient'altro: nessun `Penitent`, nessuna camera, nessun guscio |
+| ⚠️ **NON toccare i `Prefix` di `AnimationFixes.cs`** | file **non aperto**: nessun `Prefix` nuovo, e nessun `Postfix` aggiunto dove c'e' gia' un `Prefix` |
+| ⚠️ **NON toccare `FlagStates`, `FlagHelper`, i suoni della parata, l'esecuzione, il fantasma, l'orfano, lo spam** | **tutti fuori dal diff**. I marker nuovi sono **2 righe per morte di boss** *(TX + RX)*, una tantum per evento |
+
+*(Le stesse righe sono scritte nel commento del codice, `EnemySyncManager.cs:355-363`, cosi' chi legge il codice domani
+non deve fidarsi di questo documento.)*
+
+#### 2.8 ⚠️ LE SEI COSE DICHIARATE NON RISOLTE *(e due di queste vanno lette prima del test)*
+
+**1. 🔴 "ENTRAMBI MORTI" = M1 NON FA NIENTE.** E' il **buco noto**: se il sopravvissuto **non esiste**, nessuno uccide il
+boss, nessuno manda `[BossDeath TX]`, `ApplyBossDeath` **non viene mai chiamato**, e i due log vedono **due giocatori a
+terra davanti a un boss vivo**. **Non e' una svista: nessuna delle tre run copre il caso** *(`PlayerDeathSync.IsEveryoneDead()`
+esiste, `:213`, ma **nessun log lo esercita in bossfight**)*. **M1 non lo risolve e non lo simula**, e la via d'uscita
+prevista resta **il timeout di M4** — ed e' l'unica. ⚠️ **Da non dimenticare quando si scrivera' M2/M4**: un ritardo
+**senza timeout**, con `DEAD_SCREEN` acceso, e' **tastiera bloccata fino al cambio livello** *(solo `ResetManager`,
+`LevelManager.cs:355`, la scioglie)*.
+
+**2. ⚠️ La sequenza scriptata di morte del boss NON viene eseguita da `Kill()` ⇒ il boss puo' restare IN PIEDI.**
+`ElderBrotherBehaviour.Death()` *(`:319-327`: `StopAllCoroutines` + `UnsubscribeFromEverything` + `StopMovement` +
+`jumpAttack.StopJump` + `BehaviourTree.StopBehaviour` + `AnimatorInyector.Death()`)* e' chiamata **solo** da
+**`ElderBrother.Damage(Hit)`** *(`:94`)*, e `Kill()` **non passa da li'**. ⇒ **il boss puo' restare in piedi, con
+l'animazione di morte non comandata e il behaviour tree ancora vivo**, finche' qualcosa non lo spegne.
+**E' il rischio visivo piu' concreto di M1, e NON e' verificabile dai log: va GUARDATO A SCHERMO nel test.**
+*E' la stessa riserva che la mod annota a `:254-262` — "the boss's death is not a death animation: it is a scripted
+sequence" — e le **16 classi hanno strutture diverse** *(`Crisanta_StDeath`, `PontiffGiantBehaviour.DeathSequence`, …)*:
+la posizione della guardia e' verificata per stringa in tutte e 16, ma **valutata solo per `ElderBrother`**.*
+
+**3. 🔴 La lacuna dello STUDIO: chi lancia `CTS02` — non risolta, da provare.** Non si e' potuto stabilire se a lanciare
+la cutscene sia **`BossFightManager.onFinishBossFight`** *(`:188`, la strada che `Kill()` percorre)* **o una FSM separata**
+che reagisce alla morte del boss. Nei log ci sono **22-51 righe** fra `Metrics.EndBossFight` e `StartCutscene`
+*(R1-G1 2690→2721, R3-G2 2785→2814)* **e quelle righe non nominano nessun evento**. **Il fix e' progettato per funzionare
+in entrambi i casi** *— non chiama `StartCutscene`, lascia partire la catena nativa e produce **sia** `onFinishBossFight`
+**sia** `ENTITY_DEAD` —* **ma la prova e' il test, non il referto.**
+
+**4. ⚠️ Il fallback e' scritto e NON implementato** *(per mandato, non per dimenticanza)*. Se il test dovesse fallire
+**con `[BossDeath RX] applicato … Kill=ok` e senza `CTS02`**, la seconda strada e': **riaprire la guardia** *(patch mirata,
+solo per il boss e solo quando il giocatore locale e' a terra)* **e mandare il colpo letale**, cosi' che parta anche
+`ElderBrotherBehaviour.Death()` *(che `Kill()` salta, punto 2)*. **Non va scritta prima della misura**: questo progetto
+ha una storia di fix che hanno rotto cose che funzionavano.
+
+**5. ⚠️ La doppia morte del boss** *(il rischio R3 dello studio)*. `Kill()` **non** e' l'unica strada che puo' portare alla
+morte del boss sulla stessa macchina: la catena locale *(colpo letale inoltrato / `ReceiveEnemyKill`)* puo' arrivare
+**anche lei**, e in R1-G2 il flag `D17Z01_BOSSDEAD` e' stato settato **due volte** *(2547 e 2581)* **senza danno**.
+**Mitigazione di M1**: applica **una volta sola per id** *(`_bossKillsApplied`)* e **solo se `Status.Dead` e' falso**.
+**Rischio residuo dichiarato**: se **entrambe** scattassero, il secondo giro sarebbe bloccato da `Status.Dead` ⇒ al massimo
+**una** `Metrics.EndBossFight`, **un** `ENTITY_DEAD`. **Da confermare nel log**: `Metrics … successful` deve comparire
+**una volta**.
+
+**6. ⚠️ Protocollo misto** *(una macchina con la build vecchia)*. Una macchina vecchia tratterebbe `bdead|` come id di
+nemico: finirebbe in `_pendingDeaths`, **inerte**. ⇒ **nessun guasto, ma nessuna protezione**: la macchina vecchia
+continuerebbe a perdere la cutscene. **Il test va fatto con ENTRAMBE le macchine aggiornate.**
+
+**⚠️ E gli effetti collaterali LOCALI di `Kill()`, che sono reali e vanno guardati** *(non sono nuovi: sono gli stessi di
+una morte uccisa dal giocatore, su QUESTA macchina)*: `onFinishBossFight` + `Metrics.EndBossFight()` *(**l'obiettivo**)* e
+`IsFightStarted = false` · **`ENTITY_DEAD`** *sia via `Core.Events.LaunchEvent` sia via l'evento Playmaker —
+**ed e' il segnale che una FSM di livello puo' aspettare*** · **Purge al Penitent LOCALE** *(`GetPurge`)*, che al respawn
+`Core.Persistence.RestoreStored()` **dovrebbe** ripristinare — ⚠️ **non verificato** · `InventoryManager.OnEnemyKilled`
+→ `KillEnemy(e)` su **perle, reliquie, preghiere e spade equipaggiate** del giocatore morto: **un secondo giro** di quegli
+effetti per lo stesso boss · `AchievementsManager.AddProgressToAC39/AC41`: progresso **locale**, **puo' contare un boss in
+piu'** su una macchina *(. Da guardare, non da correggere adesso.)* · **e NON fa**: nessun `Destroy`, nessuna
+disattivazione, nessun blocker, nessun `TimeScale`, nessuna camera, nessuna scrittura di flag, **nessuna vita di nessuno**.
+**E non tocca il boss dell'altra macchina**: `bdead|` e' un **annuncio**, non un comando.
+
+#### 2.9 ✅ IL TEST — **e' ancora DA FARE**: M1 e' **IMPLEMENTATO, IN ATTESA DI VERIFICA IN GIOCO**
+
+> **Stato dichiarato, senza abbellimenti: M1 e' implementato, compila, e' deployato, e NON e' mai stato eseguito in gioco.**
+> **Nessun referto lo verifica. Va segnato come "IN ATTESA DI TEST", non come chiuso.** *(Nel codice i marker ci sono
+> apposta: senza `Kill=ok|nessun-effetto` nel log, "l'annuncio non e' arrivato" e "e' arrivato e non ha fatto nulla"
+> restano **indistinguibili** — ed e' esattamente la differenza che il test deve misurare.)*
+
+**Lo scenario, UN BOSS SOLO**: il boss di `D17Z01S11` *(`ElderBrother`)*, log aperti su **entrambe** le macchine, i due
+giocatori nella bossroom. **G1 (host) muore e RESTA nel prompt di morte**; **G2 resta vivo e uccide il boss.** *E' la run 3,
+cioe' il caso peggiore gia' misurato.*
+
+**L'ordine atteso SUL MORTO (G1), da confrontare con la run 3**:
+
+| # | Riga attesa | Run 3 *(prima di M1)* |
+|---|---|---|
+| 1 | `[Morte] annuncio inviato: G1 e' morto` · `PLAYERDEAD` · `DEAD_SCREEN enabled` | c'era |
+| 2 | il boss **continua a combattere** *(`[EnemyAnim] … vita=330`)* | c'era |
+| 3 | **`[BossDeath TX] …`** — ⚠️ **sul VIVO (G2)**, non sul morto | **non esisteva** |
+| 4 | **`[BossDeath RX] … applicato (ero morto: si) via=… Kill=ok vitaDopo=0 StatusDead=True`** — ⭐ **la riga nuova sul morto** | **non esisteva** |
+| 5 | `[TRACE][METRICS] Boss fight Nº 1 was successful.` **sul morto** | ❌ assente |
+| 6 | `cutscene_block enabled` / `[Cutscene BLK] … CINEMATIC=True` **sul morto** | ❌ assente |
+| 7 | `ENTITY_DEAD` **sul morto** | ❌ assente |
+| 8 | **`[Cutscene EV] … VideoStarted nome="CTS02-Bloody Baptism"`** *(o `CTS02` nel log del gioco)* **sul morto** | ❌ assente |
+
+**Come si legge l'esito — decisione, non impressione**:
+
+| Cosa si vede sul morto | Verdetto |
+|---|---|
+| `[BossDeath RX] … applicato … Kill=ok` **+ `Metrics … successful`** + `cutscene_block` + **`CTS02`** | ✅ **M1 FUNZIONA**: la morte viaggia e la catena nativa porta la cutscene. **Il buco della voce 58 e' chiuso senza `StartCutscene`, senza camera, senza blocker** |
+| `[BossDeath RX] … applicato … Kill=ok` **+ `Metrics`** ma **NIENTE `cutscene_block`/`CTS02`** | ⚠️ **la morte e' arrivata, la cutscene no**: e' la **lacuna §2.8 punto 3**. ⇒ **tocca il fallback (§2.8 punto 4), non un fix affrettato** |
+| `… NON applicato … motivo=giocatore-locale-vivo` | ❌ il morto **non era** considerato morto da `PlayerDeathSync.IsLocalPlayerDead()`: guardia troppo stretta ⇒ **si allenta con la misura in mano, non a occhio** |
+| `… motivo=boss-gia-morto` | la morte era gia' arrivata per un'altra strada *(doppia catena)*: **verificare chi l'ha uccisa** prima di concludere |
+| `… motivo=boss-non-in-scena via=nessuna` | l'id non e' risolvibile sul morto: **o** il morto era uscito dalla stanza **o** gli id delle due macchine divergono ⇒ guardare in quest'ordine, **e i due casi sono distinguibili grazie a `via=`** |
+| **`[BossDeath TX]` assente sul vivo** | il boss **non** e' passato dal ramo di morte del ciclo di invio ⇒ **NON e' un problema di RX** |
+| `Kill=nessun-effetto` *(+ `ModLog.Error`)* | `Kill()` non ha ucciso il boss: **la seconda strada del piano diventa obbligatoria**, e questo log e' la prova da portare |
+
+**⚠️ Da NON interpretare come guasti** *(dichiarato)*: **la riga `[Cutscene] … StartCutscene …` NON esiste piu'** — e' la
+**probe #1**, tolta in `b6e1838` *(§5)*; il testimone equivalente e' `[Cutscene EV] … VideoStarted` *(probe #2)* o il `CTS02`
+del log del gioco. **E il boss PUO' restare in piedi e continuare a muoversi per un istante dopo `Kill()`** *(§2.8 punto 2)*.
+
+**⚠️ E una cosa da guardare che c'e' GIA' OGGI e che M1 non introduce**: il mittente manda **anche** `SendEnemyKill(handle)`,
+e sul ricevente `ReceiveEnemyKill` fa `_enemies.Remove(id)` **prima** di `ApplyDamage`. Se il pacchetto **nudo**
+`SendEnemyDeathGlobal(id)` arrivasse **PRIMA**, il ramo generico troverebbe il boss in `_ids`, chiamerebbe
+`DestroyDeadEnemy` → `KillEnemyLocally` *(guardia: non passa, nessun danno)* → **`SetActive(false)` sul boss**: **il boss
+SPARIREBBE senza morire**, e la cutscene non avrebbe piu' su cosa girare. **Oggi non e' osservato, ma non e' garantito**:
+⇒ **se il boss sparisce dalla scena del morto SENZA `[BossDeath RX] applicato`, e' questo**, e la correzione *— una riga:
+non spedire il pacchetto nudo per un boss —* va fatta **con la prova in mano**.
+
+**⚠️ E il morto NON deve uscire dalla stanza mentre la scena parte**: la scena deve essere **ancora caricata**, o
+`ResolveEnemyForBossDeath` risponde `motivo=boss-non-in-scena`. **Non serve nessuna modifica: e' il "resta nel prompt"
+che l'utente gia' fa.**
+
+---
+
+### 3. LA VOCE 63 (LA COLPA) — verificata, e le mancava **la formulazione dell'utente**
+
+**Verifica del 2026-10-13, come richiesto.** La voce **63 esiste, ed e' leggibile**: sta **in testa alla tabella**
+*(promossa dall'audit del 2026-10-12)* e ha la sua **sezione di archivio** in fondo, `### Voce 63 — LA COLPA`
+*(che a sua volta **rimanda** alla entry `[2026-10-11 02:00] LA LIBRERIA ESTERNA: verdetto DEFINITIVO`, righe ~3446-3520,
+che **resta il punto unico di verita'**)*. **Presenti e corretti**: `GuiltManager` e i **due soli chiamanti** di
+`set_MaxFactor` *(entrambi `GuiltManager`, **sempre su `Fervour`, mai su `Life`**)* · `PlayerForever.RefreshGuilt`
+*(il nome nel TODO e' **`PlayerFervour.RefreshGuilt`**: la voce in fondo lo scrive correttamente)* · i tre `Image` privati
+`guiltStart`/`guiltBar`/`guiltEnd` *(⇒ `Traverse`)* · **la scoperta che le spine vanno DISEGNATE perche' la barra si
+riscala** *(`CalculateValue()` clampa `Current` a `CurrentMax`, e `PlayerHealth.BarTarget = Life.Current / Life.Final`
+**si riscala** ⇒ la barra risulta **di nuovo piena**)* · il verdetto sulla libreria esterna · il messaggio d'ingresso alla
+bossfight · i 6 riferimenti di lettura. **Design completo, implementazione NON iniziata**: `git log --grep` su
+*colpa / guilt / spine* → **nessun commit**, e **nessun file del client la implementa**.
+
+**⚠️ COSA MANCAVA, ed e' stato aggiunto** *(alla sezione in fondo, sotto lo "Stato della verifica")*: **LA FORMULAZIONE
+DELL'UTENTE**, che non era scritta da nessuna parte ed e' la **definizione operativa** della voce:
+
+> *"la **grief sulla vita** in caso di **morte** e **non** seduta al falò"* — l'utente
+
+⇒ **Due condizioni, e servono entrambe**: **la VITA** *(`Stats.Life`)* e **la MORTE** *(non il falo')*. **Il primo punto e'
+il lavoro vero** — `GuiltManager` oggi agisce **solo su `Fervour`**, quindi **estenderlo a `Life` e' il fix**, non riusarlo
+com'e'; **il secondo e' un vincolo di design** *(sedersi al falo' NON deve aggiungere Colpa)*, e va scritto perche' e'
+esattamente il tipo di cosa che si perde e poi si implementa al contrario.
+
+**⚠️ E la voce NON e' stata toccata oltre a questo**: la sua sezione di design in fondo **resta com'era**.
+
+---
+
+### 4. LA VOCE 9 (LO SPETTATORE) — **la descrizione era sbagliata, ed e' stata corretta**
+
+**Cos'ha accertato l'audit, e cosa dice il codice.** La cella della voce 9 raccontava un lavoro di **camera** con i pezzi
+gia' identificati *("fermabile su `DeadScreenWidget.OnDead`", "body invisibile", "camera sul compagno = banale")* e un solo
+ostacolo di motore. **La realta' e' un'altra, in due meta':**
+
+**✅ QUELLO CHE C'E' DAVVERO** *(ed e' codice reale e di qualita')*: il **livello di STATO** e' costruito —
+`Players\PlayerStatus.cs` e `Players\PlayerDeathSync.cs` implementano **`pdead|` / `palive|`** sul canale
+`EnemyDeathGlobal` *(senza bump)*, `SetPlayerDead`, `CountDeadPlayers`, `IsEveryoneDead`, `AllConnectedPlayers`,
+e usano **`DeathEventLaunched` del gioco** come guardia del "una volta per morte" **invece di una flag propria**.
+⚠️ **Ma quel codice e' stato scritto per UN'ALTRA VOCE — la 44** *(sopprimere il respawn del mondo alla morte)*,
+**non per la 9**, e con un'altra forma.
+
+**❌ QUELLO CHE NON C'E'**: **la camera sul compagno NON esiste**, **il body invisibile NON esiste**, e il
+**"segue i cambi stanza" resta BLOCCATO DAL MOTORE** *(le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato
+per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**)*.
+**Nessun referto lo verifica in gioco**, e **nessun commit chiude la voce**: **9 commit citano la parola "spettatore",
+e nessuno la chiude** — `PlayerDeathSync.cs:293` e `:339` parlano di *"spectator camera"* in forma **condizionale**
+*(«the spectator camera would have nothing to follow»)*: e' una **premessa di design**, non una funzione.
+
+**⇒ Da "quasi fatta" a "lo stato c'e', il visibile no".** *(La cella in testa e' stata **marcata**, non riscritta: il testo
+originale resta, com'e' giusto per un documento storico.)*
+
+#### 4.1 ⭐ COSA LO `STUDIO-BOSSONE-MORTE-CAM.md` HA TROVATO DI UTILE PER IL FUTURO
+
+Tutto **verificato in IL**, e sono i pezzi che rendono la voce 9 **fattibile nella stessa stanza** — e **solo** li'.
+
+1. **⭐ Il morto ha ANCORA IL SUO Penitent.** `Core.Logic.Penitent` e' **valido** mentre si e' a terra:
+   `PlayerDeathSync.IsLocalPlayerDead()` *(`:108`)* legge `Core.Logic.Penitent.Status.Dead` **a ogni frame**, e
+   `PenitentOnUpdateDeath_Patch` ci gira sopra *(`:318-331`)*. **Il Penitent non viene distrutto alla morte: viene
+   ricostruito al load** *(`SpawnManager.CreatePlayer`; il marker `[Probe] PENITENT …` compare **dopo** il respawn)*.
+   ⇒ **spostare la SUA camera e' legittimo e non tocca quella dell'altro** *(l'altro **non ha** una camera: e' un guscio)*.
+2. **⚠️ `SetFreeCamera` NON e' riusabile.** Il *perche'* e' doppio, e il secondo non era noto:
+   *(a)* accende **`SetBlocker("FREECAMERA", …)`** *(`Cinematics.cs:219`)* — blocker **non refcounted**, divieto n.1;
+   *(b)* **il ripristino NON e' idempotente**: `if (!lastCameraValid)` *(`:196`)* ⇒ se il gioco ha **gia'**
+   `lastCameraValid == true` *(una cutscene in corso, o una `SetFreeCamera(true)` mai richiusa)* **la nostra posizione non
+   viene salvata**, e alla chiusura `MoveCameraInstantlyToPosition(lastCamera)` **ci teletrasporta altrove**.
+   **⇒ Va IMITATO (salva → stacca → ripristina), non chiamato.**
+3. **⭐ LA RICETTA GIUSTA, e senza blocker**: salvare `ProCamera2D` *(`FollowHorizontal`, `FollowVertical`, le due
+   smoothness, `OverallOffset`)* **e `CameraPlayerOffset.PlayerTarget`**, poi **`RemoveAllCameraTargets()` +
+   `AddCameraTarget(<guscio dell'altro>.transform, …)`**, e **al `OnPenitentReady` rimettere tutto**.
+   **In alternativa, zero interazione con i target**: `Cinematics.SetFreeCameraPosition` *(`:222`, **pubblica**, senza
+   blocker)* ogni frame — costo: si perde lo smoothing.
+   ⚠️ **E il legame non si riscrive da solo**: `CameraManager.UpdateNewCameraParams` **non gira ogni frame** — il suo
+   **unico chiamante** e' `LevelManager.cs:349`, dentro la coroutine di caricamento livello ⇒ **si esegue UNA VOLTA PER
+   LIVELLO**. **Conseguenza a favore**: chi sposta la camera **resta spostato** fino al load successivo *(la cam **non**
+   sopravvive a un cambio scena — e nella nostra versione non serve: siamo nella stessa stanza)*.
+4. **⚠️ L'ATTrito del `tag == "Penitent"`.** `CameraPlayerOffset.SetCameraTarget` *(`:139-157`)* accetta **solo** un
+   `CameraTarget` il cui `TargetTransform.tag == "Penitent"`; **il guscio nasce `new GameObject("_" + name)` SENZA tag**
+   e senza `Penitent` *(`OtherPlayerManager.cs:295-345`)* ⇒ **o si da' il tag al guscio**, o si muove la cam a mano con
+   `MoveCameraInstantlyToPosition` *(che **e' gia' pubblica**)*. **Decide una riga di codice, non un'architettura.**
+5. **🔴 IL TIMEOUT E' OBBLIGATORIO — e c'e' un secondo spegnitore di `DEAD_SCREEN`.** `OnPenitentReady` *(`:161`)* e'
+   l'unico spegnitore **nel gioco normale** *(`SetBlocker("DEAD_SCREEN", false)` compare due volte in tutto l'assembly:
+   `:101` dentro `OnDeadActionBossRush`, e `:161` dentro `OnPenitentReady`)*. **Ma** `LevelManager.cs:355`
+   **`Core.Input.ResetManager()` azzera TUTTI i blocker a ogni load** ⇒ *un ritardo **senza uscita** con `DEAD_SCREEN`
+   acceso = **tastiera bloccata fino al cambio livello**, e la scioglierebbe solo un cambio scena.* ⇒ **un timeout di
+   sicurezza che esegue il `Respawn()` normale e' parte del fix, non un extra.**
+6. **⭐ Il caso del morto e' il migliore possibile**: la sua camera e' **gia' puntata sul suo cadavere**, e il cadavere e'
+   **nella stessa stanza** del vivo. **Nessun cambio-scena, nessuna scena non caricata: il vincolo "l'avatar esiste solo
+   nella tua scena" qui NON morde.** E il mondo **continua a girare**: `DeadScreenWidget.OnDeadAction` *(`:67-89`)* e' una
+   coroutine con `WaitForSecondsRealtime` e un ciclo `while (!Input.anyKey)`, e **niente in essa ferma il mondo** *(il
+   `Respawn()` avviene **solo dopo** il tasto)* ⇒ **il posto dove agganciarsi c'e' gia'.**
+7. **⚠️ E il predicato "in bossfight", se servira'**: due vie **verificate** e **per-oggetto** —
+   `BossFightManager.IsFightStarted` *(`:47`, richiede `FindObjectsOfType<…>(true)`)* per *"il combattimento e' in corso
+   ADESSO"*, e **`EnemySyncManager.IsBoss`** *(`:273`, **gia' nostro**)* per *"questo nemico e' un boss"*.
+   **Scartati, e va detto**: `LevelHasGeometryBoundaries` *(**vero ovunque**: tutte le stanze hanno collider)*,
+   `BossAwarenessArea` *(un `[Serializable]`, non un componente, nessuna logica)* e la riga `[TRACE][METRICS] Boss fight`
+   *(e' `PlayerPrefs` + `Log.Trace`: **leggerla da codice per pilotare una decisione significa leggere `PlayerPrefs`, non
+   lo stato del gioco**)*.
+
+**⚠️ E il piano dell'utente, valutato dallo studio**: *"non far uscire dalla bossroom"* e' **utile ma NON risolutivo**
+*(la run 3 lo falsifica: il morto era in `D17Z01S11` e la scena non e' partita lo stesso)*, *"aspettare i trigger, poi il
+prompt"* e' **utile ma non e' il collo di bottiglia** *(il prompt non era la causa; e il trigger della cutscene e quello del
+boss sono **lo stesso evento**: aspettare "il trigger della cutscene" e' **circolare**)*, *"la cam su un giocatore vivo"* e'
+**fattibile, economico e sicuro**, e *"i suoni partono fino al tasto"* e' **VERO e verificato in IL**.
+**⇒ IL BUCO, in una riga**: *"non far uscire le persone dalla bossroom"* non serve a niente finche' **il boss non puo'
+morire sulla macchina di chi e' a terra** — **ed e' M1, §2**.
+
+---
+
+### 5. LE COSE PICCOLE *(seguite in questi giorni, e il loro stato reale)*
+
+**(a) Lo spam del log: due fix fatti, e UNO NO.** *(`REFERTO-SPAM-LOG.md`)*
+
+| Spam | Commit | Misura |
+|---|---|---|
+| `[Proprieta']` — 1700 righe su G1 | `d3f54c9` | **1700 → ~40** *(-97,6%)*: la riga esce **solo quando la decisione cambia** *(`Dictionary<string,string> _deadReleaseLogged`, **chiave = id, valore = la DECISIONE**, mai il motivo testuale — la trappola che il progetto ha gia' fatto due volte)* |
+| `Couldn't find connected player: *` — 309 righe su G2 | `ff5dec7` | **309 → 1 per nome**: `HashSet<string> _missingPlayersReported` |
+
+**E il NUMERO SBAGLIATO nel TODO e' stato corretto dall'audit**: le righe **844** e **3212** dicevano **32** *"nella
+finestra di handshake"*; il vero e' **309**, **e non e' un handshake**: e' il **SENTINELLA `"*"`** che il server usa per il
+sync iniziale di squadra *(`Server.cs`, `getProgressPacket("*", …)`)* → **nessuno si chiama `"*"`** ⇒ **una domanda senza
+risposta possibile**. *(E **nessun pacchetto veniva scartato**: `ProcessRecievedStat` fa `if (player == null) return;`, e il
+progresso vero e' gia' stato applicato **una riga sopra** da `ProgressManager.ReceiveProgress`.)*
+
+**⚠️ E IL SECONDO INTERVENTO — LA CAUSA A MONTE — NON E' STATO FATTO.** *(`REFERTO-SPAM-LOG.md:127-133`)*
+Il fix di `ff5dec7` toglie **la ripetizione**, non **la domanda**: `ReceiveProgress` **continua a interrogare il registro
+anche per il sentinella `"*"`**. La correzione sarebbe in **un punto solo**
+*(`if (playerName != "*") { ProcessRecievedStat(...); DisplayProgressNotification(...); }`)* ed e' **equivalente**
+*(per `"*"` la ricerca ritorna sempre `null`)*, risparmiando **309 scansioni per sessione**.
+**⛔ NON e' stato implementato, ed e' dichiarato: e' LOGICA, non logging**, e la consegna di quei due commit toccava
+**solo il quando si logga**. ⇒ **resta un lavoro reale e non e' una voce numerata.**
+
+**(b) LA PROBE RIDOTTA — cosa c'e' in giro, adesso, e perche' nessuno la creda abbandonata.** *(`b6e1838`)*
+
+La probe sulle cutscene *(`Blasphemous.Multiplayer.Client\CutsceneProbe.cs`, nata in `b86bd3f`)* era **tre** probe di
+solo log. **Ne restano DUE, entrambe a costo ZERO, e la terza e' stata TOLTA:**
+
+| # | Dove | Costo | Cosa scrive |
+|---|---|---|---|
+| **#0** | `CutsceneProbe.Tick()`, da `Multiplayer.OnLateUpdate` *(ciclo che **girava gia'**)* | **nessuna patch** | **`[Cutscene BLK] t=… CINEMATIC=<bool> InputBlocked=<bool>`** — **una riga SOLO quando il valore cambia** |
+| ~~#1~~ | ~~`Prefix` su `Cinematics.StartCutscene`~~ | ~~**1 patch**~~ | **⛔ TOLTA in `b6e1838`** *(264 → **263**)*: la riga `[Cutscene] … StartCutscene nome="…"` **non esiste piu'**, e cercarla in un log nuovo **non e' un guasto: e' voluto** |
+| **#2** | `Subscribe()` in `Multiplayer.OnInitialize`, `Unsubscribe()` in `OnDispose` | **nessuna patch** | **`[Cutscene EV] t=… CinematicStarted / CinematicEnded cancelled=… / VideoStarted nome="…" / VideoEnded`** |
+
+**Perche' la #1 e' stata tolta** *(tre ragioni, in ordine)*: **(1)** era **l'unica che costava una patch Harmony**
+*(264 → 263, verificato da `tools\verify-patch-targets.ps1`)*; **(2)** la sua domanda e' **chiusa** — serviva a costruire la
+tabella `flag → nome scena`, e **l'utente ha deciso di NON fare il fix delle cutscene condivise** *(§1)*, quindi la tabella
+non serve piu' a nessuno; **(3)** misurava **la chiamata**, non l'esito *(nome, tipo, fade, `giaInCorso`)*, e l'esito lo
+dice gia' la **#2**. **⚠️ NON RIMETTERE un `Prefix` su `StartCutscene` "per completezza"**: e' esattamente il bersaglio
+tolto, e ogni patch in piu' e' un bersaglio in piu' che puo' fallire a runtime.
+
+**E perche' #0 e #2 RESTANO — serviranno a M3/M4, e non e' una speranza:**
+- **#0 (`[Cutscene BLK]`) e' LA MISURA CHE CONTA ADESSO**, per una ragione precisa: `CINEMATIC` ha **DUE proprietari** e
+  **NON e' refcounted** *(`Cinematics` `:134`/`:253` e `TresAngustiasMasterBehaviour` `:614`/`:639`/`:691`)*, e
+  **l'accensione del blocker e' IL PRIMO SEGNO DELLA FSM DI MORTE DEL BOSS** *(`cutscene_block has been enabled` e' la
+  stessa accensione vista dal gioco)*. ⇒ **dice se la catena di morte e' partita anche quando nessuna cutscene e'
+  ancora nominata nel log** — ed e' **il rischio dichiarato di M3/M4** *(`STUDIO-BOSSONE-MORTE-CAM.md` §1.4-bis: quella
+  riga esiste **solo sulla macchina che ha ucciso il boss** su tutte e tre le run)*. **E' anche il candidato naturale per
+  l'aggancio della cam di M3** *(sapere quando una scena e' in corso, **senza** toccare `Cinematics`)*.
+- **#2 (`[Cutscene EV]`) e' l'UNICA COSA CHE DICE SE UNA SCENA E' IN CORSO E SE IL CONTENUTO E' PARTITO DAVVERO**, ora che
+  la #1 non c'e' piu'. E il testimone vero e' **`VideoStarted`**, non `CinematicStarted`: quest'ultimo viene invocato
+  *(`:148-151`)* **anche** quando `PlayVideo` e' morto dentro il `catch (NullReferenceException)` di `:343-347` — e in quel
+  caso `cinematicRunning` resta `false`, `EndCutscene` e' un **no-op** *(`:156`)* e **il blocker `CINEMATIC` non viene
+  piu' spento**. **E' il caso peggiore, e senza `VideoStarted` sarebbe indistinguibile da una partenza riuscita.**
+- **E la #0 misura anche il caso "blocker rimasto acceso"**: con il **timeout obbligatorio** di M4 *(§4.1 punto 5)*, la
+  riga `CINEMATIC=False` a fine test e' **la prova** che la rete di sicurezza ha tenuto.
+
+**(c) LA VOCE 56 (i 5 MARKER) E' CHIUSA DALL'AUDIT — e va trovata chiusa.** *(se qualcuno la cerca)*
+La cella lo dice gia': **`✅ CHIUSA — i 5 marker sono stati TUTTI implementati`** con la prova dentro
+*(`dbcc9f4` "MARKER 1, 2, 4, 5 — i quattro locali, con verifica nell'IL di ognuno" + `ff887a0`)*, e con il riscontro nel
+codice: `FullId(id)` accanto a `ShortId` *(`EnemySyncManager.cs:3144`)* · `t={Time.time:F1}` *(`:687`, `:2908`)* ·
+i conteggi del **peer** · la riga quando `FindIdOfHandle` fallisce *(`:680`, `:3385`, `:3847`)* · i marker del parry.
+**⚠️ La riga in testa diceva ancora "MANCANO 5 MARKER": e' superata** — l'audit l'ha marcata, e **il testo originale
+resta** per storia *(la chiusura e' visibile nella stessa cella)*.
+
+**📌 E la tabella `flag → nome scena` che la probe #1 doveva costruire NON e' stata costruita, e NON serve piu'** *(§1)*:
+era lo strumento per decidere la **via (a)** *("far partire la scena all'altro")*, e quella via e' stata **respinta perché
+non serviva**. **La #1 e' stata tolta proprio per questo: non c'e' nessun lavoro interrotto a meta'.**
+
+---
+
+### 6. 📌 LA LISTA DELLE COSE DA FARE *(corta, in ordine di importanza — verificata contro il file)*
+
+**1. ⭐ LA CAM in caso di morte nella bossroom — voce 9.** *"Vedere l'altro quando sono morto"*. **La parte camera non
+esiste** *(il livello di stato si', ed e' della voce 44)*. La ricetta e' in **§4.1 punto 3**; l'attrito e' al **punto 4**;
+il **timeout e' obbligatorio** *(punto 5)*; e **il "segue i cambi stanza" NON esiste** *(non pianificarlo, non stimarlo,
+non prometterlo)*. **Dipende da M1** *(§2)*: prima la morte del boss, poi la cam.
+
+**2. ⭐ LA COLPA — la grief sulla vita morendo non seduti al falo' — voce 63.** *Formulazione dell'utente, §3:*
+**`Stats.Life`, non `Fervour`** · **morendo, non al falo'**. Design completo, `GuiltManager` presente, arte esistente
+*(`guiltStart`/`guiltBar`/`guiltEnd`)*, **implementazione non iniziata**. ⚠️ **Il messaggio d'ingresso alla bossfight costa
+una chiave di localizzazione + una chiamata a `DisplayNotification`** *(`NotificationManager` esiste gia')*: e' il pezzo
+a costo quasi nullo della stessa voce.
+
+**3. I TEST DEI BOSS — voce 18.** **Resta la voce piu' esposta**: nei referti e' esercitato **un solo boss**
+*(`ElderBrother`, `D17Z01S11`)*, e la barra del boss *"coincide per coincidenza, non per sincronizzazione"* *(§2 del
+documento)*. **E da qui passa anche il test di M1** *(§2.9)*: **UN boss solo, con i log aperti su entrambe le macchine**,
+e **da guardare a schermo** *(il boss puo' restare in piedi: §2.8 punto 2)*.
+
+**4. LE COSE PICCOLE** *(§5)*: **(a)** lo **spam a monte del `"*"`** — il taglio di `ProcessRecievedStat` per il
+sentinella, **NON implementato**, *"va deciso a parte"* *(309 scansioni per sessione, ed e' **logica, non logging**)* ·
+**(b)** i **due residui di `BUG-NOTI.md`**: la **seconda `Object.Destroy` in `SettleStuckDeaths`** *(`[EnemyDeath]` = 0 in
+ogni sessione misurata: ha un commento nel codice che dice cosa fare la prima volta che appare in un log → diventare
+`SetActive(false)`)* e l'**esecuzione "incrociata"** *(il caso **generale** del fantasma e' chiuso — voce 57; questo residuo
+raro **non e' riproducibile a comando** e chiede il log completo di **entrambe** le macchine, non un fix a naso)* ·
+**(c)** il **`fullPathHash`** *(`§8 passo 4c`)*: **parcheggiato di proposito** *(`7c638e5`)* — **da riprendere solo se** la
+fluidita' tornasse a dare fastidio, **non alzarlo di priorita' senza un sintomo nuovo**.
+
+**5. LE DOMANDE APERTE DEL §9.** Due, e sono le sole: **§9 domanda 15** *(il fantasma e' congelato dalla mod?)*:
+`PauseEnemy` ferma il behavior tree e la fisica, **non `MonoBehaviour.Update`** ⇒ `Ghost::OnUpdate` gira **anche sul
+non-proprietario**: **test mai fatto** *(loggare l'orientamento **mentre l'altra macchina possiede il nemico**)*.
+**§9 domanda 14** *(`EnemyAI` gira davvero?)*: **0 occorrenze** nel codice della mod, **0 sottoclassi**: si decide
+**guardando i prefab**, ed e' l'unico modo di sapere se `LookAtTarget` e' davvero codice morto su **71/71 sottoclassi**.
+
+**⭐ E UNA COSA NON E' IN LISTA, MA VA DETTA: M1 e' IMPLEMENTATO E NON VERIFICATO IN GIOCO.** *(`afca6fe`)*
+**Non e' chiuso, e non e' aperto come gli altri**: e' **"implementato, in attesa di verifica"**. Finche' il test di §2.9
+non e' stato fatto, **la cutscene del boss per chi e' a terra potrebbe ancora perdersi** — e il **fallback e' scritto e
+NON implementato** *(§2.8 punto 4, per mandato: prima la misura)*. **Va segnato cosi', non come chiuso.**
+
+**✅ E DUE VOCI CHE NON SONO IN LISTA PERCHE' SONO CHIUSE:** la **58** *(chiusa **per decisione**, non per fix: §1)* e la
+**56** *(i 5 marker, chiusa dall'audit: §5(c))*. **Se qualcuno le cerca, deve trovarle chiuse — non "in sospeso".**
 
