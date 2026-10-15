@@ -286,6 +286,203 @@ namespace Blasphemous.Multiplayer.Client
             return isBoss;
         }
 
+        // ============================================================================================
+        // M1 — LA MORTE DEL BOSS, PORTATA SULLA MACCHINA DI CHI E' A TERRA
+        // (referto: scratch\STUDIO-BOSSONE-MORTE-CAM.md §5.2; che spiega anche cosa NON si tocca)
+        // ============================================================================================
+
+        /// <summary>
+        /// L'OTTAVO PREFISSO del canale di morte: `bdead|` = "sulla macchina di chi ha ucciso e' morto un
+        /// BOSS". (Gli altri: `sp|` nemici, `brk|` lampade, `falo|` falo', `pdead|`/`palive|` giocatori,
+        /// `nato|` nascite, `exec|` esecuzioni.)
+        ///
+        /// PERCHE' UN PREFISSO E NON BASTA L'ID GIA' SPEDITO. Un boss viene GIA' annunciato come qualunque
+        /// altro nemico: il ciclo di invio vede `enemy.Dead` e manda `SendEnemyKill(handle)` +
+        /// `SendEnemyDeathGlobal(id)` (misurato: R1-G1:2708 `[EnemyKill] …ElderBrother…MORTO`, R3-G2 idem).
+        /// Quello che NON viaggia e' "questo e' un BOSS": sul ricevente l'id entra nel ramo generico, dove
+        /// la morte si applica chiamando `&lt;Boss&gt;::Damage(Hit)`, e quella comincia con
+        /// `if (Status.Dead || Core.Logic.Penitent.Stats.Life.Current &lt;= 0f) return;`
+        /// (`ElderBrother.cs:76`, e la stessa riga in 16 classi di boss). ⇒ con il giocatore LOCALE a terra
+        /// la morte viene SCARTATA IN SILENZIO: il boss resta in piedi a vita piena, la sua FSM di morte
+        /// non parte, `BossFightManager.OnDeathBoss` non gira e la cutscene del boss non parte.
+        /// Misurato in R3-G1: ~24 s di `vita=330` e il colpo letale inoltrato (`amount=331`) scartato, con
+        /// il flag `D17Z01_BOSSDEAD` gia' applicato.
+        ///
+        /// ⇒ Il prefisso dice al ricevente UNA cosa sola: "questa morte va applicata con `Kill()`", che
+        /// dalla guardia NON passa (vedi `ApplyBossDeath`). Non cambia nient'altro: l'annuncio generico
+        /// resta al suo posto, quindi il resto del sistema vede esattamente cio' che vedeva prima.
+        /// </summary>
+        private const string BossDeathPrefix = "bdead|";
+
+        /// <summary>True quando questo id e' l'annuncio della morte di un BOSS.</summary>
+        private static bool IsBossDeathId(string id)
+        {
+            return !string.IsNullOrEmpty(id) && id.StartsWith(BossDeathPrefix, System.StringComparison.Ordinal);
+        }
+
+        /// <summary>L'id del boss dentro l'annuncio, o null per qualunque cosa malformata.</summary>
+        private static string BossDeathIdOf(string id)
+        {
+            if (!IsBossDeathId(id))
+                return null;
+
+            string enemyId = id.Substring(BossDeathPrefix.Length);
+            return string.IsNullOrEmpty(enemyId) ? null : enemyId;
+        }
+
+        /// <summary>
+        /// Boss ids la cui morte QUESTA macchina ha gia' applicato da un annuncio. Una volta per id, e
+        /// azzerata con il resto della memoria di scena: gli id non sopravvivono a un cambio livello.
+        /// </summary>
+        private static readonly HashSet<string> _bossKillsApplied = new HashSet<string>();
+
+        /// <summary>
+        /// Applica su QUESTA macchina la morte di un boss annunciata dall'altra (vedi `BossDeathPrefix`).
+        ///
+        /// LA STRADA E' `Kill()`, ED E' NATIVA:
+        ///     Entity.Kill()                       (Entity.cs:312, public virtual, nessun override fra i boss)
+        ///       -> Damage(Life.Current + Defense.Final, "")   (Entity.cs:270, NON la Damage(Hit))
+        ///         -> Stats.Life.Current &lt;= 0
+        ///           -> KillInstanteneously()      (Entity.cs:317, public)
+        ///             -> Status.Dead = true, vita = 0
+        ///             -> Entity.Death / this.OnDeath / this.OnEntityDeath / ENTITY_DEAD
+        ///               -> BossFightManager.OnDeathBoss (BossFightManager.cs:181-189, sottoscritto a
+        ///                  `Boss.OnDeath` in Init :67)
+        ///                 -> Metrics.EndBossFight() + onFinishBossFight.Invoke()
+        /// ⭐ La guardia del morto NON e' sulla strada: e' su `Damage(Hit)`, l'overload del COLPO, mentre
+        /// `Kill()` usa `Damage(float, string)`. E' l'unica ragione per cui questo fix e' cosi' piccolo.
+        ///
+        /// COSA QUESTO METODO NON FA (i divieti del mandato, riga per riga):
+        ///   - NON chiama `StartCutscene` (la cutscene e' nativa: deve partire da sola dalla catena sopra);
+        ///   - NON tocca `SetFreeCamera` (e quindi non accende MAI il blocker `FREECAMERA`);
+        ///   - NON tocca `Core.Input.SetBlocker` di nessuno e NON chiama `ResetManager()` (un blocker
+        ///     acceso e mai spento = tastiera bloccata fino al cambio livello);
+        ///   - NON tocca `Time.timeScale` (e `DeadScreenWidget` usa `WaitForSecondsRealtime` apposta);
+        ///   - NON tocca il `Penitent` dell'altro giocatore, ne' questo, ne' la camera di nessuno;
+        ///   - NON tocca `FlagStates`, `FlagHelper`, i suoni della parata, l'esecuzione, il fantasma,
+        ///     l'orfano, ne' l'annuncio generico della morte: aggiunge un annuncio, non ne cambia uno.
+        ///
+        /// COSA NON RISOLVE, dichiarato: se il giocatore locale NON e' a terra non fa NIENTE, di proposito
+        /// (su una macchina viva la morte del boss arriva gia' per la strada di sempre e la cutscene parte:
+        /// MISURATO in R1-G2, che non aveva ucciso lei il boss e ha avuto `cutscene_block` 2 e `CTS02`
+        /// completa). E il caso "entrambi a terra" resta senza risposta: se nessuno sopravvive, nessuno
+        /// annuncia niente e questo metodo non viene mai chiamato - e' il buco noto del piano.
+        /// </summary>
+        private static void ApplyBossDeath(string id)
+        {
+            try
+            {
+                Enemy boss = ResolveEnemyForBossDeath(id, out string via);
+                bool bossHere = boss != null && boss.gameObject != null;
+                bool localDead = PlayerDeathSync.IsLocalPlayerDead();
+
+                if (!bossHere)
+                {
+                    ModLog.Info($"[BossDeath RX] {FullId(id)} NON applicato (ero morto: " +
+                                $"{(localDead ? "si" : "no")}) motivo=boss-non-in-scena via={via}");
+                    return;
+                }
+
+                // ⚠️ LA GUARDIA CHE RENDE QUESTO FIX PICCOLO: si interviene SOLO sul caso rotto.
+                if (!localDead)
+                {
+                    ModLog.Info($"[BossDeath RX] {FullId(id)} NON applicato (ero morto: no) " +
+                                $"motivo=giocatore-locale-vivo via={via}");
+                    return;
+                }
+
+                // `Status.Dead` e' "la sequenza di morte e' partita", non "la vita e' zero": e' la stessa
+                // domanda che fa KillEnemyLocally, e per la stessa ragione.
+                if (boss.Status.Dead)
+                {
+                    ModLog.Info($"[BossDeath RX] {FullId(id)} NON applicato (ero morto: si) " +
+                                $"motivo=boss-gia-morto via={via}");
+                    return;
+                }
+
+                if (!_bossKillsApplied.Add(id))
+                {
+                    ModLog.Info($"[BossDeath RX] {FullId(id)} NON applicato (ero morto: si) " +
+                                $"motivo=gia-applicata via={via}");
+                    return;
+                }
+
+                bool isBoss = IsBoss(boss, id);
+                string type = boss.GetType().Name;
+                float lifeBefore = boss.CurrentLife;
+
+                // ⚠️ IL PUNTO DEL FIX, UNA RIGA. E' anche l'unica scrittura sul gioco di tutto M1, e cade
+                // su un boss che SULL'ALTRA macchina e' gia' morto: non si inventa niente.
+                boss.Kill();
+
+                // L'esito va scritto SEMPRE, altrimenti "l'annuncio non e' arrivato" e "e' arrivato e non
+                // ha fatto nulla" restano indistinguibili nel log - ed e' esattamente la differenza che
+                // questo test deve misurare.
+                bool died = boss.Status.Dead;
+                ModLog.Info($"[BossDeath RX] {FullId(id)} applicato (ero morto: si) via={via} " +
+                            $"boss={isBoss} tipo={type} vitaPrima={lifeBefore:F0} " +
+                            $"vitaDopo={boss.CurrentLife:F0} StatusDead={died} " +
+                            $"Kill={(died ? "ok" : "nessun-effetto")}");
+
+                if (!died)
+                {
+                    // Non deve succedere: `Kill()` e' la strada con cui il gioco uccide qualunque entita'.
+                    // Se succede, e' la prova che su QUESTO boss l'uccisione passa altrove, e la seconda
+                    // strada del piano (riaprire la guardia e mandare il colpo letale) diventa necessaria.
+                    ModLog.Error($"[BossDeath RX] {FullId(id)} Kill() NON ha ucciso il boss: " +
+                                 $"StatusDead=false vita={boss.CurrentLife:F0}");
+                }
+            }
+            catch (Exception e)
+            {
+                // Un'eccezione qui uscirebbe da NetworkManager.ProcessQueue, che gira dentro try/FINALLY
+                // senza catch: la coda non verrebbe svuotata e lo stesso pacchetto verrebbe riprocessato
+                // per sempre. E' il guasto da 2934 errori, e vale per QUALUNQUE cosa giri su questo canale.
+                ModLog.Error($"[BossDeath RX] {FullId(id)} eccezione in Kill(): {e.GetType().Name} - {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Risolve il boss da uccidere, e DICE DA DOVE l'ha preso (`via=`) perche' il marker lo mostri.
+        ///
+        /// ⚠️ PERCHE' NON BASTA `ResolveEnemy`, e questa non e' prudenza: e' MISURA.
+        /// L'annuncio arriva DOPO `ReceiveEnemyKill`, che il ciclo di invio spedisce come pacchetto
+        /// PRECEDENTE, e quel metodo toglie l'id da `_enemies` PRIMA di applicare il danno. Un boss e' un
+        /// oggetto di SCENA - il suo id e' `en|…`, non `sp|…` - quindi non ha spawn point da interrogare, e
+        /// `ResolveEnemy` (spawn point prima, cache poi) non lo trova piu'. In R3-G1 la riga della morte
+        /// annunciata stampa l'id VUOTO ("[Danno] relay  amount=331", DUE spazi): e' `IdOf` che, passando
+        /// da `ResolveEnemy`, non trova piu' niente.
+        /// ⇒ si scende di un gradino: `_enemyIds` (istanza -> id) e' l'unica mappa che `ReceiveEnemyKill`
+        /// non tocca, e `ForgetEnemy` la lascia intatta di proposito ("the instance keeps its id on
+        /// purpose"). Se anche quella tace, l'id non e' risolvibile su questa macchina e lo si DICE, invece
+        /// di far sembrare il fallimento un pacchetto perso.
+        /// </summary>
+        private static Enemy ResolveEnemyForBossDeath(string id, out string via)
+        {
+            Enemy direct = ResolveEnemy(id);
+            if (direct != null && direct.gameObject != null)
+            {
+                via = "cache";
+                return direct;
+            }
+
+            foreach (KeyValuePair<Enemy, string> pair in _enemyIds)
+            {
+                if (pair.Value != id)
+                    continue;
+
+                Enemy candidate = pair.Key;
+                if (candidate != null && candidate.gameObject != null)
+                {
+                    via = "istanza";
+                    return candidate;
+                }
+            }
+
+            via = "nessuna";
+            return null;
+        }
+
         /// <summary>
         /// Last known position of every OTHER player, keyed by name, fed straight from the position
         /// packets that arrive from the server.
@@ -1527,6 +1724,7 @@ namespace Blasphemous.Multiplayer.Client
             _deadReleaseLogged.Clear();  // ditto: keyed by id, and ids do not survive a scene change
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
+            _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _puppetEnemies.Clear();      // the instances of the scene being unloaded
             _orientationLabels.Clear();  // ditto: keyed by instance id
@@ -1788,6 +1986,7 @@ namespace Blasphemous.Multiplayer.Client
             _announcedDeaths.Clear();
             _announcedBirths.Clear();
             _pendingDeaths.Clear();
+            _bossKillsApplied.Clear();   // M1: the world came back, so a boss death applied once must be applicable again
             _killLogged.Clear();
 
             // Always logged, for the same reason as OnEnemiesRespawned: a measurement that stays silent when
@@ -3585,6 +3784,25 @@ namespace Blasphemous.Multiplayer.Client
                         // would otherwise never learn about this death.
                         Main.Multiplayer.SendEnemyDeathGlobal(id);
 
+                        // ⭐ M1 — LA MORTE DEL BOSS DETTA IN MODO CHE IL MORTO POSSA APPLICARLA.
+                        //
+                        // L'annuncio qui sopra e' identico per tutti i nemici, e sul ricevente la morte si
+                        // applica chiamando `<Tipo>::Damage(Hit)`: per un boss quella comincia con la
+                        // guardia `if (Status.Dead || Core.Logic.Penitent.Stats.Life.Current <= 0f) return;`,
+                        // che con il giocatore LOCALE a terra BUTTA VIA la morte - il boss resta in piedi e
+                        // la sua cutscene non parte (misurato in R3-G1; vedi BossDeathPrefix).
+                        // Il prefisso `bdead|` dice al ricevente "questa e' la morte di un BOSS: applicala
+                        // con `Kill()`", che dalla guardia non passa (vedi ApplyBossDeath).
+                        // ⚠️ E' UN ANNUNCIO IN PIU', NON UNO DI MENO: l'id generico resta spedito come
+                        // prima, quindi niente di cio' che esisteva cambia comportamento.
+                        if (IsBoss(enemy, id))
+                        {
+                            Main.Multiplayer.SendEnemyDeathGlobal(BossDeathPrefix + id);
+                            ModLog.Info($"[BossDeath TX] {FullId(id)} boss={enemy.GetType().Name} " +
+                                        $"vita={enemy.CurrentLife:F1} StatusDead={enemy.Status.Dead} " +
+                                        $"localeMorto={PlayerDeathSync.IsLocalPlayerDead()}");
+                        }
+
                         // Remembered as well as announced: if someone reconnects later, this machine may no
                         // longer be in the room where the kill happened, and the announcement must not depend
                         // on that. Only reached while connected, because UpdateCore returns early otherwise.
@@ -4543,6 +4761,25 @@ namespace Blasphemous.Multiplayer.Client
 
                 ApplyRemoteExecution(executed);
                 enemyId = executed;
+            }
+
+            // ⭐ LA MORTE DI UN BOSS (M1), e va riconosciuta QUI - PRIMA della riga qui sotto, che consuma
+            // l'id come morte. Stessa ragione del bonfire, della morte dei giocatori, della nascita e
+            // dell'esecuzione: qualunque cosa non riconosciuta finisce in `_pendingDeaths.Add` e da li' in
+            // poi l'id viene trattato come la morte di un nemico qualunque.
+            //
+            // ⚠️ E QUI SI ESCE SENZA LA CONTABILITA' GENERICA, di proposito:
+            //   - `_pendingDeaths` non serve: l'id generico arriva per conto suo (l'annuncio sopra non e'
+            //     stato tolto) e fa la sua parte come ha sempre fatto;
+            //   - `MarkSpawnPointConsumed` su un boss sarebbe un danno NUOVO: un boss non e' un nemico da
+            //     consumare, e segnarlo consumato puo' impedirgli di tornare in scena per un altro tentativo.
+            // ⇒ l'unica cosa che questo ramo fa e' `Kill()` sul boss locale, e solo se serve davvero.
+            if (IsBossDeathId(enemyId))
+            {
+                string bossId = BossDeathIdOf(enemyId);
+                if (!string.IsNullOrEmpty(bossId))
+                    ApplyBossDeath(bossId);
+                return;
             }
 
             _pendingDeaths.Add(enemyId);
