@@ -6038,7 +6038,7 @@ della posa locale: e' **l'avatar del morto come lo vede l'altro**, e il fix non 
 **4. I TEST DEI BOSS** — **voce 18**. **Resta la voce piu' esposta**: nei referti e' esercitato **un solo boss** *(`ElderBrother`,
 `D17Z01S11`)*, e la barra del boss *"coincide per coincidenza, non per sincronizzazione"*. ⚠️ **E ora ha una parte meno urgente di
 prima**: il **test di M1** *(la morte del boss sulla macchina del morto)* **e' stato fatto e confermato dall'utente** *(§2.2)*, e il
-**rischio dichiarato di M1 — il boss che resta in piedi — e' stato chiuso da `18a4500`*, ma il fix **non e' mai stato eseguito su
+**rischio dichiarato di M1 — il boss che resta in piedi — e' stato chiuso da `18a4500`**, ma il fix **non e' mai stato eseguito su
 nessuno degli altri 16 boss** *(firma verificata in IL per tutte, esecuzione no: `REFERTO-MORTE-IN-PIEDI-E-BOSS.md:349-350`)*.
 
 **5. LE COSE PICCOLE + LE DOMANDE §9** *(§4)* — **(a)** lo **spam a monte del `"*"`** *(il taglio per il sentinella: **logica, non
