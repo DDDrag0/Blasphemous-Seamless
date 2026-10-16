@@ -47,7 +47,7 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **6** | **Oggetti distruttibili** — §4 | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 6 —")* |
 | **7** | **`RegisterEnemies`** — 84.5 ms e allocazione ~0.4 MB/s — §1e(c) | ✅ CHIUSA — non si manifesta | CHIUSA — integrale in fondo *(cerca "Voce 7 —")* |
 | **8** | **Boss impazziscono coi target** — §2b | ✅ CHIUSA — superata | CHIUSA — integrale in fondo *(cerca "Voce 8 —")* |
-| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 | ⏳ **APERTA — ma NON è più quella che questa voce descrive**: il **LIVELLO DI STATO è stato COSTRUITO** *(`Players/PlayerStatus.cs`, `PlayerDeathSync.cs`: `pdead\|`/`palive\|` sul canale `EnemyDeathGlobal` senza bump, `SetPlayerDead`, `CountDeadPlayers`, `IsEveryoneDead`, `AllConnectedPlayers`)* ⇒ **"chi è morto" e "sono tutti giù?" oggi hanno una risposta, che è il requisito della voce 44**. **RESTANO NON FATTI**: la camera sul compagno e il body invisibile. ⚠️ **NESSUN commit e NESSUN referto lo verificano in gioco** *(9 commit citano la parola "spettatore", nessuno lo chiude)*. **Audit 2026-10-12** · ⚠️ **DESCRIZIONE CORRETTA il 2026-10-13** *(e le cose utili trovate dallo `STUDIO-BOSSONE-MORTE-CAM.md` per quando si fara')*: la voce resta **APERTA**, ma **questa cella diceva il vero sullo STATO e non su cio' che manca** ⇒ **vedi in fondo `## [2026-10-13 10:00]`, §4** |
+| **9** | **Modalità spettatore** alla morte — §5a | 🟢 | ⏳ **RIDIMENSIONATA**: **fermabile su `DeadScreenWidget.OnDead`** *(`Prefix` che ritorna `false`: niente UI, niente `SetBlocker`, niente `Respawn`)*, **body invisibile** *(`SpriteRenderer.enabled`, che il gioco già usa al falò)*, **camera sul compagno** — **ma il "segue i cambi stanza" è BLOCCATO DAL MOTORE**: le stanze sono **scene Unity**, `OnLevelLoaded` azzera lo stato per-scena, `OtherPlayerManager` distrugge gli oggetti fuori scena, e `ProCamera2D` ha i **bordi geometrici per stanza**. **E il respawn-dal-falò dell'altro dipende dalla voce 4** *(dipendenza dura)*. **Il giocatore remoto è un GUSCIO**: `new GameObject` + `OtherPlayerScript`, con solo `SpriteRenderer` (disabilitato) + `Animator` — **nessun `Penitent`, nessuna camera, nessun collider** ⇒ **camera sul compagno = banale**, *"secondo Penitente" = impossibile*. Vedi §12 | ⏳ **APERTA — ma NON è più quella che questa voce descrive**: il **LIVELLO DI STATO è stato COSTRUITO** *(`Players/PlayerStatus.cs`, `PlayerDeathSync.cs`: `pdead\|`/`palive\|` sul canale `EnemyDeathGlobal` senza bump, `SetPlayerDead`, `CountDeadPlayers`, `IsEveryoneDead`, `AllConnectedPlayers`)* ⇒ **"chi è morto" e "sono tutti giù?" oggi hanno una risposta, che è il requisito della voce 44**. **RESTANO NON FATTI**: la camera sul compagno e il body invisibile. ⚠️ **NESSUN commit e NESSUN referto lo verificano in gioco** *(9 commit citano la parola "spettatore", nessuno lo chiude)*. **Audit 2026-10-12** · ⚠️ **DESCRIZIONE CORRETTA il 2026-10-13** *(e le cose utili trovate dallo `STUDIO-BOSSONE-MORTE-CAM.md` per quando si fara')*: la voce resta **APERTA**, ma **questa cella diceva il vero sullo STATO e non su cio' che manca** ⇒ **vedi in fondo `## [2026-10-13 10:00]`, §4** | ⭐⭐ **CHIUSA il 2026-10-14 — in DUE PEZZI, e col riscontro dell'utente.** *(Il testo sopra **resta** — era la descrizione del 2026-10-13, e allora era giusta.)* **IL PEZZO PRINCIPALE — LA SCHERMATA DI MORTE TRASPARENTE** *(`b9f8360`, l'idea dell'utente: **non si muove la camera, si toglie il velo**)*: si azzerano **solo i `Graphic` figli di `NormalGroup`** *(`DeathScreenTransparency.cs`)* e **MAI `CanvasGroup.alpha`** *(`OnDeadAction` fa `NormalGroup.DOFade(1f, 2.15f)` a `DeadScreenWidget.cs:82` ⇒ il tween lo riscriverebbe)*; **il prompt resta** *(vive su `ContinueGroup`, e **non puo'** essere annidato nello sfondo: in Demake `:165-186` e' acceso mentre `NormalGroup` e' a 0)*. **✅ VERIFICATO IN GIOCO: mai il nero, il prompt resta, la bossfight e la cutscene si vedono** — e **l'utente ha confermato: "tutto giusto funzionante"**. ⭐ **E la scoperta che l'ha reso sufficiente**: **la camera del morto E' GIA' nella bossroom** — il legame camera↔Penitent si scrive **una volta per livello** *(`CameraManager.cs:105`, unico chiamante `LevelManager.cs:349`)* ed e' **misurato**: `cam` **costante**, `target` a **0,5** da `posMia`, su **52 campioni / ~102 s** *(`[DeathScreen] misura`, `91acd22`)*. **L'EXTRA — LA CAM SUL VIVO** *(`04a8fad`)*: **spostare il Penitent E' spostare la camera** ⇒ si crea **una copia del cadavere** e il vero corpo va **sull'avatar del peer**, letto **in LOCALE (zero canale nuovo)**; **da morti non si spedisce piu' posizione/animazione/direzione** *(`OtherPlayerScript.cs:778-782` usa l'arrivo di un'animazione come **PROVA DI VITA**)*; l'inseguimento **si mette in pausa con `HasBlocker("CINEMATIC")`**; **fusibile 360 s che LOGGA**; **fuori scena resta sul cadavere**. ⚠️ **CON LA RISERVA DEL PUNTO 2**: **dal REMOTO il peer morto risulta ancora in piedi** *(il fix locale c'e', il remoto no)* — e 🚨 **l'EXTRA ha introdotto un GUASTO APERTO**: **il peer morto non respawna piu', i tasti non funzionano** *(sospetto: il `Collider2D` mosso ⇒ trigger di scena ⇒ `CINEMATIC` acceso)*, **in corso di riparazione al momento di scrivere**. **Storia intera in fondo: `## [2026-10-14 02:00]`, §1-§2-§3.** |
 | **10** | **`ProcessQueue` + `IdOf`** (prestazioni) — §8 | ✅ CHIUSA — non si manifesta | CHIUSA — integrale in fondo *(cerca "Voce 10 —")* |
 | **11** | **Il gioco disfa la pausa sul non-proprietario** — ma **il testo della voce era SBAGLIATO a metà** | ✅ CHIUSA — il testo era sbagliato | CHIUSA — integrale in fondo *(cerca "Voce 11 —")* |
 | **12** | **Camminata troncata** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 12 —")* |
@@ -56,7 +56,7 @@ distinguere le chiuse dalle aperte — *prima i marcatori erano incoerenti (`✅
 | **15** | **Deploy: `Common.dll` va copiato su ENTRAMBE, nella versione giusta per ciascuna** | ✅ CHIUSA — procedura coperta | CHIUSA — integrale in fondo *(cerca "Voce 15 —")* |
 | **16** | ⚠️ **Il deploy va verificato su ENTRAMBE le macchine** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 16 —")* |
 | **17** | **I nemici che restano fermi (`pos_distinte=1`)** | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 17 —")* |
-| **18** | **Boss: test boss per boss** | 🟡 | ⏳ l'unica cosa non prevedibile — **APERTA e VERIFICATA APERTA dall'audit del 2026-10-12**: nessun commit nomina "boss per boss" e l'unico boss esercitato nei referti e' **`ElderBrother`** *(`D17Z01S11`, vita 400→0 con gli **stessi valori** su G1 e G2)*. **Resta la voce più esposta**: la barra del boss **coincide per coincidenza, non per sincronizzazione** *(§2)* |
+| **18** | **Boss: test boss per boss** | 🟡 | ⏳ l'unica cosa non prevedibile — **APERTA e VERIFICATA APERTA dall'audit del 2026-10-12**: nessun commit nomina "boss per boss" e l'unico boss esercitato nei referti e' **`ElderBrother`** *(`D17Z01S11`, vita 400→0 con gli **stessi valori** su G1 e G2)*. **Resta la voce più esposta**: la barra del boss **coincide per coincidenza, non per sincronizzazione** *(§2)* — ⚠️ **AGGIORNAMENTO DEL 2026-10-14** *(il testo sopra **resta**)*: **il test di M1 e' stato FATTO e confermato dall'utente** *(la morte del boss sulla macchina del morto: `afca6fe`, e **l'animazione di morte del boss funziona** dopo `18a4500`)* ⇒ **questa voce e' meno urgente di prima, ma NON chiusa**: il fix della morte scriptata **non e' mai stato eseguito su nessuno degli altri 16 boss** *(la firma `Death()` e' verificata **in IL per tutte**, l'esecuzione no)* e la barra del boss resta **non sincronizzata**. `## [2026-10-14 02:00]`, §2.2 e §5* |
 | **19** | **`Entity.Dead` calcolato vs `EntityStatus.Dead`** — §7 | CHIUSA | **CHIUSA — integrale in fondo** *(cerca "Voce 19 —")* |
 | ~~20~~ | ~~Passo 5: le 130 patch sul Penitente~~ | — | ❌ **cade**: `Animator.name == "Body"` su entrambe |
 | ~~21~~ | ~~Passo 1: test di controllo single-player~~ | — | ❌ **cade**: la baseline disconnessa c'è già |
@@ -118,7 +118,7 @@ unico di verita' sullo stato"*. **Niente e' stato cancellato**: le righe qui sop
 | **60** | 🟡 NUOVA | ✅ **CHIUSA** | `9b1c296` · `f397168` · `15173fc` · `4a86280` · `b3c6e70` · `fa6361c` · `00fa1e5` · `60b5c5f` + i 3 fix `5547ba6` `ea8ccfb` `ce2b33e` |
 | **61** | 🟡 NUOVA | ✅ **CHIUSA** | `aee38aa` (+ `0ce8194`) |
 | **62** | 🟡 NUOVA | ✅ **CHIUSA** | `5b44d7f` *(+ `Enums.cs`: `SlideDust` · `DashDustStart` · `DashDustStop`; `OtherPlayerAttackScript.cs` ricettore)* |
-| **9** | 🟢 RIDIMENSIONATA | ⏳ **APERTA** — *stato motivato* | **il livello di stato e' costruito** *(`PlayerDeathSync.cs`, `PlayerStatus.cs`: `pdead\|\|`/`palive\|\|` senza bump)*; **camera e body no, e nessun referto lo verifica** |
+| **9** | 🟢 RIDIMENSIONATA | ⏳ **APERTA** — *stato motivato* | **il livello di stato e' costruito** *(`PlayerDeathSync.cs`, `PlayerStatus.cs`: `pdead\|\|`/`palive\|\|` senza bump)*; **camera e body no, e nessun referto lo verifica** — **⭐ CHIUSA il 2026-10-14** *(`b9f8360` la schermata trasparente, `04a8fad` la cam sul vivo: **verificate in gioco e confermate dall'utente**), **con la riserva del punto 2** *(dal remoto il peer morto risulta ancora in piedi)* e **col guasto aperto del respawn** — `## [2026-10-14 02:00]`* |
 | **18** | 🟡 «l'unica cosa non prevedibile» | 🟡 **APERTA — verificato aperto** | nessun commit nomina "boss per boss"; l'unico boss esercitato e' **`ElderBrother`** |
 | **63** | *(non esisteva)* | 🟡 **PROMOSSA a voce** | la COLPA *(spine sulla barra, `GuiltManager`)* era **solo una entry datata** (righe 3412-3489) ⇒ **non compariva in nessun inventario** |
 
@@ -138,9 +138,29 @@ cercare in fondo: il testo e' ancora nella riga.**
 
 ---
 
-Ultimo aggiornamento: **2026-10-13** — **M1, la morte del boss sulla macchina di chi e' a terra** *(implementato, **NON
+Ultimo aggiornamento: **2026-10-14** — ⭐⭐ **LA VOCE 9 (lo spettatore) e' CHIUSA**, in due pezzi e con la parola dell'utente:
+**la SCHERMATA DI MORTE TRASPARENTE** *(`b9f8360`: si azzerano i `Graphic` figli di `NormalGroup`, **mai `CanvasGroup.alpha`** che
+`DOFade` riscrive)* e **LA CAM SUL VIVO** *(`04a8fad`, il cadavere-copia: **spostare il Penitent E' spostare la camera**)*, piu' **i due
+ritocchi** *(`68f3b0e` il morto "in piedi" — la causa era **la POSA della copia**, non la visibilita'; `18a4500` la morte scriptata del
+boss)*. ✅ **Confermato dall'utente**: *"tutto giusto funzionante"* e *"l'animazione della morte del boss funziona"*. 🚨 **MA c'e' un
+GUASTO APERTO, IN CORSO DI RIPARAZIONE**: **il peer morto non riesce piu' a respawnare, i tasti non funzionano** *(`DeathCorpseFollow`
+muove il `Collider2D` ⇒ puo' far scattare un trigger ⇒ `CINEMATIC` acceso)* — **la sua riserva era stata DICHIARATA, non prevista**.
+⇒ **e la regola che ne esce: una modifica che sposta un `Collider2D` in un mondo vivo va trattata come una modifica al GIOCO, non
+cosmetica.** E **resta aperto il punto 2**: *dal REMOTO il peer morto risulta ancora in piedi*. Tutto in fondo: `## [2026-10-14 02:00]`.
+Ultimo aggiornamento precedente *(2026-10-13)*: **M1, la morte del boss sulla macchina di chi e' a terra** *(implementato, **NON
 ancora verificato in gioco**)*: **voce 58 CHIUSA PER DECISIONE**, **voce 9 con la descrizione CORRETTA**, **voce 63 con la
 formulazione dell'utente**, **probe ridotte da 3 a 2**. Tutto in fondo: `## [2026-10-13 10:00]`.
+
+⚠️ **AGGIORNAMENTO DEL 2026-10-14** *(le righe sopra **restano**, come storia — e questa e' la piu' recente)*: ⭐⭐ **LA VOCE 9
+E' CHIUSA.** Delle quattro elencate nel 2026-10-13, **una non e' piu' aperta**: la **9** *(chiusa in due pezzi — la **schermata di
+morte trasparente** e la **cam sul vivo** — `§1` della sezione in fondo)*, **e la sua "riserva" e' il punto 2 della lista** *(dal
+remoto il peer morto risulta ancora in piedi)*. **E M1 ha cambiato stato**: *"implementato, non verificato"* **non e' piu' la sua
+dicitura** — **la morte del boss sulla macchina del morto e' stata verificata in gioco e confermata dall'utente** *(l'animazione di
+morte del boss "funziona": `18a4500`, §2.2)*, **e il fix dei due ritocchi e' arrivato** *(`68f3b0e` + `18a4500`)*. **⇒ Restano
+davvero TRE voci + le cose piccole** *(18 · 63 · le piccole e le domande §9)* **e due cose che non sono voci**: 🚨 **il GUASTO APERTO
+del respawn** *(§3: **aperto, in corso di riparazione** — la priorita' assoluta)* e ⚠️ **il morto "in piedi" VISTO DAL REMOTO** *(il
+fix locale c'e', il remoto no)*. **La lista operativa e' la §5 in fondo a questa sezione.**
+
 Ultimo aggiornamento precedente: **AUDIT DEL 2026-10-12** — la lista e' stata riallineata al vero. **CHIUSE in questo audit: 52, 56, 59, 60, 61, 62** *(prove nei commit)*, e **la COLPA e' stata promossa a voce 63**.
 ~~**Restano**: la voce 33 *(misura)*, il passo 2 dell'arbitraggio *(voce 32)*, il falò *(voce 4 + 29/30/31)*, lo spettatore *(9)*, i boss *(8/18)*.~~ **⇒ QUESTA RIGA ERA VECCHIA DI CINQUE GIORNI E CONTRADDICEVA LA PROPRIA TABELLA**: 33, 32, 4, 29, 30, 31 e 8 **erano già chiuse in tabella** *(rispettivamente `f736cc3`, `9941eb9`, `6154863`, idem, idem, idem, `416fada`)*. **Restano davvero**: lo **spettatore (9)**, i **boss (18)**, le **CUTSCENE (58)**, la **COLPA (63)** e i **5 marker (56 → chiusa in questo audit)**.
 
@@ -172,7 +192,7 @@ verifica in gioco** *(§2.9: **implementato**, non chiuso)*. **La lista operativ
 | **Orientamento** | ✅ **CHIUSO e verificato** *(voce 2, `9ecf8ae`: `orientFlip` da **85** a **1** su G1 e **3** su G2) |
 | **Sangue e flash** | ✅ **CHIUSO e verificato dall'utente** *(voce 5, `110b495`) — e la diagnostica iniziale era **INVERTITA** |
 | **Diagnostica / prestazioni** | ✅ **CHIUSE** *(voci 7 e 10, `c55d80e`; il passo 4b e' stato risolto **separando la cadenza del log dal rescan**, `215c4f1`)* |
-| **Spettatore** | ⏳ **APERTO** *(voce 9: il livello di stato e' costruito, camera e body no)* |
+| **Spettatore** | ⏳ **APERTO** *(voce 9: il livello di stato e' costruito, camera e body no)* — ⭐ **SUPERATO il 2026-10-14: la voce 9 e' CHIUSA** *(la schermata di morte trasparente `b9f8360` + la cam sul vivo `04a8fad`: **verificate in gioco, "tutto giusto funzionante"**)*, **con due riserve che restano aperte**: ⚠️ **dal REMOTO il peer morto risulta ancora in piedi** e 🚨 **il peer morto non riesce piu' a respawnare** *(guasto aperto, in corso di riparazione)* — `## [2026-10-14 02:00]` |
 | **Boss** | 🟡 **APERTO** *(voce 18: un solo boss esercitato)* |
 
 ### Punti di ritorno
@@ -5670,4 +5690,369 @@ NON implementato** *(§2.8 punto 4, per mandato: prima la misura)*. **Va segnato
 
 **✅ E DUE VOCI CHE NON SONO IN LISTA PERCHE' SONO CHIUSE:** la **58** *(chiusa **per decisione**, non per fix: §1)* e la
 **56** *(i 5 marker, chiusa dall'audit: §5(c))*. **Se qualcuno le cerca, deve trovarle chiuse — non "in sospeso".**
+
+---
+
+## [2026-10-14 02:00] LA VOCE 9 — **CHIUSA** *(in due pezzi)*, E UN GUASTO APERTO CHE HA CAMBIATO LA REGOLA
+
+**Catena dei commit di questa sessione** *(verificata con `git log --oneline -12`)*:
+`91acd22` *(Passo 0 — la MISURA della schermata di morte)* → **`b9f8360`** *(Passo 1 — la schermata di morte **TRASPARENTE**)* →
+**`04a8fad`** *(la cam del morto segue il vivo, via (c) il cadavere-copia)* → **`68f3b0e`** *(FIX 1 — il cadavere del morto non
+resta piu' in piedi)* → **`18a4500`** *(FIX 2 — il boss recita la sua morte scriptata anche su questa macchina)*.
+**HEAD verificato all'inizio della redazione era `18a4500`** *(e non e' avanzato: `git status --porcelain` vuoto, nessun
+commit piu' recente)*. **Un altro agente stava lavorando al GUASTO URGENTE del §3 mentre questa sezione veniva scritta: se
+HEAD e' avanzato oltre `18a4500`, la riparazione e' arrivata DOPO questa sezione — e il §3 va riletto come "com'era".**
+I referti sono in `scratch\`: `STUDIO-DEATH-SCREEN-TRASPARENTE.md` *(lo studio)*, `REFERTO-DEATH-SCREEN-TRASPARENTE.md` *(la
+misura + la trasparenza)*, `REFERTO-CAM-SEGUE-VIVO.md` *(l'inseguimento del vivo)*, `REFERTO-MORTE-IN-PIEDI-E-BOSS.md` *(i due
+ritocchi)*.
+
+**Perche' questa sezione esiste.** La **voce 9** — *"modalita' spettatore alla morte"*, la voce su cui si e' lavorato di piu' in
+tutto il progetto — **e' chiusa**, e non da un fix solo: da **due pezzi** che sono **due idee dell'utente**, e il secondo dei due
+ha **introdotto un guasto che blocca il gioco**. Le due cose vanno lette insieme, perche' la seconda e' la lezione della prima.
+
+---
+
+### 1. ⭐⭐ LA VOCE 9 — **CHIUSA** *(e va raccontata per intero: e' la voce su cui si e' lavorato di piu')*
+
+**Cos'era.** *"Modalita' spettatore alla morte"* — **vedere l'altro quando sei morto**. La cella in testa la raccontava come un
+lavoro con i pezzi gia' identificati *("fermabile su `DeadScreenWidget.OnDead`", "body invisibile", "camera sul compagno")* e un
+solo ostacolo di motore; l'audit del 2026-10-12 ha accertato che **il livello di stato era stato costruito per un'altra voce (la
+44)** e che **camera e body non esistevano** *(§4 della sezione `[2026-10-13 10:00]`)*. **Oggi e' risolta — in DUE PEZZI.**
+
+#### 1.1 ⭐ IL PEZZO PRINCIPALE — **LA SCHERMATA DI MORTE TRASPARENTE** *(l'idea dell'utente)*
+
+> **Non si muove la camera: si toglie il velo.**
+
+**Com'e' fatta la schermata, e perche' la soluzione e' quella.** La schermata di morte **non e' una `Image`**: e' lo stato
+visibile di **quattro `CanvasGroup` pubblici** di `DeadScreenWidget` — `NormalGroup` *(lo sfondo/disegno di morte, `:30`)*,
+`BossRushGroup`, `DemakeGroup` e **`ContinueGroup` *(il prompt, `:39`)*** — e **l'unica cosa che accende e spegne la schermata sono
+i loro `alpha`** *(`HideAll()` `:208-214`; le due `DOFade` `:82` e `:85`)*. **Prova che il prompt NON e' sullo stesso oggetto dello
+sfondo**: `ContinueGroup` e' condiviso col percorso **Demake** — `OnDeadDemake` *(`:165-186`)* accende `DemakeGroup` **e**
+`ContinueGroup` **senza mai toccare `NormalGroup`** *(che resta a 0 da `HideAll`)* ⇒ **se il prompt fosse figlio dello sfondo, in
+Demake sarebbe moltiplicato per 0 e non apparirebbe mai.** *Prova per contraddizione, non per induzione* `(REFERTO-DEATH-SCREEN-TRASPARENTE.md:137-140)`.
+
+**La modifica, in due righe** *(`DeathScreenTransparency.cs`, commit `b9f8360`)*:
+```csharp
+Graphic[] graphics = widget.NormalGroup.GetComponentsInChildren<Graphic>(true);   // Image/RawImage/Text
+graphic.color = new Color(color.r, color.g, color.b, 0f);                          // SOLO l'alpha
+```
+- ⭐ **Si azzerano SOLO i `Graphic` FIGLI di `NormalGroup`, NON `CanvasGroup.alpha`.** Il motivo e' verificato:
+  `OnDeadAction` fa `NormalGroup.DOFade(1f, 2.15f)` *(`DeadScreenWidget.cs:82`)* ⇒ **il tween riscrive `CanvasGroup.alpha`**, e una
+  scrittura una-tantum verrebbe **annullata in 2,15 s**. L'alpha del `Graphic` **non e' animato da `DOFade`** (il `CanvasGroup` lo
+  **moltiplica**): `color.a = 0` × qualunque cosa = **0** ⇒ **una scrittura per morte, zero DOTween da referenziare, nessuna lotta
+  di frame** `(REFERTO-DEATH-SCREEN-TRASPARENTE.md:129-133)`.
+- **`NormalGroup` e' `public`** *(`DeadScreenWidget.cs:30`)* ⇒ **nessun `Traverse`**.
+- **Si azzera SOLO `a`**: l'RGB resta intatto, cosi' un eventuale secondo intervento *("solo in bossfight")* puo' rimettere
+  l'alpha originale **senza indovinarla**.
+- **Zero patch Harmony**: la `Tick()` gira in `Multiplayer.cs:184`, dentro `OnLateUpdate` — **il ciclo per frame che girava gia'**.
+  **Bersagli `263 → 263`**, `tipo assente 0`, `METODO assente 0`, un solo deploy, e **il DLL buildato ha lo stesso hash di quello
+  deployato** *(SHA256 `4da77a45…`)* `(REFERTO-DEATH-SCREEN-TRASPARENTE.md:11-31)`.
+- **Perche' non si tocca altro**: il respawn e' `Core.Logic.Penitent.Respawn()` **dentro il callback del fade** *(`:91-96`)* e **non
+  legge nessun alpha**; l'uscita e' `while (!Input.anyKey)` *(`:87-90`)*; e il blocker **`DEAD_SCREEN` non si tocca** — lo spegne il
+  gioco *(`OnPenitentReady` `:101`)*, e l'unico altro spegnitore e' `LevelManager.cs:355 ResetManager()` **a ogni load**.
+
+**✅ VERIFICATO IN GIOCO** *— e questa e' la prima volta in questa voce che la distinzione conta:*
+- ✅ **mai il nero** durante la morte,
+- ✅ **il prompt resta** *(e' `ContinueGroup`: non e' stato toccato)*,
+- ✅ ⭐ **la bossfight e la cutscene si vedono**,
+- ✅ **e l'utente ha confermato: "tutto giusto funzionante".**
+
+#### 1.2 ⭐ E LA SCOPERTA CHE L'HA RESO SUFFICIENTE: **la camera del morto E' GIA' NELLA BOSSROOM**
+
+**Non era una deduzione, era una misura** *(`91acd22`, `[DeathScreen] misura`)*. Il legame camera↔Penitent lo scrive
+`CameraManager.cs:105` *(`AddCameraTarget(Core.Logic.Penitent.transform, …)`)*, e le due chiamate
+`RemoveAllCameraTargets()`/`AddCameraTarget()` esistono in **un solo punto di tutto l'assembly**, con **un solo chiamante**
+(`LevelManager.cs:349`, dentro la coroutine di load) ⇒ **si scrive UNA VOLTA PER LIVELLO e non si riscrive mai mentre si e' a terra.**
+**Misurato**: `cam` **costante**, `target` a **0,5 unita'** da `posMia`, e `posMia` **ferma** — **52 campioni su ~102 s**
+*(`[DeathScreen] misura INIZIO t=184.21` → `FINE … campioni=52`)* `(REFERTO-CAM-SEGUE-VIVO.md:30-33)`. *(E in R3-G1, la run dello
+studio: `posMia=(-806.2,10.0)` **identica in 6 campioni** da `DEAD_SCREEN enabled` al `Respawn`, ~24 s, mentre il boss camminava e
+arrivava a `dist_io=0.9` — `STUDIO-DEATH-SCREEN-TRASPARENTE.md:52-55`.)*
+⇒ **Il cadavere e' nella bossroom, la camera lo inquadra, e il mondo dietro la schermata gira**: togliere il velo **basta** — e
+infatti **la cutscene del boss si vede** *(`CTS02-Bloody Baptism`: `VideoStarted` ×5, `CinematicEnded cancelled=False`, `t=235.80`
+→ `t=262.25`, con la finestra di morte aperta da `t=184.21` a `t≈286.67`)* `(REFERTO-CAM-SEGUE-VIVO.md:233-237)`.
+
+#### 1.3 ⭐ L'EXTRA — **LA CAM DEL VIVO** *(l'idea dell'utente, il "cadavere-copia")* — commit `04a8fad`
+
+> **L'idea dell'utente**: *«il morto potrebbe anche utilizzare le posizioni comunicate gia' direttamente dal peer… e spostare il
+> proprio corpo invisibile li'.»* — **ed e' esattamente la strada presa** `(REFERTO-CAM-SEGUE-VIVO.md:63-67)`.
+
+**Il fatto che decide tutto**: `CameraManager.cs:105` lega la camera a `Core.Logic.Penitent.transform`, quel legame si scrive una
+volta per livello e non si riscrive mai da morti ⇒ **spostare il Penitent E' spostare la camera.** *Nessun `RemoveAllCameraTargets`,
+nessun `tag` da dare al guscio dell'altro, nessun primo contatto della mod con `ProCamera2D`* **(`zero occorrenze` nel file nuovo)**
+`(REFERTO-CAM-SEGUE-VIVO.md:22-28, 401-406)`.
+
+**Come e' fatto**: si crea una **copia del cadavere** dove si e' caduti *(`Instantiate` dell'albero visivo sotto `_coop_death_corpse`,
+poi `Freeze`: **ogni `Behaviour` spento**, `SpriteRenderer` escluso — non e' un `Behaviour`)*, si nasconde il **vero** corpo **solo
+nell'alpha** *(`body.color.a = 0`, non `SetActive(false)`, non `SpriteRenderer.enabled`)*, e il corpo vero **si sposta verso l'avatar
+del peer** `(REFERTO-CAM-SEGUE-VIVO.md:163-181)`.
+
+**⭐ E la posizione si legge in LOCALE: zero canale nuovo.** Non serve niente di nuovo, perche' **la mod ha gia' trasformato quella
+posizione in un avatar su questa macchina**: `ReceivePosition` → `OtherPlayerManager.ReceivePosition` → `transform.position`
+*(`NetworkManager.cs:187-194` → `OtherPlayerManager.cs:434-448` → `OtherPlayerScript.cs:766-772`)* ⇒ **si legge
+`transform.position` del SUO avatar** — la stessa fonte che il morto vede a schermo *("seguo cio' che vedo": coerente per
+costruzione)* `(REFERTO-CAM-SEGUE-VIVO.md:69-82)`.
+
+**⚠️ E le scelte da registrare — ognuna con la sua ragione:**
+
+| Scelta | La ragione, con la prova |
+|---|---|
+| **Da morti NON si spedisce piu' posizione/animazione/direzione** | la posizione e' spedita a **0,2 s** leggendo `Core.Logic.Penitent.transform.position` *(`MainPlayerManager.cs:94`)* **senza guardia di morte** ⇒ se il Penitent si sposta e l'invio resta acceso, **il peer vede l'avatar del morto addosso al suo** — *peggio del difetto che si sta correggendo*. **E si ferma TUTTO il blocco, non solo la posizione**, per una trappola trovata in IL: **`OtherPlayerScript.cs:778-782` usa l'arrivo di un'animazione come PROVA DI VITA** — `if (playerDead) SetDeathStatus(false);` ⇒ **una sola animazione spedita da morti RIMETTEREBBE IN PIEDI l'avatar del morto sull'altra macchina**. *(Non era nel mandato: e' stata trovata leggendo `OtherPlayerScript`.)* E **non e' una bugia**: la posizione non e' un segnale di vita — la vita viaggia su `pdead\|`/`palive\|` *(`PlayerDeathSync.cs:205-212`)* `(REFERTO-CAM-SEGUE-VIVO.md:104-143)` |
+| **L'inseguimento si mette in pausa con `HasBlocker("CINEMATIC")`** | ⚠️ **era un rischio DICHIARATO**, non una scoperta: *"se un trigger della scena dipende dalla posizione del Penitent, muoverlo potrebbe far scattare qualcosa"*. `CINEMATIC` si **legge e basta** *(`InputManager.cs:210`, nessun side-effect: **zero `SetBlocker` in tutto il file nuovo**)*, e **il gate non toglie niente**: durante la cutscene `Cinematics.cs:272` spegne `GameplayUI` ⇒ non c'e' nessuna camera da guidare `(REFERTO-CAM-SEGUE-VIVO.md:213-241)` |
+| **Fusibile 360 s che LOGGA** | la finestra misurata e' di **~102 s** *(`t=184.21` → `t≈286.67`: il morto ha tenuto il prompt per tutta la bossfight ~51 s **e** per tutta la cutscene ~27 s)*: un fusibile piu' corto del caso reale **spegnerebbe l'inseguimento proprio durante la cutscene**, cioe' il caso per cui la funzione esiste. **6 minuti stanno larghi e restano un fusibile vero** — e la chiusura **logga** *(`finestra chiusa: FUSIBILE scattato dopo N s`)* `(REFERTO-CAM-SEGUE-VIVO.md:270-274)` |
+| **Fuori scena resta sul cadavere** | l'avatar del peer **esiste solo nella stessa scena** *(`LevelLoaded` → `RemoveAllActivePlayers`, `OtherPlayerManager.cs:24-27, 331-338`)* ⇒ `FindLivingPeer` → null e **il morto resta sul cadavere**. E' il ripiego naturale: se non c'e' nessuno da guardare, l'unica cosa sensata e' il proprio corpo `(REFERTO-CAM-SEGUE-VIVO.md:92-98)` |
+| **Il caso "entrambi morti" e' DICHIARATO, non risolto** | non c'e' nessun vivo da seguire ⇒ **il Penitent NON si muove** e la camera resta sul corpo: **e' il comportamento di oggi, quindi nessuna regressione**, e la riga lo dice una volta per finestra `(REFERTO-CAM-SEGUE-VIVO.md:245-257)` |
+
+**Le quattro vie di uscita, ognuna col suo marker**: il **respawn** *(il tasto)* · la **disconnessione/fine sessione**
+*(`Multiplayer.OnDisconnect`/`OnDispose` → `Reset()`)* · **il fusibile** · **`Penitent` ricostruito o distrutto**. **E l'ordine
+della chiusura conta**: prima si rimette il Penitent e **si riaccende il renderer**, **poi** si distrugge la copia — al contrario,
+per un fotogramma, **il cadavere non esisterebbe E il Penitent sarebbe ancora invisibile** *(un lampo di vuoto)*
+`(REFERTO-CAM-SEGUE-VIVO.md:261-288)`.
+
+**✅ E SCRIVI COSA E' STATO CONFERMATO DALL'UTENTE: *"tutto giusto funzionante"*** ✅ — **verificato in gioco.**
+
+#### 1.4 ⚠️ COSA RESTA DICHIARATO NON VERIFICATO, sulla 9 *(perche' "chiusa" non vuol dire "senza riserve")*
+
+1. 🔴 **Se spostare il `Collider2D` del Penitent faccia scattare un trigger di scena**: la pausa su `CINEMATIC` copre **la
+   cutscene**, ma **non e' una prova** che nessun altro trigger della bossroom reagisca al corpo del morto. La mitigazione
+   strutturale c'e' *(salti radi con soglia a 6 unita', non uno strisciamento continuo)*, ma **e' una mitigazione, non una
+   dimostrazione** `(REFERTO-CAM-SEGUE-VIVO.md:375-380)`. ⇒ **⚠️ QUESTA RISERVA E' DIVENTATA IL §3 DI QUESTA SEZIONE.**
+2. **Se il clone si veda ESATTAMENTE come il cadavere originale** *(ordine di rendering, e il `BlobShadow` **non** e' clonato:
+   sotto la copia non c'e' ombra)* `(REFERTO-CAM-SEGUE-VIVO.md:370-374)`.
+3. **Se `ProCamera2D` "voglia" un bersaglio MOBILE anche da morto**: il legame e' provato e `LogicStates.PlayerDead` non e' un gate
+   dell'inseguimento *(`CameraManager.cs:130` governa **solo** il camera pan)*, ma **52 campioni FERMI non provano che il follower
+   segua un bersaglio in movimento** — `ProCamera2D` e' un assembly di terze parti e non e' in `_il`
+   `(REFERTO-CAM-SEGUE-VIVO.md:381-385)`.
+4. **Il caso "entrambi morti"**: trattato e dichiarato, **mai esercitato in bossfight** `(REFERTO-CAM-SEGUE-VIVO.md:391-392)`.
+5. **La gerarchia reale di `NormalGroup`** *(quanti figli, se il fondale nero sia fra loro)*: **non e' nell'IL e non e' estraibile
+   da questa macchina** *(payload compresso: `UnityFS … 2017.4.40f1`)* ⇒ la ricetta e' gerarchia-agnostica, e sono i marker
+   `figli=`/`azzerati=` a dirlo `(REFERTO-DEATH-SCREEN-TRASPARENTE.md:296-301)`.
+
+---
+
+### 2. ⭐ I DUE RITOCCHI *(e il loro esito reale)* — commit `68f3b0e` (FIX 1) e `18a4500` (FIX 2)
+
+#### 2.1 ⚠️ IL MORTO "IN PIEDI" — la causa NON era la visibilita', era **la POSA della copia** *(`68f3b0e`)*
+
+**Il sintomo, parola dell'utente**: *"quando G1 e' morto ha fatto l'animazione di morte e poi e' rimasto IN PIEDI appena e' arrivata
+la cam"* `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:52)`.
+
+**La catena, e perche' non era la visibilita':**
+
+| # | Fatto | Prova |
+|---|---|---|
+| 1 | **La copia nasce al PRIMO frame di morte**, quando l'animazione non e' finita | il log G1: `copia congelata`/`cadavere-copia creato` vengono **prima** di `[Morte] annuncio inviato` e `Game state has been set to PLAYERDEAD`. In IL: `Entity.KillInstanteneously` *(`Entity.cs:319`)* alza `Status.Dead` **subito** `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:59)` |
+| 2 | **Il cadavere VERO e' congelato nella posa FINALE dal GIOCO**, non da noi | `PlayerDeathAnimationBehaviour.OnStateUpdate` *(`:33-36`)*: `normalizedTime >= 0.95 && Status.Dead` → **`animator.enabled = false`**. **E non e' l'unico**: `GroundingOverBehaviour.OnStateUpdate` *(`:47-54`)* fa la stessa cosa con la stessa guardia *(`:40-55`)* ⇒ **due** behaviour indipendenti, stesso esito `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:60, 100)` |
+| 3 | ⇒ **Quello che l'utente vede e' la COPIA**, perche' il corpo vero e' invisibile dal frame 0 *(`body.color.a = 0`, `alphaPrima=1.00`)* — e la prova indiretta che chiude il cerchio e' che **l'utente ha visto l'animazione di morte**: l'unica cosa disegnata era la copia `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:61)` |
+| 4 | **La copia riceveva solo `Sprite` + `color`, e solo per 2,5 s FISSI** *(`CORPSE_POSE_SECONDS`, `if (now < _poseUntil) RefreshCorpseSprite();`)* — **e nemmeno la POSA veniva copiata** | il codice precedente: **un timer CIECO**, che non c'entra niente con la durata dell'animazione `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:62)` |
+| 5 | ⇒ se l'animazione dura **piu' di 2,5 s**, la copia si ferma **a meta' caduta** = **in piedi**. **E la durata NON e' leggibile da nessun log** *(nessun timestamp per riga, nessun marker sull'animazione, nessun clip nell'IL)* ⇒ la diagnosi **non poteva** essere *"alza il numero"* `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:63)` |
+
+**Il fix, e perche' questa forma**: **non un numero piu' grande, ma un altro segnale** — si copia **`sprite + colore(RGB) + POSA`
+*(`localPosition`/`localRotation`/`localScale`)* finche' la sorgente cambia, e ci si ferma quando IL GIOCO la ferma**:
+
+```
+finche' !_poseClosed:  copia sprite + colore(RGB) + localPosition/localRotation/localScale
+                       riafferma l'alpha del corpo vero
+                       se penitent.Animator.enabled == false  ->  CHIUDI (e' il gioco che ha fermato la posa)
+                       se sono passati 8 s                    ->  CHIUDI comunque (TETTO, con Warn)
+```
+- **Il segnale e' del gioco, non nostro**: `Penitent.Animator.enabled == false` e' **la riga di `PlayerDeathAnimationBehaviour`**
+  *(`:33-36`)* per cui il cadavere vero non si muove piu'. `Entity.Animator` e' `public` *(`Entity.cs:67`)* ed e' quello del `Body`
+  *(`Entity.Awake:156`)* — **lo stesso** che quei behaviour spengono `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:85, 98)`.
+- **La copia e' esatta PER COSTRUZIONE**: nell'istante in cui la sorgente si ferma, la copia ha **l'ultimo valore copiato**
+  `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:86)`.
+- **`CORPSE_POSE_MAX_SECONDS = 8 s` e' un TETTO, non una durata**: se il segnale non arriva mai *(morte in aria, `Animator` gia'
+  fermo)* si smette lo stesso con un `Warn` — **si perde qualita' visiva, non la funzione**. **E il tetto e' asimmetrico e voluto**:
+  aspettare troppo e' innocuo, **fermarsi presto ricrea il difetto** `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:87)`.
+- **`KeepLocalCorpseHidden`: l'alpha si RIAFFERMA a ogni frame**, perche' l'alpha **non e' un nostro campo privato** *(l'animazione,
+  un effetto di danno o il gioco possono riscriverlo)*: il contatore **`riasserzioniAlpha=`** dice se e' servito `(…:89)`.
+- **Si nasconde con l'ALPHA, non con `SpriteRenderer.enabled`** — e la risposta al *"chi lo riaccende"* e' che **`enabled` e' il flag
+  che il GIOCO usa per nascondere il Penitent**: `Interactable.ShowPlayer` *(`Tools.Level\Interactable.cs:492-496`)* e' chiamato da
+  `Execution`, `PrieDieu`, `Altar`, `DemakeAltar`, `Lever`, e `SpawnManager.CreatePlayer` *(`:497`)* lo spegne **sul Penitent
+  nuovo**: usare il flag del gioco per un nostro stato, e doverlo restituire, **e' un rischio che l'alpha non ha** `(…:90)`.
+
+**I marker**, e la durata che finalmente si misura: `cadavere locale nascosto (renderer=… alpha 1.00 -> 0.00)` ·
+**`posa del cadavere chiusa dopo X.XXs e N frame copiati`** *(⭐ **`X.XX` e' la MISURA che oggi manca**: la durata dell'animazione
+di morte)* · `posa del cadavere chiusa dal TETTO dopo 8.00s` *(**Warn**, e **non e' un guasto**: e' il limite dichiarato)* ·
+`cadavere locale mostrato (… alpha 0.00 -> 1.00)` · e la riga di chiusura con `posa=chiusa|ancora aperta(<perche'>) framePosa=N
+riasserzioniAlpha=K` `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:111-136)`.
+
+**⚠️ E VA REGISTRATO CHE RESTA UN DIFETTO — QUESTO PEZZO NON E' RISOLTO:** **l'utente dice *"dal REMOTO il peer morto risulta
+ancora in piedi"*.** *(⚠️ Onesta' sulla prova: **questo esito non e' scritto in nessun referto di `scratch\`** — il
+`REFERTO-MORTE-IN-PIEDI-E-BOSS.md` §4 punto 7 dichiara che **di quella consegna non esiste un log** e che **niente e' stato provato
+in gioco**; l'esito qui registrato viene **dalla parola dell'utente**, come per la voce 63 il 2026-10-13. Va segnato cosi': **non
+verificato da un referto, riferito dall'utente** — ed e' il punto 2 della lista in fondo.)* ⇒ **il fix locale c'e' *(la copia su
+QUESTA macchina)*, il REMOTO no** *(l'avatar del morto che l'altro vede)*.
+
+#### 2.2 ✅ LA MORTE SCRIPTATA DEL BOSS — `Kill()` **non la esegue**, e ora la si invoca noi *(`18a4500`)*
+
+**La causa, con la catena completa**: la morte di un boss sono **due strade diverse** —
+- **la strada CONTABILE**: `Kill()` = `Damage(Stats.Life.Current + Stats.Defense.Final, string.Empty)` *(`Entity.cs:312-315`)* →
+  `Damage(float,string)` *(`:270-295`)* → **`KillInstanteneously()`** *(`:317-335`)*: `Status.Dead = true`, `Entity.Death` /
+  `OnDeath` / `OnEntityDeath`, `ENTITY_DEAD` → e `BossFightManager.OnDeathBoss` *(`BossFightManager.cs:64, :179-189`)*:
+  `Metrics.EndBossFight()` + `IsFightStarted=false` + `onFinishBossFight.Invoke()`;
+- **la strada SCRIPTATA**: `Behaviour.Death()` → `StopBehaviour` + `AnimatorInyector.Death()` → **`SetTrigger("DEATH")` = l'animazione
+  di morte** — e sta **SOLO in `<Boss>.Damage(Hit)`**, **l'overload del COLPO**, che `Kill()` **non percorre** *(`ElderBrother.cs:85-94`)*.
+
+⇒ **`Kill()` e' la meta' "contabile"; manca la meta' "scriptata"** — ed e' esattamente il sintomo dell'utente: **il boss resta in
+piedi**. *(Era il rischio che M1 aveva dichiarato: `REFERTO-M1-MORTE-BOSS.md` §7.3 — **qui e' chiuso**.)*
+`(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:156-193)`
+
+**Il fix**: **`Kill()` E POI `Death()` — non l'uno al posto dell'altro** *(si perderebbe la morte, e quindi `ENTITY_DEAD`,
+`OnDeathBoss` e **la cutscene nativa** che M1 ha appena portato sul morto)*. **Ed e' l'ordine del gioco**: `Damage(Hit)` fa
+`DamageArea.TakeDamage(hit)` e **poi**, `if (Status.Dead)`, `Behaviour.Death()` `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:195-208)`.
+- ⭐ **E' UN FIX UNICO, non sedici.** `Death()` **non esiste su una base comune** *(`EnemyBehaviour` dichiara `abstract`
+  `Idle`/`Wander`/`Chase`/`Attack`/`Damage`/`StopMovement` e **non ha `Death()`**)* ⇒ si cerca **per tipo**, con
+  `GetComponents<EnemyBehaviour>()` *(SOLO il GameObject del boss)* e `GetMethod("Death", Public|Instance, null, `**`Type.EmptyTypes`**`, null)`,
+  **con la cache per tipo** *(valore `null` compreso: "cercato e assente" ≠ "mai cercato", e **non va azzerata con la memoria di
+  scena**, perche' le chiavi sono **tipi dell'assembly**)* `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:210-235)`.
+- ⚠️ **`GetComponentsInChildren` sarebbe stato un guaio vero**: i behaviour di **altre entita'** stanno nella stessa gerarchia —
+  `PontiffGiantBehaviour.Death()` chiama `sword.PontiffSword.Kill()`, e la spada ha il **suo** `PontiffSwordBehaviour.Death():314`
+  ⇒ si sarebbe rischiato di chiamare **la morte della spada** al posto di quella del gigante.
+- **E' AUTO-LIMITANTE**: dove `Death()` non c'e' **non si inventa niente** e il marker lo dichiara — **e non e' un caso di scuola**:
+  `PietyMonsterBehaviour` fa la stessa cosa in `PietyMonsterOnEntityDie()`, sottoscritto a `_pietyMonster.OnDeath` *(`:57`,
+  corpo `:207-212`)*, cioe' su una strada che **`Kill()` percorre**; idem `BejeweledSaintBehaviour` *(`Head.OnDeath += BossOnDeath`)*
+  ⇒ **la chiamata in piu' arriva solo dove la catena e' rotta**.
+- **Senza doppioni**: `ApplyBossDeath` ha **gia'** le guardie di M1 *(`Status.Dead` → `motivo=boss-gia-morto`; `_bossKillsApplied`
+  → `motivo=gia-applicata`)* ⇒ `Death()` **non viene mai chiamato due volte** — **e non e' pignoleria**: `AmanecidasBehaviour.Death()`
+  fa `PlayMakerFSM.BroadcastEvent("BOSS DEAD")` e `TresAngustiasMasterBehaviour.Death()` fa `ClearAll()` +
+  `StartAttackAction()` + `StartDividedDeathSequence()` ⇒ **due invocazioni sarebbero due eventi Playmaker e due sequenze**
+  `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:250-260)`.
+
+**I marker**: `morteScriptata=` **dentro la riga che esisteva gia'** *(un rifiuto e un'applicazione restano distinguibili come prima,
+con una informazione in piu')* · `morte scriptata: <Tipo>.Death() trovata (public, zero argomenti)` · `morte scriptata INVOCATA: …`
+· e `morte scriptata NON invocata (<motivo>)` *(**Warn**)*. **L'esito vero non e' un marker nostro: e' l'animazione di morte del boss
+a schermo** `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:262-281)`.
+
+**✅ CONFERMATO DALL'UTENTE: "l'animazione della morte del boss funziona"** ✅ *(verificato in gioco **dopo** la stesura del referto,
+che al §4 punto 7 dichiara di non avere log di quella consegna — e il **5.1** di `REFERTO-M1-MORTE-BOSS.md`, che diceva "in attesa di
+verifica", **e' superato da questa conferma**)*.
+
+---
+
+### 3. 🚨🚨 IL GUASTO APERTO — *e questo e' il punto piu' importante della sezione*
+
+**Il GUASTO, con la parola dell'utente:** *"il peer morto NON RIESCE PIU' A RESPWNARE: i tasti non funzionano, ne' per tornare al
+falo' ne' per il ritorno al menu."*
+
+**⚠️ STATO: GUASTO APERTO, IN CORSO DI RIPARAZIONE — NON E' RISOLTO.** **Al momento di scrivere questa sezione un ALTRO AGENTE lo
+sta riparando.** **HEAD era `18a4500` e non era avanzato**: quindi **la riparazione, se e' arrivata, e' arrivata dopo**. ⇒ *questa
+sezione lo registra **com'era**: aperto, con il sospetto principale e con la lezione. **Chi legge un TODO aggiornato dopo il
+`18a4500` deve cercare in fondo un'altra sezione, non questa.***
+
+**⚠️ IL SOSPETTO PRINCIPALE — ed era un rischio DICHIARATO, non una sorpresa.** L'utente ha perso **i tasti**: ne' il tasto per
+tornare al falo', ne' quello per il ritorno al menu. Il sospetto e' **`DeathCorpseFollow`**, cioe' l'EXTRA del §1.3 — **quello che
+muove il `Penitent` (e con lui il suo `Collider2D`)**:
+
+```
+DeathCorpseFollow.MoveTo() → Penitent.Teleport(target)      (DeathCorpseFollow.cs:759-785; Penitent.cs:326-336)
+   ⇒ si sposta il TRANSFORM, e con esso il Collider2D, in un mondo VIVO
+   ⇒ puo' far scattare un TRIGGER di scena (entrate, CameraBoundariesTrigger, aree di boss)
+   ⇒ blocker CINEMATIC acceso (il gioco lo accende lui: Cinematics.cs:134)
+   ⇒ NESSUN TASTO RISPONDE
+```
+**E la cosa che rende il sospetto forte e' che l'autore l'aveva DICHIARATO, con le stesse parole**:
+*"**Se spostare il `Collider2D` del Penitent faccia scattare un trigger di scena.** La pausa su `CINEMATIC` copre la **cutscene**,
+ma **non e' una prova** che nessun altro trigger della bossroom (entrate, `CameraBoundariesTrigger`, aree di boss) reagisca al corpo
+del morto. La mitigazione strutturale c'e' (**salti radi, con soglia a 6 unita'**, invece di uno strisciamento continuo), ma **e' una
+mitigazione, non una dimostrazione**. ⇒ **il primo test da fare**, ed e' quello che ho messo come principale."*
+*(`REFERTO-CAM-SEGUE-VIVO.md:375-380`, §10 punto 2)* — **e il primo test ha dato l'esito peggiore.**
+
+**E il §3.4 del referto spiega perche' il gate su `CINEMATIC` NON poteva bastare da solo**: il blocker si **legge** *(`:579-599`)* e
+si mette in pausa l'inseguimento, ma **il trigger e' cio' che ACCENDE il blocker**: se il trigger scatta, la pausa arriva **dopo**
+che il danno e' fatto. **Il gate e' una reazione, non una prevenzione.**
+
+**⚠️ NON chiuderlo: al momento di scrivere NON e' risolto.** ✅ *(La ragione per cui va lasciato aperto **anche se** il fix arrivasse
+subito: **un guasto riferito dall'utente e riparato senza una run di verifica non e' chiuso — e' "implementato, non verificato",
+che e' la distinzione che l'audit ha insegnato a questo progetto.)***
+
+#### 3.1 ⭐⭐ LA LEZIONE — e la REGOLA che ne esce *(il perche' questa sezione e' la piu' importante)*
+
+> **Un ritocco COSMETICO ha introdotto un guasto che BLOCCA IL GIOCO.**
+
+Il FIX 1 *(§2.1)* e' nato per correggere **una posa** — un difetto **visivo**. La modifica che lo ha reso possibile *(FIX 1 tocca il
+modo in cui la copia insegue la posa; ma **l'EXTRA del §1.3 — l'inseguimento del vivo — e' quello che sposta il corpo**)* agisce su
+**una cosa che il gioco usa davvero**: il `Collider2D` del giocatore in una **stanza viva**, con i suoi trigger. **Nessuno dei due
+referti lo poteva escludere** — ed entrambi lo dicevano.
+
+> ⭐ **LA REGOLA CHE NE ESCE — e vale da adesso per tutto il progetto:**
+> **UNA MODIFICA CHE SPOSTA UN `Collider2D` IN UN MONDO VIVO VA TRATTATA COME UNA MODIFICA AL GIOCO, NON COME UNA MODIFICA
+> COSMETICA.**
+> Cioe': **stesso peso di un fix di gameplay** — *prova in IL prima, test in gioco dopo, e nessuna dichiarazione di "fatto" senza
+> una run che lo confermi.* Perche' **il confine non e' "quanto codice ho scritto" ma "cosa tocca il mondo"**: spostare uno sprite
+> e' cosmesi; **spostare un `Collider2D` in una stanza con i trigger accesi e' gameplay**, anche se la ragione per cui lo fai e'
+> **far vedere meglio** una bossfight a chi e' morto.
+
+**E la conseguenza pratica, in una riga**: la prossima volta che un ritocco *"solo visivo"* tocca un `Collider2D`, un `Rigidbody2D`,
+un `Animator.enabled`, un `SetActive` o una posizione che il gioco legge — **le tre domande da farsi prima** sono:
+**(1) chi altro legge questo oggetto? (2) cosa e' acceso in questa stanza? (3) come si torna indietro, e cosa lo dice nel log?**
+
+---
+
+### 4. LE COSE PICCOLE *(seguite in questi giorni, e il loro stato reale)*
+
+**(a) ⛔ Lo SPAM A MONTE DEL `"*"` — NON implementato, e la ragione resta quella.** Il fix `ff5dec7` toglie **la ripetizione**, non
+**la domanda**: `ReceiveProgress` **continua a interrogare il registro anche per il sentinella `"*"`** *(il server lo usa per il sync
+iniziale di squadra: `Server.cs`, `getProgressPacket("*", …)` — e **nessuno si chiama `"*"`**, quindi e' **una domanda senza risposta
+possibile**)*. La correzione sarebbe in **un punto solo** *(`if (playerName != "*") { … }`)* ed e' **equivalente**, risparmiando
+**309 scansioni per sessione** *(`REFERTO-SPAM-LOG.md:127-133`)*. **⛔ NON e' stato implementato, ed e' dichiarato: e' LOGICA, non
+logging** — e la consegna di quei due commit toccava **solo il quando si logga**. **Resta un lavoro reale e non e' una voce numerata.**
+
+**(b) ✅ IL MARKER FALSO — trovato nei log e CORRETTO *(`REFERTO-MORTE-IN-PIEDI-E-BOSS.md:299-310`)*.** Nella riga di chiusura
+della sessione precedente *(G1:3654)*:
+```
+[CorpseFollow] finestra chiusa: il giocatore e' tornato (respawn) · … invioPosizioneCongelato=no · la copia e' distrutta
+```
+**`invioPosizioneCongelato` veniva letto DOPO essere azzerato** *(i campi si azzerano prima della `ModLog.Info`)* ⇒ **stampava `no`
+SEMPRE.** ⇒ **quel `no` NON e' la prova che la guardia di `MainPlayerManager` non e' scattata**: era **un marker che non poteva dire
+altro**. Ora il valore si legge **prima** di azzerare *(e la stessa trappola e' evitata per `posa=`)*. **Conseguenza per la prossima
+sessione**: e' **la riga da guardare** per sapere se l'invio e' stato davvero congelato — **atteso: `si`**.
+> ⭐ **E va tenuta la massima che ne esce, perche' e' la seconda volta in questo progetto: UN MARKER CHE MENTE E' PEGGIO DI UN MARKER
+> ASSENTE.** Un marker assente ti fa andare a cercare; **un marker falso ti fa chiudere una diagnosi sbagliata.**
+
+**(c) E DUE COSE MINORI, dichiarate e non toccate** *(stessa sezione del referto)*: **`[CorpseFollow ERR] in TryRealignNetwork … :`**
+con **messaggio VUOTO** *(senza nemmeno il tipo dell'eccezione)* ⇒ ora stampa `e.GetType().Name`; **diagnosi, e resta un sospetto**:
+`SendAllLocationData` legge `Penitent.SpriteRenderer` (`CurrentDirection`) e in quella riga il renderer **era nullo** ⇒ quasi
+certamente una `NullReferenceException`, **effetto pratico nessuno** *(il peer teneva l'avatar dov'e' caduto, che e' il
+comportamento voluto)*. E la soglia **`FOLLOW_EPSILON = 6`** e' risultata **proprio sull'ampiezza dell'oscillazione** del compagno in
+quella stanza: **40 spostamenti in 161 s**, quasi tutti con `era a 6.0x unita'` — **non e' un guasto**, ma **se quei salti si
+vedessero a schermo, il numero da guardare e' quello**.
+
+---
+
+### 5. 📌 LA LISTA CORTA DELLE COSE DA FARE *(in ordine di importanza — verificata contro il file)*
+
+**1. 🚨 IL RESPAWN BLOCCATO** *(§3)* — **aperto, IN CORSO DI RIPARAZIONE da un altro agente**. **E' la priorita' assoluta**: e' un
+**guasto che blocca il gioco** *(i tasti non rispondono: ne' falò ne' menu)*, non un difetto visivo. Il sospetto e' il
+`Collider2D` mosso da `DeathCorpseFollow` che fa scattare un trigger di scena ⇒ blocker `CINEMATIC` acceso. **E non si chiude senza
+una run di verifica**: un guasto riparato e non provato e' **"implementato, non verificato"**.
+
+**2. ⚠️ IL MORTO "IN PIEDI" VISTO DAL REMOTO** *(§2.1)* — **il fix locale c'e' *(`68f3b0e`, confermato dall'utente su QUESTA
+macchina)*, il remoto no**: l'utente dice che **sull'altra macchina il peer morto risulta ancora in piedi**. Non e' la stessa cosa
+della posa locale: e' **l'avatar del morto come lo vede l'altro**, e il fix non lo copre.
+
+**3. LA COLPA** — la **grief sulla vita morendo non seduti al falò** — **voce 63**. *Formulazione dell'utente:* **`Stats.Life`, non
+`Fervour`** · **morendo, non al falò**. Design completo, `GuiltManager` presente, arte esistente *(`guiltStart`/`guiltBar`/`guiltEnd`)*,
+**implementazione non iniziata**. *(Il messaggio d'ingresso alla bossfight: **una chiave di localizzazione + una chiamata a
+`DisplayNotification`**.)*
+
+**4. I TEST DEI BOSS** — **voce 18**. **Resta la voce piu' esposta**: nei referti e' esercitato **un solo boss** *(`ElderBrother`,
+`D17Z01S11`)*, e la barra del boss *"coincide per coincidenza, non per sincronizzazione"*. ⚠️ **E ora ha una parte meno urgente di
+prima**: il **test di M1** *(la morte del boss sulla macchina del morto)* **e' stato fatto e confermato dall'utente** *(§2.2)*, e il
+**rischio dichiarato di M1 — il boss che resta in piedi — e' stato chiuso da `18a4500`*, ma il fix **non e' mai stato eseguito su
+nessuno degli altri 16 boss** *(firma verificata in IL per tutte, esecuzione no: `REFERTO-MORTE-IN-PIEDI-E-BOSS.md:349-350`)*.
+
+**5. LE COSE PICCOLE + LE DOMANDE §9** *(§4)* — **(a)** lo **spam a monte del `"*"`** *(il taglio per il sentinella: **logica, non
+logging**, 309 scansioni per sessione)* · **(b)** i **due residui di `BUG-NOTI.md`** *(la seconda `Object.Destroy` in
+`SettleStuckDeaths`, e l'esecuzione "incrociata")* · **(c)** il **`fullPathHash`** *(**parcheggiato di proposito**: non alzarlo di
+priorita' senza un sintomo nuovo)* · **e le domande del §9**: **domanda 15** *(il fantasma e' congelato dalla mod? — test mai fatto)*
+e **domanda 14** *(`EnemyAI` gira davvero? — si decide **sui prefab**)*. **Sono le sole due rimaste.**
+
+**✅ E LE VOCI CHIUSE DA REGISTRARE — e chi le cerca le deve trovare chiuse:**
+- **voce 58** — **CHIUSA per DECISIONE** *(non per fix: la mod base non si tocca)* · `[2026-10-13 10:00]` §1.
+- ⭐ **voce 9** — **CHIUSA** *(con la **riserva del punto 2**: il fix locale c'e', **il remoto no**)* · **questa sezione, §1**.
+- **voce 56** — **CHIUSA dall'audit del 2026-10-12** *(i 5 marker, tutti implementati)* · `[2026-10-13 10:00]` §5(c).
+
+**⚠️ E UNA COSA VA DETTA, perche' la lista non la contiene e non e' una voce:** **il guasto del §3 e' l'unica cosa di questa sezione
+che puo' rendere il gioco INGIOCABILE.** Tutto il resto e' visivo, di design o di test. ⇒ **finche' non e' chiuso con una run che lo
+confermi, nessun'altra voce di questa lista va promossa sopra di lui.**
 
