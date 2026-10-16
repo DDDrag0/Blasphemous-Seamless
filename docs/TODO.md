@@ -6056,3 +6056,75 @@ e **domanda 14** *(`EnemyAI` gira davvero? — si decide **sui prefab**)*. **Son
 che puo' rendere il gioco INGIOCABILE.** Tutto il resto e' visivo, di design o di test. ⇒ **finche' non e' chiuso con una run che lo
 confermi, nessun'altra voce di questa lista va promossa sopra di lui.**
 
+
+---
+
+## [2026-10-16 20:00] IL PEER MORTO **CHIUSO** *(si suona la morte, non si nasconde)* — E IL RESPAWN: **la rete di riserva NON e' difettosa**
+
+Referto: `scratch/REFERTO-PEER-MORTO-E-CAUSA.md`. Commit **`c5c7299`**. Build `succeeded`, 0 errori, **263 -> 263**,
+deploy **263 -> 263**, DLL gioco == repo *(SHA256 `C43097FC…`, marker riletti nella DLL byte-per-byte)*.
+
+### 1. ✅ LA VOCE 2 (il morto "in piedi" visto dal remoto) — **CHIUSA** *(implementata, non ancora verificata in gioco)*
+
+**La causa non era la posa, era il CANALE.** Da morti `MainPlayerManager.Update` esce prima di spedire
+(`PositionSendPaused`) e **non manda piu' nulla, nemmeno l'animazione di morte** ⇒ il peer restava sull'ultima posa
+ricevuta, che per definizione e' quella **di prima** della morte: **in piedi**. E il congelamento e' voluto *(serve a non
+mandare la posizione del cadavere-copia addosso al vivo)*.
+
+⭐ **E c'era un secondo ostacolo, che e' la parte delicata:** `OtherPlayerScript.CurrentAnimation` usa **l'arrivo di
+un'animazione come PROVA DI VITA** (`if (playerDead) SetDeathStatus(false)`) ⇒ la stessa prova scartava **l'unica
+animazione che serviva**, quella di morte. Spedire solo il byte avrebbe **rialzato l'avatar nello stesso frame**: la mod
+si sarebbe disfatta da sola.
+
+**Il fix, in due meta':** si manda **la morte UNA VOLTA** prima del congelamento (`MainPlayerManager.CorpsePeerTick`), e
+**la morte e' esclusa dalla prova di vita** (`OtherPlayerScript`), **e solo la morte**.
+
+**⛔ E NON si nasconde l'avatar**, che era la prima strada *(e la richiesta iniziale dell'utente)*: l'alternativa costa
+**la stessa classe di lavoro ma aggiunge uno stato che puo' restare bloccato** *(avatar invisibile per sempre — il
+difetto peggiore dei due)* **e mostra meno**. Lo sprite di morte **esiste gia'**: l'Animator dell'avatar ha la posa, e il
+gioco spegne l'Animator del Penitent **sulla posa finale** — `PlayerDeathAnimationBehaviour.cs:33-36`,
+`normalizedTime >= 0.95`. *(Indici 55/56/57 = `Death`/`Death Spike`/`Death Fall`, da `Data/AnimationStates.cs:64-66`.
+⚠️ `"Grounding Over"` sta nella lista dell'**avatar** ma **non** qui: e' anche il rialzarsi da una caduta.)*
+
+**Marker:** `[CorpsePeer] animazione di morte mandata: …` · `[CorpsePeer] avatar del peer: morto a terra (…)` ·
+`[CorpsePeer] avatar del peer: vivo in piedi (…)`. ⇒ *「non e' partita」, 「e' partita e non si vede」 e 「e' partita e si e'
+rialzato」 ora hanno tre righe diverse.*
+
+**Ripristino: nessun protocollo nuovo.** Al respawn `DeathCorpseFollow.Close()` chiama `SendAllLocationData()` ⇒
+animazione **0 = Idle**, che **non e' una morte**, quindi la prova di vita torna attiva e l'avatar si rialza.
+
+### 2. 🚨 IL RESPAWN — ⛔ **la causa NON e' chiusa, MA LA RETE DI RISERVA NON E' DIFETTOSA** *(e questo cambia il §5 qui sotto)*
+
+**La premessa va corretta, ed e' una misura, non un'opinione.** I due log di questa sessione **non sono quelli del
+guasto**: G1 ha **3153** righe, **nessuna cutscene dopo la morte** *(il boss resta a `vita=370`, `G1:2495`)*, **tutti** i
+fade completati *(`Called fade function` 7 `True`/7 `False` in G1, 6/6 in G2)*, e `DEAD_SCREEN` acceso a `2018` e
+**spento** a `2565`.
+
+**I tre candidati:** ① la gerarchia `GameplayUI` — **NON PROVATO**, e **indebolito**: `gameplayUIActive=True` e
+`schermataMorte=[attivo=True enabled=True]` per **tutti e 45** i campioni, zero `Cam cinematic mode` dopo la morte; e
+`OnDeadAction` gira su **`Core`**, non sul widget (`DeadScreenWidget.cs:145`) ⇒ **lo spegnimento del widget non ferma la
+sua coroutine**. ② `StopAllCoroutines` — **SMENTITO** *(zero occorrenze)*. ③ DOTween fermo — **SMENTITO**
+*(`alphaNorm` 0.00 → 0.71 → 1.00 **durante** la finestra)*.
+
+⭐ **Il fusibile e' scattato perche' nessuno ha premuto un tasto:** `unityAnyKey=False` in **tutti e 45** i campioni;
+l'unico `True` di G1 e' il campione del **frame della morte**. **E G2 lo prova al contrario:** tasto `Space` ⇒
+`RESPAWN CHIESTO: tasto premuto dal morto (Space)` **immediato**, `fusibile=non usato`.
+⇒ **RETE 1 non e' rotta: e' una rete d'INGRESSO, e in G1 non e' entrato niente.** *("Il fusibile e' scattato ⇒ RETE 1 non
+ha funzionato" NON regge.)*
+
+**⇒ La configurazione che ruppe la sessione precedente — morte + cutscene in modalita' cinema, `FADE` rimasto appeso —
+NON e' stata riprodotta.** Non ho toccato `GameplayUI`, le cutscene, il fade o i blocker. **E la riga che chiude il
+candidato ① e' UNA: `gameplayUIActive`.** Serve una run che la mostri `False` mentre si e' morti.
+
+### 3. 📌 LISTA CORTA — **aggiornata**
+
+- **1. ⚠️ IL RESPAWN** *(§2)* — **aperto, e la priorita' resta assoluta** — *ma il watchdog non e' il sospetto*: ha
+  respawnato G1 correttamente, e **in G2 non e' nemmeno intervenuto** *(non ruba il respawn al gioco)*. **Non si chiude
+  senza una run** che riproduca **morte + cutscene in modalita' cinema**: la riga da leggere e' **`gameplayUIActive`**.
+- **2. ✅ IL MORTO "IN PIEDI" VISTO DAL REMOTO** — **CHIUSA** *(§1)*: **implementata, non ancora verificata in gioco**.
+  ⚠️ **Se il cadavere non si vedesse, la riga da cercare e' `avatar del peer: morto a terra`**: se **c'e'**, la morte e'
+  arrivata *(problema di posa)*; se **non c'e'**, non e' arrivata *(problema di canale)*.
+- **3. LA COLPA** *(voce 63)* · **4. I TEST DEI BOSS** *(voce 18)* · **5. LE COSE PICCOLE + LE DOMANDE §9** — invariate.
+- ⚠️ **Il TODO non e' stato riscritto in tutte le sue parti**: questa voce **si sovrappone** al §3 e al §5 della voce
+  `[2026-10-14 02:00]`, che **parlano ancora del guasto del respawn come se il fusibile fosse la prova di un guasto** —
+  e ora **non lo e'**. **Chi legge quella voce legga anche questa.**
