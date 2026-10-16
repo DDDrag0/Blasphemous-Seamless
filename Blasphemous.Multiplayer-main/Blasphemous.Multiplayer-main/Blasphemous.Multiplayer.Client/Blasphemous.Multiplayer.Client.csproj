@@ -17,6 +17,10 @@
     <DocumentationFile>bin\$(Configuration)\$(TargetName).xml</DocumentationFile>
     <RepositoryUrl>https://github.com/BrandenEK/Blasphemous.Multiplayer</RepositoryUrl>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+
+    <!-- Interruttore del deploy nella cartella di gioco. FALSE per default: la build non tocca il gioco.
+         Per una copia voluta:  dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true -->
+    <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
   </PropertyGroup>
 
   <ItemGroup>
@@ -49,15 +53,21 @@
 
     <!-- Get export directories -->
     <PropertyGroup>
-      <!-- The game is installed under D:\SteamLibrary on this machine. The previous C: path pointed at
-           a leftover Modding folder with no game in it, so the plugin was never loaded by anything. -->
+      <!-- La cartella di gioco. Il percorso è ASSOLUTO e resta, ma NON è più un bersaglio della build:
+           lo era, e ogni `dotnet build` — in qualunque worktree — ci copiava la sua DLL, annullando
+           in silenzio il deploy di HEAD (per giorni si è creduto di testare una versione mentre il
+           gioco ne eseguiva un'altra). Ora le due Copy verso questa cartella sono spente per default
+           (vedi <DeployToGame> in cima al file): l'unico modo di mettere qualcosa in gioco è
+           tools\deploy-local.ps1 — così una build di prova non può più sovrascrivere il deploy. -->
       <DevFolder>D:\SteamLibrary\steamapps\common\Blasphemous\Modding\</DevFolder>
       <PublishFolder>$(SolutionDir)\publish\$(TargetName)</PublishFolder>
     </PropertyGroup>
 
-    <!-- Export to dev folder -->
-    <Copy SourceFiles="@(Resources)" DestinationFolder="$(DevFolder)\%(RecursiveDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="@(PluginDll)" DestinationFolder="$(DevFolder)\plugins" SkipUnchangedFiles="true" />
+    <!-- Export to dev folder — SOLO se richiesto con -p:DeployToGame=true.
+         Senza SkipUnchangedFiles di proposito: una copia voluta deve aggiornare anche il timestamp,
+         altrimenti un deploy identico sembra non essere avvenuto. -->
+    <Copy SourceFiles="@(Resources)" DestinationFolder="$(DevFolder)\%(RecursiveDir)" Condition="'$(DeployToGame)' == 'true'" />
+    <Copy SourceFiles="@(PluginDll)" DestinationFolder="$(DevFolder)\plugins" Condition="'$(DeployToGame)' == 'true'" />
 
     <!-- Export to publish folder -->
     <RemoveDir Directories="$(PublishFolder)" />

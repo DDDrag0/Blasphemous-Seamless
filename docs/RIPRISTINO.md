@@ -24,6 +24,15 @@ cd ..\..
 .\tools\verify-deploy.ps1
 ```
 
+> ⚠️ **Dal 2026-10-16 la build NON tocca più la cartella di gioco.** Il `.csproj` del **client** la
+> copiava a ogni `dotnet build` (target `Development`, `DevFolder` con percorso **assoluto**): bastava
+> una build in un **worktree di prova** per annullare in silenzio il deploy di HEAD — *ed è successo,
+> e per giorni si è creduto di testare una versione mentre il gioco ne eseguiva un'altra.* Ora quella
+> copia è **spenta** (`DeployToGame=false`) e **`deploy-local.ps1` è l'unico modo di mettere qualcosa
+> in gioco**: copia la mod, la sua `Common.dll` *(che il gioco carica da `Modding\data`)* e il server.
+> Se un giorno servisse la vecchia copia fatta dalla build:
+> `dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true`.
+
 ⚠️ **`verify-deploy.ps1` deve uscire con codice 0.** Se dice *"questa macchina non esegue il binario
 atteso"*, il deploy non è quello che credi — e un test lì non misurerebbe le funzionalità nuove.
 
