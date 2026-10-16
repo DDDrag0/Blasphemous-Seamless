@@ -5847,7 +5847,7 @@ la cam"* `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:52)`.
 | 5 | ⇒ se l'animazione dura **piu' di 2,5 s**, la copia si ferma **a meta' caduta** = **in piedi**. **E la durata NON e' leggibile da nessun log** *(nessun timestamp per riga, nessun marker sull'animazione, nessun clip nell'IL)* ⇒ la diagnosi **non poteva** essere *"alza il numero"* `(REFERTO-MORTE-IN-PIEDI-E-BOSS.md:63)` |
 
 **Il fix, e perche' questa forma**: **non un numero piu' grande, ma un altro segnale** — si copia **`sprite + colore(RGB) + POSA`
-*(`localPosition`/`localRotation`/`localScale`)* finche' la sorgente cambia, e ci si ferma quando IL GIOCO la ferma**:
+*(`localPosition`/`localRotation`/`localScale`)* finche' la sorgente cambia, e ci si ferma quando IL GIOCO la ferma:
 
 ```
 finche' !_poseClosed:  copia sprite + colore(RGB) + localPosition/localRotation/localScale
