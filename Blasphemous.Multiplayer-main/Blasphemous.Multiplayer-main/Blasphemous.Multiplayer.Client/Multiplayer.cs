@@ -220,6 +220,16 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         DeathRespawnWatchdog.AttachOnce();
         DeathRespawnWatchdog.Tick();
 
+        // TEMPORARY (CorpsePeer): ⭐⭐ LA MORTE VIAGGIA UNA VOLTA, COSI' IL PEER VEDE IL CADAVERE A TERRA.
+        // Dal remoto il giocatore morto si vedeva IN PIEDI E BLOCCATO, e la causa non e' la posa: da morti
+        // l'invio e' congelato (righe sopra) e quindi al peer non arrivava nemmeno l'animazione di morte -
+        // restava sull'ultima posa viva. Qui si manda QUEL byte una volta, prima del congelamento. Va DOPO
+        // `DeathCorpseFollow.Tick()` (che e' il punto in cui il congelamento si accende) e puo' stare dopo
+        // il watchdog: nessuno dei due spedisce animazioni. Stesso ciclo, quindi **zero patch Harmony nuove**.
+        // Vedi `MainPlayerManager.CorpsePeerTick` per il come e `OtherPlayerScript.CurrentAnimation` per
+        // l'esclusione della morte dalla prova di vita, che e' l'altra meta' della stessa modifica.
+        MainPlayerManager.CorpsePeerTick();
+
         // TEMPORARY (PerformanceProbe): the whole late-update pass is timed, because it holds the
         // packet processing, the player managers and the enemy sync together - that total is what the
         // frame actually pays. Remove with the probe.

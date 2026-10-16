@@ -31,6 +31,140 @@ namespace Blasphemous.Multiplayer.Client.Players
         private readonly float totalTimeBeforeSendAnimation = 0.5f;
         private float currentTimeBeforeSendAnimation = 0;
 
+        // ============================================================================================
+        // ⭐⭐ [CorpsePeer] LA MORTE VIAGGIA UNA VOLTA - il cadavere a terra visto dal peer.
+        // ============================================================================================
+        //
+        // IL DIFETTO, e la sua causa vera (misurata, non dedotta): dal REMOTO il giocatore morto si vede
+        // **IN PIEDI E BLOCCATO**, una posa congelata. Non e' un problema di posa: e' un problema di
+        // **CANALE**. Da morti `MainPlayerManager.Update` esce prima di spedire (`PositionSendPaused`,
+        // righe sotto) e non manda PIU' NULLA - nemmeno l'animazione di morte. Quindi il peer resta
+        // sull'ULTIMA posa ricevuta, che per definizione e' quella **di prima** della morte: in piedi.
+        //
+        // ⭐ E IL CONGELAMENTO NON E' UN ERRORE, e' voluto: `OtherPlayerScript.CurrentAnimation` usa
+        // l'ARRIVO DI UN'ANIMAZIONE come PROVA DI VITA (`if (playerDead) SetDeathStatus(false)`, :778-782),
+        // perche' gli bastava quello per rimettere in piedi il peer quando le animazioni tornavano a
+        // scorrere. Il guaio e' che la stessa prova di vita scarta anche l'UNICA animazione che serviva:
+        // quella di morte. ⇒ Da qui la forma del fix: **si manda la morte** (una volta, alla morte, prima
+        // del congelamento) **e si esclude la morte dalla prova di vita**. Vedi `OtherPlayerScript`.
+        //
+        // ⚠️ E L'ANIMATOR DELL'AVATAR HA GIA' LA POSA: `OtherPlayerScript.Update` riconosce il proprio
+        // cadavere con gli stessi stati (`"Death" | "Death Spike" | "Death Fall" | "Grounding Over"`) e il
+        // gioco spegne l'Animator del Penitent sulla posa FINALE di "Death"
+        // (`PlayerDeathAnimationBehaviour.cs:33-36`). Non si inventa nessuno sprite: si suona quello che
+        // c'e'. E' la via chiesta dall'utente ("non abbiamo lo sprite del personaggio morto? ... utilizza
+        // quello, cosi' evitiamo di farlo cancellare").
+        //
+        // ⚠️ NON SI RIAPRE IL CANALE: si manda UN byte di morte UNA volta. La posizione resta congelata e
+        // il resto delle animazioni pure - quella decisione (e la sua ragione) non cambia.
+        private bool _corpsePeerWasDead;
+        private bool _corpsePeerDeathSent;
+        private float _corpsePeerArmedAt;
+        private bool _corpsePeerWarned;
+
+        /// <summary>
+        /// Quanto si aspetta che l'Animator del Penitent ENTRI nello stato di morte prima di usare il
+        /// ripiego. E' una finestra corta di proposito: la morte e' un evento, e il gioco la mette in scena
+        /// subito (`PenitentOnUpdateDeath_Patch` annuncia nello stesso frame).
+        /// </summary>
+        private const float CorpsePeerFuseSeconds = 0.5f;
+
+        /// <summary>
+        /// [CorpsePeer] LATO MANDANTE — manda l'animazione di morte al peer, UNA volta per morte.
+        ///
+        /// Chiamato da `Multiplayer.OnLateUpdate` DOPO `DeathCorpseFollow.Tick()`: in quel momento
+        /// `PositionSendPaused` e' gia' vero, quindi questo byte e' **l'ultima cosa che parte** prima del
+        /// congelamento - ed e' esattamente il punto in cui deve partire.
+        ///
+        /// ⭐ PERCHE' UNA FINESTRA E NON UNA RIGA SOLA. `CurrentAnimation` legge l'Animator del Penitent
+        /// **ora**, e al primo frame di morte quell'Animator puo' non essere ancora entrato in "Death": la
+        /// transizione la guida il gioco, e "il morto e' morto" e' noto alla mod un istante prima che lo sia
+        /// all'Animator. Spedire alla cieca in quel frame manderebbe l'animazione SBAGLIATA, e il peer
+        /// mostrerebbe un cadavere in una posa qualsiasi. Quindi: si ritenta per `CorpsePeerFuseSeconds`, e
+        /// **se anche allora l'Animator non e' in uno stato di morte si usa "Death"**, che e' il ripiego
+        /// dichiarato - meglio una posa di morte vera su un byte standard che un avatar in piedi.
+        /// </summary>
+        public void CorpsePeerTick()
+        {
+            try
+            {
+                bool dead = PlayerDeathSync.IsLocalPlayerDead();
+
+                if (!dead)
+                {
+                    // ⭐ IL RIPRISTINO E' LA MORTE CHE FINISCE, e non serve nuovo protocollo: al respawn
+                    // `DeathCorpseFollow.Close()` chiama `SendAllLocationData()`, che rimanda posizione,
+                    // animazione (0 = Idle) e direzione ⇒ sul peer arriva un'animazione NON di morte, la
+                    // prova di vita non e' piu' esclusa, e l'avatar si rialza. Lo stato qui si azzera
+                    // perche' la PROSSIMA morte deve poter spedire di nuovo.
+                    if (_corpsePeerWasDead)
+                    {
+                        ModLog.Info($"{CorpsePeerMark} avatar del peer: vivo in piedi " +
+                                    $"(la morte e' finita: al respawn la mod rimanda animazione/direzione " +
+                                    $"e il peer rialza l'avatar) · animazioneDiMorteMandata=" +
+                                    $"{(_corpsePeerDeathSent ? "si" : "no")}");
+                    }
+
+                    _corpsePeerWasDead = false;
+                    _corpsePeerDeathSent = false;
+                    _corpsePeerArmedAt = 0f;
+                    return;
+                }
+
+                if (!_corpsePeerWasDead)
+                {
+                    _corpsePeerWasDead = true;
+                    _corpsePeerArmedAt = Time.unscaledTime;
+                    _corpsePeerWarned = false;
+                }
+
+                if (_corpsePeerDeathSent)
+                    return;
+
+                // Si legge lo stato VERO dell'Animator, e si ricorda se e' una morte: la finestra e' li'
+                // per aspettare QUESTO passaggio, non per aspettare a vuoto.
+                AnimatorStateInfo state = Core.Logic.Penitent.Animator.GetCurrentAnimatorStateInfo(0);
+                int deathIndex = PlayerStatus.DeathAnimationIndexOf(
+                    "Death", "Death Spike", "Death Fall");
+
+                bool inDeathState = deathIndex >= 0 && state.IsName(
+                    Blasphemous.Multiplayer.Client.Data.AnimationStates.animations[deathIndex].name);
+
+                float waited = Time.unscaledTime - _corpsePeerArmedAt;
+                if (!inDeathState && waited < CorpsePeerFuseSeconds)
+                    return;
+
+                byte deathAnimation = inDeathState
+                    ? (byte)deathIndex
+                    : PlayerStatus.DefaultDeathAnimation;
+
+                Main.Multiplayer.NetworkManager.SendAnimation(deathAnimation);
+                _corpsePeerDeathSent = true;
+
+                ModLog.Info($"{CorpsePeerMark} animazione di morte mandata: " +
+                            $"{(inDeathState ? "stato vero dell'Animator" : "RIPIEGO")}=" +
+                            $"{Blasphemous.Multiplayer.Client.Data.AnimationStates.animations[deathAnimation].name}" +
+                            $" (byte {deathAnimation}) · atteso={waited:F2}s" +
+                            $"{(inDeathState ? "" : " ⚠️ l'Animator del Penitent non e' entrato in uno stato di morte entro " + CorpsePeerFuseSeconds.ToString("F2") + "s")}" +
+                            $" · e' l'ULTIMO byte prima del congelamento: da qui in poi non parte piu' nulla" +
+                            $" (nemmeno la posizione) finche' il morto non risorge");
+            }
+            catch (System.Exception e)
+            {
+                // ⚠️ UN GUASTO QUI NON DEVE FERMARE NIENTE: il peggio e' il difetto noto (l'avatar resta
+                // in piedi sul peer), non uno nuovo. Stessa asimmetria dichiarata da `DeathCorpseFollow`.
+                if (!_corpsePeerWarned)
+                {
+                    _corpsePeerWarned = true;
+                    ModLog.Error($"{CorpsePeerMark} ERR nel mandante (nessun effetto sul gioco: il peer " +
+                                 $"resta con l'ultima posa, il difetto noto): {e.GetType().Name} - {e.Message}");
+                }
+            }
+        }
+
+        /// <summary>Il marker obbligatorio di questa modifica, in un posto solo.</summary>
+        internal const string CorpsePeerMark = "[CorpsePeer]";
+
         public void Update()
         {
             if (Main.Multiplayer.NetworkManager.IsConnected && Core.Logic.Penitent != null)

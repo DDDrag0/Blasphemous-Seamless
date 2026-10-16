@@ -775,10 +775,31 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             set
             {
-                // If this player was previously assumed dead but now they are receiving another anim, turn them alive again
-                if (playerDead)
+                // ========================================================================================
+                // ⭐⭐ [CorpsePeer] LA MORTE **NON** E' UNA PROVA DI VITA.
+                // ========================================================================================
+                //
+                // Qui sotto c'e' la prova di vita: l'arrivo di un'animazione qualsiasi, mentre l'avatar e'
+                // dato per morto, lo RIMETTE IN PIEDI. E' voluto, ed e' giusto per ogni animazione tranne
+                // una: **quella di morte**. Senza questa esclusione il byte che `MainPlayerManager` spedisce
+                // alla morte (vedi `CorpsePeerTick`) verrebbe letto come "e' tornato vivo", e l'avatar si
+                // rialzerebbe nello stesso frame in cui si e' messo a terra - cioe' la mod si disferebbe DA
+                // SOLA, e il difetto resterebbe quello di prima ("IN PIEDI BLOCCATO").
+                //
+                // ⚠️ E NON SI TOCCA LA PROVA DI VITA PER LE ALTRE ANIMAZIONI: e' il meccanismo su cui poggia
+                // il risveglio del peer (`DeathCorpseFollow.Close()` -> `SendAllLocationData()` ->
+                // animazione 0 = Idle), quindi resta intatto. Qui si aggiunge **un solo caso**, la morte.
+                bool isDeathAnimation = PlayerStatus.IsDeathAnimation(value);
+
+                // If this player was previously assumed dead but now they are receiving another anim, turn
+                // them alive again - unless the animation IS the death, which is what confirms the corpse.
+                if (playerDead && !isDeathAnimation)
                 {
                     SetDeathStatus(false);
+
+                    ModLog.Info("[CorpsePeer] avatar del peer: vivo in piedi " +
+                                "(e' arrivata un'animazione che NON e' una morte: byte " + value + "=" +
+                                AnimationStates.animations[value].name + ")");
                 }
 
                 if (value < 240)
@@ -800,7 +821,35 @@ namespace Blasphemous.Multiplayer.Client.Players
                     {
                         CharacterAnim.SetBool(animState.parameterNames[i], animState.parameterValues[i]);
                     }
+
+                    if (isDeathAnimation)
+                    {
+                        // ⚠️ `IS_DEAD` NON BASTA QUELLO CHE C'E' IN TABELLA, E VA GARANTITO.
+                        // `AnimationStates.animations[55]` ("Death") dichiara UN solo parametro
+                        // (`IS_DEAD = true`) e le altre due morti nessuno, quindi per 56/57 il ciclo qui
+                        // sopra non scrive nulla: su un avatar il cui Animator arriva da un'altra sequenza il
+                        // bool puo' essere rimasto falso, e con `IS_DEAD` falso il controller puo' NON restare
+                        // sulla posa di morte - cioe' il cadavere si rialza, che e' il difetto da correggere.
+                        // Si scrive DOPO il ciclo, cosi' vince su qualunque valore esso abbia impostato.
+                        SetAnimatorBoolIfPresent("IS_DEAD", true);
+                    }
+
                     CharacterAnim.Play(animState.name);
+
+                    if (isDeathAnimation)
+                    {
+                        // ⭐ IL MARKER DEL RECEIVER. Senza, "la morte non e' arrivata", "e' arrivata e non si
+                        // vede" e "e' arrivata e si e' rialzato" hanno lo stesso aspetto in un log.
+                        // ⚠️ E IL FERMARSI E' DI POCHI CENTESIMI DOPO, NON DI SECONDI: `Update` riconosce la
+                        // posa a `normalizedTime >= 0.95f` e chiama `SetDeathStatus(true)`, che spegne
+                        // l'Animator sulla posa FINALE - la stessa su cui il gioco lo spegne sul Penitent
+                        // (`PlayerDeathAnimationBehaviour.cs:33-36`). Fino a quel momento l'avatar sta
+                        // cadendo: e' una dissolvenza, non un'attesa.
+                        ModLog.Info("[CorpsePeer] avatar del peer: morto a terra " +
+                                    "(animazione di morte ricevuta: byte " + value + "=" + animState.name +
+                                    ") · l'Animator si fermera' da solo sulla posa finale " +
+                                    "(normalizedTime>=0.95, come il Penitent locale)");
+                    }
                 }
                 else
                 {
@@ -813,6 +862,13 @@ namespace Blasphemous.Multiplayer.Client.Players
                     else
                         ModLog.Warn("Failed to play special animation for " + name);
                 }
+
+                // ⚠️ L'ORDINE NON E' PIGNOLERIA: `playerDead` si scrive SOLO alla fine, dopo che lo stato e'
+                // stato davvero impostato. Se la morte non e' arrivata, `isDeathAnimation` e' falso e questa
+                // riga RIABBASSA `playerDead` - ma solo dopo che la prova di vita ha gia' fatto il suo
+                // lavoro, quindi il comportamento di prima e' intatto per ogni animazione normale.
+                if (!isDeathAnimation)
+                    playerDead = false;
             }
         }
 
@@ -981,6 +1037,52 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             CharacterAnim.enabled = !dead;
             OtherPlayerAttack.SetHitboxStatus(!dead);
+        }
+
+        /// <summary>
+        /// Scrive un bool sull'Animator dell'avatar **solo se quel parametro esiste davvero**.
+        ///
+        /// ⭐ PERCHE' SI GUARDA PRIMA DI SCRIVERE. `Animator.SetBool` con un nome che il controller non ha NON
+        /// lancia: Unity scrive un warning e va avanti, quindi una riga sbagliata qui NON si vedrebbe come
+        /// errore - si vedrebbe come un parametro che "non fa niente", che e' il guasto peggiore da leggere.
+        /// Guardando prima, la mod puo' DIRLO.
+        ///
+        /// ⭐⭐ E LA VIA E' QUELLA DEL GIOCO, non una inventata qui: `NpcDamage.cs:57` risponde alla stessa
+        /// domanda con
+        ///     `OwnerEntity.Animator.parameters.Any(param => param.name.Equals(paramName))`
+        /// ⇒ `Animator.parameters` e `AnimatorControllerParameter` **esistono nella build di Unity di questo
+        /// progetto**, ed e' una prova, non una firma ricordata. (`RuntimeAnimatorController` NON li espone:
+        /// provato, e il compilatore ha risposto `does not contain a definition for 'parameters'`.)
+        /// </summary>
+        private void SetAnimatorBoolIfPresent(string parameter, bool value)
+        {
+            try
+            {
+                if (CharacterAnim == null)
+                    return;
+
+                AnimatorControllerParameter[] parameters = CharacterAnim.parameters;
+                if (parameters == null)
+                    return;
+
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    if (parameters[i].name != parameter)
+                        continue;
+
+                    CharacterAnim.SetBool(parameter, value);
+                    return;
+                }
+
+                ModLog.Warn($"[CorpsePeer] l'Animator dell'avatar non ha il parametro \"{parameter}\": " +
+                            $"la posa di morte si regge sulla sola clip (il ciclo dei parametri di " +
+                            $"`AnimationStates` la salta, come per ogni altro stato)");
+            }
+            catch (System.Exception e)
+            {
+                ModLog.Warn($"[CorpsePeer] lettura dei parametri dell'Animator fallita ({e.GetType().Name}): " +
+                            $"si prosegue senza scrivere \"{parameter}\"");
+            }
         }
 
         /// <summary>
