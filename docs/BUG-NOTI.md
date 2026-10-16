@@ -143,6 +143,86 @@ ACT_...Execution · EXECUTION (enabled/disabled) · TRYING TO KILL ENTITY
 
 ---
 
+## 5. ⚠️ Il giocatore **MORTO** può **USCIRE DALLA BOSSROOM** premendo — **PREZZO ACCETTATO, NON un difetto da riparare**
+
+> **Questa voce è di natura diversa dalle quattro sopra, e va detto per primo.** Le voci 1-4 sono difetti
+> **chiusi** o **residui rari** che restano qui *per essere riconosciuti se ricapitano*. **Questa no**:
+> è una **conseguenza dell'architettura** che abbiamo **deciso di non chiudere**, perché **l'unico modo di
+> chiuderla costa più di quanto rende.** ⇒ **è un PREZZO ACCETTATO**, non un lavoro rimandato.
+> **Se ricapita, NON è una regressione e NON va re-indagata**: è il comportamento noto qui sotto.
+
+**Cosa si vede.** Durante la bossfight, **un giocatore morto preme un tasto qualsiasi** mentre è ancora
+a terra: **il livello si ricarica** e lui **esce dalla bossroom**. *(Il sintomo è dell'utente; il
+meccanismo è verificato nel codice.)*
+
+**Perché succede** *(verificato: `scratch\DIAGNOSI-MORTE-STUCKATA.md`, §2 e §5.2)*. La **schermata di
+morte del gioco** ha come via d'uscita `while (!Input.anyKey)` e, quando il tasto arriva, chiama nel
+callback del fade `Core.Logic.Penitent.Respawn()` — che **ricarica il livello** *(il load è l'unico punto
+in cui il gioco rimette a posto da solo `ResetManager()`, il `FADE` e `DEAD_SCREEN`)*.
+
+**⚠️ E la conseguenza, che è la parte che conta.** Quel load **distrugge la bossroom, il boss e la
+cutscene in corso** — sulla macchina del morto. È **lo stesso danno** che il progetto ha già misurato due
+volte dal lato opposto: un respawn che scatta mentre la scena del boss è in corso **la cancella**
+(`docs\TODO.md:6191`: *"ha respawnato uno spettatore e ha distrutto la cutscene"*).
+
+**Perché NON si blocca l'input** *(verificato: `scratch\DIAGNOSI-MORTE-STUCKATA.md` §4.3 e §5.2)*.
+**La schermata di morte legge `UnityEngine.Input` direttamente.** ⇒ **bloccarle l'input non la ferma**:
+`SetBlocker` agisce su `Core.Input.InputBlocked`, che è **un altro piano**, e la schermata **non lo
+legge**. *(Il file della mod che si occupa della schermata non chiama `SetBlocker` nemmeno una volta:
+`DeathScreenTransparency.cs:57`, e la riga che descrive l'uscita è la `:65`.)*
+
+**Perché NON si chiude: la via esiste, ma il rilascio è il problema.** L'aggancio c'è già:
+`PlayerDeathSync.cs:377-400` è **già** una patch Harmony su `Penitent.Respawn` *(oggi **misura** e non
+sopprime)*, e un `Prefix` che ritorna `false` **impedirebbe** il load. ⚠️ **Ma il rilascio del blocco
+dipenderebbe da condizioni che non controlliamo** — un crash, una macchina congelata, un peer che non
+torna: **il blocco non verrebbe mai rilasciato** ⇒ **un giocatore bloccato a tempo indeterminato**.
+**Un giocatore bloccato è peggio del difetto.** *(È la stessa ragione per cui il progetto ha già scartato
+la via gemella: `scratch\STUDIO-TUTTI-NELLA-BOSSROOM.md:191` — "un `Prefix` che non rilascia = ingresso
+mai più comandato = stanza bloccata".)*
+
+**✅ E il morto ha già la sua via d'uscita, che è quella del gioco: se NON preme, l'uscita dalla
+bossroom è il RESPAWN quando la sequenza si chiude** — ed è **misurata come funzionante**, con la
+cutscene intera. ⇒ **il costo di questa voce è zero per chi non preme.**
+
+**⭐ E la mitigazione, che è anche la prova che lo stato è gestibile.** **Se il morto non preme, lo stato
+è pulito.** Misurato nella **run B** di `scratch\DIAGNOSI-DUE-RUN.md` *(§(b), §(c))*, dove il morto ha
+guardato **tutta** la cutscene *(~23,5 s, `Video End` presente, `CinematicEnded cancelled=False`)*:
+
+| cosa | esito in run B |
+|---|---|
+| la cutscene del boss | **intera** ✅ |
+| la chiusura del gioco (`POP_UP`, `cutscene_block`) | **gira** ✅ |
+| la finestra del cadavere-seguace | si chiude **con il respawn** ✅ |
+| il giocatore | **torna vivo** e **nessuno resta bloccato** ✅ |
+
+**🔎 Se lo si vuole riconoscere in un log**, le firme sono queste *(canale della morte; i due orologi
+`t=` non si mescolano)*:
+
+```
+[TRACE][INPUT] The input blocker DEAD_SCREEN has been enabled.      <- la morte (mai spento finche' non si respawna)
+core.Logic.Penitent.Respawn  ->  [Morte] il giocatore e' morto: …   <- il tasto E' arrivato (PlayerDeathSync.cs:397)
+---> LevelManager: Load and activate level …                        <- IL LOAD: la bossroom e' sparita
+   e, subito prima, una cutscene in corso:  CINEMATIC / cutscene_block / FADE accesi
+```
+
+**⚠️ E l'altra firma, che è quella che dice "sto per perdere la scena"**: `[TRACE][INPUT] The input
+blocker cutscene_block has been enabled.` **seguito da un load invece che** dal `disabled` della
+chiusura.
+
+**📌 E le due cose che rendono questa voce verificabile la prossima volta** *(senza di esse un log non
+distingue "la schermata non accetta i tasti" da "nessun tasto è arrivato")*:
+
+1. **la riga `[Morte] il giocatore e' morto: …`** *(il `Prefix` di `PlayerDeathSync.cs:397`, che esce
+   **sempre** quando `Respawn()` gira)*: se c'è, **il tasto è arrivato al gioco**;
+2. **e il load** (`Load and activate level`) **a valle di quella riga**, con una cutscene in corso:
+   **allora la bossroom è andata persa** — ed è questa la cosa da non fare.
+
+**Stato.** **PREZZO ACCETTATO.** ⛔ **Non è un difetto da riparare**, e **non è in lavorazione**. Se un
+giocatore lo riporta: *"ha premuto mentre era morto, durante la morte del boss"* — **è questo**, ed è già
+tutto scritto qui. **Nessun log da raccogliere, nessun fix da cercare.**
+
+---
+
 ## Come si riporta un difetto *(per chi gioca e per i tester)*
 
 **Quello che serve**, in ordine di utilità:

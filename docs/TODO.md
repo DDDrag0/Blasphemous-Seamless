@@ -6244,3 +6244,175 @@ Nella **sessione del guasto** `[Respawn] RESPAWN CHIESTO` = **0 occorrenze** *(l
 5. 📊 **E l'assenza di tasti nella sessione del cambio stanza e' un'ASSENZA, non una misura** *(`:580-584`)*: `[Morte] il giocatore e' morto` = 0 e `RESPAWN CHIESTO` = 0 **dicono che nessuno ha chiesto il respawn**, non **cosa** ha fatto partire il load *(lo dice la riga `Door opened`, non una misura nostra)*.
 
 > ⚠️ **E una cosa va detta, perche' e' il filo di questa sezione**: **`RETE 1` e' provata nei log, il fusibile e' provato nei log come DIFETTO, e i due fix di oggi non sono provati affatto.** ⇒ **la prossima sessione non deve "vedere se funziona": deve fare i DUE casi del §4 punto 1**, e solo dopo si decide se togliere il fusibile *(§3)*.
+
+---
+
+
+
+---
+
+## [2026-10-17 01:07] ⛔⚠️ **IL FUSIBILE E `RETE 1` NON ESISTONO PIU'** *(e la sezione del `2026-10-16 22:00` li descrive ancora come PRESENTI)* — piu' il **ROLLBACK**, l'**AUTO-DEPLOY SPENTO**, le **DUE RUN** e **cosa e' stato verificato dall'utente**
+
+**Referti**: `scratch/REFERTO-ROLLBACK.md` *(il rollback)* · `scratch/REFERTO-AUTODEPLOY.md` e `scratch/REFERTO-DEPLOY-HEAD-2.md` *(l'auto-deploy e il deploy di HEAD)* · `scratch/DIAGNOSI-MORTE-STUCKATA.md` *(la morte stuckata)* · `scratch/DIAGNOSI-DUE-RUN.md` *(le due run)* · `scratch/PIANO-SPRITE-MORTO-E-M1.md` *(sprite del morto e M1)* · `scratch/STUDIO-TUTTI-NELLA-BOSSROOM.md` *(il punto 0)*.
+**Commit**: **`13107c9`** *(ROLLBACK — revert di 7 commit)* · **`2e8cf19`** *(l'auto-deploy spento — e' l'HEAD)*.
+⚠️ **E QUESTA SEZIONE NON CANCELLA NULLA**: le righe `docs\TODO.md:6135-6246` **restano dove sono e come sono**, perche' **la storia non si perde** *(e' la regola in testa al file)*. Ma **da qui in poi vanno lette come STORIA, non come stato**: la descrizione del fusibile che sta li' **non e' piu' vera**.
+
+**🔎 COME SI LEGGE QUESTA SEZIONE — le tre etichette del `2026-10-16 22:00`, e vanno cercate una per una:**
+- ✅ **VERIFICATO DALL'UTENTE** *(in gioco, con le sue parole)* · 📊 **PROVATO NEI LOG** *(una riga di log, un conteggio)* · 🔧 **IMPLEMENTATO, NON VERIFICATO** *(build + deploy + referto, nessuna run)*.
+
+---
+
+### 1. ⛔⚠️ **LA COSA DA CUI PARTE TUTTO: QUESTO FILE CONTRADDICE L'ALBERO** *(e ha gia' fatto sbagliare)*
+
+**📊 Misurato** *(`scratch/DIAGNOSI-MORTE-STUCKATA.md:40` e `:246`, §4.4)*:
+
+- le righe **`docs\TODO.md:6185-6210`** *(`## [2026-10-16 22:00]`, §2 e §3)* descrivono **il fusibile del respawn come PRESENTE**, con i suoi numeri *(§2: `BOSS_DEATH_GRACE_SECONDS = 30 s`, `ESCAPE_SECONDS = 15 s`, `MAX_ESCAPE_SECONDS = 300 s`)* e con la prescrizione di §3: *"**Finche' quel test non c'e', il fusibile RESTA**"*;
+- **e l'albero NON lo ha piu'**: il rollback **`13107c9`** *(commit message: "ROLLBACK dei respawn automatici: revert di 7 commit")* ha **cancellato `DeathRespawnWatchdog.cs`** — `git show HEAD --stat` → `DeathRespawnWatchdog.cs | 1664 --------------------`, **file cancellato**; e **0 occorrenze** in `*.cs` di `DeathRespawnWatchdog` *(verificato oggi: `git grep -c "DeathRespawnWatchdog" -- "*.cs"` → **vuoto**, e il file **non e' tracciato**)*.
+- ⇒ ⛔ **la doc contraddice il codice.** E **non e' un dettaglio formale**: e' **la trappola che ci ha gia' fatto sbagliare** — un agente ha letto questa TODO **e ha creduto che il fusibile ci fosse** *(`DIAGNOSI-MORTE-STUCKATA.md:40`: *"il registro del progetto oggi contraddice l'albero"*)*.
+- ⇒ ⭐ **e il rollback non ha toccato la doc**: `docs/TODO.md` e' **byte-identica a `0bca7fa`** prima e dopo *(`REFERTO-ROLLBACK.md` V1: `git diff 0bca7fa HEAD -- docs/TODO.md` → **VUOTO**, hash `2DF34A07…C6D93` su disco dopo il rollback)*. **Ecco perche' questa sezione esiste.**
+
+**⛔ E la `RETE 1` non c'e' nemmeno lei.** Erano **la stessa cosa**: `RETE 1` *(leggere `UnityEngine.Input` in proprio e chiamare `Penitent.Respawn()` al primo tasto vero)* e il fusibile sono nati **insieme**, in **`4c15659`**, e **insieme** sono spariti. A HEAD: **0 occorrenze** di `RESPAWN CHIESTO`, `STATO INCOERENTE`, `unityAnyKey`, `fusibile` *(e nei due log nuovi, **0** anche li': `DIAGNOSI-MORTE-STUCKATA.md` §4.3)*. ⇒ ⛔ **oggi NESSUNA riga di codice della mod chiede il respawn**: l'unica via di ritorno e' un **load di livello**.
+
+---
+
+### 2. ⭐⚠️ **E IL PROGETTO AVEVA DECISO IL CONTRARIO** — il rollback ha tolto **ENTRAMBI**
+
+**📊 E' scritto, prima del rollback** — `docs\TODO.md:6210` *(`## [2026-10-16 22:00]`, §3, **ultima riga**)*:
+
+> *"la forma della decisione, in una riga: **si tolgono i TIMER, si tiene la `RETE 1`**, e il fusibile si toglie solo dopo che il test ha mostrato che un tasto vero arriva sempre."*
+
+E la condizione era **esplicita** *(`docs\TODO.md:6208`)*: ⚠️ **"E' UNA DECISIONE DOPO IL TEST, NON PRIMA"** — *"un fusibile inerte non costa niente, un fusibile tolto prima della prova **costa una sessione**"*.
+⇒ ⛔ **il rollback ha tolto i TIMER *e* `RETE 1` INSIEME**, cioe' **piu' di quanto la decisione scritta autorizzasse**, e **senza il test** che la condizionava *(`DIAGNOSI-MORTE-STUCKATA.md` §5.3)*.
+
+---
+
+### 3. ⚠️ **LA CONSEGUENZA MISURATA: LA "MORTE STUCKATA"** *(due log, `DIAGNOSI-MORTE-STUCKATA.md` §1.1 e §2)*
+
+**📊 misurato nei log** *(sessione `G1`, 3371 righe, a HEAD `13107c9`)*:
+
+| riga | cosa | `t` |
+|---|---|---|
+| `G1:2494` | `[Morte] annuncio inviato: G1 e' morto` — la morte | ~303,6 |
+| `G1:2499` | `The input blocker DEAD_SCREEN has been enabled.` — **mai piu' spento** | — |
+| `G1:2548` | `[DeathScreen] misura t=307.68 … normalAlpha=1.00` — ⛔ **QUI SI FERMA** | 307,68 |
+| *assente* | ⛔ **`Penitent.Respawn()` non viene MAI chiamato**: la riga che il suo `Prefix` scrive **sempre** — `[Morte] il giocatore e' morto: …` *(`PlayerDeathSync.cs:397`)* — ha **0 occorrenze** | — |
+| *assente* | ⛔ **nessun load**: `Load and activate level` ha l'**ultima** occorrenza a `G1:1712`, **prima** della morte *(controllo positivo: il marker esiste, e dopo `:2494` e' 0)* | — |
+| `G1:3358` | `[DeathScreen] misura t=404.13 campione=51 … normalAlpha=1.00` — **la schermata era ancora li'** | 404,13 |
+| `G1:3371` | `All mods disposed!` — **il gioco si chiude** | — |
+
+⇒ ⭐ **`Game state` inchiodato a `PLAYERDEAD`**: `G1:2495` (`Game state has been set to PLAYERDEAD`) ed e' **l'ultima** riga `Game state` di tutta la sessione *(totale 10, ultima `:2495`)*.
+⇒ ⭐ **la schermata ferma ~100 s** *(da `t=307.68` a `t=404.13`)*, fino alla chiusura del gioco, **con `DEAD_SCREEN` acceso e mai spento**.
+⇒ ⚠️ **e il morto non ha nemmeno un soccorso automatico**: senza `RETE 1` e senza fusibile, **la mod non lo aiuta piu'** *(e' il prezzo dichiarato del rollback: `REFERTO-ROLLBACK.md` §5 punto 1)*.
+
+⚠️ **E DUE COSE NON VANNO CONFUSE, perche' la gerarchia conta** *(`DIAGNOSI-MORTE-STUCKATA.md` §3.3 e §6)*:
+1. **la "morte stuckata" E' il respawn che non arriva** — e **M1 non ne e' la causa**: il `Kill` del boss arriva a `t≈325,6` *(`G1:2851`)*, **~22 s dopo** la morte, su una schermata **gia' opaca** da `t=307.68`, e **nessuna richiesta di respawn era stata fatta ne' prima ne' dopo**;
+2. **M1 pero' e' un difetto a se'** — e **misurato**: fa girare **la sequenza di morte del boss su una macchina in `PLAYERDEAD`**, e quella sequenza **le lascia il `FADE` acceso per sempre**. Differenziale netto: **`G1:2910` acceso → mai spento** *(e `G1:2914` `Active: True` senza il suo `False`)* contro **`G2:2608` acceso → `G2:2632` spento**, **la stessa cutscene su una macchina viva**. ⚠️ **osservazione NUOVA di quella sessione**: il registro non ne aveva un precedente *(§5.4)*.
+
+📌 **E la riga del progetto che descrive esattamente cio' che e' successo** e' la sua stessa condizione, `docs\TODO.md:6208`: *"**un fusibile tolto prima della prova costa una sessione**"*. Il fusibile **e `RETE 1`** sono stati tolti **prima** di quella prova.
+
+---
+
+### 4. ⭐ **LA RACCOMANDAZIONE: RIMETTERE LA SOLA `RETE 1`, SENZA TIMER** *(🔧 proposta — NON implementata, NON verificata)*
+
+**📊 e la prova che la sostiene e' nei log, ed e' quella giusta**: **`RETE 1` e' gia' stata vista funzionare con `DEAD_SCREEN` e `FADE` accesi INSIEME** — cioe' **esattamente la configurazione in cui `G1` e' rimasto bloccato 100 s** *(`docs\TODO.md:6151`: `unityAnyKey=True` con `blockers=(DEAD_SCREEN,FADE)` accesi; il meccanismo e' che **`SetBlocker` NON blocca `UnityEngine.Input`**, `docs\TODO.md:6152`)*.
+
+⇒ **la forma minima, in una riga**: *reintrodurre **la sola `RETE 1`** — lettura in proprio di `UnityEngine.Input` + `Penitent.Respawn()` al primo tasto vero — **senza timer, senza grazia, senza orologio***. E' **la forma che il progetto aveva gia' deciso** *(`docs\TODO.md:6210`)*, ed e' **l'unica che non dipende da un load ne' dalla buona volonta' del peer**.
+⛔ **E il fusibile NON si rimette**: il registro lo ha provato **due volte come DIFETTO** *(ha respawnato uno spettatore **e ha distrutto la cutscene**: `docs\TODO.md:6191`)* ⇒ *"un fusibile inerte non costa niente"* **non e' vero**: **costa una cutscene**, e la misura e' nel registro.
+
+⚠️ **E il caso che `RETE 1` NON copre va detto** *(`docs\TODO.md:6209`)*: **un blocco a livello UNITY** — nessun tasto che arrivi affatto *(finestra non a fuoco, dispositivo scollegato, motore fermo)*. In quel caso **la mod e' cieca come il gioco**, e non c'e' uscita automatica. ⇒ **e' il residuo vero, e va dichiarato, non nascosto.**
+
+📌 **E perche' la prossima sessione possa DECIDERE** *(oggi non puo': `DIAGNOSI-MORTE-STUCKATA.md` §7 punto 1)*: **nei due log nuovi NON c'e' nessuna informazione sui tasti** — l'unico componente che leggeva la tastiera in proprio era **il watchdog, cancellato** *(nel codice `anyKey` sopravvive **solo in un commento**: `DeathScreenTransparency.cs:65`)*. ⇒ **il prossimo test deve portarsi la riga `unityAnyKey`** *(o una sonda equivalente)*, perche' **e' l'unica misura che distingue** *"la schermata di morte non accetta i tasti"* da *"nessun tasto e' arrivato"*.
+
+---
+
+### 5. ✅ **IL ROLLBACK — `13107c9`** *(`REFERTO-ROLLBACK.md`)*
+
+- **7 commit revertati**, in **UN SOLO commit**: `4c15659` *(nasce `RETE 1` + il fusibile, e RETE 2)* · `ea9d1ea` · `0393fd2` · `59f34d7` · `d0facd4` · `16a49ee` *(⚠️ **solo la meta' "rete"**: la meta' "congelamento" e' tenuta)* · `18a4500` *(la morte **scriptata** del boss)*. **Revert, non reset**: nessun force-push.
+- **Rete di sicurezza `pre-rollback`** → `0bca7fa`, **e branch `backup-prima-del-rollback`**; la prima stesura con un errore resta raggiungibile col tag **`rollback-pre-correzione`** → `4ab2212` *(l'errore e' dichiarato per intero in `REFERTO-ROLLBACK.md` §2.5: `CorpsePeerTick()` non era piu' invocato — **la vista del peer sarebbe rimasta codice dormiente**)*.
+- ⚠️ **quello che il rollback TOGLIE, e va saputo**: (1) **nessuna rete di riserva per il giocatore bloccato** sulla schermata di morte; (2) **il boss ucciso dall'altra macchina non recita piu' la sua morte** *(il boss **resta in piedi**: `EnemySyncManager.cs:422-425`, marker reale `Kill=ok` **senza** `morteScriptata=`)*; (3) **il prompt "premi un tasto" resta del gioco** e la mod non lo tocca *(`REFERTO-ROLLBACK.md` §5)*.
+- ⚠️ **E il messaggio del commit dichiara un obiettivo che NON ha raggiunto**: dice *"l'obiettivo e' NON usare `kill()`"* — **ma `kill()` c'e' ed e' eseguito** *(`DIAGNOSI-MORTE-STUCKATA.md` §4.2: `EnemySyncManager.cs:416`, e in `G1:2851` `Kill=ok`)*.
+- ✅ **E cosa ha tenuto, di proposito**: **`CorpsePeerTick()`** *(`Multiplayer.cs:215`, da `c5c7299`)* e **`AttachOnce()`** *(`Multiplayer.cs:204`, il congelamento sul cambio stanza)* — entrambe **invocate ogni frame**, verificate con un `git grep` sulla **chiamata** e non sull'esistenza dei metodi *(`REFERTO-ROLLBACK.md` §2.5 e V2)*.
+
+---
+
+### 6. ✅ **L'AUTO-DEPLOY E' SPENTO — `2e8cf19`** *(`REFERTO-AUTODEPLOY.md` — ed e' l'HEAD)*
+
+- ⚠️ **il problema**: il target `Development` del `.csproj` del client copiava **la DLL in gioco A OGNI BUILD** *(righe 59-60, con `DevFolder` **assoluto**: `D:\SteamLibrary\steamapps\common\Blasphemous\Modding\`)*. ⇒ ⭐ **era la causa dei fraintendimenti**: *"si credeva di testare una versione e il gioco ne eseguiva un'altra"*.
+- ✅ **il fix**: un interruttore, **`DeployToGame` = `false` per default** ⇒ `dotnet build` **non tocca piu' la cartella di gioco**. E **l'unico modo di deployare e' `tools\deploy-local.ps1`**.
+- ✅ **e `deploy-local.ps1` ora copia anche `Modding\data\*`** *(prima copiava **solo** `BlasClient.dll`)*: senza il target, **`Common.dll` non l'avrebbe piu' aggiornata nessuno** — ed e' **la stessa divergenza silenziosa** *(mod nuova con `Common.dll` vecchia)* che si e' poi **misurata davvero** prima del deploy di HEAD: `REFERTO-DEPLOY-HEAD-2.md` §1, coppia mista `5fa9acf2` (build di `wt-04a8fad`) + `d165d391` (build di `wt-HEAD`).
+- **📊 provato con TRE build** *(due nel repo principale, una in un worktree)*: la cartella di gioco **identica** ogni volta — **18 file, stessi sha256 E stessi timestamp**. E il controllo **positivo** dell'interruttore: con `-p:DeployToGame=true` la copia **avviene** ⇒ l'interruttore **non e' vacuo**.
+
+---
+
+### 7. ⛔⚠️ **`tools\verify-deploy.ps1` NON VERIFICA** — e il sostituto e' `scratch\marker-check.ps1`
+
+- ⛔ **cosa fa**: stampa *"ESITO: questa macchina esegue il binario atteso. **Puoi testare.**"* con **exit 0 anche su una DLL sbagliata** *(e **non e' stato toccato**: `REFERTO-ROLLBACK.md` §V6 e `REFERTO-DEPLOY-HEAD-2.md` §3, che lo dichiara **non usato come prova**)*.
+- ✅ **il sostituto**: **`scratch\marker-check.ps1`** — verifica il **CONTENUTO** della DLL **deployata nel gioco**, con **due metodi indipendenti** (*byte-level sull'heap `#US` in UTF-16LE, **e** a livello IL con **Mono.Cecil**, `Ldstr` su 2459 letterali)*, e **sa dire NO**.
+- ⭐ **e la prova che il check DISCRIMINA** *(non e' un timbro)*: sulla mod **vecchia** che stava in gioco (`5fa9acf2…`) lo **stesso** check da' il risultato **opposto** — `[ASSENTE]` sulle stringhe di HEAD e `[PRESENTE]` su quelle esclusive di `04a8fad` *(`REFERTO-DEPLOY-HEAD-2.md` §3D)*.
+- 📊 **e il deploy di HEAD e' stato verificato cosi'**: `Modding\plugins\BlasClient.dll` → sha256 **`6d880bec…b447`**, `Modding\data\Blasphemous.Multiplayer.Common.dll` → **`fab798e2…07d0`**, `SERVER-COOP\blas1mpserver.dll` → **`82e21ba1…6b95`**, **protocollo allineato** *(letto con Mono.Cecil dai due `Common.dll`: `Protocol.VERSION = 0` su **entrambi**)*, e **263 bersagli Harmony, 0 tipo assente, 0 METODO assente** *(`REFERTO-DEPLOY-HEAD-2.md` §2-§4)*.
+- ⭐ **e questo e' il punto che conta**: **l'auto-deploy spento `+` l'HEAD deployato e verificato NEL CONTENUTO sono le due condizioni che hanno reso affidabile il test che l'utente ha poi confermato** *(§9)*.
+
+---
+
+### 8. ✅ **LE DUE RUN** *(`scratch/DIAGNOSI-DUE-RUN.md` — 4 log, 95/95 assert)*
+
+- ⚠️ **la premessa "la A respawna e la B no" NON e' confermata**: **respawnano ENTRAMBE** *(`A-G2:2554` e `B-G1:2733` dicono la stessa cosa: "e' di nuovo vivo")*. ✅ *(e' la stessa correzione che il referto fa all'utente)*.
+- ⭐ **la differenza vera e' IL SALTO DELLA CUTSCENE** *(`[TRACE][CUTSCENE] Video End` presente **solo** in B; `CinematicEnded cancelled=True` in A contro `cancelled=False` in B; ~2,4/5,4 s contro ~23,5 s)*:
+  - **se salti** *(run A)*: **`cutscene_block` resta ACCESO sulla macchina del morto** *(acceso `A-G2:2359`, **mai spento**)*, **`POP_UP` non compare mai**, e **la chiusura del gioco non gira**;
+  - **se guardi** *(run B)*: `POP_UP` **si accende e si spegne**, `cutscene_block` **viene spento**, e la finestra di morte si chiude a **68,39 s** *(~23 s dopo la fine della cutscene)*.
+  - ⇒ ⚠️ **ed e' una differenza DI FORMA, NON DI SOSTANZA**: **il load lo azzera comunque** — in A il morto torna **~31 s prima** *(finestra 36,80 s)*.
+- ✅ **il `FADE` si chiude in ENTRAMBE** *(`B-G1:2652`→`:2707`; `A-G2:2463`→`:2524`)*, e su tutte e 4 le macchine gli `enabled` del blocker `FADE` sono **esattamente pari** ai `disabled` *(9/9, 9/9, 7/7, 7/7)* ⇒ ⭐ **il difetto "il `FADE` resta acceso" misurato in `G1` NON si e' riprodotto in queste due run**: o e' un'altra condizione, o e' specifico della sessione di `G1`. **Da non dare per chiuso.**
+- ✅ **il cadavere locale e' a posto in entrambe** *(copia `_coop_death_corpse` a terra al punto di morte, `alphaPrima=1.00`)*, ⚠️ **ma il binario di quelle run era `04a8fad`** *(provato da una stringa che esiste **solo** li': `DIAGNOSI-DUE-RUN.md` §0.2)*, quindi **quelle run NON dicono nulla su `c5c7299`**: a `04a8fad` `[CorpsePeer]` **non esisteva** *(0 occorrenze in tutti e 4 i log)*.
+
+---
+
+### 9. ✅✅ **VERIFICATO DALL'UTENTE OGGI — `c5c7299` E LA CUTSCENE AD ENTRAMBI**
+
+> **⭐ VERIFICATO DALL'UTENTE** *(in gioco, con le sue parole)*: *"Il test è positivo, **il cadavere c'è** — e **la cutscene funziona anche ad entrambi**."*
+
+- ✅ **il cadavere del peer C'E'** — il morto si vede **a terra**, **non piu' in piedi** *(`c5c7299`: si manda l'animazione di morte **una volta**, prima del congelamento)*;
+- ✅ **la cutscene del boss funziona su ENTRAMBE le macchine** — **compresa quella del morto**;
+- ⇒ ⭐ **e questo CHIUDE il difetto storico**: *"dal REMOTO il peer morto risulta ancora in piedi"* — che era **la voce 9** di questo file *(`docs\TODO.md:50`) e `[2026-10-16 20:00]` §1*, chiusa fino ad oggi con la **riserva**: *"il fix locale c'e', **il remoto no**"* *(`docs\TODO.md:6232`)*. ⭐ **LA RISERVA E' CHIUSA.**
+
+⚠️ **E va detto anche il metro di questa verifica**, perche' e' quello che la rende affidabile: **l'auto-deploy era spento** *(§6)* **e l'HEAD era deployato e verificato NEL CONTENUTO** *(§7: `marker-check.ps1`, con il controllo negativo sulla DLL vecchia)*. ⇒ **il gioco eseguiva davvero il binario di `2e8cf19`**: senza quelle due condizioni, *"verificato"* avrebbe voluto dire *"verificato su una versione che non si sa quale fosse"*.
+
+**⭐ E LO STATO DELLE FEATURE DI MORTE, COSI' COM'E' ORA:**
+
+| feature | stato |
+|---|---|
+| ✅ **cadavere locale** *(la posa chiusa dal segnale del gioco: `Animator.enabled == false`)* | **VERIFICATO** ✅ *(`DIAGNOSI-MORTE-STUCKATA.md` §1.1: `posa del cadavere chiusa dopo 1.46s`, **senza** il `Warn` del tetto)* |
+| ✅ **vista del peer** *(`c5c7299`)* | ⭐ **VERIFICATO DALL'UTENTE OGGI** ✅ |
+| ✅ **congelamento sul cambio stanza** *(`AttachOnce()`, `Multiplayer.cs:204`)* | **vivo e funzionante nei log** ✅ *(`G1:2887` inseguimento in pausa sulla cutscene, `:2939` ripresa, `:3369` finestra chiusa; ⚠️ **ma la porta l'ha usata il peer**, non il corpo del morto: `DIAGNOSI-MORTE-STUCKATA.md` §4.4)* |
+| ✅ **M1** *(la morte del boss portata sulla macchina di chi e' a terra)* | ⭐ **VERIFICATO DALL'UTENTE OGGI** ✅ *(e 📊 nei log: `G1:2851` `Kill=ok` sul morto, `G2:2557` la trasmissione dal vivo)* |
+| ✅ **cutscene del boss su ENTRAMBE le macchine** | ⭐ **VERIFICATO DALL'UTENTE OGGI** ✅ |
+| ⚠️ **M1: la conseguenza da affrontare** | **APERTA** — sulla macchina del morto la sequenza **lascia il `FADE` acceso** *(§3, misurato in `G1`)*. ⇒ o si tiene **garantendo che la macchina esca da `PLAYERDEAD`**, o si toglie *(ed e' cio' che il messaggio del rollback **dichiara** di voler fare e **non** ha fatto)*. **Da decidere esplicitamente.** |
+| ⛔ **`RETE 1` e il fusibile del respawn** | **NON ESISTONO** *(§1-§2)* — **da rimettere: la sola `RETE 1`, senza timer** *(§4)* |
+
+---
+
+### 10. ⚠️ **M1 RESTA — `afca6fe`** *("M1 - LA MORTE DEL BOSS ARRIVA ANCHE SULLA MACCHINA DI CHI E' A TERRA: annuncio `bdead|` + `boss.Kill()` sul morto")*
+
+- ⭐ **E' il fix che ha fatto funzionare le CUTSCENE INSIEME** *(l'utente lo conferma: §9)* ⇒ ⛔ **NON va tolto.**
+- ⚠️ **E il difetto a se' che si porta dietro** resta quello del §3: **il `FADE` acceso e mai spento sulla macchina del morto.** ⇒ ⇒ **si tiene, e si affronta la conseguenza**: una macchina in `PLAYERDEAD` che **non puo' respawnare** **non puo' assorbire in sicurezza una sequenza di morte del boss** *(`DIAGNOSI-MORTE-STUCKATA.md` §6 — e' la stessa ragione per cui il fusibile, quando respawnava durante la cutscene, **la distruggeva**: solo al contrario)*.
+- ⚠️ **e una cosa che il piano aveva dimostrato e che va ricordata prima di toccarlo**: **se togli M1, il morto NON vede piu' la cutscene del boss** — *"«togliere M1» e «avere la cutscene sul morto» sono, su questa base di codice, la stessa scelta presa due volte al contrario"* *(`scratch\PIANO-SPRITE-MORTO-E-M1.md`, §"la cosa da dire per prima")*.
+
+---
+
+### 11. ⚠️ **LA DECISIONE DI OGGI: IL "GATE" SUL MORTO E' MESSO DA PARTE**
+
+- ⛔ **il "gate"** — trattenere il morto in bossfight sopprimendo `Penitent.Respawn()` *(la via minima studiata in `scratch\STUDIO-TUTTI-NELLA-BOSSROOM.md` §6.2, dentro `PenitentRespawn_Patch` che **esiste gia'**: `PlayerDeathSync.cs:377`)* — **E' MESSO DA PARTE**, e per due ragioni **misurate**:
+  1. ✅ **il risultato si ottiene GIA' NON PREMENDO**: e' la **run B** del §8 — **cutscene intera, prompt funzionante, nessuno bloccato**;
+  2. ⚠️ **e il rischio e' un giocatore BLOCCATO**: il rilascio dipenderebbe da **condizioni che non controlliamo** *(crash, macchina congelata, peer che non torna)*, e **un `Prefix` che non rilascia blocca la stanza** — **peggio del difetto**.
+- ⭐ **E le due conseguenze operative, che vanno scritte perche' altrimenti si riapre due volte**:
+  - ⛔ **NON si estende `PenitentRespawn_Patch` con un `Prefix` che ritorna `false`**: **oggi MISURA e non sopprime** *(alza solo `SuppressingWorldReset`, `PlayerDeathSync.cs:394-395`)*, e **deve restare cosi'**;
+  - ✅ **e vale la mitigazione che c'e' gia'**: **avviso a schermo / consegna "NON PREMERE"** e **le due righe da cercare nel log** *(`[Morte] il giocatore e' morto: …` = il tasto e' arrivato; `Load and activate level` con una cutscene in corso = **la bossroom e' andata persa**)*. ⇒ **la nota e' scritta anche in `docs\BUG-NOTI.md` voce 5, come PREZZO ACCETTATO** *(e' il file giusto: **un difetto noto e non in lavorazione**)*.
+
+---
+
+### 12. 📌 **LA PROSSIMA COSA DA FARE: IL PUNTO 0** *(la sequenza d'ingresso del boss per chi arriva dopo)*
+
+- ⭐ **il punto 0** = *"tutti i giocatori nella bossroom prima che parta la sequenza d'ingresso"*.
+- ⚠️ **E IL PUNTO 0, COME E' SCRITTO, NON E' FATTIBILE** *(verificato: `scratch\STUDIO-TUTTI-NELLA-BOSSROOM.md` §(b), §(c), §(f))*: **non esiste nessuna funzione di attesa da ritardare** — la sequenza d'ingresso del boss e' **un evento PER MACCHINA**, agganciato **a un trigger di scena che ogni macchina attraversa per conto suo**, mentre **il boss e' GIA' NELLA STANZA dal caricamento del livello**. Il predicato *"metti in attesa la partenza"* **non esiste e non e' raggiungibile dal codice**: l'unico chiamante di `StartBossFight()` in tutto l'assembly e' **un pulsante di test dell'ispettore**.
+- ✅ **ma il risultato che l'utente vuole si ottiene lo stesso**, e la via e' **praticabile**: **un gate all'INGRESSO della bossroom** *(trattenere il giocatore, non la bossfight)*, con **predicati che la mod ha gia'** *(`OtherPlayerInMyScene()`, `EnemySyncManager.cs:247…`)*.
+- ⇒ **l'ordine dichiarato dalle due vie** *(`STUDIO-TUTTI-NELLA-BOSSROOM.md` §(f))*: **(1)** il gate del respawn *(piccolissimo — **ma oggi messo da parte, §11**)*; **(2)** il **gate all'ingresso della bossroom** *(medio)*. ⇒ **con la decisione di oggi, la prossima cosa da fare e' la (2).**
+- ⚠️ **e la trappola da non riaprire**: tenere un `Prefix` che **non rilascia** ⇒ *"ingresso mai piu' comandato = stanza bloccata"* *(e' la stessa ragione del §11 punto 2)*.
