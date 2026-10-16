@@ -145,8 +145,10 @@ namespace Blasphemous.Multiplayer.Client.Players
         // dovrebbe conoscerne i numeri a memoria - ed e' esattamente il modo in cui "spedisco una cosa e
         // l'altro ne riconosce un'altra" diventa un guasto che nessuna delle due parti vede.
         //
-        // ⭐ I NOMI SONO QUELLI VERI, letti in `Data/AnimationStates.cs:64-66` (indici 55, 56, 57) e non
-        // inventati: "Death" (55), "Death Spike" (56), "Death Fall" (57).
+        // ⭐ I NOMI SONO QUELLI VERI, letti in `Data/AnimationStates.cs:64-66` e non inventati:
+        // "Death" (**47**), "Death Spike" (**48**), "Death Fall" (**49**). ⚠️ L'indice e' la POSIZIONE nella
+        // tabella `AnimationStates.animations`, NON il numero di riga del file: la prima stesura scriveva
+        // 55/56/57 (le righe), e il difetto e' vissuto per giorni dentro quel numero sbagliato.
         //
         // ⭐ E SONO GLI STESSI CHE L'AVATAR GIA' GUARDA PER CONTO SUO: `OtherPlayerScript.Update` riconosce
         // il proprio cadavere con `state.IsName("Death") | "Death Spike" | "Death Fall" | "Grounding Over"`.
@@ -200,9 +202,21 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (animation >= all.Length)
                 return false;
 
-            // Il nome dello stato si passa come UNO stato: `params` lo impacchetta da solo, mentre passare
-            // direttamente il `string` a un metodo `params string[]` non compila.
-            return DeathAnimationIndexOf(all[animation].name) >= 0;
+            // ⚠️ SI CONFRONTA COL NOME DELLO STATO **DI MORTE** (`DeathStates`), NON CON LA TABELLA DELLE
+            // ANIMAZIONI. La versione precedente chiedeva a `DeathAnimationIndexOf` se il nome letto DALLA
+            // TABELLA (es. "Run", "Healing") comparisse NELLA TABELLA: quel nome viene da li', quindi la
+            // risposta era **sempre si'** e questa funzione diceva `true` per OGNI byte 0..85 (86 voci).
+            // Provato nei log, non dedotto: `morto a terra (animazione di morte ricevuta: byte 81=Healing)`
+            // e `byte 6=Run`. La domanda vera e' "questa animazione e' una morte?", e l'elenco delle morti
+            // e' `DeathStates` - non "questo nome esiste?".
+            string stateName = all[animation].name;
+            for (int i = 0; i < DeathStates.Length; i++)
+            {
+                if (DeathStates[i] == stateName)
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>

@@ -16,6 +16,13 @@ namespace Blasphemous.Multiplayer.Client.Players
         private PlayerStatus playerStatus;
         private bool playerDead = false;
 
+        /// <summary>
+        /// Vero quando <see cref="SetDeathStatus(bool)"/> ha davvero messo l'avatar **a terra** (Animator
+        /// spento sulla posa di morte). E' il testimone della prova di vita: e' la cosa che va disfatta, e
+        /// non oscilla come <c>playerDead</c> (vedi <c>Update</c>, il ramo <c>else</c>).
+        /// </summary>
+        private bool deathStatusApplied = false;
+
         private SpriteRenderer CharacterRenderer { get; set; }
         private Animator CharacterAnim { get; set; }
 
@@ -793,13 +800,32 @@ namespace Blasphemous.Multiplayer.Client.Players
 
                 // If this player was previously assumed dead but now they are receiving another anim, turn
                 // them alive again - unless the animation IS the death, which is what confirms the corpse.
-                if (playerDead && !isDeathAnimation)
+                //
+                // ⚠️ LA CONDIZIONE GUARDA `deathStatusApplied`, **NON** `playerDead`: `Update` riabbassa
+                // `playerDead` a ogni fotogramma che non sia quello in cui la posa e' "appena finita"
+                // (`:1003-1006`, il ramo `else`), quindi mentre l'avatar e' a terra quel flag OSCILLA
+                // vero/falso - e la prova di vita dipenderebbe dal fotogramma in cui arriva il pacchetto.
+                // `deathStatusApplied` e' invece **esattamente cio' che `SetDeathStatus(true)` ha fatto
+                // all'avatar** (`:1036-1045`): la prova di vita e' la cosa che lo disfa, quindi e' quello che
+                // deve guardare. Con `playerDead` questa protezione non era affidabile nemmeno col predicato
+                // giusto (e nei log non e' mai scattata: `vivo in piedi` = 0).
+                if (deathStatusApplied && !isDeathAnimation)
                 {
                     SetDeathStatus(false);
+                    SetAnimatorBoolIfPresent("IS_DEAD", false);
+
+                    // ⚠️ IL NOME SI LEGGE SOLO SE IL BYTE E' NELLA TABELLA, e non e' pignoleria: questa prova
+                    // di vita scatta anche per le animazioni SPECIALI (byte >= 240, es. 247 = "entra nella
+                    // porta"), e li' `AnimationStates.animations[value]` non esiste - indicizzare era un
+                    // `IndexOutOfRangeException` dentro il marker della protezione stessa. Era invisibile
+                    // solo perche' il ramo era irraggiungibile; ora che scatta, va scritto bene.
+                    string arrivedName = value < AnimationStates.animations.Length
+                        ? AnimationStates.animations[value].name
+                        : ("animazione speciale tipo " + value);
 
                     ModLog.Info("[CorpsePeer] avatar del peer: vivo in piedi " +
-                                "(e' arrivata un'animazione che NON e' una morte: byte " + value + "=" +
-                                AnimationStates.animations[value].name + ")");
+                                "(l'avatar era a terra e arriva un'animazione che NON e' una morte: byte " +
+                                value + "=" + arrivedName + " · IsDeathAnimation=false)");
                 }
 
                 if (value < 240)
@@ -825,14 +851,24 @@ namespace Blasphemous.Multiplayer.Client.Players
                     if (isDeathAnimation)
                     {
                         // ⚠️ `IS_DEAD` NON BASTA QUELLO CHE C'E' IN TABELLA, E VA GARANTITO.
-                        // `AnimationStates.animations[55]` ("Death") dichiara UN solo parametro
-                        // (`IS_DEAD = true`) e le altre due morti nessuno, quindi per 56/57 il ciclo qui
+                        // `AnimationStates.animations[47]` ("Death") dichiara UN solo parametro
+                        // (`IS_DEAD = true`) e le altre due morti (`animations[48]` "Death Spike",
+                        // `animations[49]` "Death Fall") nessuno, quindi per 48/49 il ciclo qui
                         // sopra non scrive nulla: su un avatar il cui Animator arriva da un'altra sequenza il
                         // bool puo' essere rimasto falso, e con `IS_DEAD` falso il controller puo' NON restare
                         // sulla posa di morte - cioe' il cadavere si rialza, che e' il difetto da correggere.
                         // Si scrive DOPO il ciclo, cosi' vince su qualunque valore esso abbia impostato.
                         SetAnimatorBoolIfPresent("IS_DEAD", true);
                     }
+
+                    // ⭐ IL MARKER DEL PREDICATO, E STA SU **OGNI** ANIMAZIONE REGOLARE, non solo sulla morte.
+                    // E' l'unico modo perche' un log provi anche il caso NEGATIVO - "byte 6=Run NON e' una
+                    // morte" - che e' precisamente cio' che `PlayerStatus.IsDeathAnimation` sbagliava: prima
+                    // della correzione rispondeva `true` per ogni byte della tabella, e il caso negativo non
+                    // poteva comparire in nessun log (`morto a terra (byte 81=Healing)`).
+                    ModLog.Info("[CorpsePeer] animazione del peer ricevuta: byte " + value + "=" +
+                                animState.name + " · IsDeathAnimation=" +
+                                (isDeathAnimation ? "true" : "false"));
 
                     CharacterAnim.Play(animState.name);
 
@@ -847,7 +883,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                         // cadendo: e' una dissolvenza, non un'attesa.
                         ModLog.Info("[CorpsePeer] avatar del peer: morto a terra " +
                                     "(animazione di morte ricevuta: byte " + value + "=" + animState.name +
-                                    ") · l'Animator si fermera' da solo sulla posa finale " +
+                                    " · IsDeathAnimation=true) · l'Animator si fermera' da solo sulla posa finale " +
                                     "(normalizedTime>=0.95, come il Penitent locale)");
                     }
                 }
@@ -867,6 +903,9 @@ namespace Blasphemous.Multiplayer.Client.Players
                 // stato davvero impostato. Se la morte non e' arrivata, `isDeathAnimation` e' falso e questa
                 // riga RIABBASSA `playerDead` - ma solo dopo che la prova di vita ha gia' fatto il suo
                 // lavoro, quindi il comportamento di prima e' intatto per ogni animazione normale.
+                // ⚠️ NOTA: dopo la correzione la prova di vita NON legge piu' `playerDead` (legge
+                // `deathStatusApplied`, che scrive solo `SetDeathStatus`); questa riga resta perche' `Update`
+                // usa ancora il flag (`:1015`) e toccarlo non serve a niente.
                 if (!isDeathAnimation)
                     playerDead = false;
             }
@@ -1037,6 +1076,11 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             CharacterAnim.enabled = !dead;
             OtherPlayerAttack.SetHitboxStatus(!dead);
+
+            // ⭐ IL TESTIMONE DELLA PROVA DI VITA. Si scrive QUI e non altrove perche' e' l'unica riga che sa
+            // se l'avatar e' rimasto a terra: `CurrentAnimation` la interroga per rialzarlo, e `Update` la
+            // spegne quando la posa di morte e' finita. Vedi `deathStatusApplied`.
+            deathStatusApplied = dead;
         }
 
         /// <summary>
