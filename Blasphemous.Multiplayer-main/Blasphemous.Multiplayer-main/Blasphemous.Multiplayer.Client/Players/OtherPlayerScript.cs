@@ -803,10 +803,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 //
                 // ⚠️ LA CONDIZIONE GUARDA `deathStatusApplied`, **NON** `playerDead`: `Update` riabbassa
                 // `playerDead` a ogni fotogramma che non sia quello in cui la posa e' "appena finita"
-                // (`:1003-1006`, il ramo `else`), quindi mentre l'avatar e' a terra quel flag OSCILLA
+                // (`:1042-1045`, il ramo `else`), quindi mentre l'avatar e' a terra quel flag OSCILLA
                 // vero/falso - e la prova di vita dipenderebbe dal fotogramma in cui arriva il pacchetto.
                 // `deathStatusApplied` e' invece **esattamente cio' che `SetDeathStatus(true)` ha fatto
-                // all'avatar** (`:1036-1045`): la prova di vita e' la cosa che lo disfa, quindi e' quello che
+                // all'avatar** (`:1075-1082`): la prova di vita e' la cosa che lo disfa, quindi e' quello che
                 // deve guardare. Con `playerDead` questa protezione non era affidabile nemmeno col predicato
                 // giusto (e nei log non e' mai scattata: `vivo in piedi` = 0).
                 if (deathStatusApplied && !isDeathAnimation)
@@ -905,7 +905,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                 // lavoro, quindi il comportamento di prima e' intatto per ogni animazione normale.
                 // ⚠️ NOTA: dopo la correzione la prova di vita NON legge piu' `playerDead` (legge
                 // `deathStatusApplied`, che scrive solo `SetDeathStatus`); questa riga resta perche' `Update`
-                // usa ancora il flag (`:1015`) e toccarlo non serve a niente.
+                // usa ancora il flag (`:1037`) e toccarlo non serve a niente.
                 if (!isDeathAnimation)
                     playerDead = false;
             }
