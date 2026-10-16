@@ -6128,3 +6128,119 @@ candidato ① e' UNA: `gameplayUIActive`.** Serve una run che la mostri `False` 
 - ⚠️ **Il TODO non e' stato riscritto in tutte le sue parti**: questa voce **si sovrappone** al §3 e al §5 della voce
   `[2026-10-14 02:00]`, che **parlano ancora del guasto del respawn come se il fusibile fosse la prova di un guasto** —
   e ora **non lo e'**. **Chi legge quella voce legga anche questa.**
+
+
+---
+
+## [2026-10-16 22:00] ⭐⭐ **IL TASTO ARRIVA A `UnityEngine.Input` ANCHE CON L'INPUT DEL GIOCO BLOCCATO** — il RESPAWN raccontato per intero *(la causa, le due proposte scartate, il fix del cambio stanza)*, e **LA DECISIONE CHE ASPETTA IL TEST**
+
+**Referti**: `scratch/REFERTO-RITORNO-IN-VITA-E-NUMERI.md` *(il principale: HEAD di partenza verificato `59f34d7`, arrivo `d0facd4`)* · `scratch/REFERTO-FUSIBILE-3.md` · `scratch/REFERTO-FUSIBILE-2.md` · `scratch/REFERTO-FUSIBILE-RESPAWN.md` · `scratch/REFERTO-RESPAWN-BLOCCATO.md` · `scratch/REFERTO-PEER-MORTO-E-CAUSA.md` · `scratch/REFERTO-CAM-SEGUE-VIVO.md`.
+**Commit**: **`16a49ee`** *(il cadavere-seguace si FERMA sul cambio stanza + lo stato incoerente ha una rete che lo DICHIARA)* e **`d0facd4`** *(i due numeri del fusibile)* — e la **catena del fusibile**, tutta del `2026-10-16`: `4c15659` *(nasce `RETE 1` + il fusibile)* → `ea9d1ea` → `0393fd2` → `59f34d7`.
+**Build/deploy dei due commit**: `Build succeeded`, **0 errori** *(441 warning)*, **263 → 263**, deploy **263 → 263**, 0 tipo assente, 0 METODO assente. **DLL gioco == repo**: SHA256 `8052A8B3A0AFC601266A105473F8EC14A2B7C07C4B594918AA758F4C89294920` per (A) e `DA98723F240A56AC47B0A71619955454C4EF5FAF905B5BA80FA97C7568D8EE77` per (B) — e per (B) i due numeri sono stati **riletti come COSTANTI dentro la DLL deployata** con **Mono.Cecil**, non con un `Contains`.
+⚠️ **E prima di leggere il §1: questa sezione NON e' una voce chiusa** — e' lo stato di una diagnosi. **La run che la conferma non e' stata fatta** *(§5)*.
+
+**🔎 COME SI LEGGE QUESTA SEZIONE — tre etichette, e vanno cercate una per una:**
+- ✅ **VERIFICATO DALL'UTENTE** *(in gioco, con le sue parole)* · 📊 **PROVATO NEI LOG** *(una riga di log, un conteggio)* · 🔧 **IMPLEMENTATO, NON VERIFICATO** *(build + deploy + referto, nessuna run)*.
+
+---
+
+### 1. ⭐⭐ LA SCOPERTA CHE CHIUDE TRE SESSIONI DI DUBBI *(il pezzo piu' importante)*
+
+#### ⭐ **IL TASTO ARRIVA A `UnityEngine.Input` ANCHE CON L'INPUT DEL GIOCO BLOCCATO** ✅ *(📊 provato nei log)*
+
+- **PROVA NEI LOG**: `unityAnyKey=True` **con `blockers=(DEAD_SCREEN,FADE)` ACCESI** — `G1:2894 · 2898 · 2905 · 2906 · 2916` *(campioni 56, 57, 59, 60, 64)*, ognuno con `schermataMorte=[trovato=1 attivo=True enabled=True alphaNorm=1.00]` *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:251-256`)*.
+- **E il meccanismo, verificato in IL**: **`SetBlocker` NON blocca `UnityEngine.Input`** — `DeadScreenWidget` legge `UnityEngine.Input` *(la sua uscita e' `while (!Input.anyKey)`, `:87`)*, **non** `Core.Input.InputBlocked`: **47 riferimenti a `UnityEngine.Input`** contro **20 a `Core.Input.InputBlocked`** nella DLL del gioco ⇒ **due piani diversi** *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:262-265` e `:436-441`)*.
+- **E la conferma indipendente, dello stesso ordine**: a `t≈308.5` il morto preme **`Escape`** e la mod scrive `TASTO IGNORATO: Escape e' stato premuto mentre la sequenza di morte del boss era in corso` *(riga **2844**)*, e **nello stesso torno di tempo il `FADE` della schermata si ACCENDE** *(riga **2831**: `FADE has been enabled` + `[TRACE][FADE] Called fade function. Active: True`)* ⇒ **il tasto e' arrivato al GIOCO con i due blocker accesi.**
+- ⇒ ⭐ **CONSEGUENZA OPERATIVA**: **RETE 1** — *il watchdog che legge i tasti IN PROPRIO (`DeathRespawnWatchdog` → `UnityEngine.Input.GetKeyDown`, verificato in IL) e chiama `Penitent.Respawn()`* — **funziona in OGNI caso, anche quando il gioco sembra bloccato** ✅
+- ⇒ e **il fusibile diventa la rete di CHI NON PREME**, non la rete di un guasto ✅ *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:267-270`; ed e' la ragione per cui il numero del §2 puo' essere corto: `:391-393`)*.
+
+**⚠️ PRECISAZIONE PER CHI CERCA NEI LOG — due sessioni diverse si chiamano tutte e due `G1`, e vanno tenute separate:**
+- la **sessione del GUASTO** *(il verbatim dell'utente: "i tasti non funzionano, ne' per tornare al falo' ne' per il ritorno al menu")* e' quella di `REFERTO-RESPAWN-BLOCCATO.md` *(3347 righe)*: `DEAD_SCREEN` acceso a `G1:2510` e **mai spento**, `FADE` acceso a `G1:3159` e **mai spento** *(l'11º `Called fade function. Active: True` senza il suo `False`, `:85-94`)*, `Respawn()` **mai invocato** *(`:75-81`)*;
+- la **sessione di `REFERTO-RITORNO-IN-VITA-E-NUMERI.md` §1.1/§2.4** *(dove `unityAnyKey=True` con `blockers=(DEAD_SCREEN,FADE)`)* e' quella del cambio stanza: morte a `t=253.43`, `kill()` del boss a `t=278.9`, cutscene a `t=290.8`, **porta aperta dal peer a `t≈325.6`**, load a `t≈326.4`;
+- e una **terza**, quella di `REFERTO-FUSIBILE-2.md` §1.1 / `REFERTO-FUSIBILE-3.md`, in cui e' la **schermata di morte del gioco** a respawnare (`[Morte] il giocatore e' morto` a riga **3196**, ~`t=287.14`).
+⇒ ⚠️ **Le tre non si mescolano**: chi legge un numero trovi prima il referto.
+
+---
+
+### 2. ⭐ IL RESPAWN: LA STORIA COMPLETA *(e' stata una delle parti piu' intricate — va raccontata)*
+
+**· LA CAUSA VERA DEL GUASTO "i tasti non funzionano" — e' la schermata di morte DEL GIOCO.** *(📊 provato nei log)*
+Il suo callback e' una coroutine: `DeadScreenWidget.OnDeadAction:87-96` = `while (!Input.anyKey) { yield return null; }` → `Core.UI.Fade.Fade(toBlack, 1.5f, 0f, …)` → **nel callback** `Core.Logic.Penitent.Respawn()` *(`REFERTO-FUSIBILE-3.md:38-39` e `:130-134`, dove il conto e' `1.5 s` fra il `FADE` a ~285.6 e il `Respawn()` a ~287.1)*.
+⚠️ **E la variabile che decide tutto**: **`inputBlockers` + `InputBlocked`**, che si aggiorna **SOLO dentro `SetBlocker`** *(verificato in IL: `inputBlockers` e' `private List<string>`, `InputBlocked` e' `Count > 0`, il setter e' non-public, `HasBlocker` e' `public` e legge soltanto — `REFERTO-RITORNO-IN-VITA-E-NUMERI.md:288-290` e `:419-423`)*.
+E i due blocker **non li spegne nessuno**: `DEAD_SCREEN` acceso da `OnDeadAction:78` (`G1:2510`) e `FADE` acceso da `FadeWidget.Fade` (`G1:3159`), **mai spenti**, e `CINEMATIC` **era spento** *(`G1:3183`: `[Cutscene BLK] CINEMATIC=False InputBlocked=True`)*
+⇒ ✅ **con `DEAD_SCREEN`+`FADE` accesi e mai spenti il gioco non reagiva piu' ai tasti** *(`REFERTO-RESPAWN-BLOCCATO.md:66-69, 85-94, 109`)*.
+⚠️ **E il prezzo e' grande, e va detto**: `PlatformCharacterInput.get_Blocked` = `Core.Input.InputBlocked` ⇒ **20 letture di `InputBlocked`** nelle classi di gioco *(attacco, parata, preghiera, dash, scale, idle-mode: `Parry.OnUpdate`, `GrabLadder.OnUpdate`, `PlayerIdleMode.OnUpdate`, `PrayerUse.OnUpdate`, `RangeAttack.OnUpdate`, …)* ⇒ **un giocatore a cui manca meta' dell'input** *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:351`)*.
+
+**· E LA CAUSA CHE NON ERA NOSTRA.** *(📊 provato nei log)*
+Nella **sessione del guasto** `[Respawn] RESPAWN CHIESTO` = **0 occorrenze** *(la mod non ha chiesto nulla: quella riga esce **sempre** prima che la mod chiami `Penitent.Respawn()`)* e `[Morte] il giocatore e' morto` = **0 occorrenze** *(ed e' il `Prefix` di Harmony di `Penitent.Respawn()`, `PlayerDeathSync.cs:378-400` — **se `Respawn()` girasse, quella riga uscirebbe sempre**)*
+⇒ ✅ **il respawn non e' stato rifiutato: non e' mai stato chiesto, e non l'ha chiesto la mod** *(`REFERTO-RESPAWN-BLOCCATO.md:75-81`)*.
+📊 **E nella sessione del cambio stanza la stessa assenza vale per entrambe le righe**: in **tutti e due** i log nuovi `[Morte] il giocatore e' morto` = **0** e `RESPAWN CHIESTO` = **0** ⇒ **il giocatore e' tornato vivo lo stesso, e a riportarlo su e' stato il LOAD** *(`LevelManager.InitializeLevel` → `SpawnManager.SpawnPlayerOnLevelLoad():422` → `CreatePlayer` → `Instantiate`, `SpawnManager.cs:489`)* *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:39-45, 139-167`)*.
+⚠️ **Una precisazione, perche' e' un numero che si legge male**: nella **terza** sessione *(`REFERTO-FUSIBILE-2.md` §1.1 / `REFERTO-FUSIBILE-3.md`)* `[Morte] il giocatore e' morto` **c'e'** *(riga 3196)* e `RESPAWN CHIESTO` **non c'e'**: li' **ha respawnato la schermata di morte del gioco**, `1.5 s` dopo il suo `FADE` *(`REFERTO-FUSIBILE-2.md:93-100`)*. ⇒ **in tutte e tre le sessioni la mod non ha mai chiesto il respawn**: cambia **chi** l'ha chiesto *(il load, oppure il gioco)*, non **se** e' stata la mod. ✅
+
+**· ⛔ E DUE PROPOSTE VALUTATE E SCARTATE — con la prova, perche' non si rifacciano.** *(📊 in IL + nei log)*
+**① bloccare l'input in bossfight (`SetBlocker`): ⛔ NON funziona.** La schermata di morte **legge `UnityEngine.Input`**, quindi **reagisce lo stesso** anche col blocker acceso *(`unityAnyKey=True` con `blockers=(DEAD_SCREEN,FADE)`: §1)*, e il prezzo sarebbe **il controllo del personaggio spento** *(`PlatformCharacterInput.get_Blocked`)* **+ la sparizione del prompt che si voleva proteggere** *(`InputNotifier.DelayerShowNotification` esce subito se `InputBlocked` e `!showWhenInputBlocked`, `:0039-0053`)* ⇒ **toglie il controllo e non ottiene cio' che promette** *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:412-456, 478-496`)*. ✅ E la parte di fattibilita' **era vera**: `SetBlocker`/`HasBlocker` sono `public`, e un nome nostro **non disturba il gioco** *(`inputBlockers` e' una lista di stringhe e il gioco non conosce nessun nome)* — **e' il MECCANISMO che non funziona, non il permesso**.
+**② "sfruttare" il ritorno in vita per il cambio stanza: ⛔ e' una TRAPPOLA.** E' un **load di livello dipendente da un trigger che non controlliamo** *(`Door.OnUpdate:267-284` legge `base.PlayerInRange` del **Penitent locale**, che quando si e' morti e' il cadavere)* **e perde la registrazione della morte** *(`[Morte] il giocatore e' morto` assente ⇒ nessuna animazione di respawn, nessuna morte registrata: `:54-57`)* ⇒ **il fix prioritario non e' "ripararlo", e' NON PRODURLO** *(`:356-359`)*.
+
+**· IL FUSIBILE, DOPO TRE ITERAZIONI — la prima versione era un TIMER CIECO.** *(🔧 implementato, non verificato in gioco)*
+- **`4c15659` — nasce** *(con `REFERTO-RESPAWN-BLOCCATO.md`)*: **`RETE 1`** *(si legge `UnityEngine.Input` in proprio e al primo tasto vero si chiama `Penitent.Respawn()`, che e' la via del gioco: un **load**, e il load e' l'unico punto in cui il gioco rimette a posto `ResetManager()`, il `FADE` e `DEAD_SCREEN` **da solo**)* **piu' un fusibile a 45 s dal momento della morte**: **un timer cieco**, che non sapeva niente del boss.
+- **`ea9d1ea`** *(con `REFERTO-FUSIBILE-RESPAWN.md`)*: il fusibile **aspetta il `kill()` del boss** *(`EnemySyncManager` conta i `kill()` nei due punti che il progetto gia' conosce: `ApplyBossDeath` e il ramo `[BossDeath TX]`)*, il conteggio si **azzera** mentre e' acceso un blocker di scena *(anche `FADE`, `cutscene_block`, …)* e resta un **orologio assoluto che ignora le sequenze**.
+- **`0393fd2`** *(con `REFERTO-FUSIBILE-2.md`)*: il fusibile si arma **alla FINE della sequenza di morte del boss** *(eventi pubblici `Cinematics.CinematicStarted`/`CinematicEnded`, nessuna patch Harmony)*, col **ripiego** `BOSS_DEATH_GRACE_SECONDS` per un boss **senza** cutscene.
+- **`59f34d7`** *(con `REFERTO-FUSIBILE-3.md`)*: **`RETE 1` diventa MUTA** per tutta la sequenza *(`BossSequenceInProgress` = `_cinematicOn || _waitingSequence`)* **piu' l'avviso a schermo** *"NON PREMERE: il boss sta morendo - la cutscene sta per partire"* (`WARN_PLAYER_ON_BOSS_DEATH`) — perche' **la mod puo' impedire a SE STESSA di respawnare, ma non puo' impedire al GIOCO di farlo** *(`Input.anyKey`)*.
+- ⭐ **OGGI, dopo `d0facd4`** *(e i valori sono in cima al file: `DeathRespawnWatchdog.cs:344`, `:354`, `:376`)*:
+  **`BOSS_DEATH_GRACE_SECONDS = 30 s`** *(la grazia **PRIMA**: quanto si aspetta, dopo il `kill()`, che parta una cutscene — **7-10× la misura di 3.0-3.9 s**)* **+ `ESCAPE_SECONDS = 15 s`** *(il conteggio **DOPO**, e parte **solo a sequenza conclusa**)* **+ `MAX_ESCAPE_SECONDS = 300 s`** *(l'orologio che ignora le sequenze: la spiaggia di una cutscene appesa)* *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:365-396`)*.
+  ⚠️ **E il fusibile ha GIA' causato due volte il difetto che gli si rimprovera** — ed e' la ragione per cui la voce 2 della lista corta parla di **toglierlo**, non di tararlo: **①** `REFERTO-FUSIBILE-RESPAWN.md:30-35` *(scatta a `45.01 s`, `RESPAWN CHIESTO: FUSIBILE scattato` → `Load and activate level D17Z01S05`: **ha respawnato uno spettatore e ha distrutto la cutscene** che stava guardando — il verbatim dell'utente)*; **②** `REFERTO-FUSIBILE-2.md:37-42` e `:89-92` *(armato **per tutta l'animazione di morte** del boss — 5 campioni `fusibile=armato-in-pausa(scena)` — e sarebbe scattato `45 s` dopo il `kill()`)*.
+
+**· E IL FIX DEL CAMBIO STANZA — `DeathCorpseFollow` SI CONGELA su due FATTI DEL GIOCO, non su sensori a raggio.** *(🔧 implementato, non verificato in gioco — commit `16a49ee`)*
+`DeathCorpseFollow.SceneChangeFrozen()`, chiamato in `Follow()` **dopo** la pausa sulla cutscene, si ferma su:
+- **`Core.LevelManager.InsideChangeLevel`** *(campo `public bool` con setter privato, `LevelManager.cs:69`, vero da `:162` a `:195`)* — il gioco **sta gia'** cambiando livello;
+- **`Door.OnDoorEnter` / `Door.OnDoorExit`** *(eventi `Core.SimpleEvent` **pubblici**, `Door.cs:127-129`, invocati in `EnterDoor:212-215` / `ExitDoorSafe:154-157`)* — e servono perche' coprono la finestra in cui `InsideChangeLevel` e' **ancora falso**: **~0.8 s** misurati in `G1` fra la porta (`325.6`) e il load (`~326.4`) *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:194-228`; nel codice: `DeathCorpseFollow.cs:262-266`, `:634`, `:698-745`, `:776-780`, `:796-826`)*.
+⛔ **E il sensore a raggio (`Physics2D.OverlapCircleAll`) e' stato scartato DI PROPOSITO**: dipende dal **layer** dei trigger di porta e `Physics2D.DefaultRaycastLayers` **esclude** i layer piu' alti ⇒ **puo' non vedere niente e non dirlo** — *un guardiano che fallisce in silenzio e' peggio di nessun guardiano* *(`:208-212`)*.
+✅ **E non e' una patch**: `InsideChangeLevel` si **legge**, i due eventi si **sottoscrivono** *(una volta sola, da `Multiplayer.OnLateUpdate`)*: **zero patch Harmony, 263 → 263**, zero `SetBlocker`/`ResetManager`/`TimeScale`/`SetActive`/camera *(`:205-207` e `:543-557`)*.
+📌 **E c'e' un pezzo in piu', che va detto perche' e' nuovo**: da `16a49ee` lo **stato incoerente** — `!Penitent.Status.Dead` **e** `Core.Input.HasBlocker("DEAD_SCREEN")` vero — ha finalmente una **rete che lo DICHIARA** *(una riga `[Respawn] STATO INCOERENTE …` + **una sola** richiesta di `Respawn()` dopo `INCOHERENT_GRACE_SECONDS = 5 s`, `DeathRespawnWatchdog.cs:413`)*, perche' **il watchdog era STRUTTURALMENTE CIECO** *(`Tick`: `if (!dead) return` — la sua finestra esiste solo da morto)* e **nessuna via lecita congeda la schermata** *(`Respawn()` = il load che l'ha creata; `Status.Dead = true` = un'altra attesa; `HideAll()` e' **privata**)* *(`:274-345, 561-605`)*. ⚠️ **Questo tentativo NON e' stato esercitato** *(`:585-588`)*.
+
+---
+
+### 3. ⭐⭐ LA DECISIONE DA PRENDERE DOPO IL TEST *(⚠️ e va scritta come CANDIDATO, non come piano)*
+
+> ⚠️ **SE IL TEST CONFERMA CHE `RETE 1` BASTA** *(e la prova nei log e' gia' forte: §1)*
+> ⇒ ⭐ **SI POSSONO TOGLIERE TUTTI I CONTROLLI E I TIMER DEL RESPAWN AUTOMATICO**: il fusibile *(`15 s`)* e l'orologio *(`300 s`)* diventano **RESIDUI** — sono la rete di **CHI NON PREME**, non la rete di un guasto ✅
+> ⇒ **meno stato, meno timer, e meno cose che possono scattare a sproposito** ✅ — *(ed e' ESATTAMENTE il difetto che il fusibile ha gia' causato **DUE VOLTE**: §2, ① e ②)*
+> ⚠️ **MA E' UNA DECISIONE DOPO IL TEST, NON PRIMA**: e' un **CANDIDATO ALLA RIMOZIONE**, e la **CONDIZIONE e' esplicita** — *il test del §4 punto 1 deve mostrare `RETE 1` che respawna al primo tasto vero, e nessun `[Respawn] STATO INCOERENTE` che compaia per conto suo.* **Finche' quel test non c'e', il fusibile RESTA**: un fusibile inerte non costa niente, un fusibile tolto prima della prova costa una sessione.
+> ⚠️ **E VA TENUTO IL CASO CHE `RETE 1` NON COPRE** — e va detto perche' e' l'unico: **un blocco a livello UNITY** *(nessun tasto arriva affatto)*. `RETE 1` legge `UnityEngine.Input` in proprio: se nemmeno quello risponde *— finestra non a fuoco, dispositivo scollegato, motore fermo —* la mod e' cieca come il gioco ⇒ **in quel caso il fusibile e' l'unica uscita automatica che esiste** *(`REFERTO-FUSIBILE-RESPAWN.md:229-231`: "se il tasto non arriva a Unity, la mod non puo'…")*.
+> ⇒ **la forma della decisione, in una riga: si tolgono i TIMER, si tiene la `RETE 1`, e il fusibile si toglie solo dopo che il test ha mostrato che un tasto vero arriva sempre.**
+
+---
+
+### 4. 📌 LA LISTA CORTA — *verificata contro il file, e aggiornata*
+
+**1. ⭐ IL TEST** *(§2 — ed e' l'unica cosa che sblocca tutto il resto)*: i due casi, e ognuno ha la sua riga da leggere:
+   - **(a)** morte in una **stanza con una porta** + il vivo la apre ⇒ deve comparire **`[CorpseFollow] inseguimento CONGELATO`** *(una per finestra: `_sceneChangeReported`)* — e' **la prova che il fix del cambio stanza di `16a49ee` funziona** *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:531`)*. ⚠️ **In `G1` questo NON e' successo**: a usare la porta e' stato **il peer**, e il `[CorpseFollow]` non registra nessun movimento dopo `t=325.10` *(`:567-572`)*;
+   - **(b)** morte **col boss vivo** + il compagno lo uccide ⇒ **la cutscene si vede** *(la riga da leggere e' `la CUTSCENE e' PARTITA … CinematicStarted`, e **non** deve comparire `fusibile=armato(X.XX/15.00s)` prima della fine della scena)* *(`REFERTO-FUSIBILE-2.md:289-296` — ⚠️ **quella tabella scrive `45.00s` perche' e' scritta PRIMA di `d0facd4`: oggi la soglia e' `ESCAPE_SECONDS = 15 s`, `DeathRespawnWatchdog.cs:344`)*.
+   - ⚠️ **E la riga da leggere per prima se qualcosa non torna**: `[Respawn] STATO INCOERENTE` **non deve comparire**; `[Morte] il giocatore e' morto` **deve** comparire ogni volta che `Respawn()` gira davvero.
+
+**2. ⚠️ POI: LA VALUTAZIONE SE TOGLIERE IL FUSIBILE** *(§3)* — **condizionata al test**, e va scritta come **candidato alla rimozione** con la condizione esplicita. **Non prima.**
+
+**3. LA COLPA** *(voce 63)* — la grief sulla vita morendo non seduti al falo': **`Stats.Life`, non `Fervour`** · **morendo, non al falo'** · design completo, `GuiltManager` presente, arte esistente *(`guiltStart`/`guiltBar`/`guiltEnd`)*, **implementazione non iniziata**. *(Il messaggio d'ingresso alla bossfight: una chiave di localizzazione + una chiamata a `DisplayNotification`.)* **Invariata.**
+   - ⚠️ **E una cosa va detta, perche' un conteggio automatico non la vede**: la voce 63 **NON e' una riga della tabella principale** — vive nel **blocco di provenienza** (`docs\TODO.md:123`, `**PROMOSSA a voce**`) ⇒ *verificato il 2026-10-16*: nella tabella principale *(righe 41-108)* ci sono **59 righe-voce**, **58** con un marcatore di chiusura e **una sola aperta: la 18**; la **63** sta fuori, e **per questo va cercata a parte**.
+
+**4. I TEST DEI BOSS** *(voce 18)* — **resta la voce piu' esposta**: nei referti e' esercitato **un solo boss** *(`ElderBrother`, `D17Z01S11`)* e la barra del boss *"coincide per coincidenza, non per sincronizzazione"*; il fix della morte scriptata **non e' mai stato eseguito su nessuno degli altri 16 boss** *(la firma `Death()` e' verificata in IL per tutte, l'esecuzione no)*. **Invariata.**
+
+**5. LE COSE PICCOLE + LE DOMANDE §9** *(§4 della voce `[2026-10-14 02:00]`)* — **(a)** lo **spam a monte del `"*"`** *(logica, non logging: 309 scansioni per sessione)* · **(b)** i **due residui di `BUG-NOTI.md`** · **(c)** il **`fullPathHash`** *(parcheggiato di proposito)* · **e le domande §9: la 15** *(il fantasma e' congelato dalla mod? — test mai fatto)* **e la 14** *(`EnemyAI` gira davvero? — si decide sui prefab)*. **Invariate.**
+
+**✅ E LE VOCI CHIUSE DA REGISTRARE — chi le cerca le deve trovare chiuse:**
+- **voce 58** — **CHIUSA per DECISIONE** *(non per fix: la mod base non si tocca)* · `## [2026-10-13 10:00]`, §1 · in tabella: `docs\TODO.md:100`.
+- ⭐ **voce 9** — **CHIUSA il 2026-10-14, in due pezzi e col riscontro dell'utente** *(`b9f8360` la schermata trasparente, `04a8fad` la cam sul vivo)* **con la riserva del punto 2** *(dal remoto il peer morto risultava ancora in piedi)* — e **quella riserva e' stata CHIUSA dalla voce `[2026-10-16 20:00]`, §1** *(`c5c7299`)* · in tabella: `docs\TODO.md:50`.
+- **voce 56** — **CHIUSA dall'audit del 2026-10-12** *(i 5 marker, tutti implementati)* · `## [2026-10-13 10:00]`, §5(c) · in tabella: `docs\TODO.md:103`.
+- 📐 **E la convenzione dei marcatori va letta com'e', perche' un conteggio automatico sbaglia di 4**: la cella *Stato* di una voce chiusa **compresa nell'archivio** e' esattamente `**CHIUSA — integrale in fondo** *(cerca "Voce N —")*`; le **sei** voci chiuse dall'audit del 2026-10-12 — **e fra queste la 56 e la 58** — usano `✅ CHIUSA — <prova>`, **perche' il loro testo non e' stato compresso** ⇒ **una regola rigida conta 55 chiuse invece di 59** *(`scratch/AUDIT-TODO.md`, §5 "Un'irregolarita' di convenzione, dichiarata e non nascosta")*.
+
+---
+
+### 5. ⚠️ COSA **NON** E' VERIFICATO *(e va detto senza sconti, perche' questa sezione contiene due fix)*
+
+1. 🔧 **NIENTE DI `16a49ee` E `d0facd4` E' STATO PROVATO IN GIOCO.** Il referto lo dichiara al §8.1: *"questa consegna ha prodotto codice, build, deploy e due commit, non una misura runtime"*. ⇒ **il fix del cambio stanza e i due numeri del fusibile sono "implementati, non verificati"** *(`REFERTO-RITORNO-IN-VITA-E-NUMERI.md:561-566`)*.
+2. 📊 **E in `G1` il corpo del morto NON e' entrato in un trigger di cambio stanza**: e' stato **il peer** a usare la porta ⇒ **la meccanica e' strutturalmente possibile ma non e' quello che e' successo**, e il fix **non e' provato da un log** *(`:567-572`)*.
+3. ⚠️ **Lo "stato incoerente vero" non ha nessuna occorrenza in quei log**: il predicato e i marker ci sono, la riproduzione no *(`:573-579`)*; e del pari **il tentativo automatico di `Respawn()` (`INCOHERENT_GRACE_SECONDS`) non e' stato esercitato** *(`:585-588`)*.
+4. ⚠️ **`ESCAPE_SECONDS = 15 s` e' una SCELTA, non una misura**: il numero "quanto ci mette il gioco a finire dopo la `CinematicEnded`" **non esiste in nessun log**, ed e' la ragione per cui il marker dice **da dove** conta *(`:592-596`)*.
+5. 📊 **E l'assenza di tasti nella sessione del cambio stanza e' un'ASSENZA, non una misura** *(`:580-584`)*: `[Morte] il giocatore e' morto` = 0 e `RESPAWN CHIESTO` = 0 **dicono che nessuno ha chiesto il respawn**, non **cosa** ha fatto partire il load *(lo dice la riga `Door opened`, non una misura nostra)*.
+
+> ⚠️ **E una cosa va detta, perche' e' il filo di questa sezione**: **`RETE 1` e' provata nei log, il fusibile e' provato nei log come DIFETTO, e i due fix di oggi non sono provati affatto.** ⇒ **la prossima sessione non deve "vedere se funziona": deve fare i DUE casi del §4 punto 1**, e solo dopo si decide se togliere il fusibile *(§3)*.
