@@ -67,11 +67,17 @@ namespace Blasphemous.Multiplayer.Client
     ///   arriva, questa rete e' un **no-op** (il giocatore e' gia' risorto quando il tasto arriva); se non
     ///   ci arriva, questa e' l'unica strada.
     ///
-    ///   RETE 2 — "il fusibile". Se il giocatore resta morto oltre `ESCAPE_SECONDS` con la schermata di
-    ///   morte aperta e **nessuna** sequenza in corso (niente `CINEMATIC`, niente `DIALOG`, niente
-    ///   cutscene di `Cinematics`, niente dialogo), il respawn viene invocato **anche senza tasti**. Un
-    ///   giocatore bloccato non puo' piu' giocare: e' il guasto peggiore possibile, e a quel punto il
-    ///   respawn e' **esattamente cio' che il gioco avrebbe fatto** al primo tasto.
+    ///   RETE 2 — "il fusibile". Se il giocatore resta morto oltre `ESCAPE_SECONDS` **dopo la fine della
+    ///   sequenza di morte del boss** con la schermata di morte aperta e **nessuna** sequenza in corso
+    ///   (niente `CINEMATIC`, niente `DIALOG`, niente cutscene di `Cinematics`, niente dialogo), il respawn
+    ///   viene invocato **anche senza tasti**. Un giocatore bloccato non puo' piu' giocare: e' il guasto
+    ///   peggiore possibile, e a quel punto il respawn e' **esattamente cio' che il gioco avrebbe fatto al
+    ///   primo tasto**.
+    ///   ⭐⭐ **I DUE NUMERI (19/10)**: `BOSS_DEATH_GRACE_SECONDS = 30 s` **prima** (la grazia perche' parta
+    ///   una cutscene: e' la richiesta dell'utente, ed e' 7–10× la finestra misurata di ~3.0–3.9 s) e
+    ///   `ESCAPE_SECONDS = 15 s` **dopo** (la fine della scena: da li' il gioco non sta piu' lavorando, e
+    ///   il tasto lo copre gia' `RETE 1`, che legge il dispositivo anche con l'input bloccato). E l'ultima
+    ///   spiaggia resta `MAX_ESCAPE_SECONDS = 300 s`, l'orologio che **ignora** le sequenze.
     ///
     /// ============================================================================================
     /// ⭐⭐ LA REGRESSIONE DEL 16/10, E LE DUE GUARDIE NUOVE. *Questa* e' la parte da leggere.
@@ -173,8 +179,8 @@ namespace Blasphemous.Multiplayer.Client
     ///      ⇒ fra il `kill()` e la fine della scena **il fusibile non esiste**, che e' esattamente cio'
     ///      che il mandato chiede;
     ///   2. **il ripiego per un boss SENZA cutscene**: se dopo il `kill()` **nessuna cutscene e' partita**
-    ///      entro `BOSS_DEATH_GRACE_SECONDS = 30 s` (misurato: la scena parte **4.3-5.1 s** dopo il
-    ///      `kill()`, quindi 30 s stanno **oltre sei volte** sopra la misura), la **sequenza di morte** e'
+    ///      entro `BOSS_DEATH_GRACE_SECONDS = 30 s` (misurato: la scena parte **3.0–3.9 s** dopo il
+    ///      `kill()`, quindi 30 s stanno **7–10 volte** sopra la misura), la **sequenza di morte** e'
     ///      finita e il fusibile si arma **da li' in poi**. ⚠️ **E non si arma mai prima**: e' la scelta
     ///      conservativa che il mandato indica, e l'attesa ha il tetto dell'orologio a 300 s;
     ///   3. ⚠️ **la via scartata**: *azzerare il conteggio finche' "una sequenza e' in corso"* **non
@@ -183,7 +189,9 @@ namespace Blasphemous.Multiplayer.Client
     ///      fusibile **non deve esistere** li': si arma quando la sequenza e' **finita**, non quando
     ///      "sembra in corso".
     ///
-    /// ⛔ **E NON SI TOGLIE IL FUSIBILE** (divieto del mandato): resta a **45 s** e resta l'orologio
+    /// ⛔ **E NON SI TOGLIE IL FUSIBILE** (divieto del mandato): resta — **15 s dalla fine della sequenza**
+    /// (`ESCAPE_SECONDS`, 19/10: prima erano 45 s contati da un punto che includeva l'animazione di morte)
+    /// — e resta l'orologio
     /// assoluto a **300 s** che ignora le sequenze, perche' una cutscene **appesa** non deve poter
     /// bloccare il giocatore per sempre.
     ///
@@ -309,14 +317,31 @@ namespace Blasphemous.Multiplayer.Client
         private const float KEY_ARM_SECONDS = 2.5f;
 
         /// <summary>
-        /// IL FUSIBILE. Oltre questo tempo da morto con la schermata aperta e nessuna sequenza in corso, il
-        /// respawn si invoca anche senza tasti: un giocatore che non respawna e' il guasto peggiore.
+        /// ⭐⭐ **IL PRIMO DEI DUE NUMERI (19/10): IL CONTEGGIO DOPO LA FINE DELLA SEQUENZA — 45 s → 15 s.**
         ///
-        /// ⚠️ E IL CONTO PARTE **DOPO IL `kill()` DEL BOSS** (guardia 1) e **NON AVANZA DURANTE UNA
-        /// SEQUENZA** (guardia 2): vedi il commento di classe. Senza quelle due guardie, questo numero
-        /// respawna uno spettatore e gli fa perdere la cutscene — che e' la regressione del 16/10.
+        /// ⚠️ **E' UN CONTO CHE PARTE SOLO A SEQUENZA CONCLUSA** (fix `0393fd2`, non toccato): fra il
+        /// `kill()` e la fine della cutscene il fusibile **non esiste** (`disarmato(attesa-fine-sequenza)`),
+        /// quindi questo numero **non ha niente a che vedere con l'animazione di morte del boss** — non la
+        /// puo' interrompere per costruzione.
+        ///
+        /// **PERCHE' 15 E NON 45** — *"a scena finita il gioco non sta piu' lavorando"* (il mandato):
+        ///   - ⭐ **il gioco ha SMESSO**: `CinematicEnded` e' arrivato, i blocker di scena sono caduti, il
+        ///     boss e' a terra, il mondo e' fermo. Da li' in poi **l'unica cosa che deve succedere e' che il
+        ///     giocatore torni**;
+        ///   - ⭐ **e il tasto lo copre gia' `RETE 1`**: e' provato su questo log che
+        ///     `UnityEngine.Input.GetKeyDown` **legge comunque** con l'input bloccato (in `G1` le righe
+        ///     2894/2898/2905/2906/2916 hanno `unityAnyKey=True` **con `blockers=(DEAD_SCREEN,FADE)`**);
+        ///     quindi il fusibile non e' la rete principale, e' **la rete di chi NON preme**;
+        ///   - ⚠️ **45 s erano tarati su una finestra piu' larga di quella vera**: il conteggio partiva al
+        ///     `kill()` e includeva l'animazione di morte. Adesso che parte **dalla fine della scena**, 15 s
+        ///     misurano il tempo in cui il gioco **non sta piu' facendo niente**;
+        ///   - **e restano un fusibile**: nessun caso reale misurato ha mai avuto bisogno di piu' di pochi
+        ///     secondi dopo la scena, e chi e' bloccato davvero aspetta **30 + 15 = 45 s** dall'inizio della
+        ///     sequenza (prima erano 30 + 45 = 75 s);
+        ///   - **e l'ultima spiaggia non cambia**: `MAX_ESCAPE_SECONDS = 300 s` (l'orologio che ignora le
+        ///     sequenze) e' **intatto**, quindi una cutscene appesa non puo' bloccare il giocatore per sempre.
         /// </summary>
-        private const float ESCAPE_SECONDS = 45f;
+        private const float ESCAPE_SECONDS = 15f;
 
         /// <summary>
         /// ⭐ L'ULTIMA SPIAGGIA VERA, e **l'unico numero nuovo di questa consegna**. E' un orologio che
@@ -329,16 +354,24 @@ namespace Blasphemous.Multiplayer.Client
         private const float MAX_ESCAPE_SECONDS = 300f;
 
         /// <summary>
-        /// ⭐ IL RIPIEGO PER UN BOSS **SENZA CUTSCENE**, e il secondo numero di questa consegna. Se dopo il
-        /// `kill()` **nessuna cutscene e' partita** entro questo tempo, la *sequenza di morte* del boss e'
-        /// finita e il fusibile si arma da li' in poi.
+        /// ⭐⭐ **IL SECONDO DEI DUE NUMERI (19/10): LA GRAZIA PRIMA — 30 s, ed e' la richiesta esplicita
+        /// dell'utente** (*"magari aggiungendo un 30 secondi di attesa che parta una cutscene"*).
         ///
-        /// ⚠️ **E' UNA MISURA, NON UN INDOVINELLO**: nei due log di questa sessione il `kill()` e la
-        /// partenza della scena distano **~3.0 s** (`G1`, misurato sul `FADE` che precede la scena mai
-        /// arrivata) e **~5.1 s** (`G2`: `kill()` a `t≈271.9` → `CinematicStarted` a `t=276.98`; il
-        /// `cutscene_block` si accende a `t=275.51`, cioe' **3.6 s** dopo). **Trenta secondi stanno oltre
-        /// sei volte sopra la misura**, quindi un boss con una scena lenta non viene mai scambiato per un
-        /// boss senza scena.
+        /// ⚠️ **E' GIA' QUELLO CHE C'ERA** (`0393fd2`), quindi questa consegna **non lo cambia: lo conferma**
+        /// — ed e' il punto: era stato scelto come **ripiego per un boss SENZA cutscene**, e la misura che lo
+        /// giustifica e' la stessa che l'utente cita a occhio. Se dopo il `kill()` **nessuna cutscene e'
+        /// partita** entro questo tempo, la *sequenza di morte* di quel boss e' conclusa e il fusibile si
+        /// arma da li' in poi.
+        ///
+        /// ⚠️ **E' UNA MISURA, NON UN INDOVINELLO** — la finestra misurata `kill()` → `CinematicStarted` e'
+        /// **~3.0 s** (`G1`) e **~3.9 s** (`G2`): **trenta secondi stanno 7–10× sopra la misura**, che e'
+        /// esattamente il margine che il mandato chiede, e un boss con una scena lenta non viene mai
+        /// scambiato per un boss senza scena.
+        ///
+        /// ⛔ **E NON SI ACCORCIA**: e' il numero che protegge la cutscene da un `kill()` senza scena, e
+        /// **accorciarlo e' l'unico modo di far ripartire la regressione del 17/10** (il fusibile armato
+        /// mentre il boss finisce l'animazione di morte). **Il numero da accorciare era l'ALTRO**
+        /// (`ESCAPE_SECONDS`, vedi li').
         /// </summary>
         private const float BOSS_DEATH_GRACE_SECONDS = 30f;
 
@@ -836,12 +869,15 @@ namespace Blasphemous.Multiplayer.Client
                     }
                 }
 
-                // ---- ⭐ RETE 2: IL FUSIBILE, e ora ha le due guardie. Il conteggio (`now - _fuseSince`)
-                // NON parte prima del `kill()` del boss e NON avanza durante una sequenza; il tentativo
-                // parte quando il conteggio supera `ESCAPE_SECONDS`, oppure quando l'orologio assoluto
-                // (`MAX_ESCAPE_SECONDS`) dice che la finestra e' troppo lunga per essere una scena normale
-                // — ed e' l'unica via che ignora di proposito le sequenze, perche' una cutscene APPESA non
-                // deve poter bloccare il giocatore per sempre.
+                // ---- ⭐ RETE 2: IL FUSIBILE, e i DUE NUMERI di questa consegna (19/10). Il conteggio
+                // (`now - _fuseSince`) NON parte prima del `kill()` del boss e NON avanza durante una
+                // sequenza; il tentativo parte quando il conteggio supera `ESCAPE_SECONDS` — che ora sono
+                // **15 s e partono dalla FINE della sequenza** (a scena finita il gioco non sta piu'
+                // lavorando) — oppure quando l'orologio assoluto (`MAX_ESCAPE_SECONDS = 300 s`) dice che la
+                // finestra e' troppo lunga per essere una scena normale: ed e' l'unica via che ignora di
+                // proposito le sequenze, perche' una cutscene APPESA non deve poter bloccare il giocatore per
+                // sempre. La grazia di `BOSS_DEATH_GRACE_SECONDS = 30 s` sta nell'armamento (vedi
+                // `UpdateFuseGate`), non qui.
                 bool hardTimeout = now - _deadSince >= MAX_ESCAPE_SECONDS;
                 if (!_armed && !hardTimeout)
                     return;
@@ -859,8 +895,11 @@ namespace Blasphemous.Multiplayer.Client
                                       ? " e oltre " + F(MAX_ESCAPE_SECONDS) + "s di orologio: la finestra " +
                                         "e' troppo lunga per essere una scena normale (cutscene appesa?), " +
                                         "e un giocatore bloccato non puo' piu' giocare"
-                                      : ", DOPO il `kill()` del boss e senza nessuna sequenza in corso, e " +
-                                        "senza che il gioco abbia risposto ai tasti")
+                                      : ", contati DALLA FINE DELLA SEQUENZA (`armato-per=" +
+                                        (_armReason.Length > 0 ? _armReason : "?") + "`, soglia " +
+                                        F(ESCAPE_SECONDS) + "s) e senza che il gioco abbia risposto ai " +
+                                        "tasti: a scena finita il gioco non sta piu' lavorando, quindi il " +
+                                        "fusibile puo' essere corto")
                                 : "FUSIBILE, nuovo tentativo a " + F(fuseElapsed) + "s da morto") +
                             " · tentativi=" + (_attempts + 1) + " di questa rete (e' esattamente cio' " +
                             "che il gioco avrebbe fatto al primo tasto)");
