@@ -91,9 +91,6 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // TEMPORARY (DeathCorpseFollow): the death window can be open when the mod shuts down, and the
         // copy is a GameObject of its own - nothing else would ever take it away.
         DeathCorpseFollow.Reset();
-
-        // TEMPORARY (DeathRespawnWatchdog): the same reason, for the same window.
-        DeathRespawnWatchdog.Reset();
     }
 
     protected override void OnRegisterServices(ModServiceProvider provider)
@@ -113,11 +110,6 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // per-frame close in Tick() would never fire. Without this line a copy and a hidden renderer would
         // stay in the scene with no living player left to follow. See DeathCorpseFollow.Reset().
         DeathCorpseFollow.Reset();
-
-        // TEMPORARY (DeathRespawnWatchdog): a disconnect can arrive while this machine is STILL DEAD, and in
-        // that moment IsLocalPlayerDead() stays true - so the per-frame close in Tick() would never fire and
-        // the watchdog would keep its window open for the next session. See DeathRespawnWatchdog.Reset().
-        DeathRespawnWatchdog.Reset();
 
         NotificationManager.DisplayNotification(LocalizationHandler.Localize("dcon"));
         ProgressManager.ResetProgressSentStatus();
@@ -211,18 +203,6 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // trigger di scena e' la stessa cosa che fa il fusibile, cioe' un load che respawna il giocatore.
         DeathCorpseFollow.AttachOnce();
         DeathCorpseFollow.Tick();
-
-        // TEMPORARY (DeathRespawnWatchdog): LA VIA D'USCITA GARANTITA PER IL GIOCATORE MORTO. Il 16/10 il
-        // peer morto non e' piu' riuscito a respawnare: `DEAD_SCREEN` acceso e MAI spento (G1:2510), `FADE`
-        // acceso e MAI spento (G1:3159), e `Penitent.Respawn()` MAI invocato (il suo Prefix di Harmony non
-        // logga mai la sua riga). Questa rete ascolta `UnityEngine.Input` in proprio - questo ciclo gira
-        // anche quando il gioco non legge piu' i tasti - e chiede il respawn con la via DEL GIOCO
-        // (`Penitent.Respawn`, che fa un load di livello e quindi rimette a posto tutto dal lato gioco),
-        // con un fusibile a 45 s per il caso in cui i tasti non arrivino affatto. Legge i blocker, non ne
-        // scrive nessuno: zero `SetBlocker`, zero `ResetManager`, zero `DEAD_SCREEN`.
-        // Same loop, still no new Harmony target (263). See DeathRespawnWatchdog.cs.
-        DeathRespawnWatchdog.AttachOnce();
-        DeathRespawnWatchdog.Tick();
 
         // TEMPORARY (CorpsePeer): ⭐⭐ LA MORTE VIAGGIA UNA VOLTA, COSI' IL PEER VEDE IL CADAVERE A TERRA.
         // Dal remoto il giocatore morto si vedeva IN PIEDI E BLOCCATO, e la causa non e' la posa: da morti

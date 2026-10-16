@@ -336,72 +336,6 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static readonly HashSet<string> _bossKillsApplied = new HashSet<string>();
 
-        // ============================================================================================
-        // IL SEGNALE "IL `kill()` DEL BOSS E' AVVENUTO" — letto da `DeathRespawnWatchdog`.
-        // ============================================================================================
-
-        /// <summary>
-        /// ⭐ IL FUSIBILE DEL RESPAWN NON DEVE ARMARSI PRIMA CHE IL BOSS SIA STATO UCCISO.
-        ///
-        /// IL GUASTO (log G1 della sessione del 16/10, righe 1386→2064, verificato in questo lavoro):
-        ///   - il giocatore muore alle 107.27 (`[Respawn] stato … daMorte=0.00`, `blockers=(nessuno)`);
-        ///   - **il boss e' VIVO per tutta la finestra** (`[EnemyAnim] …ElderBrother … vita=220` alle righe
-        ///     2052-2060, cioe' a 44 s dalla morte);
-        ///   - a 45.01 s il fusibile di `DeathRespawnWatchdog` scatta lo stesso
-        ///     (`[Respawn] RESPAWN CHIESTO: FUSIBILE scattato: 45.01s da morto`);
-        ///   - `Respawn()` fa **un load di livello** (`D17Z01S11` → `D17Z01S05`, riga 2110) e **la cutscene
-        ///     del boss non arriva mai**.
-        ///   ⇒ In quella configurazione **nessuno era bloccato**: il giocatore era morto e stava
-        ///     **spectando** il compagno, e `unityAnyKey=False` in **tutti e 44** i campioni dice che **non
-        ///     aveva premuto niente** (non che i tasti fossero rotti). Il fusibile ha respawnato un
-        ///     **spettatore**, e ha distrutto la cosa che stava guardando.
-        ///
-        /// ⭐ E IL CRITERIO DELL'UTENTE E' ESATTAMENTE QUESTO: *"il timer non si deve attivare fino a quando
-        /// non viene effettuato il `kill()`"*. ⇒ Il fusibile aspetta il segnale, e il segnale e' **questo
-        /// contatore**: non se ne inventa uno nuovo, perche' il progetto **ha gia'** i due punti in cui il
-        /// `kill()` avviene, ed entrambi passano di qui (vedi `NotifyBossKilled`).
-        ///
-        /// ⚠️ IL CONTATORE NON E' UN BOOLEANO, ed e' la parte che conta. Il `kill()` puo' avvenire
-        /// **mentre il giocatore e' gia' morto** (e' il caso del guasto) **oppure prima**, e le due
-        /// situazioni vanno distinte: un `bool` acceso prima della morte direbbe *"e' gia' armato"* e il
-        /// fusibile non scatterebbe **mai** nella finestra giusta. `DeathRespawnWatchdog` registra quindi
-        /// **il valore all'apertura della finestra** e si arma solo quando il valore **cresce**.
-        ///
-        /// ⚠️ UN SOLO INCREMENTO PER `kill()`: la guardia `_bossKillsApplied` di `ApplyBossDeath` e la
-        /// deduplica `_killLogged` del ciclo di invio garantiscono che qui non si conti due volte lo stesso
-        /// boss. Il contatore e' azzerato con il resto della memoria di scena (`LevelLoaded`), quindi i suoi
-        /// valori non sopravvivono a un cambio livello.
-        /// </summary>
-        private static int _bossKillSignal;
-
-        /// <summary>
-        /// Quante volte un `kill()` DI BOSS e' avvenuto su questa macchina in questa scena.
-        /// **Solo `DeathRespawnWatchdog` lo legge** (il valore assoluto non ha altro significato: conta il
-        /// **cambio**, non il numero).
-        /// </summary>
-        internal static int BossKillSignal
-        {
-            get { return _bossKillSignal; }
-        }
-
-        /// <summary>
-        /// Chiamato **nei due soli punti** in cui questa macchina fa avvenire il `kill()` di un boss:
-        ///   1. `ApplyBossDeath` — la morte annunciata dall'altra macchina (`bdead|`), applicata con
-        ///      `boss.Kill()` (:416);
-        ///   2. il ciclo di invio — questa macchina **ha ucciso il boss lei stessa** (il ramo `IsBoss(enemy, id)`
-        ///      che manda `[BossDeath TX]`).
-        /// ⇒ **non e' una nuova condizione**: e' la stessa riga di `Kill()` che esisteva, con un contatore
-        /// accanto. Zero scritture sul gioco, zero patch Harmony.
-        /// </summary>
-        private static void NotifyBossKilled(string why)
-        {
-            _bossKillSignal++;
-            ModLog.Info($"[Respawn] segnale `kill()` del boss: #{_bossKillSignal} ({why}) · da questo " +
-                        "momento il fusibile del respawn puo' armarsi (prima non poteva: e' il criterio " +
-                        "dell'utente, e la sessione del guasto e' la prova che senza questo segnale il " +
-                        "fusibile respawnava uno spettatore e perdeva la cutscene)");
-        }
-
         /// <summary>
         /// Applica su QUESTA macchina la morte di un boss annunciata dall'altra (vedi `BossDeathPrefix`).
         ///
@@ -481,70 +415,22 @@ namespace Blasphemous.Multiplayer.Client
                 // su un boss che SULL'ALTRA macchina e' gia' morto: non si inventa niente.
                 boss.Kill();
 
-                // ⭐ IL `kill()` E' AVVENUTO, E VA DETTO SUBITO (non alla fine del metodo): da questo
-                // momento `DeathRespawnWatchdog` puo' armare il suo fusibile. Il marcatore va PRIMA delle
-                // righe che possono ritardare o fallire piu' sotto, perche' il boss e' comunque morto.
-                if (PlayerDeathSync.IsLocalPlayerDead())
-                    NotifyBossKilled("la morte del boss e' stata applicata su questa macchina con Kill(), " +
-                                     "ed ero morto");
-
-                bool died = boss.Status.Dead;
-
-                // ⭐⭐ FIX 2 - LA MORTE *SCRIPTATA* DEL BOSS, che `Kill()` NON esegue.
-                //
-                // ⚠️ LA CATENA, verificata in IL (`scratch\_il\`), e sono due strade DIVERSE:
-                //   (a) `Kill()`  -> `Entity.Damage(float,string)` -> `KillInstanteneously()`
-                //       -> `Status.Dead = true`, `Entity.Death` / `OnDeath` / `OnEntityDeath`, `ENTITY_DEAD`
-                //       -> `BossFightManager.OnDeathBoss` (Metrics + `onFinishBossFight`) ... e **basta**:
-                //          nessun ramo di questa catena chiama `Behaviour.Death()`;
-                //   (b) `<Boss>.Damage(Hit)` (l'overload del COLPO) -> `if (Status.Dead) Behaviour.Death()`
-                //       -> `StopAllCoroutines` / `StopBehaviour` / `AnimatorInyector.Death()`
-                //          (es. `ElderBrotherBehaviour.cs:319-327`, `ElderBrother.cs:94`).
-                // ⇒ con `Kill()` il boss resta **in piedi**, con la sua animazione di morte mai comandata e
-                //   l'albero di comportamento ancora vivo. E' il difetto che l'utente ha chiesto di chiudere:
-                //   *"dopo `Kill()` del boss, il boss attivi anche l'animazione di morte"*.
-                //
-                // ⭐ PERCHE' QUESTA CHIAMATA E' GENERICA E NON SEDICI VOLTE. `Death()` **non esiste su una
-                // base comune**: `EnemyBehaviour` (la base di TUTTI i behaviour dei boss, verificata con
-                // `GetComponent<XBehaviour>()` in ognuno dei 17 `<Boss>.OnAwake`) non ha `Death()`, e ogni
-                // classe concreta se lo dichiara da sola (`public void Death()`, zero argomenti, non
-                // `virtual`, non `override`). Cercarlo per TIPO sulla istanza che il boss stesso tiene come
-                // `Behaviour` e' quindi l'unica forma che copre tutte - ed e' **auto-limitante**, che e' la
-                // parte importante: dove il metodo NON c'e' vuol dire che la morte passa da un'altra strada
-                // gia' percorsa da `Kill()`. **Provato in IL**: `PietyMonsterBehaviour` non ha `Death()`,
-                // perche' fa la stessa cosa in `PietyMonsterOnEntityDie()` **sottoscritto a
-                // `_pietyMonster.OnDeath`** (`PietyMonsterBehaviour.cs:57` e `:207-212`) - cioe' una strada
-                // che `Kill()` **percorre**. Lo stesso vale per `BejeweledSaintBehaviour`
-                // (`Head.OnDeath += BossOnDeath`). ⇒ la chiamata aggiuntiva scatta **solo dove la catena e'
-                // rotta**, e dove non serve non fa niente e lo dice nel marker.
-                string scripted = died ? ApplyScriptedBossDeath(boss) : "saltata (Kill=nessun-effetto)";
-
                 // L'esito va scritto SEMPRE, altrimenti "l'annuncio non e' arrivato" e "e' arrivato e non
                 // ha fatto nulla" restano indistinguibili nel log - ed e' esattamente la differenza che
                 // questo test deve misurare.
-                bool diedNow = boss.Status.Dead;
+                bool died = boss.Status.Dead;
                 ModLog.Info($"[BossDeath RX] {FullId(id)} applicato (ero morto: si) via={via} " +
                             $"boss={isBoss} tipo={type} vitaPrima={lifeBefore:F0} " +
-                            $"vitaDopo={boss.CurrentLife:F0} StatusDead={diedNow} " +
-                            $"Kill={(diedNow ? "ok" : "nessun-effetto")} morteScriptata={scripted}");
+                            $"vitaDopo={boss.CurrentLife:F0} StatusDead={died} " +
+                            $"Kill={(died ? "ok" : "nessun-effetto")}");
 
-                if (!diedNow)
+                if (!died)
                 {
                     // Non deve succedere: `Kill()` e' la strada con cui il gioco uccide qualunque entita'.
                     // Se succede, e' la prova che su QUESTO boss l'uccisione passa altrove, e la seconda
                     // strada del piano (riaprire la guardia e mandare il colpo letale) diventa necessaria.
                     ModLog.Error($"[BossDeath RX] {FullId(id)} Kill() NON ha ucciso il boss: " +
                                  $"StatusDead=false vita={boss.CurrentLife:F0}");
-                }
-                else if (scripted == "nessun-metodo-Death" || scripted == "nessun-EnemyBehaviour" ||
-                         scripted.StartsWith("errore", StringComparison.Ordinal))
-                {
-                    // ⚠️ DICHIARATO, non silenzioso: qui il boss PUO' restare in piedi (e' il difetto che
-                    // FIX 2 chiude), oppure no perche' la sua morte passa da `OnDeath` (il caso di
-                    // `PietyMonsterBehaviour`). Il marker sopra dice gia' quale dei due, e questa riga dice
-                    // che e' un esito NOTO e non un guasto taciuto.
-                    ModLog.Warn($"[BossDeath RX] {FullId(id)} morte scriptata NON invocata ({scripted}): " +
-                                $"se il boss resta in piedi con il suo behaviour tree vivo, e' questo il motivo");
                 }
             }
             catch (Exception e)
@@ -555,131 +441,6 @@ namespace Blasphemous.Multiplayer.Client
                 ModLog.Error($"[BossDeath RX] {FullId(id)} eccezione in Kill(): {e.GetType().Name} - {e.Message}");
             }
         }
-
-        /// <summary>
-        /// ⭐⭐ FIX 2 - CHIAMA LA MORTE *SCRIPTATA* DEL BOSS, quella che `Kill()` non esegue.
-        ///
-        /// ⚠️ PERCHE' UNA RIFLESSIONE E NON UNA CHIAMATA DIRETTA. Verificato in IL: `Death()` **non e' su
-        /// una base comune**. `EnemyBehaviour` (`Enemies.Framework.IA\EnemyBehaviour.cs:10`, `abstract class`)
-        /// dichiara `Idle`/`Wander`/`Chase`/`Attack`/`Damage`/`StopMovement` come `abstract` e **NON ha
-        /// `Death()`**; e i 17 behaviour dei boss che ce l'hanno se lo scrivono da soli, tutti con la stessa
-        /// firma ma **senza `virtual`/`override`**:
-        ///   `ElderBrotherBehaviour:319` · `LesmesBehaviour:515` · `PontiffGiantBehaviour:928` ·
-        ///   `PontiffOldmanBehaviour:810` · `PontiffSwordBehaviour:314` · `PontiffHuskBossBehaviour:1638` ·
-        ///   `CrisantaBehaviour:1489` · `EsdrasBehaviour:811` · `PerpetuaBehaviour:537` · `IsidoraBehaviour:3114` ·
-        ///   `BurntFaceBehaviour:783` · `WickerWurmBehaviour:844` · `TresAngustiasMasterBehaviour:587` ·
-        ///   `SnakeBehaviour:2180` · `QuirceBehaviour:1018` · `AmanecidasBehaviour:7058` · `SingleAnguishBehaviour:522`.
-        /// ⇒ un fix "sedici volte" sarebbe sedici punti in cui una firma puo' divergere, e una lista di tipi
-        /// che invecchia a ogni aggiornamento del gioco. La ricerca per tipo, **sulla sola istanza che il boss
-        /// tiene come `Behaviour`**, copre tutte e non nomina nessuna.
-        ///
-        /// ⚠️ E SI CERCA **SOLO SUL GAME OBJECT DEL BOSS** (`GetComponents`, non `GetComponentsInChildren`), e
-        /// non e' un dettaglio: in IL ogni boss prende il proprio behaviour con
-        /// `Behaviour = GetComponent<XBehaviour>()` (`ElderBrother.cs:44`, `PontiffGiant.cs`,
-        /// `Amanecidas.cs`, `Snake.cs`, `Quirce.cs`, `PontiffHuskBoss.cs`, …), mentre i behaviour di **altre
-        /// entita'** possono stare nella gerarchia - `PontiffGiantBehaviour.Death()` chiama
-        /// `sword.PontiffSword.Kill()`, e la spada ha il SUO `PontiffSwordBehaviour.Death()` (`:314`). Con
-        /// `GetComponentsInChildren` si rischierebbe di chiamare la morte della SPADA al posto di quella del
-        /// gigante: il primo comportamento trovato sarebbe quello sbagliato.
-        ///
-        /// ⚠️ ED E' AUTO-LIMITANTE, che e' la proprieta' che rende il fix sicuro: se il tipo non ha `Death()`
-        /// **non si inventa niente** e lo si dichiara nel marker. E non e' un caso di scuola - e' il caso
-        /// `PietyMonsterBehaviour`, che la stessa cosa la fa in `PietyMonsterOnEntityDie()` sottoscritto a
-        /// `_pietyMonster.OnDeath` (`PietyMonsterBehaviour.cs:57`, corpo a `:207-212`), cioe' su una strada
-        /// che `Kill()` percorre. Stessa cosa `BejeweledSaintBehaviour` (`_bejeweledSaintHead.OnDeath +=
-        /// BossOnDeath`, `:177`). ⇒ la chiamata in piu' arriva **solo dove la catena e' rotta**, e dove non
-        /// serve non fa niente.
-        ///
-        /// ⚠️ NON DUPLICA EFFETTI, ed e' la domanda a cui il mandato chiede una risposta: `Kill()` non passa
-        /// MAI da `Behaviour.Death()` (la catena sta in `<Boss>.Damage(Hit)`, un overload diverso), quindi
-        /// quello che si chiama qui **non e' mai stato chiamato** su questa macchina. L'ordine e' quello del
-        /// gioco: `Damage(`*`Hit`*`)` fa `DamageArea.TakeDamage(hit)` e **poi**, `if (Status.Dead)`,
-        /// `Behaviour.Death()` (`ElderBrother.cs:85-94`) ⇒ prima la morte (`Kill()`), poi la sequenza
-        /// scriptata. E non si chiama due volte: `ApplyBossDeath` ha gia' le sue guardie
-        /// (`Status.Dead` + `_bossKillsApplied`), ed e' quello che serve perche' alcune `Death()` **non sono
-        /// idempotenti** - `AmanecidasBehaviour.Death()` fa `PlayMakerFSM.BroadcastEvent("BOSS DEAD")`, e due
-        /// eventi Playmaker per una morte sola sono un rischio che non vale la pena correre.
-        ///
-        /// ⚠️ E L'ECCEZIONE NON ESCE. Il chiamante sta dentro `ProcessQueue`, che gira in try/**finally**
-        /// senza catch: un throw qui farebbe riprocessare lo stesso pacchetto per sempre (il guasto da 2934
-        /// errori). L'esito torna come STRINGA e finisce nel marker.
-        /// </summary>
-        private static string ApplyScriptedBossDeath(Enemy boss)
-        {
-            try
-            {
-                EnemyBehaviour[] behaviours = boss.GetComponents<EnemyBehaviour>();
-                if (behaviours == null || behaviours.Length == 0)
-                    return "nessun-EnemyBehaviour";
-
-                for (int i = 0; i < behaviours.Length; i++)
-                {
-                    EnemyBehaviour behaviour = behaviours[i];
-                    if (behaviour == null)
-                        continue;
-
-                    Type behaviourType = behaviour.GetType();
-
-                    // ⚠️ LA CACHE E' PER TIPO, e il valore `null` e' un valore come un altro: `TryGetValue`
-                    // distingue "non ancora cercato" da "cercato e assente", quindi il tipo senza `Death()`
-                    // non paga una riflessione a ogni morte. E **non va azzerata con la memoria di scena**
-                    // (a differenza di `_bossIds` e `_bossKillsApplied`): le chiavi sono TIPI
-                    // dell'assembly, non istanze ne' id, quindi non possono diventare stantie a un cambio
-                    // livello.
-                    if (!_bossScriptedDeaths.TryGetValue(behaviourType, out MethodInfo death))
-                    {
-                        death = behaviourType.GetMethod("Death",
-                            BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-                        _bossScriptedDeaths[behaviourType] = death;
-
-                        ModLog.Info($"[BossDeath RX] morte scriptata: {behaviourType.Name}.Death() " +
-                                    (death != null
-                                        ? "trovata (public, zero argomenti)"
-                                        : "ASSENTE su questo tipo: la sua morte passa da un'altra strada"));
-                    }
-
-                    if (death == null)
-                        continue;
-
-                    death.Invoke(behaviour, null);
-
-                    // Una riga SOLO alla prima morte di quel tipo per sessione: il `via`/`vitaDopo` sono
-                    // gia' nel marker del chiamante, e ripetere la stessa riga a ogni boss dello stesso
-                    // tipo sarebbe spam.
-                    // ⚠️ `HashSet.Add` ritorna TRUE quando l'elemento **non c'era**: la riga va stampata
-                    // **la prima volta**, quindi la condizione e' `Add(...)` - NON `!Add(...)`, che la
-                    // stamperebbe solo dalla seconda morte in poi (cioe' mai, nel caso che conta).
-                    if (_bossScriptedDeathLogged.Add(behaviourType))
-                    {
-                        ModLog.Info($"[BossDeath RX] morte scriptata INVOCATA: {behaviourType.Name}.Death() " +
-                                    "(sequenza di morte + `AnimatorInyector.Death()`: l'animazione di morte " +
-                                    "del boss finalmente comandata anche su questa macchina)");
-                    }
-
-                    return behaviourType.Name + ".Death()";
-                }
-
-                return "nessun-metodo-Death";
-            }
-            catch (Exception e)
-            {
-                return "errore:" + e.GetType().Name;
-            }
-        }
-
-        /// <summary>
-        /// I tipi per cui la riga "morte scriptata INVOCATA" e' gia' stata stampata in questa sessione. Non
-        /// si azzera con la memoria di scena di proposito: il marker serve a dire "questo tipo e' coperto",
-        /// e ripeterlo a ogni boss dello stesso tipo non aggiungerebbe niente.
-        /// </summary>
-        private static readonly HashSet<Type> _bossScriptedDeathLogged = new HashSet<Type>();
-
-        /// <summary>
-        /// Il `Death()` di ogni tipo di behaviour gia' cercato: `null` significa "cercato e ASSENTE",
-        /// distinto da "mai cercato" perche' `TryGetValue` guarda la CHIAVE. Vedi `ApplyScriptedBossDeath`.
-        /// </summary>
-        private static readonly Dictionary<Type, MethodInfo> _bossScriptedDeaths =
-            new Dictionary<Type, MethodInfo>();
 
         /// <summary>
         /// Risolve il boss da uccidere, e DICE DA DOVE l'ha preso (`via=`) perche' il marker lo mostri.
@@ -1964,7 +1725,6 @@ namespace Blasphemous.Multiplayer.Client
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
-            _bossKillSignal = 0;         // ⭐ il segnale `kill()` e' della scena che si sta scaricando
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _puppetEnemies.Clear();      // the instances of the scene being unloaded
             _orientationLabels.Clear();  // ditto: keyed by instance id
@@ -2227,7 +1987,6 @@ namespace Blasphemous.Multiplayer.Client
             _announcedBirths.Clear();
             _pendingDeaths.Clear();
             _bossKillsApplied.Clear();   // M1: the world came back, so a boss death applied once must be applicable again
-            _bossKillSignal = 0;         // ⭐ ditto: se il boss puo' tornare in piedi, il suo `kill()` non e' piu' avvenuto
             _killLogged.Clear();
 
             // Always logged, for the same reason as OnEnemiesRespawned: a measurement that stays silent when
@@ -4042,15 +3801,6 @@ namespace Blasphemous.Multiplayer.Client
                             ModLog.Info($"[BossDeath TX] {FullId(id)} boss={enemy.GetType().Name} " +
                                         $"vita={enemy.CurrentLife:F1} StatusDead={enemy.Status.Dead} " +
                                         $"localeMorto={PlayerDeathSync.IsLocalPlayerDead()}");
-
-                            // ⭐ IL SECONDO PUNTO IN CUI IL `kill()` DI UN BOSS AVVIENE SU QUESTA MACCHINA:
-                            // qui e' QUESTA macchina ad averlo ucciso. Se il giocatore locale e' morto,
-                            // `DeathRespawnWatchdog` deve poter armare il fusibile (prima non poteva, ed e'
-                            // il criterio chiesto dall'utente). Se il giocatore e' vivo non si conta niente:
-                            // il fusibile esiste solo per il giocatore morto, e un suo valore che cresce da
-                            // vivo confonderebbe soltanto la lettura del log.
-                            if (PlayerDeathSync.IsLocalPlayerDead())
-                                NotifyBossKilled("il boss e' stato ucciso da questa macchina, ed ero morto");
                         }
 
                         // Remembered as well as announced: if someone reconnects later, this machine may no
