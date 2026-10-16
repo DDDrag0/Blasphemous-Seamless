@@ -137,6 +137,73 @@ namespace Blasphemous.Multiplayer.Client
     /// (~102 s, bossfight + cutscene comprese) e sopra la finestra del guasto (~90 s), quindi non
     /// interferiscono con nessun caso reale, e restano un fusibile vero.
     ///
+    /// ============================================================================================
+    /// ⭐⭐ LA REGRESSIONE DEL 17/10 — *"respawnato appena il boss ha finito l'animazione di morte, ed
+    /// ha perso la cutscene"* — E IL FUSIBILE CHE ASPETTA **LA FINE DELLA SEQUENZA**. *Questa* e' la
+    /// parte nuova, e la guardia 1/2 qui sopra **non bastavano**.
+    ///
+    /// **IL FATTO, dai due log di questa sessione** (`output_log G1/G2`, filtrati):
+    ///
+    ///   | | G1 (spettatore, boss ucciso dal compagno) | G2 (vivo, uccide lui) |
+    ///   |---|---|---|
+    ///   | `kill()` del boss (il segnale) | `t=282.6` | `t≈271.9` |
+    ///   | **animazione di morte** (nessuna scena) | `282.6 → 285.6` = **~3.0 s** | `271.9 → 276.98` = **~5.1 s** |
+    ///   | `cutscene_block` acceso | `t=282.7` | `t=275.51` |
+    ///   | `FADE` della scena | `t=285.58` | subito prima del `CINEMATIC` |
+    ///   | `CinematicStarted` / cutscene | **mai arrivata** (respawn a `t=287.14`) | `t=276.98` |
+    ///   | `VideoStarted` | — | `t=277.13` (`CTS02-Bloody Baptism`) |
+    ///   | `VideoEnded` / `CinematicEnded` | — | `t=282.85` / `t=285.85` |
+    ///   | finestra di morte | `80.10 s` (da `207.30`) | — |
+    ///
+    /// ⇒ **`sequenza=` era `si` per tutta l'animazione di morte** (`cutscene_block`, `[Respawn] stato` a
+    /// `t=282.97…287.00`), quindi il predicato riconosceva la sequenza: **il difetto non e' li'**. Il
+    /// difetto e' che il fusibile si considera *"un fusibile"* **appena il boss muore**, cioe' con
+    /// **~3 s di anticipo sulla cutscene**: in quei 3 s il gioco sta **lavorando normalmente** (e' la
+    /// sequenza scriptata di morte del boss) e **non c'e' niente da sbloccare**.
+    ///
+    /// **E LA DOMANDA DI FONDO E' PROPRIO QUESTA**: *quando ha senso che il fusibile esista?* Solo da
+    /// **fine sequenza in poi**: da li' il gioco non sta piu' facendo niente per il giocatore morto, e se
+    /// i tasti non arrivano **quello** e' il guasto. ⇒ **il fusibile si arma DOPO la sequenza**, non al
+    /// `kill()`.
+    ///
+    /// **IL CRITERIO SCELTO — il segnale DENTRO il gioco, con un ripiego, e niente predicati inventati.**
+    ///   1. **la via buona**: `Cinematics.CinematicStarted`/`CinematicEnded`, **gli eventi pubblici** che
+    ///      `CutsceneProbe` gia' sottoscrive (`Cinematics.cs:85-91`). Il fusibile si arma **alla FINE
+    ///      della cutscene** (`CinematicEnded`), e **non conta** finche' la scena gira (`_cinematicOn`).
+    ///      ⇒ fra il `kill()` e la fine della scena **il fusibile non esiste**, che e' esattamente cio'
+    ///      che il mandato chiede;
+    ///   2. **il ripiego per un boss SENZA cutscene**: se dopo il `kill()` **nessuna cutscene e' partita**
+    ///      entro `BOSS_DEATH_GRACE_SECONDS = 30 s` (misurato: la scena parte **4.3-5.1 s** dopo il
+    ///      `kill()`, quindi 30 s stanno **oltre sei volte** sopra la misura), la **sequenza di morte** e'
+    ///      finita e il fusibile si arma **da li' in poi**. ⚠️ **E non si arma mai prima**: e' la scelta
+    ///      conservativa che il mandato indica, e l'attesa ha il tetto dell'orologio a 300 s;
+    ///   3. ⚠️ **la via scartata**: *azzerare il conteggio finche' "una sequenza e' in corso"* **non
+    ///      basta**, ed e' il punto 2 del mandato: il fusibile **esiste** in quella finestra, e basta che
+    ///      un blocker esca per un frame (o che la scena non sia ancora partita) perche' parta. Il
+    ///      fusibile **non deve esistere** li': si arma quando la sequenza e' **finita**, non quando
+    ///      "sembra in corso".
+    ///
+    /// ⛔ **E NON SI TOGLIE IL FUSIBILE** (divieto del mandato): resta a **45 s** e resta l'orologio
+    /// assoluto a **300 s** che ignora le sequenze, perche' una cutscene **appesa** non deve poter
+    /// bloccare il giocatore per sempre.
+    ///
+    /// **E RETE 1 SMETTE DI ESSERE MUTA NELLA FINESTRA CHE CONTA.** Il suo guardiano era `!_sceneOn`, e
+    /// `FADE`/`cutscene_block` sono accesi **prima** che la cutscene parta: misurato in `G1` (`FADE`
+    /// acceso a `t=285.58`, `_sceneOn=si`, e la mod **non** ha chiesto il respawn → **`[Respawn]
+    /// RESPAWN CHIESTO` NON compare** nel log, mentre il livello e' stato ricaricato lo stesso a
+    /// `t=287.14` con `Penitent.Respawn()` invocato — `[Morte] il giocatore e' morto` a riga 3196, che e'
+    /// **il `Prefix` di `Respawn`**). ⇒ il guardiano ora e' **`_cinematicOn`**, cioe' "la cutscene e'
+    /// **davvero** in corso" (`CinematicStarted` acceso): **fuori** dalla cutscene i tasti tornano a
+    /// contare, dentro la cutscene no. Cosi' il caso normale (l'ascolto dei tasti) **non e' piu'
+    /// disarmato** nel momento in cui il gioco si sta preparando a mostrare la scena.
+    ///
+    /// ⚠️ **COSA QUESTO FIX NON PUO' IMPEDIRE** *(dichiarato)*: la schermata di morte **del gioco**
+    /// (`DeadScreenWidget.OnDeadAction:87-96`) respawna **al primo tasto** con la sua stessa catena
+    /// (`FADE` 1.5 s → `Core.Logic.Penitent.Respawn()`) e **non passa da questa mod**: se il tasto arriva
+    /// **prima** che la cutscene parta, la scena si perde **comunque**, ed e' la ricostruzione di `G1`.
+    /// Nessuna via di questa consegna puo' cambiarlo (servirebbe una patch su `DeadScreenWidget`, che e'
+    /// **la zona vietata**). ⇒ nel test: **non premere niente** durante l'animazione di morte del boss.
+    ///
     /// ⚠️ **LE DUE CONDIZIONI CHE ARMANO LA RETE 1**, e non sono pignoleria.
     ///   - `KEY_ARM_SECONDS = 2.5 s`: il tasto che ha **ucciso** il giocatore (o quello premuto mentre
     ///     moriva) non deve essere riletto come "voglio respawnare". La schermata di morte del gioco non ha
@@ -218,6 +285,20 @@ namespace Blasphemous.Multiplayer.Client
         private const float MAX_ESCAPE_SECONDS = 300f;
 
         /// <summary>
+        /// ⭐ IL RIPIEGO PER UN BOSS **SENZA CUTSCENE**, e il secondo numero di questa consegna. Se dopo il
+        /// `kill()` **nessuna cutscene e' partita** entro questo tempo, la *sequenza di morte* del boss e'
+        /// finita e il fusibile si arma da li' in poi.
+        ///
+        /// ⚠️ **E' UNA MISURA, NON UN INDOVINELLO**: nei due log di questa sessione il `kill()` e la
+        /// partenza della scena distano **~3.0 s** (`G1`, misurato sul `FADE` che precede la scena mai
+        /// arrivata) e **~5.1 s** (`G2`: `kill()` a `t≈271.9` → `CinematicStarted` a `t=276.98`; il
+        /// `cutscene_block` si accende a `t=275.51`, cioe' **3.6 s** dopo). **Trenta secondi stanno oltre
+        /// sei volte sopra la misura**, quindi un boss con una scena lenta non viene mai scambiato per un
+        /// boss senza scena.
+        /// </summary>
+        private const float BOSS_DEATH_GRACE_SECONDS = 30f;
+
+        /// <summary>
         /// La distanza fra due tentativi del fusibile. Non e' pignoleria: `Respawn()` fa un **load di
         /// livello**, che non e' istantaneo, e ritentarlo a ogni frame sarebbe una richiesta di load per
         /// frame. Dieci secondi stanno larghi su un load vero e restano un fusibile vero.
@@ -295,6 +376,30 @@ namespace Blasphemous.Multiplayer.Client
         private static bool _sceneOn;
         private static bool _disarmedReported;
 
+        // ---- ⭐⭐ LA SEQUENZA DEL BOSS, MISURATA DAGLI EVENTI DEL GIOCO (non da un predicato inventato).
+        //      `_cinematicOn` e' "la cutscene e' DAVVERO in corso" (`Cinematics.CinematicStarted` acceso e
+        //      non ancora chiuso da `CinematicEnded`): e' la verita' di "una scena sta girando", ed e' il
+        //      guardiano che sostituisce `!_sceneOn` su RETE 1 (vedi il commento di classe: `FADE` e
+        //      `cutscene_block` si accendono PRIMA che la scena parta).
+        private static bool _cinematicOn;
+
+        // ---- ⭐ IL FUSIBILE NON ESISTE FRA IL `kill()` E LA FINE DELLA SEQUENZA: `_killSeen` e' "il
+        //      `kill()` del boss e' arrivato DOPO questa morte", `_waitingSequence` e' "il fusibile e'
+        //      ancora da armare perche' la sequenza non e' conclusa", `_sequenceEnded` e' "la cutscene e'
+        //      finita", `_bossDeathAt`/`_bossDeathFuseAt` sono i due istanti da cui si decide (la morte del
+        //      boss e la fine della scena), e `_armReason` e' **perche'** si e' armato — cosi' il marker lo
+        //      dice invece di lasciarlo indovinare.
+        private static bool _killSeen;
+        private static bool _waitingSequence;
+        private static bool _sequenceEnded;
+        private static float _bossDeathAt;
+        private static float _bossDeathFuseAt;
+        private static string _armReason = string.Empty;
+
+        // ---- la sottoscrizione agli eventi pubblici di `Cinematics` (zero patch Harmony).
+        private static bool _subscribed;
+        private static bool _subscribePending;
+
         // ---- lo stack dei blocker, ricostruito per differenza dalle transizioni di `SetBlocker`.
         private static readonly System.Collections.Generic.List<string> Blockers =
             new System.Collections.Generic.List<string>();
@@ -345,6 +450,16 @@ namespace Blasphemous.Multiplayer.Client
                     _fuseSince = now;
                     _disarmedReported = false;
 
+                    // ⭐⭐ LA SEQUENZA DEL BOSS: si azzera la memoria della finestra. `_cinematicOn` **non**
+                    // si azzera: non e' un fatto di questa morte, e' lo stato vero del gioco (se una
+                    // cutscene sta girando, sta girando).
+                    _killSeen = false;
+                    _waitingSequence = false;
+                    _sequenceEnded = false;
+                    _bossDeathAt = 0f;
+                    _bossDeathFuseAt = 0f;
+                    _armReason = string.Empty;
+
                     // ⭐ IL PRIMO GIRO NON SI FIDA DELLA DIFFERENZA: le sottoscrizioni possono essere
                     // arrivate DOPO un blocker gia' acceso (la mod si aggancia al primo ciclo per frame, e il
                     // gioco accende `InitialBlocker` nel suo `Start`). Quindi all'apertura della finestra si
@@ -354,6 +469,10 @@ namespace Blasphemous.Multiplayer.Client
                     // invisibile. E' esattamente il blocker che nel log del guasto non si vedeva.
                     SyncBlockers();
                 }
+
+                // ---- ⭐ LA PROBE CINEMATIC: se `Core.Cinematics` non era pronto all'aggancio, si riprova
+                //      qui (una volta riuscita non fa piu' niente). E' lo stesso schema di `CutsceneProbe`.
+                TickCinematicSubscription();
 
                 // ---- ⭐ GUARDIA 1 (la lettura del segnale) e GUARDIA 2 (la pausa sulle sequenze).
                 //      Stanno PRIMA della probe, cosi' la riga di stato del secondo in cui il fusibile si
@@ -382,15 +501,22 @@ namespace Blasphemous.Multiplayer.Client
                 // che risponde **subito** quando il tasto arriva al gioco (provato su G2 con `Space`,
                 // `fusibile=non usato`). E resta l'unica rete che NON dipende dal `kill()` del boss: un
                 // giocatore che preme un tasto non deve aspettare nessun segnale.
-                if (!_keyArmed && !_sceneOn)
+                //
+                // ⚠️ E IL GUARDIANO E' CAMBIATO: `_cinematicOn` ("la cutscene e' davvero in corso"),
+                // **non** `_sceneOn`. `FADE` e `cutscene_block` si accendono **prima** che la scena parta
+                // (misurato in `G1`: `FADE` a `t=285.58` e la scena mai arrivata), quindi con `!_sceneOn`
+                // questa rete era **muta proprio nella finestra in cui deve funzionare** — e in `G1` il
+                // livello e' stato ricaricato lo stesso (dalla schermata di morte del gioco) senza che la
+                // mod chiedesse niente. Fuori dalla cutscene i tasti contano: dentro, no.
+                if (!_keyArmed && !_cinematicOn)
                 {
                     _keyArmed = true;
-                    ModLog.Info(MARK + " ascolto dei tasti ARMATO (nessuna sequenza in corso): " +
+                    ModLog.Info(MARK + " ascolto dei tasti ARMATO (nessuna cutscene in corso): " +
                                 "se il gioco non legge piu' i tasti della schermata di morte, questo e' " +
                                 "il punto in cui il respawn viene chiesto lo stesso");
                 }
 
-                if (_keyArmed && !_sceneOn)
+                if (_keyArmed && !_cinematicOn)
                 {
                     KeyCode pressed = FirstKeyPressed();
                     if (pressed != KeyCode.None)
@@ -438,14 +564,15 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         // ============================================================================================
-        // ⭐ LE DUE GUARDIE NUOVE DEL FUSIBILE
+        // ⭐ LE GUARDIE DEL FUSIBILE, E ORA SONO TRE
         // ============================================================================================
 
         /// <summary>
         /// Un giro per frame, **solo da morti**: legge il segnale del `kill()` del boss (guardia 1), misura
-        /// se una sequenza e' in corso e fa ripartire il conteggio del fusibile (guardia 2), e scrive i due
-        /// marker di armamento/disarmamento. **Non chiama niente del gioco**: legge `InputManager.HasBlocker`
-        /// e un `int`, e scrive due righe di log.
+        /// se una **scena** e' in corso e fa ripartire il conteggio del fusibile (guardia 2), e **arma il
+        /// fusibile solo quando la sequenza di morte del boss e' CONCLUSA** (guardia 3, quella di questa
+        /// consegna). **Non chiama niente del gioco**: legge `InputManager.HasBlocker` e un `int`, e scrive
+        /// righe di log.
         /// </summary>
         private static void UpdateFuseGate(float now)
         {
@@ -456,18 +583,26 @@ namespace Blasphemous.Multiplayer.Client
 
             _killSignal = EnemySyncManager.BossKillSignal;
 
-            // ---- GUARDIA 1. Il fusibile puo' armarsi **solo da un `kill()` avvenuto DOPO questa morte**: e'
-            // il momento in cui la cutscene del boss diventa possibile, ed e' tutto il punto del fix.
-            // `while`, non `if`, e con il marker: e' un attimo solo, ma se il valore saltasse di due (due
-            // boss, o un annuncio applicato due volte) la riga lo direbbe invece di nasconderlo.
+            // ---- ⭐ GUARDIA 3, IL PUNTO DI QUESTA CONSEGNA. Il `kill()` NON arma piu' il fusibile: lo
+            //      mette in **attesa della fine della sequenza**. Il fusibile esiste solo da li' in poi,
+            //      perche' e' solo da li' in poi che "il giocatore non respawna" e' un guasto invece che
+            //      **il gioco che sta facendo la sua animazione di morte e la sua cutscene**.
+            //      ⚠️ Un `kill()` avvenuto **prima** di questa morte resta invisibile alla finestra
+            //      (`_killSignalAtOpen`), ed e' giusto: li' non c'e' nessuna scena da attendere.
             while (_killSignal > _killSignalAtOpen)
             {
                 _killSignalAtOpen++;
-                _armed = true;
-                _fuseSince = now;   // ⭐ il conteggio parte dal `kill()`, non dalla morte
-                ModLog.Info(MARK + " fusibile ARMATO (perche=il `kill()` del boss e' avvenuto DOPO la " +
-                            "morte: era `BossKillSignal`=" + _killSignal + ") · da ora il fusibile conta, " +
-                            "ma NON durante una sequenza: e' la guardia che non fa perdere la cutscene");
+                _killSeen = true;
+                _waitingSequence = true;
+                _sequenceEnded = false;
+                _bossDeathAt = now;
+                _fuseSince = now;
+                _disarmedReported = false;
+                ModLog.Info(MARK + " segnale del `kill()` del boss arrivato " + F(now - _deadSince) +
+                            "s dopo la morte (`BossKillSignal`=" + _killSignal + "): ⭐ da qui la sequenza " +
+                            "di morte del boss puo' partire, quindi il fusibile **ASPETTA la fine della " +
+                            "sequenza** e NON si arma adesso: fra il `kill()` e la fine della cutscene il " +
+                            "gioco sta lavorando normalmente e non c'e' niente da sbloccare");
             }
 
             // ---- GUARDIA 2. La sequenza in corso NON fa scattare il fusibile, e **azzera il conteggio**.
@@ -486,6 +621,7 @@ namespace Blasphemous.Multiplayer.Client
             }
 
             _sceneOn = scene;
+            _bossDeathFuseAt = _cinematicOn ? now : _bossDeathFuseAt;
 
             if (scene)
             {
@@ -493,6 +629,62 @@ namespace Blasphemous.Multiplayer.Client
                 // verita' su da quanto si e' morti. Si sposta solo il punto di partenza del fusibile.
                 _fuseSince = now;
                 return;
+            }
+
+            // ---- ⭐ L'ARMATURA, E HA DUE VIE (vedi il commento di classe).
+            if (!_armed && _waitingSequence)
+            {
+                // (a) LA VIA BUONA: la cutscene e' partita ed e' **finita** (`CinematicEnded`).
+                bool byCinematic = _sequenceEnded;
+
+                // (b) IL RIPIEGO: nessuna cutscene e' partita entro `BOSS_DEATH_GRACE_SECONDS` ⇒ questo
+                //     boss non ha una scena, la sua **sequenza di morte** e' conclusa, e il fusibile puo'
+                //     esistere. ⚠️ **E non si arma mai prima**: e' la scelta conservativa del mandato.
+                bool byFallback = !_cinematicOn && (now - _bossDeathAt) >= BOSS_DEATH_GRACE_SECONDS;
+
+                if (byCinematic || byFallback)
+                {
+                    // ⭐ Il conteggio parte da QUANDO LA SEQUENZA E' FINITA, non da quando il boss e'
+                    //    morto: e' esattamente la differenza che questa consegna doveva colmare.
+                    float from = byCinematic && _bossDeathFuseAt > _bossDeathAt
+                        ? _bossDeathFuseAt
+                        : now;
+
+                    _armed = true;
+                    _waitingSequence = false;
+                    _fuseSince = from;
+                    _armReason = byCinematic ? "fine-cutscene" : "nessuna-cutscene";
+                    ModLog.Info(MARK + " fusibile ARMATO (perche=" +
+                                (byCinematic
+                                    ? "la CUTSCENE del boss e' FINITA (`CinematicEnded`): la sequenza di " +
+                                      "morte e' conclusa e solo da qui il fusibile ha senso"
+                                    : "sono passati " + F(now - _bossDeathAt) + "s dal `kill()` e nessuna " +
+                                      "cutscene e' partita (soglia " + F(BOSS_DEATH_GRACE_SECONDS) +
+                                      "s): questo boss non ha una scena, la sua sequenza di morte e' " +
+                                      "conclusa") +
+                                ") · il conteggio parte da QUI (non dal `kill()`): " + F(now - _fuseSince) +
+                                "s di " + F(ESCAPE_SECONDS) + "s · era `BossKillSignal`=" + _killSignal);
+                }
+                else
+                {
+                    if (!_disarmedReported)
+                    {
+                        _disarmedReported = true;
+                        ModLog.Info(MARK + " fusibile NON armato (perche=manca ancora la fine della " +
+                                    "sequenza di morte del boss: o e' in corso (`sequenza=`/`cinematic=`) " +
+                                    "o non e' ancora passata la soglia di " +
+                                    F(BOSS_DEATH_GRACE_SECONDS) + "s dal `kill()`, che e' il ripiego per " +
+                                    "un boss senza cutscene) · `BossKillSignal`=" + _killSignal + ", " +
+                                    "atteso>" + _killSignalAtOpen + " · i tasti restano la rete " +
+                                    "principale e funzionano lo stesso fuori dalla cutscene");
+                    }
+
+                    // ⚠️ IL CONTEGGIO NON PARTE: finche' la sequenza non e' conclusa il fusibile **non
+                    //    esiste**. E' il punto della regressione del 17/10: prima si armava qui, e
+                    //    scattava mentre il boss finiva l'animazione di morte.
+                    _fuseSince = now;
+                    return;
+                }
             }
 
             if (!_armed && !_fuseUsed)
@@ -544,6 +736,7 @@ namespace Blasphemous.Multiplayer.Client
             ModLog.Info(MARK + " finestra chiusa: " + why + " · campioni=" + _samples +
                         " fusibile=" + (_fuseUsed ? "usato" : "non usato") +
                         " fusibileArmato=" + (_armed ? "si" : "no") +
+                        (_armed && _armReason.Length > 0 ? "(perche=" + _armReason + ")" : string.Empty) +
                         " killBoss=(visti " + (_killSignal - _killSignalAtOpen) + " durante la finestra, " +
                         "totale scena " + _killSignal + ")" +
                         " · " + BlockersLine());
@@ -561,6 +754,12 @@ namespace Blasphemous.Multiplayer.Client
             _killSignalAtOpen = 0;
             _killSignal = 0;
             _disarmedReported = false;
+            _killSeen = false;
+            _waitingSequence = false;
+            _sequenceEnded = false;
+            _bossDeathAt = 0f;
+            _bossDeathFuseAt = 0f;
+            _armReason = string.Empty;
         }
 
         // ============================================================================================
@@ -700,17 +899,29 @@ namespace Blasphemous.Multiplayer.Client
                    " unityAnyKey=" + (unityAnyKey ? "True" : "False") +
                    " tentativiMiei=" + _attempts +
                    " sequenza=" + (_sceneOn ? "si" : "no") +
+                   " cinematic=" + (_cinematicOn ? "si" : "no") +
                    " fusibile=" + FusibileState(now) +
                    " killBoss=" + _killSignal + "(atteso>" + _killSignalAtOpen + ")" +
+                   " sequenzaBoss=" + (_armed ? "conclusa(armato-per=" +
+                                             (_armReason.Length > 0 ? _armReason : "?") + ")"
+                                       : _waitingSequence
+                                           ? "in-corso(attesa-da-" + F(now - _bossDeathAt) + "s/" +
+                                             F(BOSS_DEATH_GRACE_SECONDS) + "s)"
+                                           : "non-ancora") +
                    " gameplayUIActive=" + gameplayUI + " fadeUIActive=" + fadeUI +
                    " schermataMorte=[" + deadScreen + "] · " + BlockersLine();
         }
 
         /// <summary>
-        /// ⭐ IL CAMPO CHE RENDE LEGGIBILE LA REGRESSIONE IN UNA RIGA SOLA: dice in **quale** dei tre stati e'
-        /// il fusibile — `disarmato`, `armato`, `scattato` — e **da quanto** conta. Senza, "non si e' armato",
-        /// "si e' armato e non e' scattato" e "e' scattato" hanno lo stesso aspetto nel log, ed e' esattamente
-        /// la confusione che ha reso difficile leggere la sessione del guasto.
+        /// ⭐ IL CAMPO CHE RENDE LEGGIBILE LA REGRESSIONE IN UNA RIGA SOLA: dice in **quale** degli stati e'
+        /// il fusibile — `disarmato(pre-kill)`, `disarmato(attesa-fine-sequenza)`, `armato`, `scattato` — e
+        /// **da quanto** conta. Senza, "non si e' armato", "si e' armato e non e' scattato" e "e' scattato"
+        /// hanno lo stesso aspetto nel log.
+        ///
+        /// ⚠️ E IL FORMATO E' QUELLO CHE IL MANDATO CHIEDE, riga per riga:
+        /// `fusibile=disarmato(pre-kill)|armato(X/45.00s)|armato-in-pausa(perche=…)|scattato`. Lo stato
+        /// nuovo e' `disarmato(attesa-fine-sequenza)`: e' **il fusibile che NON esiste ancora** perche' il
+        /// boss sta finendo la sua animazione di morte o la sua cutscene — ed e' la regressione del 17/10.
         /// </summary>
         private static string FusibileState(float now)
         {
@@ -718,10 +929,19 @@ namespace Blasphemous.Multiplayer.Client
                 return "scattato";
 
             if (!_armed)
+            {
+                if (_waitingSequence)
+                    return "disarmato(attesa-fine-sequenza:da-kill=" + F(now - _bossDeathAt) + "s/" +
+                           F(BOSS_DEATH_GRACE_SECONDS) + "s)";
+
                 return "disarmato(pre-kill)";
+            }
+
+            if (_cinematicOn)
+                return "armato-in-pausa(perche=cutscene)";
 
             if (_sceneOn)
-                return "armato-in-pausa(scena)";
+                return "armato-in-pausa(perche=scena)";
 
             return "armato(" + F(now - _fuseSince) + "/" + F(ESCAPE_SECONDS) + "s)";
         }
@@ -759,6 +979,141 @@ namespace Blasphemous.Multiplayer.Client
             catch (Exception e)
             {
                 Fail("AttachOnce", e);
+            }
+
+            // ⭐ E LA SOTTOSCRIZIONE AGLI EVENTI DELLA CUTSCENE, che e' il segnale della guardia 3.
+            SubscribeCinematics();
+        }
+
+        // ============================================================================================
+        // ⭐⭐ LA SEQUENZA DEL BOSS: "LA CUTSCENE E' IN CORSO" E "LA CUTSCENE E' FINITA"
+        // ============================================================================================
+
+        /// <summary>
+        /// ⭐ IL SEGNALE CHE IL MANDATO CHIEDE, E **ESISTEVA GIA'**: `Cinematics.CinematicStarted` /
+        /// `CinematicEnded` sono `event` **pubblici** di `Framework.Managers.Cinematics` (`:85-91`), gli
+        /// stessi che `CutsceneProbe` sottoscrive gia' senza nessuna patch Harmony. ⇒ **una sottoscrizione,
+        /// zero patch**: il conteggio dei 263 bersagli non cambia.
+        ///
+        /// ⚠️ E NON SI Sottoscrive `VideoStarted`: la **cutscene** e' quella che cambia il mondo (`CINEMATIC`
+        /// e' il blocker che spegne i tasti), e `CinematicStarted` e' invocato in fondo a `StartCutscene`
+        /// (`Cinematics.cs:148-151`), cioe' **dopo** il blocker: e' la verita' di "la scena e' partita".
+        /// </summary>
+        private static void SubscribeCinematics()
+        {
+            try
+            {
+                Cinematics cinematics = Core.Cinematics;
+                if (cinematics == null)
+                {
+                    // Come in `CutsceneProbe`: `Core.Cinematics` puo' non essere pronto al primo giro, e il
+                    // ritentativo sta in `TickCinematicSubscription`.
+                    _subscribePending = true;
+                    return;
+                }
+
+                if (_subscribed)
+                    return;
+
+                cinematics.CinematicStarted += OnCinematicStarted;
+                cinematics.CinematicEnded += OnCinematicEnded;
+
+                _subscribed = true;
+                _subscribePending = false;
+
+                ModLog.Info(MARK + " sequenza del boss: sottoscritti `CinematicStarted`/`CinematicEnded` " +
+                            "(eventi PUBBLICI, nessuna patch Harmony) · il fusibile del respawn si armera' " +
+                            "**dopo la fine della cutscene**, non al `kill()`: fra i due il gioco sta " +
+                            "lavorando normalmente");
+            }
+            catch (Exception e)
+            {
+                Fail("SubscribeCinematics", e);
+            }
+        }
+
+        /// <summary>
+        /// Il ritentativo della sottoscrizione, **una volta per frame e solo finche' non e' riuscita**:
+        /// quando `Core.Cinematics` arriva, si aggancia e non fa piu' niente (nessuno spam).
+        /// </summary>
+        private static void TickCinematicSubscription()
+        {
+            if (_subscribed || !_subscribePending)
+                return;
+
+            SubscribeCinematics();
+        }
+
+        /// <summary>
+        /// LA CUTSCENE E' PARTITA. Da questo istante il fusibile **non conta** e **RETE 1 tace**: il respawn
+        /// non deve poter ricaricare il livello mentre una scena scorre (e' la richiesta dell'utente, e la
+        /// guardia che non fa perdere la cutscene).
+        /// </summary>
+        private static void OnCinematicStarted()
+        {
+            try
+            {
+                if (!_cinematicOn)
+                {
+                    _cinematicOn = true;
+
+                    // Il fusibile e' ancora in attesa (o armato): in entrambi i casi, da qui si conta da
+                    // zero. Se era armato, la pausa e' quella di sempre (`armato-in-pausa(perche=cutscene)`).
+                    _fuseSince = Time.unscaledTime;
+
+                    // ⚠️ La scena che conta e' quella che parte **dopo** il `kill()`: una cutscene che era
+                    // gia' in corso quando il boss e' morto non deve poter dire "la sequenza e' finita".
+                    if (_killSeen)
+                        _sequenceEnded = false;
+
+                    if (_dead)
+                        ModLog.Info(MARK + " la CUTSCENE e' PARTITA (`CinematicStarted`) · da qui il " +
+                                    "fusibile NON conta e RETE 1 non legge i tasti: la scena non si " +
+                                    "interrompe" + (_waitingSequence
+                                        ? " · il fusibile aspettava proprio questa, e si armera' alla FINE"
+                                        : string.Empty));
+                }
+            }
+            catch (Exception e)
+            {
+                Fail("OnCinematicStarted", e);
+            }
+        }
+
+        /// <summary>
+        /// ⭐⭐ LA CUTSCENE E' FINITA. **E' QUI CHE IL FUSIBILE PUO' ESISTERE**: da questo istante il gioco
+        /// non sta piu' facendo niente per il giocatore morto, e se i tasti non arrivano quello **e'** il
+        /// guasto. Il conteggio parte da qui (o dall'istante in cui anche l'ultimo blocker di scena cade,
+        /// vedi `UpdateFuseGate`).
+        /// </summary>
+        private static void OnCinematicEnded(bool cancelled)
+        {
+            try
+            {
+                if (_cinematicOn)
+                {
+                    _cinematicOn = false;
+                    _sequenceEnded = true;
+                    _bossDeathFuseAt = Time.unscaledTime;
+
+                    if (_dead)
+                        ModLog.Info(MARK + " la CUTSCENE e' FINITA (`CinematicEnded cancelled=" + cancelled +
+                                    "`) · la sequenza di morte del boss e' CONCLUSA: da qui il fusibile e' " +
+                                    "un fusibile" + (_waitingSequence
+                                        ? " e si arma adesso (il conteggio parte da QUI, non dal `kill()`)"
+                                        : string.Empty));
+                }
+                else
+                {
+                    // Nessuna cutscene aperta: non si inventa niente, ma il fatto si registra (una
+                    // `CinematicEnded` senza la sua `Started` e' un dato, non un errore).
+                    _sequenceEnded = true;
+                    _bossDeathFuseAt = Time.unscaledTime;
+                }
+            }
+            catch (Exception e)
+            {
+                Fail("OnCinematicEnded", e);
             }
         }
 
