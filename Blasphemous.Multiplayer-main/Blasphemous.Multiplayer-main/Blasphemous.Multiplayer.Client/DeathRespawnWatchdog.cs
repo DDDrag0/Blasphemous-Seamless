@@ -365,6 +365,21 @@ namespace Blasphemous.Multiplayer.Client
         private const float ESCAPE_RETRY_SECONDS = 10f;
 
         /// <summary>
+        /// ⭐⭐ LA GRAZIA DELLO STATO INCOERENTE, in secondi NON scalati (19/10). E' il tempo che si lascia
+        /// passare **fra il riconoscimento di "vivo ma con `DEAD_SCREEN` acceso" e il tentativo lecito**
+        /// (`Penitent.Respawn()`), e non e' pignoleria: quello stato nasce **durante un load di livello**
+        /// (`LevelManager` → `SpawnPlayerOnLevelLoad` → `CreatePlayer` → il Penitent e' un altro oggetto),
+        /// e chiedere un secondo load mentre il primo non e' finito significa chiamare `ChangeLevel` dentro
+        /// `ChangeLevel` — che il gioco rifiuta con
+        /// `"Calling a ChangeLevel when a change level is in progress"` (`LevelManager.cs:135`).
+        /// **Cinque secondi stanno sopra qualunque load misurato** (il load di `G1` da
+        /// `Load and activate level` a `OnLevelLoaded` e' ~1 s) **e restano corti per un giocatore fermo**.
+        /// ⚠️ **E IL TENTATIVO E' UNO SOLO PER EPISODIO** (`_incoherentRespawned`): ripetere i load sarebbe
+        /// **peggio** dello stato, perche' **un load e' esattamente cio' che lo produce**.
+        /// </summary>
+        private const float INCOHERENT_GRACE_SECONDS = 5f;
+
+        /// <summary>
         /// ⭐ I BLOCKER CHE SIGNIFICANO "UNA SEQUENZA STA GIRANDO SU QUESTA MACCHINA". Finche' uno di questi
         /// e' acceso, il fusibile **non conta** (guardia 2): e' la guardia che impedisce al respawn di
         /// ricaricare il livello mentre una cutscene scorre o sta per partire, che e' la seconda richiesta
@@ -414,6 +429,15 @@ namespace Blasphemous.Multiplayer.Client
         private static bool _fuseUsed;
         private static int _attempts;
         private static float _nextAttempt;
+
+        // ---- ⭐⭐ LO STATO INCOERENTE (19/10). Vedi `IncoherentState()` e `TickAlive()`: sono la memoria
+        //      dell'episodio "vivo ma con `DEAD_SCREEN` acceso", che il watchdog **non poteva vedere**
+        //      perche' la sua finestra esiste solo da morto.
+        private static bool _incoherent;
+        private static float _incoherentSince;
+        private static bool _incoherentReported;
+        private static bool _incoherentRespawned;
+        private static float _incoherentNextAttempt;
 
         // ---- ⭐ GUARDIA 1: il `kill()` del boss. `_killSignalAtOpen` e' il valore del contatore
         //      ALL'APERTURA della finestra: un `kill()` avvenuto PRIMA della morte non conta (e sarebbe il
@@ -475,6 +499,133 @@ namespace Blasphemous.Multiplayer.Client
         // ---- una riga sola per finestra quando il Penitent non e' disponibile.
         private static bool _goneReported;
 
+        // ============================================================================================
+        // ⭐⭐ LO STATO INCOERENTE (19/10) — "VIVO, MA CON LA SCHERMATA DI MORTE ANCORA ADDOSSO".
+        // ============================================================================================
+
+        /// <summary>
+        /// ⭐ **IL PREDICATO DELLO STATO INCOERENTE, e sono DUE FONTI DEL GIOCO CHE SI CONTRADDICONO.**
+        ///
+        ///   `!PlayerDeathSync.IsLocalPlayerDead()`   ⇒ il gioco dice **VIVO** (`Penitent.Status.Dead` falso)
+        ///   `Core.Input.HasBlocker("DEAD_SCREEN")`   ⇒ il gioco dice **MORTO** (la schermata di morte e'
+        ///                                               accesa e l'input e' bloccato)
+        ///
+        /// ⚠️ **E' ESATTAMENTE LO STATO CHE L'UTENTE HA VISTO** (*"quando torna in vita in questa maniera
+        /// non fa l'animazione di respawn, quindi ha ancora il prompt di tasto da premere buggato"*), ed e'
+        /// **misurabile**: `DEAD_SCREEN` e' acceso da `DeadScreenWidget.OnDeadAction:78` e lo spegne
+        /// **solo** il gioco, in `OnPenitentReady:101` — cioe' **solo se quella schermata riceve
+        /// `SpawnManager.OnPlayerSpawn`** (`DeadScreenWidget.cs:58`). Se il livello viene ricaricato mentre
+        /// il PENITENT e' un altro oggetto (o il widget della scena vecchia non riceve piu' l'evento),
+        /// **il giocatore e' vivo e il blocker resta**.
+        ///
+        /// ⛔ **E NON SI TOCCA**: `HasBlocker` e' solo **LETTO** (e' `public`, `InputManager.cs:210-213`,
+        /// verificato in IL: `inputBlockers.Contains(name)` — nessun side-effect). Questo metodo **non
+        /// chiama `SetBlocker`, non chiama `ResetManager`, non tocca la schermata**: riporta e basta.
+        /// </summary>
+        private static bool IncoherentState()
+        {
+            if (PlayerDeathSync.IsLocalPlayerDead())
+                return false;
+
+            try
+            {
+                InputManager input = Core.Input;
+                return input != null && input.HasBlocker("DEAD_SCREEN");
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// ⭐⭐ UN GIRO PER FRAME **DA VIVI**, e serve a una cosa sola: **dire che lo stato incoerente
+        /// esiste, e che questa rete e' strutturalmente cieca**.
+        ///
+        /// ⚠️ **IL WATCHDOG NON PUO' REPARARLO, ed e' la risposta alla domanda del mandato**: tutta la sua
+        /// logica vive dentro `if (!dead) { ... return; }` e `dead` e'
+        /// `Core.Logic.Penitent.Status.Dead` → **falso** appena il load ricostruisce il Penitent. Quindi
+        /// *"il watchdog non e' scattato"* **non e' un guasto del watchdog**: e' che **per il gioco il
+        /// giocatore e' vivo**, e il watchdog e' una rete **per il morto**.
+        ///
+        /// ⇒ **E LE VIE D'USCITA LECITE SONO TRE, TUTTE VERIFICATE IN IL, E NESSUNA FA CONGEDARE LA
+        /// SCHERMATA** *(quindi non si implementa nessuna delle tre: sarebbe un fix sporco in zona morte)*:
+        ///
+        ///   | via | firma verificata in `_il` | cosa fa | perche' NON basta |
+        ///   |---|---|---|---|
+        ///   | `Penitent.Respawn()` | `public void` (`Penitent.cs:310-315`) | load di livello ⇒ `LevelManager:355` `ResetManager()` ⇒ **il blocker cade dal GIOCO** | **non congeda la schermata**: la fa sparire solo perche' **ricarica il livello**, cioe' **la stessa cosa che ha creato lo stato** (e' il loop) |
+        ///   | `Penitent.Status.Dead = true` | campo **pubblico** (`Entity.Status` → `EntityStatus.Dead`) | rientra in `Penitent.OnUpdate:482-498` e rilancia `OnDead` | ⇒ `DeadScreenWidget.OnDead` parta **di nuovo** la coroutine della schermata su un widget che sta gia' mostrandola: **nessun congedo**, solo un'altra attesa di tasto (e `HideAll()` non e' mai chiamata) |
+        ///   | forzare il congedo della schermata | `HideAll()` e' **privata** (`DeadScreenWidget.cs:208`) | — | servirebbe una patch su `DeadScreenWidget` (**zona vietata**) o `Core.Input.ResetManager()` (**vietato**: azzera **tutti** i blocker) |
+        ///
+        /// ✅ **E L'UNICA VIA CHE ESISTE DAVVERO E' GIA' QUELLA CHE C'E'**: `RETE 1` legge
+        /// `UnityEngine.Input.GetKeyDown` **in proprio**, e il ciclo per frame della mod gira **anche**
+        /// quando il gioco non legge piu' i tasti ⇒ **al primo tasto vero la mod chiama `Respawn()`**
+        /// (`DeathRespawnWatchdog.Respawn`), che fa il load e il load rimette a posto **dal lato gioco**
+        /// (`ResetManager`, il fade e `DEAD_SCREEN`). ⚠️ **Ed e' provato su questo log, non dedotto**: in
+        /// `G1` le righe 2894/2898/2905/2906/2916 hanno `unityAnyKey=True` **con
+        /// `blockers=(DEAD_SCREEN,FADE)` accesi** → **il tasto ARRIVA a Unity anche con l'input bloccato**.
+        /// ⇒ **il caso "bloccato vero" e' quello che `RETE 1` copre, e per questo il fusibile e' solo la
+        /// rete di chi NON preme.**
+        private static void TickAlive()
+        {
+            bool incoherent = IncoherentState();
+
+            if (!incoherent)
+            {
+                if (_incoherent)
+                {
+                    _incoherent = false;
+                    ModLog.Info(MARK + " STATO INCOERENTE FINITO dopo " +
+                                F(Time.unscaledTime - _incoherentSince) + "s: il blocker `DEAD_SCREEN` non " +
+                                "e' piu' acceso e il giocatore e' vivo: le due fonti del gioco tornano " +
+                                "d'accordo" + (_incoherentRespawned
+                                    ? " · ed e' finito con un RESPAWN CHIESTO da questa rete"
+                                    : " · non e' finito per un'azione di questa rete"));
+                }
+                return;
+            }
+
+            float now = Time.unscaledTime;
+
+            if (!_incoherent)
+            {
+                _incoherent = true;
+                _incoherentSince = now;
+                _incoherentReported = false;
+                _incoherentRespawned = false;
+                _incoherentNextAttempt = now + INCOHERENT_GRACE_SECONDS;
+            }
+
+            if (!_incoherentReported)
+            {
+                _incoherentReported = true;
+                ModLog.Warn(MARK + " STATO INCOERENTE: il giocatore e' VIVO e il blocker `DEAD_SCREEN` e' " +
+                            "ANCORA ACCESO (due fonti del gioco che si contraddicono: " +
+                            "`Penitent.Status.Dead`=False, `Core.Input.HasBlocker(\"DEAD_SCREEN\")`=True) · " +
+                            "⭐ e' lo stato che nasce quando un load ricostruisce il Penitent mentre la " +
+                            "schermata di morte era aperta: il giocatore riappare **senza l'animazione di " +
+                            "respawn** (`Penitent.Respawn()` non e' mai stato invocato: nel log G1 " +
+                            "`[Morte] il giocatore e' morto` = 0 occorrenze e il gioco lo dichiara vivo " +
+                            "lo stesso, e il prompt del tasto resta a schermo) · ⚠️ IL WATCHDOG E' " +
+                            "STRUTTURALMENTE CIECO a questo stato: `IsLocalPlayerDead()` risponde False, " +
+                            "quindi non entra mai nella sua finestra · questa rete lo vede e lo dichiara, e " +
+                            "chiedera' `Respawn()` fra " + F(INCOHERENT_GRACE_SECONDS) + "s (una volta " +
+                            "sola, perche' ripetere dei load e' peggio dello stato)");
+            }
+
+            if (_incoherentRespawned || now < _incoherentNextAttempt)
+                return;
+
+            _incoherentRespawned = true;
+            Respawn("STATO INCOERENTE (il giocatore e' vivo ma `DEAD_SCREEN` e' ancora acceso da " +
+                    F(now - _incoherentSince) + "s): si chiede `Penitent.Respawn()` — **la via del gioco**, " +
+                    "la stessa di un tasto — perche' e' l'unico modo lecito di rimettere d'accordo le due " +
+                    "fonti (`Respawn()` → load → `LevelManager:355` `ResetManager()` azzera i blocker " +
+                    "DAL GIOCO). ⚠️ NON congeda la schermata: la fa sparire **ricaricando il livello**, ed " +
+                    "e' dichiarato nel referto. UNA volta sola per episodio: ripetere i load sarebbe " +
+                    "peggio dello stato (ed e' esattamente cio' che l'ha prodotto)");
+        }
+
         /// <summary>
         /// ⭐⭐ IL PREDICATO UNICO — **"LA SEQUENZA DI MORTE DEL BOSS E' IN CORSO"** — e lo usano **tutte e
         /// due** le reti, di proposito: il mandato chiede che `RETE 1` usi **lo stesso guardiano del
@@ -511,6 +662,13 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     if (_dead)
                         CloseWindow("il giocatore e' tornato (respawn)");
+
+                    // ⭐⭐ E IL GIRO "DA VIVI" ESISTE PER UNA COSA SOLA: vedere lo STATO INCOERENTE
+                    // (vivo + `DEAD_SCREEN` acceso), che altrimenti **non avrebbe nessuna rete**. La
+                    // finestra di questa classe esiste solo da morto, e in quello stato `Status.Dead` e'
+                    // falso: senza queste due righe il watchdog e' **strutturalmente cieco**. Vedi
+                    // `TickAlive()`.
+                    TickAlive();
                     return;
                 }
 

@@ -3,6 +3,7 @@ using Framework.Managers;
 using Gameplay.GameControllers.Penitent;
 using System;
 using System.Globalization;
+using Tools.Level.Interactables;
 using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.Players
@@ -258,6 +259,15 @@ namespace Blasphemous.Multiplayer.Client.Players
         private static bool _pausedByCinematic;
         private static bool _positionSendPaused;
 
+        // ---- ⭐⭐ IL CONGELAMENTO SUL CAMBIO STANZA (19/10). Vedi `SceneChangeFrozen()`: sono le due
+        //      condizioni che impediscono al corpo del morto di entrare in un trigger di cambio scena, e il
+        //      guardiano che tiene la riga di log a UNA per finestra (`_sceneChangeReported`).
+        private static bool _doorTransit;
+        private static bool _sceneChangeReported;
+
+        // ---- la sottoscrizione agli eventi pubblici di `Door` (zero patch Harmony).
+        private static bool _doorSubscribed;
+
         /// <summary>
         /// Un giro per frame. Chiamata da `Multiplayer.OnLateUpdate` (vedi `Multiplayer.cs`).
         ///
@@ -393,6 +403,14 @@ namespace Blasphemous.Multiplayer.Client.Players
                 _positionSendPaused = false;
                 _repeatReported = false;
                 _teleportFailed = false;
+
+                // ⚠️ E IL CONGELAMENTO SUL CAMBIO STANZA SI AZZERA QUI, non in `Close()`: se la porta non
+                // arrivasse mai a `Door.OnDoorExit` (il giocatore muore a meta' transito, il load
+                // ricostruisce tutto, la scena cambia mentre e' chiuso), un flag che non scende mai
+                // terrebbe l'inseguimento **fermo per sempre**. Ogni finestra di morte riparte da zero:
+                // la porta eventualmente in corso la ritrova il `Door.OnDoorEnter` successivo.
+                _doorTransit = false;
+                _sceneChangeReported = false;
 
                 HideLocalCorpse(body, "all'inizio della finestra (e' il cadavere-copia a restare a terra)");
 
@@ -604,6 +622,18 @@ namespace Blasphemous.Multiplayer.Client.Players
                 ModLog.Info(MARK + " inseguimento RIPRESO: cutscene finita (blocker CINEMATIC spento)");
             }
 
+            // ---- 1-bis. ⭐⭐ IL CAMBIO STANZA — **LA REGOLA DI OGGI, applicata**: *spostare un corpo in un
+            //      mondo vivo e' una modifica AL GIOCO, non cosmetica*. Il trigger di cambio stanza e' il
+            //      caso misurato (G1: `Door opened` a t=325.6 → il Penitent del morto entra nel trigger →
+            //      `Load and activate level D17Z01S05` → **il load respawna il giocatore**
+            //      (`SpawnManager.SpawnPlayerOnLevelLoad` → `CreatePlayer`), e **la mod non ha chiesto
+            //      niente**: in G1 `[Respawn] RESPAWN CHIESTO` NON compare e la finestra si chiude lo stesso
+            //      alle 3067-3069, con `[Morte] il giocatore e' morto` (il `Prefix` di `Respawn`)).
+            //      ⇒ da qui in avanti **il cadavere-seguace NON entra in un cambio stanza, e non segue il
+            //      peer ATTRAVERSO un load**: si ferma e la riga lo dice.
+            if (SceneChangeFrozen())
+                return;
+
             // ---- 2. IL VIVO. Si cerca un guscio ATTIVO il cui giocatore non risulti morto.
             OtherPlayerScript alive = FindLivingPeer(out string aliveName);
             if (alive == null)
@@ -637,6 +667,164 @@ namespace Blasphemous.Multiplayer.Client.Players
             ModLog.Info(MARK + " Penitent spostato sul vivo " + aliveName + ": pos=" + V(target) +
                         " (era a " + F(gap) + " unita' dal cadavere in " + V(_deathPos) + ") " +
                         "spostamenti=" + _moves + " · la camera lo segue da sola");
+        }
+
+        // ============================================================================================
+        // ⭐⭐ IL CAMBIO STANZA — LA REGOLA DI OGGI: SPOSTARE UN CORPO IN UN MONDO VIVO E' UNA MODIFICA
+        //     AL GIOCO, NON COSMETICA.
+        // ============================================================================================
+
+        /// <summary>
+        /// ⭐⭐ **TRUE QUANDO UNA SCENA STA CAMBIANDO, E IL CADAVERE-SEGUACE DEVE RESTARE FERMO.**
+        ///
+        /// LA MECCANICA, RICOSTRUITA DAI LOG E VERIFICATA IN IL (non dedotta):
+        ///   1. il morto insegue il peer (`[CorpseFollow] Penitent spostato sul vivo G2: pos=(-830.00,9.00)`
+        ///      in `G1`, a **t=325.10**);
+        ///   2. il peer apre la porta e la attraversa (`Door opened: 7675d9b9…` a **t=325.6**,
+        ///      `[TRACE][DOOR] Door has been activated.`, `Leaving old scene`);
+        ///   3. **il livello si RICARICA** (`---> LevelManager: Load and activate level D17Z01S05`);
+        ///   4. ⭐ **e un load di livello respawna il giocatore**: `LevelManager.InitializeLevel` →
+        ///      `Core.SpawnManager.SpawnPlayerOnLevelLoad()` (`:422`) → `CreatePlayer` → `Instantiate` del
+        ///      `Penitent` (`SpawnManager.cs:489`) e `SpawnManager.OnPlayerSpawn` (`:505-508`), che e' il
+        ///      punto in cui **il gioco stesso** congeda la schermata di morte
+        ///      (`DeadScreenWidget.OnPenitentReady:99-107` → `SetBlocker("DEAD_SCREEN", false)`).
+        ///
+        /// ⭐ **E NESSUNO L'HA CHIESTO**: in `G1` la mod **non** ha chiesto il respawn
+        /// (`[Respawn] RESPAWN CHIESTO` = 0 occorrenze in tutto il log) e il livello e' stato ricaricato lo
+        /// stesso, con `[Morte] il giocatore e' morto` a riga 3196 (il `Prefix` di `Penitent.Respawn`).
+        /// ⇒ **e' il `load`, non la mod**, ed e' esattamente la stessa cosa che fa il fusibile.
+        ///
+        /// LE DUE CONDIZIONI, e sono **fatti del gioco**, non sensori nostri:
+        ///   - **`Core.LevelManager.InsideChangeLevel`** (`LevelManager.cs:69`, `public bool` con setter
+        ///     privato, vero da `:162` a `:195`): il gioco sta gia' cambiando livello ⇒ **non si muove
+        ///     niente**, perche' qualunque movimento adesso avviene su una scena che sta per sparire;
+        ///   - **`Door.OnDoorEnter`** (`Door.cs:127`, `event Core.SimpleEvent` **pubblico**, invocato in
+        ///     `EnterDoor:212-215` **prima** del fade e prima di `SpawnFromDoor`): la porta e' stata
+        ///     ATTRAVERSATA da **questo** giocatore. ⚠️ **E' la condizione che copre la finestra in cui
+        ///     `InsideChangeLevel` e' ancora falso**: fra l'apertura della porta e l'inizio del load
+        ///     passano ~0.8 s (misurato in `G1`: porta a **325.6**, load a **~326.4**) e in quella finestra
+        ///     il corpo del morto **e' ancora libero di entrare nel trigger**.
+        ///
+        /// ⚠️ **PERCHE' NON BASTA `FindLivingPeer`** (che gia' restituisce `null` quando il peer e' in
+        /// un'altra scena, `DeathCorpseFollow.cs` §"il limite, dichiarato"): quello protegge dal **seguire il
+        /// peer di la'**, non dall'**entrare noi nel trigger di qua**. Il `Collider2D` del Penitent viene
+        /// teletrasportato **addosso al peer** (`MoveTo` → `Penitent.Teleport(target)`), quindi se il peer
+        /// e' dentro il volume della porta ci finisce anche il corpo del morto - e `Door.OnUpdate:267-284`
+        /// legge `base.PlayerInRange` del **Penitent locale**, che a quel punto **e' il cadavere**.
+        ///
+        /// ⚠️ **E' LA MITIGAZIONE STRUTTURALE DELLO STESSO RISCHIO DICHIARATO NEL REFERTO DELLA CAMERA**
+        /// (`REFERTO-CAM-SEGUE-VIVO.md` §10.2: *"se spostare il `Collider2D` del Penitent faccia scattare un
+        /// trigger di scena … e' una mitigazione, non una dimostrazione"*). Da adesso **il trigger di cambio
+        /// stanza non e' piu' raggiungibile da un movimento del cadavere-seguace**: le due condizioni sono
+        /// lette dal gioco, non indovinate.
+        ///
+        /// ⛔ E NON SI TOCCA NIENTE DEL GIOCO: `InsideChangeLevel` si **legge**, `Door.OnDoorEnter` si
+        /// **sottoscrive** (evento pubblico, `Door.cs:127`, **zero patch Harmony**: i 263 bersagli non
+        /// cambiano), e `OnDoorExit` riapre l'inseguimento quando la porta e' stata davvero attraversata.
+        /// </summary>
+        private static bool SceneChangeFrozen()
+        {
+            bool changing = false;
+            try
+            {
+                LevelManager levels = Core.LevelManager;
+                changing = levels != null && levels.InsideChangeLevel;
+            }
+            catch (Exception)
+            {
+            }
+
+            if (!changing && !_doorTransit)
+                return false;
+
+            if (!_sceneChangeReported)
+            {
+                _sceneChangeReported = true;
+                ModLog.Info(MARK + " inseguimento CONGELATO: cambio stanza in corso (" +
+                            (changing ? "`LevelManager.InsideChangeLevel`=True" : "porta attraversata") +
+                            (_doorTransit ? " · `Door.OnDoorEnter` visto" : string.Empty) +
+                            ") · ⭐ il Penitent NON si sposta: muovere il suo `Collider2D` in un trigger di " +
+                            "cambio stanza e' la stessa cosa che fa il fusibile, cioe' **un load di livello " +
+                            "che respawna il giocatore SENZA che nessuno l'abbia chiesto** (misurato in G1: " +
+                            "porta a t=325.6, `Load and activate level D17Z01S05` a ~326.4, " +
+                            "`[Morte] il giocatore e' morto` a riga 3196 e `RESPAWN CHIESTO` assente). " +
+                            "Riprende quando la scena e' stabile");
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Le due sottoscrizioni agli eventi PUBBLICI di `Door` (`Door.cs:127-129`), fatte **una volta
+        /// sola**. Sono gli stessi eventi che il gioco usa per il fade e la camera della porta, quindi non
+        /// si tocca nessun comportamento: si **ascolta**.
+        ///
+        /// ⚠️ E NON SI USA NESSUN SENSORE A RAGGIO (`Physics2D.OverlapCircleAll` intorno al bersaglio),
+        /// che era la prima idea ed e' stata scartata: dipende dal **layer** dei trigger di porta
+        /// (`Physics2D.DefaultRaycastLayers` esclude i layer piu' alti) e quindi **puo' fallire in
+        /// silenzio** - un guardiano che non vede niente e non lo dice e' peggio di nessun guardiano. Le due
+        /// condizioni scelte invece sono un **campo pubblico** e un **evento pubblico**, e la riga di log
+        /// dice quale delle due ha fermato l'inseguimento.
+        /// </summary>
+        internal static void AttachOnce()
+        {
+            try
+            {
+                if (_doorSubscribed)
+                    return;
+
+                Door.OnDoorEnter += OnDoorEnter;
+                Door.OnDoorExit += OnDoorExit;
+                _doorSubscribed = true;
+
+                ModLog.Info(MARK + " cambio stanza: sottoscritti `Door.OnDoorEnter`/`OnDoorExit` (eventi " +
+                            "PUBBLICI, nessuna patch Harmony) · da qui il cadavere-seguace si FERMA finche' " +
+                            "la scena non e' stabile, cosi' non puo' entrare in un trigger di cambio stanza " +
+                            "ne' seguire il peer ATTRAVERSO un load");
+            }
+            catch (Exception e)
+            {
+                Fail("AttachOnce", e);
+            }
+        }
+
+        /// <summary>
+        /// La porta e' stata ATTRAVERSATA **da questo giocatore**: `Door.EnterDoor` invoca l'evento a
+        /// `Door.cs:212-215`, **prima** del fade e prima di `OnDoorActivated` → `SpawnFromDoor`. Da questo
+        /// istante l'inseguimento e' congelato (`SceneChangeFrozen`) finche' `OnDoorExit` non lo riapre.
+        /// </summary>
+        private static void OnDoorEnter()
+        {
+            try
+            {
+                _doorTransit = true;
+                _sceneChangeReported = false;
+            }
+            catch (Exception e)
+            {
+                Fail("OnDoorEnter", e);
+            }
+        }
+
+        /// <summary>
+        /// La porta e' stata attraversata e il giocatore e' USCITO dall'altra parte
+        /// (`Door.ExitDoorSafe` → `Door.OnDoorExit`): l'inseguimento puo' riprendere.
+        /// ⚠️ **E il flag si azzera anche all'apertura di ogni finestra di morte** (`Create`), perche' se la
+        /// porta non arrivasse mai a `OnDoorExit` (il giocatore muore a meta' transito, oppure il load
+        /// ricostruisce tutto) l'inseguimento resterebbe congelato per sempre: un flag che non scende mai e'
+        /// il guasto che questo progetto ha gia' pagato due volte.
+        /// </summary>
+        private static void OnDoorExit()
+        {
+            try
+            {
+                _doorTransit = false;
+                _sceneChangeReported = false;
+            }
+            catch (Exception e)
+            {
+                Fail("OnDoorExit", e);
+            }
         }
 
         /// <summary>

@@ -206,6 +206,10 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // compagno VIVO, che la mod ha gia' in scena - quindi la camera, legata al Penitent, lo segue da
         // sola e questo file NON tocca la camera. E' anche il punto in cui si congela l'invio della
         // posizione da morti. Same loop, still no new Harmony target (263). See DeathCorpseFollow.cs.
+        // ⭐ 19/10: `AttachOnce` sottoscrive `Door.OnDoorEnter`/`OnDoorExit` (eventi PUBBLICI, zero patch)
+        // per CONGELARE l'inseguimento durante un cambio stanza: muovere il `Collider2D` del Penitent in un
+        // trigger di scena e' la stessa cosa che fa il fusibile, cioe' un load che respawna il giocatore.
+        DeathCorpseFollow.AttachOnce();
         DeathCorpseFollow.Tick();
 
         // TEMPORARY (DeathRespawnWatchdog): LA VIA D'USCITA GARANTITA PER IL GIOCATORE MORTO. Il 16/10 il
