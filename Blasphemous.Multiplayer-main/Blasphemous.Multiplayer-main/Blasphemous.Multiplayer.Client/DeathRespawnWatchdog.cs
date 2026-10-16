@@ -204,6 +204,50 @@ namespace Blasphemous.Multiplayer.Client
     /// Nessuna via di questa consegna puo' cambiarlo (servirebbe una patch su `DeadScreenWidget`, che e'
     /// **la zona vietata**). ⇒ nel test: **non premere niente** durante l'animazione di morte del boss.
     ///
+    /// ============================================================================================
+    /// ⭐⭐ LA TERZA REGRESSIONE, DEL 18/10 — **LA PORTA DEI TASTI**, E L'AVVISO A SCHERMO.
+    /// *Questa* e' la parte nuova, e la guardia di `RETE 1` scritta qui sopra l'aveva aperta.
+    ///
+    /// **IL FATTO, e non e' un'ipotesi.** Il fix del 17/10 ha cambiato il guardiano di `RETE 1` da
+    /// `!_sceneOn` a **`!_cinematicOn`**, e ha fatto bene: `FADE`/`cutscene_block` si accendono **prima**
+    /// che la scena parta, quindi con `!_sceneOn` la rete era **muta** nella finestra che conta. ⚠️ **Ma
+    /// `_cinematicOn` e' vero solo da `CinematicStarted`**, cioe' **dopo** l'animazione di morte del boss:
+    /// ⇒ in tutta la finestra `kill()` → `CinematicStarted` (**~3.0 s** in `G1`, **~3.9 s** in `G2`) i
+    /// tasti **tornavano a contare**, e un tasto premuto li' faceva respawnare **la mod** — lo stesso
+    /// guasto di `G1`, **da un'altra porta**.
+    ///
+    /// **LA CHIUSURA — il predicato "sequenza in corso" RIUSATO, non reinventato.** `RETE 1` ora usa
+    /// **lo stesso guardiano del fusibile** (`_waitingSequence`, cioe' "il `kill()` e' arrivato e la
+    /// sequenza non e' conclusa", piu' `_cinematicOn` per la scena davvero in corso):
+    ///
+    ///   | finestra | predicato | `RETE 1` |
+    ///   |---|---|---|
+    ///   | morte normale, boss vivo | **falso** | **legge i tasti** (come sempre) ⭐ |
+    ///   | `kill()` → `CinematicStarted` (**l'animazione di morte**) | **vero** | **muta** ⭐ *(era accesa: e' la porta chiusa qui)* |
+    ///   | cutscene in corso | **vero** | **muta** (la scena non si interrompe) |
+    ///   | dopo la fine della sequenza | **falso** | **legge i tasti** (e il fusibile conta) ⭐ |
+    ///
+    /// ⛔ **E NON E' UNA MUTILAZIONE DELLA RETE**: `RETE 1` e' il ripiego per una schermata di morte
+    /// **rotta**, e nel caso normale i tasti li legge **il gioco**; fuori dalla sequenza la rete e'
+    /// **identica a prima**, e la riga di stato lo dice in ogni campione col campo `tasti=`
+    /// (`ignorati(sequenza-boss)` · `ignorati(cutscene)` · `attesa(armamento)` · `attivi` · `respawN`).
+    ///
+    /// ⚠️ **E LA SECONDA DOMANDA — si puo' impedire alla schermata di morte DEL GIOCO di respawnare?**
+    /// **NO, e va detto chiaro**: la catena e' `while (!Input.anyKey)` → `FADE(1.5 s)` → `Respawn()`
+    /// (`DeadScreenWidget.cs:87-96`). La mod **non puo' bloccare l'input** (divieto), **non puo'
+    /// "consumare" il tasto** (`Input.anyKey` e' una lettura diretta del dispositivo, e non esiste nessuna
+    /// API per svuotarla) e **non puo' patchare la schermata di morte** (zona vietata). ⇒ *premendo un
+    /// tasto durante l'animazione di morte del boss, la schermata del GIOCO respawna e la cutscene si
+    /// perde, e la mod non puo' impedirlo.*
+    ///
+    /// ⭐ **IL COMPROMESSO MIGLIORE CHE RISPETTA I DIVIETI, ed e' implementato**: un **avviso a schermo**
+    /// al giocatore morto nel momento esatto del `kill()` — *"NON PREMERE: il boss sta morendo - la
+    /// cutscene sta per partire"* — via `NotificationManager`, che e' **della mod** (nessuna UI del gioco
+    /// toccata, nessuna patch). E' l'unica leva che resta: non impedisce il respawn del gioco, ma
+    /// **toglie la causa** (il tasto non voluto). L'avviso e' **uno per finestra**, dura
+    /// `config.notificationDisplaySeconds` (4 s di default: si spegne prima che la scena parta), e si
+    /// spegne con `WARN_PLAYER_ON_BOSS_DEATH = false` se da' fastidio.
+    ///
     /// ⚠️ **LE DUE CONDIZIONI CHE ARMANO LA RETE 1**, e non sono pignoleria.
     ///   - `KEY_ARM_SECONDS = 2.5 s`: il tasto che ha **ucciso** il giocatore (o quello premuto mentre
     ///     moriva) non deve essere riletto come "voglio respawnare". La schermata di morte del gioco non ha
@@ -297,6 +341,21 @@ namespace Blasphemous.Multiplayer.Client
         /// boss senza scena.
         /// </summary>
         private const float BOSS_DEATH_GRACE_SECONDS = 30f;
+
+        /// <summary>
+        /// ⭐ L'AVVISO A SCHERMO AL GIOCATORE MORTO, e **l'unico rimedio lecito** alla porta che la mod
+        /// **non puo' chiudere**: la schermata di morte **del gioco** respawna al primo tasto con
+        /// `while (!Input.anyKey)` → `FADE(1.5 s)` → `Penitent.Respawn()` (`DeadScreenWidget.cs:87-96`), e
+        /// **non passa da questa mod**. La mod non puo' bloccare l'input (divieto), non puo' "consumare" il
+        /// tasto (`Input.anyKey` e' la lettura diretta del dispositivo) e non puo' patchare quella schermata
+        /// (zona vietata). ⇒ **l'unica cosa che resta e' togliere la causa**: dire al giocatore, nel momento
+        /// in cui il boss muore, che **non deve premere niente**.
+        ///
+        /// E' l'avviso che il mandato chiede di valutare, ed e' **acceso**: usa `NotificationManager`
+        /// (**della mod**: nessuna UI del gioco, nessuna patch), esce **una volta per finestra**, e con
+        /// `false` qui si spegne tutto senza toccare nient'altro.
+        /// </summary>
+        private const bool WARN_PLAYER_ON_BOSS_DEATH = true;
 
         /// <summary>
         /// La distanza fra due tentativi del fusibile. Non e' pignoleria: `Respawn()` fa un **load di
@@ -396,6 +455,15 @@ namespace Blasphemous.Multiplayer.Client
         private static float _bossDeathFuseAt;
         private static string _armReason = string.Empty;
 
+        // ---- ⭐⭐ LA PORTA DEI TASTI (18/10). `_keysRespawns` conta le volte in cui RETE 1 ha chiesto il
+        //      respawn (e' il valore che la riga di stato stampa in `tasti=respawN`), `_keysMuted` ricorda
+        //      se l'ultimo giro l'ha vista **muta** (serve alla riga di RIARMO, una per sequenza) e
+        //      `_warnedThisWindow` tiene l'avviso a schermo a **uno per finestra di morte**.
+        private static int _keysRespawns;
+        private static bool _keysMuted;
+        private static bool _keyIgnoredReported;
+        private static bool _warnedThisWindow;
+
         // ---- la sottoscrizione agli eventi pubblici di `Cinematics` (zero patch Harmony).
         private static bool _subscribed;
         private static bool _subscribePending;
@@ -406,6 +474,28 @@ namespace Blasphemous.Multiplayer.Client
 
         // ---- una riga sola per finestra quando il Penitent non e' disponibile.
         private static bool _goneReported;
+
+        /// <summary>
+        /// ⭐⭐ IL PREDICATO UNICO — **"LA SEQUENZA DI MORTE DEL BOSS E' IN CORSO"** — e lo usano **tutte e
+        /// due** le reti, di proposito: il mandato chiede che `RETE 1` usi **lo stesso guardiano del
+        /// fusibile**, cosi' "la mod non ha respawnato" non e' piu' una coincidenza ma una conseguenza.
+        ///
+        ///   - `_waitingSequence` ⇒ il `kill()` del boss e' arrivato e la sequenza **non e' conclusa**
+        ///     (`kill()` → animazione di morte → cutscene → fine). ⚠️ **E' la finestra che il fix del 17/10
+        ///     aveva lasciato scoperta su `RETE 1`**: `_cinematicOn` e' falso per tutta l'animazione di
+        ///     morte (**~3.0 s** in `G1`, **~3.9 s** in `G2`), quindi con il solo `_cinematicOn` un tasto
+        ///     premuto li' faceva respawnare **la mod** e la cutscene si perdeva;
+        ///   - `_cinematicOn` ⇒ la cutscene e' **davvero** in corso (`CinematicStarted` acceso e non ancora
+        ///     chiuso): vale anche per una scena **senza** `kill()` di mezzo (si muore durante una cutscene).
+        ///
+        /// Fuori da questi due casi il predicato e' **falso** e `RETE 1` e' **identica a prima**: legge i
+        /// tasti e respawna subito, che e' la configurazione normale (morte senza boss, morte con il boss
+        /// vivo) e la regressione da non rompere.
+        /// </summary>
+        private static bool BossSequenceInProgress
+        {
+            get { return _cinematicOn || _waitingSequence; }
+        }
 
         /// <summary>
         /// Un giro per frame, **solo da morti**. Chiamata da `Multiplayer.OnLateUpdate`, subito dopo
@@ -460,6 +550,13 @@ namespace Blasphemous.Multiplayer.Client
                     _bossDeathFuseAt = 0f;
                     _armReason = string.Empty;
 
+                    // ⭐ LA PORTA DEI TASTI: si riparte da "nessun respawn chiesto dai tasti", da "RETE 1
+                    // non ancora muta" e da "avviso non ancora mostrato" (uno per finestra).
+                    _keysRespawns = 0;
+                    _keysMuted = false;
+                    _keyIgnoredReported = false;
+                    _warnedThisWindow = false;
+
                     // ⭐ IL PRIMO GIRO NON SI FIDA DELLA DIFFERENZA: le sottoscrizioni possono essere
                     // arrivate DOPO un blocker gia' acceso (la mod si aggancia al primo ciclo per frame, e il
                     // gioco accende `InitialBlocker` nel suo `Start`). Quindi all'apertura della finestra si
@@ -497,32 +594,86 @@ namespace Blasphemous.Multiplayer.Client
                 if (now - _deadSince < KEY_ARM_SECONDS)
                     return;
 
-                // ---- ⭐ RETE 1: IL TASTO. Non e' cambiata, e non e' un doppione del fusibile: e' la rete
-                // che risponde **subito** quando il tasto arriva al gioco (provato su G2 con `Space`,
-                // `fusibile=non usato`). E resta l'unica rete che NON dipende dal `kill()` del boss: un
-                // giocatore che preme un tasto non deve aspettare nessun segnale.
+                // ---- ⭐ RETE 1: IL TASTO. Non e' un doppione del fusibile: e' la rete che risponde
+                // **subito** quando il tasto arriva al gioco (provato su `G2` con `Space`,
+                // `fusibile=non usato`).
                 //
-                // ⚠️ E IL GUARDIANO E' CAMBIATO: `_cinematicOn` ("la cutscene e' davvero in corso"),
-                // **non** `_sceneOn`. `FADE` e `cutscene_block` si accendono **prima** che la scena parta
-                // (misurato in `G1`: `FADE` a `t=285.58` e la scena mai arrivata), quindi con `!_sceneOn`
-                // questa rete era **muta proprio nella finestra in cui deve funzionare** — e in `G1` il
-                // livello e' stato ricaricato lo stesso (dalla schermata di morte del gioco) senza che la
-                // mod chiedesse niente. Fuori dalla cutscene i tasti contano: dentro, no.
-                if (!_keyArmed && !_cinematicOn)
+                // ⚠️ E IL GUARDIANO E' CAMBIATO DUE VOLTE, e questa e' la seconda.
+                //   - `!_sceneOn` (fino al 17/10) ⇒ **muta** nella finestra che conta: `FADE` e
+                //     `cutscene_block` si accendono **prima** che la scena parta (misurato in `G1`: `FADE`
+                //     come **inizio** del fade a `t=285.58`, la scena mai arrivata), e in `G1` il livello e'
+                //     stato ricaricato lo stesso, dalla schermata di morte del gioco, senza che la mod
+                //     chiedesse niente;
+                //   - `!_cinematicOn` (dal 17/10) ⇒ **accanto** alla scena ma **troppo largo**: la cutscene
+                //     inizia solo a `CinematicStarted`, quindi per tutta **l'animazione di morte** del boss
+                //     (`kill()` → `CinematicStarted`: **~3.0 s** in `G1`, **~3.9 s** in `G2`) i tasti
+                //     contavano di nuovo, e un tasto premuto li' faceva respawnare **la mod** ⇒ **la stessa
+                //     perdita di cutscene, da un'altra porta** (la regressione del 18/10);
+                //   - ⭐ **`BossSequenceInProgress`** (adesso) ⇒ **lo stesso predicato del fusibile**: muta
+                //     dal `kill()` alla fine della sequenza, viva **fuori**. Cosi' "la mod non ha
+                //     respawnato mentre il boss moriva" non e' una coincidenza, ed e' la richiesta del
+                //     mandato (*"RETE 1 deve usare lo stesso guardiano del fusibile"*).
+                bool keysMuted = BossSequenceInProgress;
+
+                if (keysMuted)
                 {
-                    _keyArmed = true;
-                    ModLog.Info(MARK + " ascolto dei tasti ARMATO (nessuna cutscene in corso): " +
-                                "se il gioco non legge piu' i tasti della schermata di morte, questo e' " +
-                                "il punto in cui il respawn viene chiesto lo stesso");
+                    _keysMuted = true;
+
+                    // ⭐⭐ E QUESTA E' LA DIAGNOSTICA CHE PRIMA NON ESISTEVA, e non e' cosmetica: se il tasto
+                    // arriva **mentre la sequenza gira**, la mod **non** respawna (e' la porta chiusa), ma la
+                    // schermata di morte **DEL GIOCO** si' (`while (!Input.anyKey)` → `FADE` 1.5 s →
+                    // `Respawn()`). ⇒ **questa riga e' l'unica cosa che, nella prossima sessione, puo'
+                    // distinguere "la cutscene si e' persa per un tasto" da "si e' persa per la mod"** —
+                    // in `G1` la pressione e' caduta **fra due campioni** (`unityAnyKey=False` in tutti gli
+                    // 80 campioni) e non si e' potuta vedere. Una volta per finestra, e non consuma niente:
+                    // `GetKeyDown` e' una lettura.
+                    if (!_keyIgnoredReported)
+                    {
+                        KeyCode ignored = FirstKeyPressed();
+                        if (ignored != KeyCode.None)
+                        {
+                            _keyIgnoredReported = true;
+                            ModLog.Warn(MARK + " TASTO IGNORATO: " + ignored + " e' stato premuto mentre la " +
+                                        "sequenza di morte del boss era in corso (`tasti=ignorati(" +
+                                        (_waitingSequence ? "sequenza-boss" : "cutscene") + ")`): la mod " +
+                                        "NON respawna, e la cutscene non si perde per colpa di questa rete · " +
+                                        "⚠️ MA LA SCHERMATA DI MORTE DEL GIOCO respawna al primo tasto " +
+                                        "(`DeadScreenWidget.OnDeadAction:87-96`: `while (!Input.anyKey)` → " +
+                                        "`FADE(1.5s)` → `Penitent.Respawn()`), quindi se da qui in poi il " +
+                                        "livello si ricarica e la cutscene NON arriva, **la causa e' quella " +
+                                        "e non questa mod**: e' la porta che il referto dichiara di non " +
+                                        "poter chiudere (l'avviso a schermo esiste per questo)");
+                        }
+                    }
+                }
+                else if (_keysMuted)
+                {
+                    _keysMuted = false;
+                    if (_keyArmed)
+                    {
+                        ModLog.Info(MARK + " RETE 1 di nuovo ATTIVA (la sequenza di morte del boss e' " +
+                                    "conclusa): da qui i tasti tornano a chiedere il respawn, e il campo " +
+                                    "`tasti=` della riga di stato vale `attivi`");
+                    }
                 }
 
-                if (_keyArmed && !_cinematicOn)
+                if (!_keyArmed && !keysMuted)
+                {
+                    _keyArmed = true;
+                    ModLog.Info(MARK + " ascolto dei tasti ARMATO (nessuna sequenza di morte del boss in " +
+                                "corso): se il gioco non legge piu' i tasti della schermata di morte, " +
+                                "questo e' il punto in cui il respawn viene chiesto lo stesso");
+                }
+
+                if (_keyArmed && !keysMuted)
                 {
                     KeyCode pressed = FirstKeyPressed();
                     if (pressed != KeyCode.None)
                     {
-                        Respawn("tasto premuto dal morto (" + pressed + "): la schermata di morte non ha " +
-                                "reagito, il respawn viene chiesto qui");
+                        _keysRespawns++;
+                        Respawn("tasto premuto dal morto (" + pressed + "): nessuna sequenza di morte del " +
+                                "boss in corso (quindi la scena non si interrompe) e la schermata di morte " +
+                                "non ha reagito, percio' il respawn viene chiesto qui");
                         return;
                     }
                 }
@@ -602,7 +753,17 @@ namespace Blasphemous.Multiplayer.Client
                             "s dopo la morte (`BossKillSignal`=" + _killSignal + "): ⭐ da qui la sequenza " +
                             "di morte del boss puo' partire, quindi il fusibile **ASPETTA la fine della " +
                             "sequenza** e NON si arma adesso: fra il `kill()` e la fine della cutscene il " +
-                            "gioco sta lavorando normalmente e non c'e' niente da sbloccare");
+                            "gioco sta lavorando normalmente e non c'e' niente da sbloccare · ⭐ e da qui " +
+                            "e' **MUTA anche RETE 1** (l'ascolto dei tasti): un tasto premuto durante " +
+                            "l'animazione di morte del boss faceva respawnare la mod e la cutscene si " +
+                            "perdeva — e' la porta chiusa il 18/10, e si legge in `tasti=` " +
+                            "(`ignorati(sequenza-boss)` fino alla fine della sequenza)");
+
+                // ⭐⭐ E L'UNICA COSA CHE RESTA CONTRO LA PORTA CHE NON SI CHIUDE: l'avviso a schermo.
+                // La schermata di morte DEL GIOCO respawna al primo tasto e non passa da qui (vedi il
+                // commento di `WARN_PLAYER_ON_BOSS_DEATH`): l'unico rimedio lecito e' **togliere la
+                // causa**, cioe' dire al giocatore di non premere. Una volta per finestra.
+                WarnPlayerNotToPress();
             }
 
             // ---- GUARDIA 2. La sequenza in corso NON fa scattare il fusibile, e **azzera il conteggio**.
@@ -714,6 +875,63 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// ⭐⭐ L'AVVISO A SCHERMO — **il compromesso dichiarato**, e l'unica leva lecita contro la porta
+        /// che la mod **non puo' chiudere**.
+        ///
+        /// **LA PORTA, e la prova che non si chiude**: `DeadScreenWidget.OnDeadAction` fa
+        /// `while (!Input.anyKey)` → `Core.UI.Fade.Fade(toBlack: true, 1.5f, 0f, callback)` → nel callback
+        /// `Core.Logic.Penitent.Respawn()` (`DeadScreenWidget.cs:87-96`). Tre divieti si frappongono:
+        /// `Core.Input.SetBlocker` (**vietato**), una patch su `DeadScreenWidget` (**zona vietata**) e
+        /// `ResetManager` (**vietato**). E "consumare" il tasto non e' una cosa che esista: `Input.anyKey` e'
+        /// la lettura diretta del dispositivo, la **stessa** che farebbe questa rete. ⇒ **premendo un tasto
+        /// durante l'animazione di morte del boss, la schermata del GIOCO respawna e la cutscene si perde,
+        /// e la mod non puo' impedirlo.**
+        ///
+        /// **L'UNICA COSA CHE RESTA e' togliere la causa**: dire al giocatore di **non premere**. Non e' un
+        /// rimedio al guasto, e' un modo per non farlo succedere — e nel test che l'utente vuole fare
+        /// (*"la cutscene si deve vedere"*) e' l'unica leva che esista.
+        ///
+        /// ⚠️ **Perche' e' lecito**: `NotificationManager` e' **della mod** (`Multiplayer.NotificationManager`,
+        /// gia' usato per "connesso"/"disconnesso"/errori) — non e' la UI del gioco, non la si patcha e non la
+        /// si tocca: si aggiunge una riga al suo elenco, e il suo `Update` la disegna. Nessun `SetActive`,
+        /// nessun blocker, nessuna patch: **i 263 bersagli Harmony non cambiano**.
+        ///
+        /// ⚠️ **E perche' e' anche poco invasivo**: **uno per finestra di morte** (`_warnedThisWindow`),
+        /// mostrato **solo se il giocatore locale e' morto** (questa classe gira solo da morti), e dura
+        /// `config.notificationDisplaySeconds` — **4 s di default**, cioe' si spegne intorno al momento in cui
+        /// la scena parte (la scena parte **3.0–3.9 s** dopo il `kill()`), quindi **non copre la cutscene**.
+        /// Se desse fastidio, si spegne con `WARN_PLAYER_ON_BOSS_DEATH = false`.
+        /// </summary>
+        private static void WarnPlayerNotToPress()
+        {
+            if (!WARN_PLAYER_ON_BOSS_DEATH || _warnedThisWindow)
+                return;
+
+            // Una volta sola, anche se l'avviso non riesce: ritentarlo a ogni frame sarebbe spam.
+            _warnedThisWindow = true;
+
+            try
+            {
+                if (Main.Multiplayer == null || Main.Multiplayer.NotificationManager == null)
+                    return;
+
+                string text = "NON PREMERE: il boss sta morendo - la cutscene sta per partire";
+
+                Main.Multiplayer.NotificationManager.DisplayNotification(text);
+
+                ModLog.Info(MARK + " avviso a schermo al giocatore morto: \"" + text + "\" · e' il " +
+                            "compromesso dichiarato per la porta che la mod NON puo' chiudere (la " +
+                            "schermata di morte DEL GIOCO respawna al primo tasto: " +
+                            "`DeadScreenWidget.cs:87-96`) · l'avviso non impedisce il respawn del gioco, " +
+                            "toglie la causa (il tasto non voluto)");
+            }
+            catch (Exception e)
+            {
+                Fail("WarnPlayerNotToPress", e);
+            }
+        }
+
+        /// <summary>
         /// Chiude la finestra e **riporta lo stato della sessione a zero**. Esiste anche per la
         /// disconnessione (`Reset`), perche' la disconnessione puo' arrivare **mentre si e' ancora morti** e
         /// in quel momento `IsLocalPlayerDead()` resta vero (il gioco non sa nulla della rete).
@@ -760,6 +978,10 @@ namespace Blasphemous.Multiplayer.Client
             _bossDeathAt = 0f;
             _bossDeathFuseAt = 0f;
             _armReason = string.Empty;
+            _keysRespawns = 0;
+            _keysMuted = false;
+            _keyIgnoredReported = false;
+            _warnedThisWindow = false;
         }
 
         // ============================================================================================
@@ -897,6 +1119,7 @@ namespace Blasphemous.Multiplayer.Client
             return MARK + " stato t=" + F(now) + " daMorte=" + F(now - _deadSince) +
                    " campione=" + _samples +
                    " unityAnyKey=" + (unityAnyKey ? "True" : "False") +
+                   " tasti=" + KeysState() +
                    " tentativiMiei=" + _attempts +
                    " sequenza=" + (_sceneOn ? "si" : "no") +
                    " cinematic=" + (_cinematicOn ? "si" : "no") +
@@ -910,6 +1133,41 @@ namespace Blasphemous.Multiplayer.Client
                                            : "non-ancora") +
                    " gameplayUIActive=" + gameplayUI + " fadeUIActive=" + fadeUI +
                    " schermataMorte=[" + deadScreen + "] · " + BlockersLine();
+        }
+
+        /// <summary>
+        /// ⭐⭐ IL CAMPO CHE DICE **PERCHE' RETE 1 NON HA AGITO**, ed e' il campo obbligatorio di questa
+        /// consegna: senza, *"non ha agito perche' non ho premuto"* e *"non ha agito perche' era muta"*
+        /// hanno **lo stesso aspetto** nel log — ed e' esattamente la confusione che ha reso illeggibile la
+        /// sessione di `G1`.
+        ///
+        ///   | valore | cosa significa | cosa fare |
+        ///   |---|---|---|
+        ///   | `respawN` | RETE 1 ha chiesto il respawn **N** volte in questa finestra | il giocatore e' tornato |
+        ///   | `ignorati(sequenza-boss)` | ⭐ **la sequenza di morte del boss e' in corso**: la rete e' **muta** di proposito (e' la porta chiusa il 18/10) | **normale**: il gioco sta facendo l'animazione di morte / la cutscene |
+        ///   | `ignorati(cutscene)` | una cutscene e' in corso **senza** un `kill()` di mezzo | **normale**: la scena non si interrompe |
+        ///   | `attesa(armamento)` | primi `2.5 s` dalla morte (`KEY_ARM_SECONDS`) | **normale**: e' il tasto che ha ucciso |
+        ///   | `attivi` | la rete **sta leggendo i tasti** | se il giocatore preme, il respawn parte |
+        ///
+        /// ⚠️ **E l'ordine dei controlli e' l'informazione**: `respawN` viene **prima** di tutto (se ha
+        /// agito, il motivo non conta piu'), e `ignorati(sequenza-boss)` **prima** di `attesa(armamento)`,
+        /// perche' "muta per la sequenza" e' la risposta che si sta cercando in questo test.
+        /// </summary>
+        private static string KeysState()
+        {
+            if (_keysRespawns > 0)
+                return "respaw" + _keysRespawns;
+
+            if (_waitingSequence)
+                return "ignorati(sequenza-boss)";
+
+            if (_cinematicOn)
+                return "ignorati(cutscene)";
+
+            if (!_keyArmed)
+                return "attesa(armamento)";
+
+            return "attivi";
         }
 
         /// <summary>
