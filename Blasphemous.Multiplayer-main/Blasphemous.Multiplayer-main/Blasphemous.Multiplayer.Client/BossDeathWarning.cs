@@ -71,7 +71,7 @@ namespace Blasphemous.Multiplayer.Client
         ///
         /// ⚠️ E' `static readonly` E NON `const`, di proposito: con `const bool X = true` la riga
         /// `if (!X) return;` fa emettere al compilatore **CS0162 "codice non raggiungibile"**, e un warning
-        /// che grida sempre nasconde quelli veri (la build di questo repo ne ha 440: uno in piu' non
+        /// che grida sempre nasconde quelli veri (la build di questo repo ne ha centinaia: uno in piu' non
         /// aggiunge informazione, uno in piu' FALSO la toglie). Con `readonly` la riga resta raggiungibile
         /// per il compilatore e la scelta resta una riga sola.
         /// </summary>
