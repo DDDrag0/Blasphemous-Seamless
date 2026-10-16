@@ -336,6 +336,72 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static readonly HashSet<string> _bossKillsApplied = new HashSet<string>();
 
+        // ============================================================================================
+        // IL SEGNALE "IL `kill()` DEL BOSS E' AVVENUTO" — letto da `DeathRespawnWatchdog`.
+        // ============================================================================================
+
+        /// <summary>
+        /// ⭐ IL FUSIBILE DEL RESPAWN NON DEVE ARMARSI PRIMA CHE IL BOSS SIA STATO UCCISO.
+        ///
+        /// IL GUASTO (log G1 della sessione del 16/10, righe 1386→2064, verificato in questo lavoro):
+        ///   - il giocatore muore alle 107.27 (`[Respawn] stato … daMorte=0.00`, `blockers=(nessuno)`);
+        ///   - **il boss e' VIVO per tutta la finestra** (`[EnemyAnim] …ElderBrother … vita=220` alle righe
+        ///     2052-2060, cioe' a 44 s dalla morte);
+        ///   - a 45.01 s il fusibile di `DeathRespawnWatchdog` scatta lo stesso
+        ///     (`[Respawn] RESPAWN CHIESTO: FUSIBILE scattato: 45.01s da morto`);
+        ///   - `Respawn()` fa **un load di livello** (`D17Z01S11` → `D17Z01S05`, riga 2110) e **la cutscene
+        ///     del boss non arriva mai**.
+        ///   ⇒ In quella configurazione **nessuno era bloccato**: il giocatore era morto e stava
+        ///     **spectando** il compagno, e `unityAnyKey=False` in **tutti e 44** i campioni dice che **non
+        ///     aveva premuto niente** (non che i tasti fossero rotti). Il fusibile ha respawnato un
+        ///     **spettatore**, e ha distrutto la cosa che stava guardando.
+        ///
+        /// ⭐ E IL CRITERIO DELL'UTENTE E' ESATTAMENTE QUESTO: *"il timer non si deve attivare fino a quando
+        /// non viene effettuato il `kill()`"*. ⇒ Il fusibile aspetta il segnale, e il segnale e' **questo
+        /// contatore**: non se ne inventa uno nuovo, perche' il progetto **ha gia'** i due punti in cui il
+        /// `kill()` avviene, ed entrambi passano di qui (vedi `NotifyBossKilled`).
+        ///
+        /// ⚠️ IL CONTATORE NON E' UN BOOLEANO, ed e' la parte che conta. Il `kill()` puo' avvenire
+        /// **mentre il giocatore e' gia' morto** (e' il caso del guasto) **oppure prima**, e le due
+        /// situazioni vanno distinte: un `bool` acceso prima della morte direbbe *"e' gia' armato"* e il
+        /// fusibile non scatterebbe **mai** nella finestra giusta. `DeathRespawnWatchdog` registra quindi
+        /// **il valore all'apertura della finestra** e si arma solo quando il valore **cresce**.
+        ///
+        /// ⚠️ UN SOLO INCREMENTO PER `kill()`: la guardia `_bossKillsApplied` di `ApplyBossDeath` e la
+        /// deduplica `_killLogged` del ciclo di invio garantiscono che qui non si conti due volte lo stesso
+        /// boss. Il contatore e' azzerato con il resto della memoria di scena (`LevelLoaded`), quindi i suoi
+        /// valori non sopravvivono a un cambio livello.
+        /// </summary>
+        private static int _bossKillSignal;
+
+        /// <summary>
+        /// Quante volte un `kill()` DI BOSS e' avvenuto su questa macchina in questa scena.
+        /// **Solo `DeathRespawnWatchdog` lo legge** (il valore assoluto non ha altro significato: conta il
+        /// **cambio**, non il numero).
+        /// </summary>
+        internal static int BossKillSignal
+        {
+            get { return _bossKillSignal; }
+        }
+
+        /// <summary>
+        /// Chiamato **nei due soli punti** in cui questa macchina fa avvenire il `kill()` di un boss:
+        ///   1. `ApplyBossDeath` — la morte annunciata dall'altra macchina (`bdead|`), applicata con
+        ///      `boss.Kill()` (:416);
+        ///   2. il ciclo di invio — questa macchina **ha ucciso il boss lei stessa** (il ramo `IsBoss(enemy, id)`
+        ///      che manda `[BossDeath TX]`).
+        /// ⇒ **non e' una nuova condizione**: e' la stessa riga di `Kill()` che esisteva, con un contatore
+        /// accanto. Zero scritture sul gioco, zero patch Harmony.
+        /// </summary>
+        private static void NotifyBossKilled(string why)
+        {
+            _bossKillSignal++;
+            ModLog.Info($"[Respawn] segnale `kill()` del boss: #{_bossKillSignal} ({why}) · da questo " +
+                        "momento il fusibile del respawn puo' armarsi (prima non poteva: e' il criterio " +
+                        "dell'utente, e la sessione del guasto e' la prova che senza questo segnale il " +
+                        "fusibile respawnava uno spettatore e perdeva la cutscene)");
+        }
+
         /// <summary>
         /// Applica su QUESTA macchina la morte di un boss annunciata dall'altra (vedi `BossDeathPrefix`).
         ///
@@ -414,6 +480,13 @@ namespace Blasphemous.Multiplayer.Client
                 // ⚠️ IL PUNTO DEL FIX, UNA RIGA. E' anche l'unica scrittura sul gioco di tutto M1, e cade
                 // su un boss che SULL'ALTRA macchina e' gia' morto: non si inventa niente.
                 boss.Kill();
+
+                // ⭐ IL `kill()` E' AVVENUTO, E VA DETTO SUBITO (non alla fine del metodo): da questo
+                // momento `DeathRespawnWatchdog` puo' armare il suo fusibile. Il marcatore va PRIMA delle
+                // righe che possono ritardare o fallire piu' sotto, perche' il boss e' comunque morto.
+                if (PlayerDeathSync.IsLocalPlayerDead())
+                    NotifyBossKilled("la morte del boss e' stata applicata su questa macchina con Kill(), " +
+                                     "ed ero morto");
 
                 bool died = boss.Status.Dead;
 
@@ -1891,6 +1964,7 @@ namespace Blasphemous.Multiplayer.Client
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
+            _bossKillSignal = 0;         // ⭐ il segnale `kill()` e' della scena che si sta scaricando
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _puppetEnemies.Clear();      // the instances of the scene being unloaded
             _orientationLabels.Clear();  // ditto: keyed by instance id
@@ -2153,6 +2227,7 @@ namespace Blasphemous.Multiplayer.Client
             _announcedBirths.Clear();
             _pendingDeaths.Clear();
             _bossKillsApplied.Clear();   // M1: the world came back, so a boss death applied once must be applicable again
+            _bossKillSignal = 0;         // ⭐ ditto: se il boss puo' tornare in piedi, il suo `kill()` non e' piu' avvenuto
             _killLogged.Clear();
 
             // Always logged, for the same reason as OnEnemiesRespawned: a measurement that stays silent when
@@ -3967,6 +4042,15 @@ namespace Blasphemous.Multiplayer.Client
                             ModLog.Info($"[BossDeath TX] {FullId(id)} boss={enemy.GetType().Name} " +
                                         $"vita={enemy.CurrentLife:F1} StatusDead={enemy.Status.Dead} " +
                                         $"localeMorto={PlayerDeathSync.IsLocalPlayerDead()}");
+
+                            // ⭐ IL SECONDO PUNTO IN CUI IL `kill()` DI UN BOSS AVVIENE SU QUESTA MACCHINA:
+                            // qui e' QUESTA macchina ad averlo ucciso. Se il giocatore locale e' morto,
+                            // `DeathRespawnWatchdog` deve poter armare il fusibile (prima non poteva, ed e'
+                            // il criterio chiesto dall'utente). Se il giocatore e' vivo non si conta niente:
+                            // il fusibile esiste solo per il giocatore morto, e un suo valore che cresce da
+                            // vivo confonderebbe soltanto la lettura del log.
+                            if (PlayerDeathSync.IsLocalPlayerDead())
+                                NotifyBossKilled("il boss e' stato ucciso da questa macchina, ed ero morto");
                         }
 
                         // Remembered as well as announced: if someone reconnects later, this machine may no
