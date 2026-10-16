@@ -432,6 +432,22 @@ namespace Blasphemous.Multiplayer.Client
                     ModLog.Error($"[BossDeath RX] {FullId(id)} Kill() NON ha ucciso il boss: " +
                                  $"StatusDead=false vita={boss.CurrentLife:F0}");
                 }
+
+                // ⭐⭐ L'AVVISO A SCHERMO AL GIOCATORE MORTO — ed e' QUI che e' riagganciato (19/10).
+                //
+                // Il punto di aggancio ORIGINALE non esiste piu': nel commit 59f34d7 l'avviso stava nel
+                // `DeathRespawnWatchdog` e partiva dal suo segnale `kill()`; il rollback 13107c9 ha
+                // CANCELLATO quel file, e con lui `EnemySyncManager.BossKillSignal`. Questo invece e' il
+                // punto VIVO in cui la mod fa morire il boss su questa macchina, ed e' esattamente "il
+                // momento in cui il boss muore": da qui parte la sua sequenza di morte e la cutscene e'
+                // alle porte.
+                //
+                // E il giocatore locale e' morto PER COSTRUZIONE (la guardia poco sopra esce con
+                // `motivo=giocatore-locale-vivo` prima del `Kill()`): quindi la schermata di morte DEL
+                // GIOCO, quella che respawna al primo tasto, c'e' davvero - e la mod non puo' impedirglielo.
+                // Vedi `BossDeathWarning`: una notifica, una volta per finestra, 4 s, e nient'altro.
+                if (died)
+                    BossDeathWarning.WarnBossDied("rx:ApplyBossDeath (Kill() applicato)");
             }
             catch (Exception e)
             {
@@ -3801,6 +3817,13 @@ namespace Blasphemous.Multiplayer.Client
                             ModLog.Info($"[BossDeath TX] {FullId(id)} boss={enemy.GetType().Name} " +
                                         $"vita={enemy.CurrentLife:F1} StatusDead={enemy.Status.Dead} " +
                                         $"localeMorto={PlayerDeathSync.IsLocalPlayerDead()}");
+
+                            // ⭐⭐ L'AVVISO A SCHERMO, secondo punto di aggancio: QUESTA macchina ha appena
+                            // visto morire il boss, quindi anche qui "il boss e' morto" e la cutscene e' alle
+                            // porte. Il predicato (il giocatore locale e' morto?) lo verifica
+                            // `BossDeathWarning` da solo, e il dedup per finestra impedisce che questo punto
+                            // e `ApplyBossDeath` producano due notifiche per la stessa morte.
+                            BossDeathWarning.WarnBossDied("tx:morte-del-boss-vista-su-questa-macchina");
                         }
 
                         // Remembered as well as announced: if someone reconnects later, this machine may no

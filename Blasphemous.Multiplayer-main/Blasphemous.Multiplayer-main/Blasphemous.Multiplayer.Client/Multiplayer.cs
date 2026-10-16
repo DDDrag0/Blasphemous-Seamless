@@ -193,6 +193,23 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // lives on ContinueGroup and is not touched. Same loop, still no new Harmony target (263).
         DeathScreenTransparency.Tick();
 
+        // ⭐⭐ BossDeathWarning (19/10): L'AVVISO A SCHERMO AL GIOCATORE MORTO QUANDO IL BOSS MUORE, e la
+        // sua finestra di morte. E' la rimessa in funzione di un avviso che ERA NOSTRO - stava nel
+        // `DeathRespawnWatchdog` del commit 59f34d7, e il rollback 13107c9 ha cancellato quel file.
+        //
+        // PERCHE' SERVE, in una riga: la schermata di morte DEL GIOCO legge `UnityEngine.Input`
+        // (`DeadScreenWidget.OnDeadAction:87-96`: `while (!Input.anyKey)` -> FADE 1.5 s ->
+        // `Penitent.Respawn()`), quindi premere un tasto mentre il boss muore RICARICA il livello e
+        // distrugge la cutscene; la mod non puo' impedirlo (bloccare l'input, patchare quella schermata e
+        // "consumare" il tasto sono tutti fuori portata, i primi due vietati) ⇒ l'unica difesa e'
+        // avvisare. La notifica e' quella DELLA MOD (`NotificationManager`), non un prompt modale, una
+        // volta per finestra, ~4 s.
+        //
+        // QUESTO `Tick` NON DISEGNA NIENTE: tiene solo la finestra di morte e riarma l'avviso quando il
+        // giocatore e' di nuovo vivo. Stesso ciclo per frame delle sonde qui sopra, quindi **zero patch
+        // Harmony nuove** (263 bersagli, invariati).
+        BossDeathWarning.Tick();
+
         // TEMPORARY (DeathCorpseFollow): LA CAMERA DEL MORTO SEGUE IL COMPAGNO VIVO. Via (c): un
         // cadavere-copia resta sul posto e il Penitent locale (invisibile) si sposta sull'avatar del
         // compagno VIVO, che la mod ha gia' in scena - quindi la camera, legata al Penitent, lo segue da
