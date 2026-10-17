@@ -2089,6 +2089,7 @@ namespace Blasphemous.Multiplayer.Client
             _lastAnimChangeAt.Clear();   // ditto: the clock belongs to the scene being unloaded
             _treeStateLogged.Clear();    // diagnostics: keyed by id, meaningless in the next scene
             _deadReleaseLogged.Clear();  // ditto: keyed by id, and ids do not survive a scene change
+            _bossOwnLogged.Clear();      // ditto: [BossProp] e' per id, e l'id di un boss non sopravvive
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
@@ -2109,6 +2110,13 @@ namespace Blasphemous.Multiplayer.Client
             _sendTimer = 0f;
             _rescanTimer = 0f;
             _lastSweep = 0f;
+
+            // ② Lo stato della bossfight si rilegge SUBITO per la scena nuova, e stampa una riga anche se
+            // non cambia. Senza questa riga un `OFF` non comparirebbe mai nel log e non si potrebbe
+            // distinguere "in questa stanza non c'e' nessuna fight" da "il latch non sta girando" - che
+            // sono due cose diverse e la seconda sarebbe invisibile.
+            _lastBossFightStateCheck = 0f;
+            _bossFightStateArmed = true;
 
             // And the diagnostic log with them, so the first snapshot of a new scene is written immediately
             // instead of waiting out the interval. The scene just changed: that is the moment worth
@@ -2411,6 +2419,207 @@ namespace Blasphemous.Multiplayer.Client
             catch (Exception)
             {
                 return 0;
+            }
+        }
+
+        // ============================================================================================
+        // ② IL TERZO VALORE DELLO STATO:  BOSSFIGHT|<scena> = OFF | IN_CORSO | FINITA
+        // (referto: scratch\REFERTO-PROPRIETA-BOSS.md; studio: scratch\STUDIO-VIA-BOSS-E-TRIGGER.md §3.3)
+        // ============================================================================================
+        //
+        // PERCHE' MANCAVA, E PERCHE' ADESSO C'E'. La mod conosceva due fatti e nessuna parola per
+        // metterli insieme: "c'e' un boss VIVO in questa stanza" (`CountLiveBossesInScene()`) e "un altro
+        // giocatore e' QUI" (`AnyOtherPlayerInMyScene()`). Quello che non esisteva in NESSUN punto del
+        // codice era la frase "la fight e' **IN_CORSO**": zero occorrenze di `BossFightManager`,
+        // `IsFightStarted` o `onStartBossFight` nel codice della mod. Le due informazioni c'erano e non
+        // venivano usate, ed e' la ragione per cui il nuovo arrivato non sapeva di essere arrivato a meta'
+        // (misurato: su G1 il predicato era vero al primo frame utile, `peerInScena=1/1 · bossVivi=1`,
+        // ~110 righe e ~18 s PRIMA che partisse la cerimonia).
+        //
+        // ⛔ SOLO LOG E MEMORIA. Questo latch non cambia un solo comportamento: non accende niente, non
+        // spegne niente, non sopprime la cerimonia (che e' vietato toccare: e' una FSM dentro l'asset di
+        // scena, l'unica cosa che puo' bloccare la stanza) e non manda un solo pacchetto. Serve alla voce
+        // ② della feature, dove il gate va messo SULLA MACCHINA CHE ENTRA, non su quella che combatte.
+        //
+        // COSA SIGNIFICA IN_CORSO, DETTO PER ESTESO. La regola e':
+        //     IN_CORSO  <=  bossVivi > 0  E  ( peerInScena  O  il boss ha gia' perso vita )
+        // Il secondo pezzo e' il testimone che il gioco non ci da' per contratto: senza patch non
+        // esiste un modo per leggere `IsFightStarted` (e' uno stato di ISTANZA di un componente di
+        // scena), quindi "la fight e' cominciata" si legge dal solo fatto osservabile - il boss ha
+        // perso vita. La vita e' l'unico segnale che la mod riceve GIA' (arriva in ogni update, e i
+        // `[Danno] relay` la fanno scendere anche sulla macchina che non ha menato).
+        // ⚠️ MA SULLA MACCHINA CHE ENTRA il testimone non c'e' ancora (la sua copia del boss e' a vita
+        // piena), e la macchina che entra e' esattamente quella a cui lo stato serve: per questo vale
+        // anche `peerInScena`. Il prezzo e' dichiarato e onesto: con un altro giocatore in stanza e un
+        // boss DORMIENTE (pre-trigger) il latch dice IN_CORSO senza che qualcuno stia combattendo. Per
+        // questo la riga di log stampa SEMPRE anche `bossToccato` e `peerInScena`: chi legge vede su
+        // quale delle due meta' la decisione si fonda, e non deve fidarsi della parola.
+        private enum BossFightState
+        {
+            Off = 0,
+            InCorso = 1,
+            Finita = 2,
+        }
+
+        /// <summary>
+        /// Lo stato per SCENA, e non per macchina: la stessa stanza puo' essere visitata piu' volte nella
+        /// stessa sessione e il valore deve sopravvivere al viaggio (e' proprio al RIENTRO che serve).
+        /// Non viene svuotato da `LevelLoaded`, per la stessa ragione per cui non viene svuotata
+        /// `_remoteTargets` (:2079-2084).
+        /// </summary>
+        private static readonly Dictionary<string, BossFightState> _bossFightByScene =
+            new Dictionary<string, BossFightState>();
+
+        /// <summary>
+        /// Ogni quanto si rilegge lo stato. NON a ogni frame: `CountLiveBossesInScene()` percorre i root
+        /// della scena con `GetComponentsInChildren` e questo latch e' un marker, non una regola di gioco.
+        /// 2 s e' lo stesso passo con cui la sonda di performance misura il mondo (`PerformanceProbe`,
+        /// `REPORT_INTERVAL = 2f`), quindi i due log si possono affiancare riga per riga.
+        /// </summary>
+        private const float BOSSFIGHT_STATE_INTERVAL = 2f;
+
+        private static float _lastBossFightStateCheck;
+
+        /// <summary>Forza UNA riga per caricamento anche quando lo stato non cambia (vedi `UpdateBossFightState`).</summary>
+        private static bool _bossFightStateArmed;
+
+        /// <summary>
+        /// Il valore corrente per una scena, per il resto della feature: `OFF`, `IN_CORSO`, `FINITA`
+        /// (o `?` se non e' leggibile). Non esiste nessun altro modo di leggere questo stato, ed e'
+        /// voluto: un solo nome, un solo significato.
+        /// </summary>
+        internal static string BossFightStateOf(string scene)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(scene))
+                    return "?";
+
+                BossFightState state;
+                if (!_bossFightByScene.TryGetValue(scene, out state))
+                    return "OFF";
+
+                return BossFightStateName(state);
+            }
+            catch (Exception)
+            {
+                return "?";
+            }
+        }
+
+        private static string BossFightStateName(BossFightState state)
+        {
+            switch (state)
+            {
+                case BossFightState.InCorso: return "IN_CORSO";
+                case BossFightState.Finita: return "FINITA";
+                default: return "OFF";
+            }
+        }
+
+        /// <summary>
+        /// `true` quando un boss VIVO e ATTIVO di questa scena ha gia' perso vita: e' il testimone che la
+        /// fight e' cominciata. Letto dalle tabelle della mod (`_ids`), non da una scansione della scena:
+        /// gli stessi nemici che l'arbitro considera, senza un `GetComponentsInChildren` in piu'.
+        /// </summary>
+        private static bool BossAlreadyEngaged()
+        {
+            try
+            {
+                for (int i = 0; i < _ids.Count; i++)
+                {
+                    Enemy enemy = ResolveEnemy(_ids[i]);
+                    if (enemy == null || enemy.gameObject == null)
+                        continue;
+
+                    if (!enemy.gameObject.activeInHierarchy)
+                        continue; // spento: non sta combattendo (vedi CountSceneEnemies, :2333)
+
+                    if (enemy.Status != null && enemy.Status.Dead)
+                        continue; // la sequenza di morte e' partita: non e' "in corso", e' finita
+
+                    if (!IsBossByNamespace(enemy))
+                        continue;
+
+                    float maxLife = enemy.Stats != null && enemy.Stats.Life != null
+                        ? enemy.Stats.Life.Final
+                        : 0f;
+
+                    // La tolleranza e' di mezzo punto: `SetHealth` e l'aritmetica dei colpi lasciano
+                    // differenze di frazioni, e un boss a 399.9999 su 400 non e' stato colpito.
+                    if (maxLife > 0f && enemy.CurrentLife < maxLife - 0.5f)
+                        return true;
+                }
+            }
+            catch (Exception)
+            {
+                // Un testimone che non si puo' leggere vale "non lo so": si resta su quello che si sa.
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Rilegge lo stato della bossfight di QUESTA scena e lo latcha, scrivendo una riga SOLO quando
+        /// cambia (piu' una riga per caricamento, armata da `LevelLoaded`).
+        ///
+        /// LA REGOLA, in ordine:
+        ///   IN_CORSO  se c'e' almeno un boss vivo E ( c'e' un altro giocatore in scena OPPURE il boss ha
+        ///             gia' perso vita ) -- vedi il commento del blocco per cosa compra e cosa non compra;
+        ///   FINITA    se NON c'e' piu' nessun boss vivo e lo stato era IN_CORSO;
+        ///   altrimenti lo stato NON CAMBIA. E' un latch, non una misura: un valore che oscilla non
+        ///             direbbe niente a chi deve decidere se sopprimere una cerimonia. `FINITA` non torna
+        ///             `OFF` da sola (la fight non e' mai stata "mai cominciata" dopo che e' cominciata) e
+        ///             `IN_CORSO` non torna `OFF` mentre il boss e' vivo - al massimo diventa `FINITA`.
+        /// </summary>
+        private static void UpdateBossFightState()
+        {
+            try
+            {
+                if (Time.time - _lastBossFightStateCheck < BOSSFIGHT_STATE_INTERVAL)
+                    return;
+
+                _lastBossFightStateCheck = Time.time;
+
+                string scene = SceneForMarker();
+                if (string.IsNullOrEmpty(scene) || scene == "?")
+                    return;
+
+                int bossVivi = CountLiveBossesInScene();
+                bool peerHere = OtherPlayerInMyScene();
+                bool bossToccato = BossAlreadyEngaged();
+
+                BossFightState before;
+                if (!_bossFightByScene.TryGetValue(scene, out before))
+                    before = BossFightState.Off;
+
+                BossFightState now = before;
+
+                if (bossVivi > 0 && (peerHere || bossToccato))
+                    now = BossFightState.InCorso;
+                else if (bossVivi == 0 && before == BossFightState.InCorso)
+                    now = BossFightState.Finita;
+
+                _bossFightByScene[scene] = now;
+
+                bool first = _bossFightStateArmed;
+                _bossFightStateArmed = false;
+
+                if (!first && now == before)
+                    return;
+
+                // La riga. Il formato `BOSSFIGHT|scena = VALORE` e' il nome dello stato, e viaggia con i
+                // due numeri su cui e' stato deciso, cosi' non c'e' niente da dedurre.
+                ModLog.Info($"[BossFight] BOSSFIGHT|{scene} = {BossFightStateName(now)}" +
+                            (before == now ? string.Empty : $" (era {BossFightStateName(before)})") +
+                            $" · bossVivi={bossVivi} · bossToccato={(bossToccato ? "true" : "false")} · " +
+                            $"peerInScena={(peerHere ? 1 : 0)}/{ConnectedPlayersCount()} · " +
+                            $"io={(IsHost ? "host" : "peer")} · solo-log-nessun-comportamento");
+            }
+            catch (Exception e)
+            {
+                ModLog.Info($"[BossFight] BOSSFIGHT|{SceneForMarker()} = ? " +
+                            $"(lettura fallita: {e.GetType().Name}: {e.Message})");
             }
         }
 
@@ -3116,6 +3325,55 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// True when ANOTHER PLAYER IS IN THIS SCENE **AND IS NOT DOWN** — the one question the boss rule
+        /// may ask before leaving a boss to somebody else.
+        ///
+        /// It is `OtherPlayerInMyScene()` plus one field, and the two halves answer two different defects:
+        ///   - NOT HERE: nobody else can be simulating the boss. Leaving it to a machine that is not in the
+        ///     room is exactly how a boss ends up owned by nobody - paused, no attacks, `FreezePhysics` on,
+        ///     and no token coming that could wake it up. The host recovers it instead.
+        ///   - HERE BUT DOWN: the survivor's copy of the boss throws every hit away, because the game's own
+        ///     entry point is guarded by the LOCAL player's life
+        ///     (`if (Status.Dead || Core.Logic.Penitent.Stats.Life.Current &lt;= 0f) return;`, the guard quoted
+        ///     in full in the dead-owner branch of DecideOwnership). A boss left on a corpse is invulnerable
+        ///     until that player respawns, which is worse than any handover.
+        ///
+        /// `IsDead` is the remote player's own announcement (pdead/palive), which is the only source there
+        /// is: the other player is a bare GameObject with no Penitent, so nothing local can inspect them.
+        /// An unknown player reads as not-dead (`IsDead` starts false), which is the conservative answer:
+        /// it keeps the boss where it is until the other machine says otherwise.
+        /// </summary>
+        private static bool OtherPlayerHereAndAlive()
+        {
+            try
+            {
+                string myScene = Core.LevelManager.currentLevel == null
+                    ? null
+                    : Core.LevelManager.currentLevel.LevelName;
+
+                if (string.IsNullOrEmpty(myScene))
+                    return false;
+
+                if (Main.Multiplayer == null || Main.Multiplayer.OtherPlayerManager == null)
+                    return false;
+
+                foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
+                {
+                    if (player != null && player.CurrentScene == myScene && !player.IsDead)
+                        return true;
+                }
+
+                return false;
+            }
+            catch (Exception)
+            {
+                // Verso prudente: "non lo so" = l'altro non e' un simulatore affidabile, e l'host riprende
+                // il boss invece di lasciarlo fermo. Un boss che si muove troppo e' meglio di un boss fermo.
+                return false;
+            }
+        }
+
+        /// <summary>
         /// True when this machine should hold off taking an enemy because its position has not arrived yet.
         ///
         /// The rule is deliberately three-sided, because each side of it was a real failure:
@@ -3720,6 +3978,47 @@ namespace Blasphemous.Multiplayer.Client
             if (enemy == null || enemy.gameObject == null)
                 return;
 
+            // ============================================================================================
+            // ⭐ ④ UN BOSS NON SI RIAGGANCIA MAI A UNA POSIZIONE REMOTA
+            // (referto: scratch\REFERTO-PROPRIETA-BOSS.md; studio: scratch\STUDIO-VIA-BOSS-E-TRIGGER.md §4.6)
+            //
+            // E' IL SALTO CHE L'UTENTE VEDE, e la misura e' nei log: G2 `[Proprieta'] t=375.5 adotta la
+            // posizione (-805.9,22.1)` - il punto di SPAWN - mentre il boss stava combattendo a
+            // `(-823.0,9.0)`. Il boss viene teletrasportato indietro di ~12,6 unita', e l'altra macchina lo
+            // vede saltare.
+            //
+            // PERCHE' QUI E NON SOLO NEI DUE RAMI DELL'ARBITRO. `_remoteTargets` e' scritta da OGNI update
+            // ricevuto ma CONTIENE SOLO CIO' CHE IL PADRONE HA TRASMESSO: quando il boss passa all'altra
+            // macchina, questa non riceve piu' niente per quell'id, quindi il record resta fermo all'ultima
+            // posizione trasmessa dal vecchio padrone - e se il vecchio padrone non lo simulava da tempo
+            // (o se il record viene da una VISITA PRECEDENTE della stanza: `LevelLoaded` non svuota
+            // `_remoteTargets`, di proposito, :2079-2084) quella posizione e' lo SPAWN di quando nessuno
+            // combatteva. Adottarla non e' "correggere": e' scrivere un'assenza come se fosse una verita'.
+            //
+            // ⚠️ E NON SI PERDE NIENTE A SALTARLA, che e' la ragione per cui questa guardia e' sicura:
+            // `InterpolateRemoteEnemies` (:3601-3626) insegue GIA' `_remoteTargets` a OGNI frame su ogni
+            // nemico che questa macchina NON possiede, e oltre 6 unita' fa uno SNAP secco. Al momento del
+            // passaggio di mano la copia locale e' quindi gia' dove e' il boss: l'adozione aggiungeva solo
+            // il salto, non la verita'. Per un nemico normale il salto puo' servire (la copia puo' essere
+            // rimasta indietro di pochi frame e il lerp e' morbido); per un boss e' solo un teletrasporto
+            // visibile, perche' tutti i suoi spostamenti sono grandi e tutte le sue pause sono lunghe.
+            // ============================================================================================
+            try
+            {
+                if (!string.IsNullOrEmpty(id) && IsBoss(enemy, id))
+                {
+                    ModLog.Info($"[Proprieta'] {FullId(id)} boss: posizione remota NON adottata " +
+                                $"(resta a ({enemy.transform.position.x:F1},{enemy.transform.position.y:F1}), " +
+                                "la copia locale e' gia' inseguita ogni frame da InterpolateRemoteEnemies)");
+                    return;
+                }
+            }
+            catch (Exception)
+            {
+                // Se il test "e' un boss" fallisse non si deve saltare l'adozione per un nemico normale:
+                // si prosegue e si adotta, che e' il comportamento di sempre.
+            }
+
             Vector2 lastKnown;
             if (!_remoteTargets.TryGetValue(id, out lastKnown))
                 return;
@@ -3978,10 +4277,39 @@ namespace Blasphemous.Multiplayer.Client
         ///   - the role only moves after OWNER_HOLD_SECONDS, which stops the two machines from trading the
         ///     same enemy many times per second.
         /// </summary>
-        private static bool DecideOwnership(Enemy enemy, EnemyState state, bool localIsHost)
+        private static bool DecideOwnership(Enemy enemy, string id, EnemyState state, bool localIsHost)
         {
             bool wants = ShouldOwnByProximity(enemy);
             bool peerCloser = PeerIsCloser(enemy);
+
+            // ============================================================================================
+            // ① UN BOSS NON E' UN NEMICO QUALUNQUE — LA PROPRIETA' E' STABILE
+            // (referto: scratch\REFERTO-PROPRIETA-BOSS.md; studio: scratch\STUDIO-VIA-BOSS-E-TRIGGER.md §4.6)
+            //
+            // MISURATO, e non e' una supposizione: trattato come un nemico qualunque, il boss cambiava di
+            // mano 4 volte in ~60 s e stava FERMO 30,5 s su 58 (53%) su G1 - tutto `esito=` di proprieta',
+            // niente cerimonia. Le due macchine misurano la stessa distanza in modo diverso (§4.4), quindi
+            // con il margine di 2,5 nessuna delle due ha ragione in modo stabile e la decisione viene
+            // rimessa in discussione a ogni tick.
+            //
+            // ⚠️⚠️ E LA SCOPERTA CHE CAMBIA IL FIX (§4.6): il ramo che fa il danno non e' un passaggio di
+            // mano, e' IL PRIMO, dove il ripiego `!peerCloser && localIsHost` SCAVALCA `ShouldWaitForPosition`
+            // e fa adottare lo spawn. Misurato: `adotta (-805.9,22.1)` mentre il boss era a `(-823.0,9.0)`,
+            // e l'altra macchina se lo vedeva teletrasportare. ⇒ rendere il boss "definitivo" senza
+            // proteggere il PRIMO ramo CONGELA quel difetto invece di toglierlo.
+            //
+            // ⇒ la regola ha TRE proprieta', e sono le tre scritte qui sotto:
+            //   ② il boss non entra nel ripiego del primo ramo (questo blocco);
+            //   ③ il boss non entra nei due rami di cessione (piu' sotto), con UNA eccezione: il recupero;
+            //   ④ il boss non viene MAI riagganciato a una posizione remota (`AdoptLastKnownPosition`).
+            //
+            // La forma e' quella dei tre precedenti gia' in produzione: `SetHealth` saltato per i boss
+            // (:4770-4782), esenzione dal ramo `_pendingDeaths` (:2815-2822), `HideDefeatedBosses`
+            // (:692-740). L'id arriva dal chiamante (:4474) invece di essere ricalcolato con `IdOf` a ogni
+            // tick: `IsBoss` ha bisogno dell'id, e `IdOf` e' una scansione lineare che qui girerebbe per
+            // OGNI nemico a OGNI tick.
+            // ============================================================================================
+            bool boss = IsBoss(enemy, id);
 
             if (state.OwnerSince <= 0f)
             {
@@ -4008,13 +4336,57 @@ namespace Blasphemous.Multiplayer.Client
                 // fallback (!peerCloser && localIsHost) is exempt: an enemy nobody is closer to must not be
                 // left unowned just because its position is not known yet.
                 bool take = wants || (!peerCloser && localIsHost);
-                if (wants && ShouldWaitForPosition(enemy, state))
+
+                // ⭐ ② PROPRIETA' STABILE, PRIMO RAMO: il ripiego `!peerCloser && localIsHost` NON vale per
+                // un boss, e questa e' la riga che chiude il difetto misurato.
+                //
+                // Con `dist_io=22.9` e `dist_altro=21.5` (G1:L2421) il margine rende `wants=false` e
+                // `peerCloser=false`: nessuno e' significativamente piu' vicino, quindi il ripiego faceva
+                // PRENDERE il boss all'host, che e' esattamente il caso che deve restare fermo. Un boss che
+                // nessuno dei due e' "significativamente" vicino a chi appartiene? A chi lo sta gia'
+                // simulando, cioe' a quello che era nella stanza prima: l'host lo lascia al peer.
+                //
+                // ⚠️ E NON E' UNA PERDITA: se il peer NON e' raggiungibile la posizione remota e' vecchia o
+                // assente, `ShouldOwnByProximity` risponde `true` (nessuno puo' essere piu' vicino di uno che
+                // non si sa dove sia) e l'host se lo prende lo stesso. L'unico caso in cui l'host lo lascia
+                // e' quello in cui l'altro lo sta davvero simulando.
+                //
+                // ⚠️⚠️ MA "LASCIARLO AL PEER" HA SENSO SOLO SE IL PEER **PUO'** AVERLO, e senza questa
+                // distinzione il fix creerebbe esattamente il difetto che il mandato vieta di creare: il
+                // BOSS FANTASMA. Le posizioni remote viaggiano anche FRA STANZE (dichiarato in
+                // `OtherPlayerInMyScene`, :3269-3275), quindi con il peer in un'ALTRA stanza `wants` puo'
+                // essere `false` per una distanza che non significa niente - e allora `take=false`, l'host
+                // pubblica "il padrone sei tu", il token viene filtrato per scena e non arriva a nessuno, e
+                // il boss resta PAUSATO su questa macchina senza che nessuno lo simuli. ⇒ se nessun altro
+                // giocatore e' qui VIVO, l'host lo prende SEMPRE: e' lo stesso predicato del recupero
+                // (`bossRecovery`, piu' sotto), applicato al primo tick invece che dopo un abbandono.
+                bool forced = false;
+                if (boss)
+                {
+                    bool otherCanSimulate = OtherPlayerHereAndAlive();
+                    forced = !otherCanSimulate;
+                    take = otherCanSimulate ? wants : true;
+                }
+
+                // ⚠️ E L'ATTESA DELLA POSIZIONE NON SI APPLICA A UN PRIMO TICK FORZATO. La sua ragione -
+                // "non riprendere il nemico sulla copia fresca e trasmettere una posizione vecchia" - per un
+                // boss non esiste piu': la posizione remota non viene adottata (:4005-4019) e la copia
+                // locale e' inseguita ogni frame. Lasciarla attiva qui riaprirebbe il boss fantasma per la
+                // porta di servizio: con l'altro a TERRA `OtherPlayerInMyScene()` e' vero, l'attesa
+                // scatterebbe e il boss resterebbe a una macchina che non puo' ucciderlo.
+                if (!forced && wants && ShouldWaitForPosition(enemy, state))
                     take = false;
 
                 state.OwnedByLocal = take;
 
                 if (state.OwnedByLocal)
-                    AdoptLastKnownPosition(enemy, IdOf(enemy));
+                    AdoptLastKnownPosition(enemy, id);
+
+                // Il marker della decisione: UNA riga per decisione, mai una per motivo (vedi
+                // LogBossOwnershipDecision), e solo per i boss.
+                if (boss)
+                    LogBossOwnershipDecision(enemy, id, state, wants, peerCloser, "primo-tick");
+
                 return false;
             }
 
@@ -4115,13 +4487,44 @@ namespace Blasphemous.Multiplayer.Client
 
             bool changed = false;
 
+            // ⭐ ③ PROPRIETA' STABILE, I DUE RAMI DI CESSIONE.
+            //
+            // Per un boss i due rami restano chiusi: non cede mai (il ramo `peerCloser`) e non riprende mai
+            // mentre l'altro e' qui a simularlo (il ramo `wants`). E' la regola della voce (e) dello studio,
+            // ed e' quella che toglie il ping-pong: oggi il boss cambia padrone 4 volte in ~60 s e ogni
+            // cambio e' una pausa (`PauseEnemy` sul vecchio padrone) piu' un riaggancio di posizione.
+            //
+            // ⚠️⚠️ MA LA CESSIONE NON PUO' ESSERE CHIUSA SENZA UNA VIA D'USCITA, o si scambia il ping-pong
+            // con un difetto peggiore: il BOSS FANTASMA. Se il padrone del boss esce dalla stanza, il suo
+            // `_lastSent` viene azzerato da LevelLoaded e non torna piu' niente per quell'id: l'host
+            // resterebbe con un record che dice "suo del peer" e terrebbe il boss in `PauseEnemy` PER SEMPRE
+            // - fermo, senza attacchi, senza collider (`FreezePhysics`), e nessun token a svegliarlo.
+            // (`ReleaseOwnedEnemiesBeforeLeaving` gira solo sull'HOST: il peer che esce non restituisce
+            // niente.) ⇒ la via d'uscita e' il RECUPERO, e la sua condizione e' la sola che questa macchina
+            // puo' rispondere con certezza: NESSUN ALTRO GIOCATORE E' QUI VIVO ⇒ nessuna macchina puo' stare
+            // simulando questo boss, quindi lo riprende l'host.
+            //
+            // ⚠️ E IL "VIVO" NON E' UN DETTAGLIO. Se l'altro e' qui ma a terra, la sua copia del boss BUTTA
+            // VIA ogni colpo (`Entity.Damage()` esce se la vita del giocatore LOCALE e' zero, e' la guardia
+            // scritta per esteso nel commento del ramo "padrone morto" qui sopra): lasciarglielo vorrebbe
+            // dire un boss invulnerabile fino al suo respawn. Con `IsDead` il boss torna all'host, che e'
+            // chi puo' ucciderlo.
+            //
+            // Il recupero e' IMMEDIATO (niente `OWNER_HOLD_SECONDS`) per la stessa ragione del rilascio del
+            // padrone morto: non e' un trade fra due giocatori vivi, e mezzo secondo di attesa sarebbe mezzo
+            // secondo di boss fermo. Una volta ripreso, non torna piu' indietro (la cessione resta chiusa).
+            bool bossRecovery = boss && !state.OwnedByLocal && !OtherPlayerHereAndAlive();
+
+            bool takeNow = bossRecovery ||
+                           (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS);
+
             // Take it when this machine's player is meaningfully closer; give it up when the other player
             // is. Both use the margin, so while the two distances are comparable neither applies and the
             // owner simply stays - which is what keeps a contested enemy from flapping between the two.
             //
             // The handover used to require RemoteEverClaimed, and that is the deadlock this fixes: a peer
             // only transmits the enemies it owns, so it could never claim the enemy it was trying to take.
-            if (wants && !state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+            if (takeNow)
             {
                 // Same wait as the first-time branch, with the same guards: take the enemy as soon as the
                 // position is here, and never let the wait outlive POSITION_WAIT_GRACE or a reachable peer,
@@ -4130,18 +4533,79 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     state.OwnedByLocal = true;
                     state.OwnerSince = Time.time;
-                    AdoptLastKnownPosition(enemy, IdOf(enemy));
+                    AdoptLastKnownPosition(enemy, id);
                     changed = true;
                 }
             }
-            else if (peerCloser && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
+            else if (!boss && peerCloser && state.OwnedByLocal && Time.time - state.OwnerSince >= OWNER_HOLD_SECONDS)
             {
                 state.OwnedByLocal = false;
                 state.OwnerSince = Time.time;
                 changed = true;
             }
 
+            if (boss)
+                LogBossOwnershipDecision(enemy, id, state, wants, peerCloser,
+                                         bossRecovery ? "recupero: nessun altro puo' simularlo" : "fisso");
+
             return changed;
+        }
+
+        // ============================================================================================
+        // ⭐ MARKER [BossProp] — LA DECISIONE DI PROPRIETA' DI UN BOSS, UNA RIGA PER DECISIONE
+        // ============================================================================================
+
+        /// <summary>Ultima decisione stampata per id: `true` = padrone io, `false` = padrone l'altro.</summary>
+        private static readonly Dictionary<string, bool> _bossOwnLogged = new Dictionary<string, bool>();
+
+        /// <summary>
+        /// Scrive `[BossProp]` SOLO quando la decisione su quel boss CAMBIA.
+        ///
+        /// PERCHE' ESISTE. Il fix toglie un difetto che nei log si vede come ASSENZA (niente pause, niente
+        /// passaggi di mano) e l'assenza, da sola, non distingue "il fix funziona" da "questo boss non e'
+        /// mai stato preso in considerazione". Questa riga dice la cosa che manca: chi e' il padrone,
+        /// all'inizio e a ogni cambiamento, con i due booleani che hanno deciso.
+        ///
+        /// ⚠️ LA CHIAVE E' LA DECISIONE, NON IL MOTIVO - la trappola e' la stessa di `LogTreeState` e di
+        /// `LogDeadOwnerDecision`, ed e' scritta per esteso sopra. `DecideOwnership` gira per ogni nemico a
+        /// ogni tick di invio: se il motivo entrasse nella chiave, `wants`/`peerCloser` (che oscillano con
+        /// le distanze) produrrebbero una riga nuova a ogni tick e la deduplica sarebbe morta. Il motivo e'
+        /// il CONTESTO della decisione, e viaggia con essa.
+        /// </summary>
+        private static void LogBossOwnershipDecision(Enemy enemy, string id, EnemyState state,
+                                                     bool wants, bool peerCloser, string why)
+        {
+            try
+            {
+                if (state == null || string.IsNullOrEmpty(id))
+                    return;
+
+                bool was;
+                if (_bossOwnLogged.TryGetValue(id, out was) && was == state.OwnedByLocal)
+                    return;
+
+                _bossOwnLogged[id] = state.OwnedByLocal;
+
+                // Le due distanze, perche' sono i due numeri su cui la regola decide e sono quelli che nei
+                // log delle due macchine NON concordano (§4.4 dello studio: ~20 unita' di differenza sulla
+                // stessa distanza). `[EnemyTick]` le stampa ogni 10 s: qui arrivano nell'istante esatto
+                // della decisione, che e' quando servono.
+                Penitent local = Core.Logic.Penitent;
+                string distLocal = local != null
+                    ? Vector2.Distance(enemy.transform.position, local.transform.position).ToString("F1")
+                    : "n/d";
+                float remote = NearestRemoteDistance(enemy);
+                string distRemote = remote == float.MaxValue ? "n/d" : remote.ToString("F1");
+
+                ModLog.Info($"[BossProp] {FullId(id)} padrone={(state.OwnedByLocal ? "io" : "altro")} " +
+                            $"motivo={why} wants={wants} peerCloser={peerCloser} " +
+                            $"dist_io={distLocal} dist_altro={distRemote} " +
+                            $"pos=({enemy.transform.position.x:F1},{enemy.transform.position.y:F1})");
+            }
+            catch (Exception)
+            {
+                // Un marker non deve mai fermare l'arbitro: qui si perde una riga, non una decisione.
+            }
         }
 
         /// <summary>
@@ -4336,6 +4800,13 @@ namespace Blasphemous.Multiplayer.Client
             // while nobody is connected or the first reveal after a reconnect would go unannounced.
             DetectReveals();
 
+            // ② BOSSFIGHT|<scena> = OFF | IN_CORSO | FINITA. Stesso posto e stessa ragione di DetectReveals:
+            // prima del gate della connessione, perche' la bossfight e' un fatto del MONDO (una stanza con
+            // un boss dentro), non della rete - e in single player lo stato deve comunque esistere.
+            // ⛔ Solo lettura e memoria: questa chiamata non cambia un solo comportamento (vedi il blocco
+            // "IL TERZO VALORE DELLO STATO" piu' sopra).
+            UpdateBossFightState();
+
             // Both machines receive: the owner to follow the authoritative state, the non-owner to apply
             // it. Receiving is what tells a machine whether it should be simulating a given enemy, so it
             // cannot be limited to the host.
@@ -4471,7 +4942,7 @@ namespace Blasphemous.Multiplayer.Client
                     // EnemyOwnership packet, never recalculated here.
                     if (IsHost)
                     {
-                        DecideOwnership(enemy, previous, true);
+                        DecideOwnership(enemy, id, previous, true);
 
                         if (!previous.OwnershipKnown || previous.LastPublishedOwnerIsMe != previous.OwnedByLocal)
                         {
