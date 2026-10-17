@@ -1840,7 +1840,34 @@ namespace Blasphemous.Multiplayer.Client
             _lastSent.Clear();
             _registrations = 0;
 
+            // ⭐ MARKER [BossView], PRIMA META': la scena com'e' ADESSO, nello stesso frame dello spawn e
+            // PRIMA che la mod registri qualunque cosa. Sta qui e non altrove perche' questo e' l'unico
+            // istante in cui l'oggetto del boss e' ancora come la scena l'ha messo: `DestroyDeadEnemy`
+            // (chiamato da `RegisterEnemy`, nel ramo `_pendingDeaths.Contains(id)`) lo spegne, e un frame
+            // dopo la misura non direbbe piu' niente.
+            //
+            // LA RAGIONE (studio: scratch\STUDIO-PUNTO-0-RIENTRO.md §5, marker 4): serve a sapere se al
+            // RIENTRO in bossroom il boss e' SPENTO, ASSENTE o VIVO, e se e' la mod a spegnerlo. Non e'
+            // deducibile dal repo: la condizione che sopprime l'ingresso e' una flag del gioco
+            // (`*_BOSSDEAD`) letta da una FSM dentro l'asset della scena, che il repo non contiene. Questa
+            // riga la rende decidibile in gioco.
+            //
+            // COME SI LEGGE, insieme alla riga gemella sotto e al `Post-spawn` che segue:
+            //   attivo>0 e bossVivi=1                 => il boss e' VIVO in scena;
+            //   statusDead>0 e bossVivi=0             => trovato attivo ma GIA' morto per il gioco: la mod
+            //                                            lo sta per togliere (e' lei, non la scena);
+            //   attivo=0 e `Post-spawn: 1 enemies`    => c'e' e SPENTO (esiste, non lo simula nessuno);
+            //   attivo=0 e `Post-spawn: 0 enemies`    => ASSENTE (distrutto: non c'e' piu').
+            LogBossViewBefore();
+
             RegisterEnemies(_scene);
+
+            // ⭐ MARKER [BossView], SECONDA META': IDENTICA MISURA, nello stesso frame, SUBITO DOPO la
+            // registrazione. La DIFFERENZA fra questa riga e quella sopra e' la risposta a "e' la mod a
+            // spegnere il boss?": se `attivi` scende mentre `pendingMorti` non cambia, a spegnerlo e' stato
+            // `RegisterEnemy` -> `DestroyDeadEnemy`, cioe' NOI; se non scende, a spegnerlo (o a non
+            // accenderlo) e' stata la scena. Vedi LogBossViewAfter.
+            LogBossViewAfter();
 
             _ids.Sort(string.CompareOrdinal);
             _listFingerprint = ComputeFingerprint();
@@ -1848,6 +1875,178 @@ namespace Blasphemous.Multiplayer.Client
             _spawnFinalized = true;
 
             ModLog.Info($"[EnemySync] Post-spawn: {_enemies.Count} enemies / {_spawnPoints.Count} spawn points / {_ids.Count} ids");
+        }
+
+        // ============================================================================================
+        // MARKER [BossView] / [BossJoin] — SOLO LOG, ZERO COMPORTAMENTO, ZERO PATCH
+        // (studio che li chiede: scratch\STUDIO-PUNTO-0-RIENTRO.md §5; referto:
+        //  scratch\REFERTO-MARKER-PUNTO-0.md)
+        //
+        // Questi metodi NON leggono niente che non fosse gia' letto e NON scrivono NIENTE: contano e
+        // stampano. Se il gioco fa qualcosa di diverso dopo questo commit, e' un errore.
+        //
+        // PERCHE' NON SONO COSTOSI: girano solo dentro `OnEnemiesSpawned()` (una volta per spawn, non per
+        // frame) e in un singolo frame dopo ogni `LevelLoaded`. Niente e' stato messo in `Update()`.
+        //
+        // PERCHE' NON LANCIANO MAI: un marker che esplode e zittisce la misura e' peggio di un marker
+        // assente, quindi ogni riga ha un `try/catch` che, in caso di errore, STAMPA LO STESSO MARKER con
+        // `?` al posto dei numeri (fallback) e prosegue. Nessuna eccezione esce da qui.
+        // ============================================================================================
+
+        /// <summary>
+        /// [BossView] riga 1 — `scena · attivo · statusDead · pendingMorti · bossVivi`, PRIMA della
+        /// registrazione. Vedi il commento nel punto di chiamata per come si legge.
+        /// </summary>
+        private static void LogBossViewBefore()
+        {
+            try
+            {
+                int attivo;
+                int statusDead;
+                int bossVivi;
+                CountSceneEnemies(out attivo, out statusDead, out bossVivi);
+
+                ModLog.Info($"[BossView] scena={SceneForMarker()} · attivo={attivo} · statusDead={statusDead} · " +
+                            $"pendingMorti={_pendingDeaths.Count} · bossVivi={bossVivi}");
+            }
+            catch (Exception e)
+            {
+                ModLog.Info($"[BossView] scena={SceneForMarker()} · attivo=? · statusDead=? · pendingMorti=? · " +
+                            $"bossVivi=? (lettura fallita: {e.GetType().Name}: {e.Message})");
+            }
+        }
+
+        /// <summary>
+        /// [BossView] riga 2 (gemella, stesso frame) — `dopo-registrazione · attivi · pendingMorti`.
+        /// </summary>
+        private static void LogBossViewAfter()
+        {
+            try
+            {
+                int attivo;
+                int statusDead;
+                int bossVivi;
+                CountSceneEnemies(out attivo, out statusDead, out bossVivi);
+
+                ModLog.Info($"[BossView] dopo-registrazione · attivi={attivo} · pendingMorti={_pendingDeaths.Count}");
+            }
+            catch (Exception e)
+            {
+                ModLog.Info($"[BossView] dopo-registrazione · attivi=? · pendingMorti=? " +
+                            $"(lettura fallita: {e.GetType().Name}: {e.Message})");
+            }
+        }
+
+        /// <summary>
+        /// I tre numeri del marker, in una passata sola.
+        ///
+        /// `attivo`     = quanti `Enemy` sono ATTIVI in scena (`activeInHierarchy`), non quanti esistono:
+        /// `FindAllEnemiesIncludingInactive` trova anche i disattivati, e un boss spento NON deve contare
+        /// qui, altrimenti "spento" e "vivo" darebbero lo stesso numero. Quanti ESISTONO lo dice la riga
+        /// `[EnemySync] Post-spawn: N enemies` che segue nello stesso frame.
+        /// `statusDead` = quanti di quelli ATTIVI hanno `Status.Dead == true` (la sequenza di morte e'
+        /// partita: e' la stessa nozione usata altrove in questo file, non "la vita e' zero").
+        /// `bossVivi`   = quanti di quelli ATTIVI sono boss (namespace `Gameplay.GameControllers.Bosses`,
+        /// lo stesso criterio di `IsBoss`) e NON morti.
+        /// </summary>
+        private static void CountSceneEnemies(out int attivo, out int statusDead, out int bossVivi)
+        {
+            attivo = 0;
+            statusDead = 0;
+            bossVivi = 0;
+
+            Enemy[] enemies = FindAllEnemiesIncludingInactive();
+            if (enemies == null)
+                return;
+
+            for (int i = 0; i < enemies.Length; i++)
+            {
+                Enemy enemy = enemies[i];
+                if (enemy == null || enemy.gameObject == null)
+                    continue;
+
+                if (!enemy.gameObject.activeInHierarchy)
+                    continue; // esiste ma e' spento: lo conta il Post-spawn, non questo marker
+
+                attivo++;
+
+                if (enemy.Status != null && enemy.Status.Dead)
+                {
+                    statusDead++;
+                    continue;
+                }
+
+                if (IsBossByNamespace(enemy))
+                    bossVivi++;
+            }
+        }
+
+        /// <summary>
+        /// Lo STESSO test di `IsBoss` (il namespace del tipo), ma senza id e senza toccare la cache
+        /// `_bossIds`: il marker deve leggere lo stato e NON lasciare traccia in nessuna tabella della mod.
+        /// </summary>
+        private static bool IsBossByNamespace(Enemy enemy)
+        {
+            string space = enemy.GetType().Namespace;
+            return !string.IsNullOrEmpty(space) &&
+                   space.StartsWith("Gameplay.GameControllers.Bosses", System.StringComparison.Ordinal);
+        }
+
+        /// <summary>Nome della scena per i marker, con il ripiego sul livello corrente se `_scene` e' vuota.</summary>
+        private static string SceneForMarker()
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(_scene))
+                    return _scene;
+
+                return Core.LevelManager.currentLevel == null
+                    ? "?"
+                    : Core.LevelManager.currentLevel.LevelName;
+            }
+            catch (Exception)
+            {
+                // Anche il nome della scena ha un ripiego: il marker deve stampare comunque.
+                return "?";
+            }
+        }
+
+        /// <summary>[BossJoin] — quanti boss VIVI ci sono in scena (marker 2, un frame dopo il load).</summary>
+        internal static int CountLiveBossesInScene()
+        {
+            int attivo;
+            int statusDead;
+            int bossVivi;
+            CountSceneEnemies(out attivo, out statusDead, out bossVivi);
+            return bossVivi;
+        }
+
+        /// <summary>
+        /// [BossJoin] — il PREDICATO CHE ESISTE GIA' (`OtherPlayerInMyScene`, :2493), esposto all'unico
+        /// chiamante che ne ha bisogno fuori da questo file: il marker in `Multiplayer.OnLevelLoaded`.
+        /// Nessuna logica nuova: e' un inoltro di una riga.
+        /// </summary>
+        internal static bool AnyOtherPlayerInMyScene()
+        {
+            return OtherPlayerInMyScene();
+        }
+
+        /// <summary>
+        /// [BossJoin] — il secondo numero di `peerInScena=N/TOT`: quanti peer sono connessi in tutto.
+        /// </summary>
+        internal static int ConnectedPlayersCount()
+        {
+            try
+            {
+                if (Main.Multiplayer == null || Main.Multiplayer.OtherPlayerManager == null)
+                    return 0;
+
+                return Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers.Count;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
         }
 
         /// <summary>

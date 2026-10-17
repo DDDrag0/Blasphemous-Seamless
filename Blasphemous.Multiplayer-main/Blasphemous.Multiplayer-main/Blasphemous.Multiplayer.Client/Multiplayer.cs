@@ -128,6 +128,14 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         ProgressManager.LevelLoaded(newLevel);
         CanObtainStatUpgrades = true;
 
+        // ⭐ MARKER [BossJoin] — SI ARMA QUI, SI STAMPA UN FRAME DOPO (`BossJoinMarker`, in OnLateUpdate).
+        // "Un frame dopo" non e' pigrizia: questo evento scatta PRIMA che la scena sia utilizzabile
+        // (`EnemySpawnPatch.cs:15-17`), quindi leggere qui il predicato di scena o i nemici misurerebbe il
+        // frame sbagliato. Vedi `BossJoinMarker` per cosa stampa e perche'.
+        _bossJoinScene = newLevel;
+        _bossJoinFrame = Time.frameCount;
+        _bossJoinArmed = newLevel != "MainMenu";
+
         if (CurrentlyInLevel && NetworkManager.IsConnected)
         {
             // Entered a new scene
@@ -173,6 +181,12 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnLateUpdate()
     {
+        // ⭐ MARKER [BossJoin]: consuma l'armato di OnLevelLoaded, UNA riga sola, nel primo frame utile.
+        // Sta PRIMA di tutto il resto perche' non deve misurare lo stato che questo stesso ciclo modifica,
+        // e perche' quando non c'e' niente armato costa un solo confronto booleano. Stesso ciclo per frame
+        // delle sonde qui sotto, quindi **zero patch Harmony nuove** (263 bersagli, invariati).
+        BossJoinMarker();
+
         // TEMPORARY (CutsceneProbe): PROBE #0 - one log line ONLY when the CINEMATIC input blocker
         // changes, read from two PUBLIC values (HasBlocker / InputBlocked). It reuses this per-frame
         // loop on purpose: a probe does not deserve a MonoBehaviour of its own. It sits BEFORE the
@@ -255,6 +269,56 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         finally
         {
             PerformanceProbe.EndLate();
+        }
+    }
+
+    // ⭐ MARKER [BossJoin] (studio: scratch\STUDIO-PUNTO-0-RIENTRO.md §5, marker 5 — SOLO LOG):
+    // ONLEVELLOADED ARMA, IL LATEUPDATE DEL FRAME DOPO STAMPA. Tre campi, nessuno stato di gioco.
+    private bool _bossJoinArmed;
+    private int _bossJoinFrame;
+    private string _bossJoinScene = string.Empty;
+
+    /// <summary>
+    /// ⭐ MARKER [BossJoin] — `scena · io · vivo · peerInScena · bossVivi`, UNA riga per caricamento di
+    /// livello, un frame dopo `OnLevelLoaded`.
+    ///
+    /// LA RAGIONE: e' il marker che dice CHI ARRIVA, QUANDO, e se gli altri sono GIA' DENTRO. E' la base
+    /// della via 2 dello studio (comunicare lo stato e lasciare che l'ingresso avvenga) e del gate della via
+    /// 1: senza sapere se il peer e' in questa scena nel momento esatto del load, "chi entra a meta'" resta
+    /// un'ipotesi. Va confrontato con il `[BossView]` dello stesso frame: quello dice com'e' il boss, questo
+    /// dice chi c'e' nella stanza.
+    ///
+    /// COME SI LEGGE: `peerInScena=1/1` = l'altro e' qui ADESSO, quindi la fight e' potenzialmente
+    /// condivisa; `0/1` = l'altro e' connesso ma in un'ALTRA stanza (e' il caso "arrivo dopo io");
+    /// `0/0` = nessun peer connesso, misure non confrontabili con una run a due.
+    /// ⚠️ `peerInScena` e' il predicato `OtherPlayerInMyScene()` ridotto a 0/1 (e' un booleano), mentre il
+    /// secondo numero e' il TOTALE dei peer connessi: con 2 macchine i due numeri esauriscono il quadro, con
+    /// 3+ `1/2` significa "almeno uno dei due e' qui".
+    ///
+    /// NON LANCIA MAI: in caso di errore stampa lo stesso marker con `?` (fallback) e prosegue.
+    /// </summary>
+    private void BossJoinMarker()
+    {
+        if (!_bossJoinArmed || Time.frameCount <= _bossJoinFrame)
+            return;
+
+        _bossJoinArmed = false;
+
+        try
+        {
+            bool vivo = !PlayerDeathSync.IsLocalPlayerDead();
+            int peer = EnemySyncManager.AnyOtherPlayerInMyScene() ? 1 : 0;
+            int tot = EnemySyncManager.ConnectedPlayersCount();
+            int bossVivi = EnemySyncManager.CountLiveBossesInScene();
+
+            ModLog.Info($"[BossJoin] scena={_bossJoinScene} · " +
+                        $"io={(string.IsNullOrEmpty(PlayerName) ? "(senza-nome)" : PlayerName)} · " +
+                        $"vivo={(vivo ? "true" : "false")} · peerInScena={peer}/{tot} · bossVivi={bossVivi}");
+        }
+        catch (System.Exception e)
+        {
+            ModLog.Info($"[BossJoin] scena={_bossJoinScene} · io=? · vivo=? · peerInScena=?/? · bossVivi=? " +
+                        $"(lettura fallita: {e.GetType().Name}: {e.Message})");
         }
     }
 
