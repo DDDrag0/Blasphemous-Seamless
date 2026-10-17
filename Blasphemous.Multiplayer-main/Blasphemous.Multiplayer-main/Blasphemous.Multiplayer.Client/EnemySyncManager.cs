@@ -411,6 +411,49 @@ namespace Blasphemous.Multiplayer.Client
                 string type = boss.GetType().Name;
                 float lifeBefore = boss.CurrentLife;
 
+                // ⭐ LO STATO DELLA TREE NELL'ISTANTE DEL KILL: misurato, e NON toccato.
+                //
+                // E' la meta' di misura di questo fix, e la ragione per cui non c'e' una riga che la
+                // riaccende (vedi il blocco qui sotto): se il boss resta AFK, il log deve dire da solo se
+                // la tree era spenta quando `Kill()` e' passato, invece di far dedurre la causa.
+                // `off` = spenta (PauseEnemy), `on/isRunning=False` = componente acceso ma grafo fermo,
+                // `assente` = nessun EnemyBehaviour (allora nessuna tree da svegliare e nessuna morte da
+                // recitare: il boss non ha una sequenza di morte in albero).
+                EnemyBehaviour tree = FindBehaviour(boss);
+                string treePrima = tree == null
+                    ? "assente"
+                    : ((tree.enabled ? "on" : "off") + "/isRunning=" + ReadTreeRunning(tree));
+
+                // ⛔ PERCHE' QUI NON SI RIACCENDE LA TREE PRIMA DEL `Kill()` — e non e' paura, e' misurato
+                // sul codice del gioco.
+                //
+                // La via per spegnerla e' `PauseEnemy` (`:1304-1348`): `behaviour.PauseBehaviour()` +
+                // `behaviour.enabled = false`, cioe' `EnemyBehaviour.PauseBehaviour` (IL decompilato:
+                // `if (BehaviourTree != null && BehaviourTree.isRunning) BehaviourTree.PauseBehaviour();`).
+                // Il rovescio esatto sarebbe `behaviour.enabled = true; behaviour.StartBehaviour();`
+                // (idempotente allo stesso modo: `if (BehaviourTree != null && !BehaviourTree.isRunning)
+                // BehaviourTree.StartBehaviour();`). ⇒ la riga e' innocua in se'.
+                //
+                // ⚠️ MA NON RESTITUISCE LA MORTE AL BOSS, E ARMA L'AI SU UN CADAVERE. Per OGNI boss la
+                // sequenza di morte NON e' pilotata dall'albero: e' `Boss.Damage(Hit)` a chiamare
+                // `Behaviour.Death()` dopo `DamageArea.TakeDamage` (`ElderBrother.cs:74-101` ⇒
+                // `ElderBrotherBehaviour.cs:319-327`: `StopAllCoroutines` + `StopBehaviour` +
+                // `AnimatorInyector.Death()`, cioe' `Animator.SetTrigger("DEATH")`; la stessa forma in 16
+                // classi di boss: Crisanta.cs:109-115, Isidora.cs:101-107, Snake.cs:190, ...).
+                // `Kill()` passa da `Entity.Damage(float,string)` -> `KillInstanteneously` e da li'
+                // `Behaviour.Death()` NON passa: nessun trigger DEATH, nessuna animazione, e il collider di
+                // danno resta acceso (lo spegne solo `Damage(Hit)`). E `Behaviour.Death()` stesso chiama
+                // `BehaviourTree.StopBehaviour()`: quando il boss muore, il GIOCO la tree la FERMA.
+                // ⇒ riaccenderla qui (a) non fa partire la morte e (b) lascia un albero in corsa su un boss
+                // con `Status.Dead = true`, che `ElderBrotherBehaviour` non controlla da nessuna parte
+                // (`LaunchRandomAction`/`CanExecuteNewAction` non guardano la morte): il boss
+                // combatterebbe da morto. Meglio l'AFK noto che un boss che combatte da cadavere.
+                // ⇒ la strada giusta e' far eseguire alla macchina del morto la sequenza di morte DEL BOSS
+                // (la sua `Damage(Hit)`, o la sua `Death()`), non risvegliarne l'albero: referto
+                // scratch\REFERTO-FIX-AFK.md §3. Non scritta qui di proposito: per boss come lo Snake
+                // `Behaviour.Death()` tocca il `Penitent` LOCALE e accende `Core.Input.SetBlocker(
+                // "TPOReposition")` (SnakeBehaviour.cs:170-219), cioe' proprio le cose vietate.
+                //
                 // ⚠️ IL PUNTO DEL FIX, UNA RIGA. E' anche l'unica scrittura sul gioco di tutto M1, e cade
                 // su un boss che SULL'ALTRA macchina e' gia' morto: non si inventa niente.
                 boss.Kill();
@@ -422,7 +465,8 @@ namespace Blasphemous.Multiplayer.Client
                 ModLog.Info($"[BossDeath RX] {FullId(id)} applicato (ero morto: si) via={via} " +
                             $"boss={isBoss} tipo={type} vitaPrima={lifeBefore:F0} " +
                             $"vitaDopo={boss.CurrentLife:F0} StatusDead={died} " +
-                            $"Kill={(died ? "ok" : "nessun-effetto")}");
+                            $"Kill={(died ? "ok" : "nessun-effetto")} treePrima={treePrima} " +
+                            "treeToccata=no (vedi il commento sopra)");
 
                 if (!died)
                 {
@@ -2415,8 +2459,39 @@ namespace Blasphemous.Multiplayer.Client
             // mark it again for the next load and take this instance down.
             if (_pendingDeaths.Contains(id))
             {
-                MarkSpawnPointConsumed(id);
-                DestroyDeadEnemy(enemy);
+                // ⭐ UN BOSS E' ESENTE DA QUESTO RAMO, E NON E' UNA PRUDENZA: QUI IL RAMO FA DANNO.
+                //
+                // Su un boss `MarkSpawnPointConsumed` e' gia' un no-op (l'id e' "en|...", non "sp|...") e
+                // `DestroyDeadEnemy` e' danno NUOVO, esattamente come lo e' nel ramo `bdead|` di
+                // `ReceiveEnemyDeathGlobal` (vedi il commento li'): chiama `KillEnemyLocally` e poi
+                // `SetActive(false)` su un boss che la scena ha appena rimesso in scena, su UNA macchina
+                // sola. Il risultato non e' "il boss e' morto anche qui": e' un boss che il gioco ha
+                // rigenerato e che la mod abbatte e spegne alle spalle della FSM della stanza, che sulla
+                // morte del boss ha la sua strada (la flag `<scena>_BOSSDEAD`, letta dentro l'asset di
+                // scena - vedi scratch\DIAGNOSI-BOSS-AFK.md §6.2 punto 2 e §7 punto 7).
+                //
+                // L'ID VA ANCHE TOLTO DALLA MEMORIA, non solo ignorato: se restasse, l'id di un boss
+                // rimarrebbe "in sospeso" per sempre (misurato: G1:4532 "1 ricevute", e OnDeathStateReset
+                // esce prima quando la morte sopprime il reset del mondo) e la decisione verrebbe
+                // ri-presa a ogni registrazione. Toglierlo e' cio' che fa `ReceiveBirth` per la stessa
+                // ragione: una memoria che non deve piu' sopprimere niente non va tenuta.
+                //
+                // ⚠️ E IL RESTO NON CAMBIA: per un nemico normale il ramo gira come sempre - l'id resta
+                // in `_pendingDeaths`, lo spawn point viene risegnato consumato e l'istanza viene
+                // abbattuta. Il test dei due casi e' in scratch\REFERTO-FIX-AFK.md.
+                if (IsBoss(enemy, id))
+                {
+                    _pendingDeaths.Remove(id);
+
+                    ModLog.Info($"[BossPending] {FullId(id)} esente dal ramo delle morti in sospeso: " +
+                                "un boss non si abbatte ne' si spegne alla registrazione " +
+                                "(id tolto dalla memoria, la morte del boss resta alla scena)");
+                }
+                else
+                {
+                    MarkSpawnPointConsumed(id);
+                    DestroyDeadEnemy(enemy);
+                }
             }
         }
 
