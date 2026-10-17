@@ -907,6 +907,35 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly Dictionary<string, Vector2> _remoteTargets = new Dictionary<string, Vector2>();
 
         /// <summary>
+        /// ⭐⭐ PUNTO 0 — IN CHE VISITA DELLA SCENA E' STATA SCRITTA OGNI VOCE DI `_remoteTargets` (id -> visita).
+        ///
+        /// PERCHE' SERVE. `_remoteTargets` non viene svuotata a `LevelLoaded`, di proposito (:2326-2331), quindi
+        /// una voce puo' venire da una visita PRECEDENTE della stessa stanza: e' l'ultima posizione che il
+        /// vecchio padrone aveva trasmesso, spesso quella in cui il boss si trovava quando la scena e' stata
+        /// scaricata. Al rientro il gioco ricrea il boss NUOVO e al suo spawn, e `InterpolateRemoteEnemies` lo
+        /// trapianta su quella voce. Misurato: `G1:L2826` `(-805.9,22.1)` (spawn) -> `G1:L2827`
+        /// `(-822.0,9.0)`, UNA RIGA DOPO. E `-822.0` e' 6,3 unita' PRIMA del volume della cerimonia: il corpo
+        /// del boss (solido, perche' e' lui il padrone) sbarra il corridoio, il giocatore non arriva al
+        /// trigger, la cerimonia non parte, nessuno chiama `IntroJump` e il boss resta `Idle` per la visita.
+        ///
+        /// CON QUESTA DATA UNA VOCE SI PUO' DISTINGUERE: `_remoteTargetsVisit[id] == _sceneVisit` significa
+        /// "il padrone la sta trasmettendo ADESSO", ed e' la verita' - una fight in corso si insegue come
+        /// sempre. Un numero piu' basso significa "questa posizione viene da un'altra visita": per un BOSS non
+        /// e' una verita' da applicare (la sua posizione la decide il gioco/la scena), per un nemico normale
+        /// resta la verita' di sempre - e i nemici normali NON cambiano comportamento.
+        /// </summary>
+        private static readonly Dictionary<string, int> _remoteTargetsVisit = new Dictionary<string, int>();
+
+        /// <summary>Quante scene sono state caricate in questa sessione: la "visita" corrente della stanza.</summary>
+        private static int _sceneVisit;
+
+        /// <summary>
+        /// Id dei boss per cui il marker `[Insegue]` ha gia' detto che l'inseguimento e' stato saltato:
+        /// la guardia gira A OGNI FRAME, e una riga per frame sarebbe 60 righe al secondo. Una per visita.
+        /// </summary>
+        private static readonly HashSet<string> _bossFollowSkipLogged = new HashSet<string>();
+
+        /// <summary>
         /// Deaths announced while this machine was in another scene, or before the enemy existed here.
         ///
         /// Applied at registration time instead: the enemy may spawn moments later (or after a scene
@@ -2342,6 +2371,12 @@ namespace Blasphemous.Multiplayer.Client
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
             _bossDeathsApplied.Clear();  // A: ditto - the death of the next scene's boss must be playable again
+            // PUNTO 0: una VISITA nuova. Non si svuota `_remoteTargets` (di proposito, :2326-2331), ma le sue
+            // voci invecchiano: `_remoteTargetsVisit` dice quali sono state rinfrescate in QUESTA visita, e
+            // per un boss una voce vecchia non si applica (vedi `SkipBossFollow`). Una visita nuova deve
+            // anche poter riparlare: il marker `[Insegue]` e' deduplicato per id.
+            _sceneVisit++;
+            _bossFollowSkipLogged.Clear();
             _hiddenBossCorpses.Clear();  // C: ditto - the instances just unloaded must not be remembered
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _puppetEnemies.Clear();      // the instances of the scene being unloaded
@@ -4121,6 +4156,10 @@ namespace Blasphemous.Multiplayer.Client
                 Vector2 flat = new Vector2(current.x, current.y);
                 float distance = Vector2.Distance(flat, target);
 
+                // ⭐⭐ PUNTO 0 — UN BOSS NON SI INSEGUE (se la posizione che arriva non e' di adesso).
+                if (SkipBossFollow(entry.Key, enemy, flat, target, distance))
+                    continue;
+
                 Vector2 next;
                 if (distance > FOLLOW_SNAP_DISTANCE)
                     next = target; // a real jump (spawn, knockback): do not smear it out
@@ -4128,6 +4167,68 @@ namespace Blasphemous.Multiplayer.Client
                     next = Vector2.Lerp(flat, target, FOLLOW_LERP);
 
                 PlaceEnemy(enemy, new Vector3(next.x, next.y, current.z));
+            }
+        }
+
+        /// <summary>
+        /// ⭐⭐ PUNTO 0 — LA GUARDIA DEL TRAPIANTO: il boss non viene spostato dall'inseguimento.
+        ///
+        /// VERO quando questo enemy e' un BOSS e la voce di `_remoteTargets` che stiamo per applicargli NON e'
+        /// stata rinfrescata in QUESTA visita: significa che viene da una visita precedente della stanza, cioe'
+        /// da una simulazione che non esiste piu', e non e' una posizione da applicare.
+        ///
+        /// LA VIA, ed e' questa - NON `AdoptLastKnownPosition`. Il padre lo aveva messo in guardia ed e'
+        /// misurato: `3239407` dichiara "il boss non viene mai riagganciato a una posizione remota"
+        /// (`:4254-4262`), ma i log sono di `934820d`, che CONTIENE `3239407`, e il boss era a `-822.0` lo
+        /// stesso. La riga che lo sposta e' `PlaceEnemy` chiamata da QUI, a ogni frame, con lo SNAP oltre
+        /// `FOLLOW_SNAP_DISTANCE = 6f` (`:1088`, `:4125-4126`): 16,3 unita' fra spawn e voce ⇒ SNAP secco.
+        /// E' la stessa riga che dice "posizione remota NON adottata" (`G1:L2834`) mentre il salto e' gia'
+        /// avvenuto.
+        ///
+        /// ⚠️ E UN BOSS IN FIGHT CONTINUA A ESSERE INSEGUITO, che e' la ragione per cui la guardia e' sulla
+        /// FRESCHEZZA e non sul tipo: quando e' l'altra macchina a simularlo la posizione arriva a ogni tick,
+        /// la voce e' di questa visita ⇒ si insegue come sempre, e la fight resta visibile al pupazzo. Senza
+        /// questa distinzione ("nessun boss, mai") il boss resterebbe fermo al suo spawn sull'altra macchina
+        /// mentre il padrone lo combatte altrove: sarebbe un difetto nuovo, non un fix.
+        ///
+        /// ⚠️ E NON TOCCA NIENTE DEL BOSS: nessuna vita, nessun flag, nessuna morte, nessuna API del gioco,
+        /// nessuna FSM. Salta UNA scrittura di posizione: il boss resta dove la scena l'ha messo - il suo
+        /// spawn, che e' 10,4 unita' OLTRE il volume della cerimonia ⇒ il corridoio e' libero, il giocatore
+        /// arriva al trigger, la cerimonia parte da sola e il gioco fa il resto (intro, `IntroJump`,
+        /// `AVAILABLE_FOR_ACTION`, AI, barra). Per i NEMICI NORMALI il metodo risponde `false` subito e la
+        /// funzione insegue esattamente come prima.
+        /// </summary>
+        private static bool SkipBossFollow(string id, Enemy enemy, Vector2 flat, Vector2 target, float distance)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(id) || !IsBoss(enemy, id))
+                    return false;
+
+                int writtenInVisit;
+                if (!_remoteTargetsVisit.TryGetValue(id, out writtenInVisit))
+                    writtenInVisit = 0;
+
+                if (writtenInVisit >= _sceneVisit)
+                    return false;   // il padrone la sta trasmettendo ADESSO: e' la verita', si insegue
+
+                // ⭐ IL MARKER NUOVO: una riga per boss e per visita, cosi' il test lo dimostra.
+                if (_bossFollowSkipLogged.Add(id))
+                {
+                    ModLog.Info($"[Insegue] {FullId(id)} boss: inseguimento SALTATO - la posizione remota e' " +
+                                $"della visita {writtenInVisit} e siamo alla {_sceneVisit} (non e' una " +
+                                $"simulazione in corso: la posizione del boss la decide la scena) · " +
+                                $"boss=({flat.x:F1},{flat.y:F1}) target=({target.x:F1},{target.y:F1}) " +
+                                $"dist={distance:F1} · il boss resta dove la scena l'ha messo");
+                }
+
+                return true;
+            }
+            catch (Exception)
+            {
+                // Se il test "e' un boss" fallisse non si deve fermare l'inseguimento di un nemico normale:
+                // si prosegue e si insegue, che e' il comportamento di sempre.
+                return false;
             }
         }
 
@@ -5503,7 +5604,13 @@ namespace Blasphemous.Multiplayer.Client
             // Record the snapshot as a TARGET. The position is applied smoothly in Update, once per frame,
             // instead of being snapped here 20 times a second.
             if (FindIdOfHandle(handle, out string targetId))
+            {
                 _remoteTargets[targetId] = position;
+                // PUNTO 0: la voce dice anche QUANDO e' stata scritta. Una voce di questa visita e' il
+                // risultato di una simulazione in corso; una voce piu' vecchia e' solo un residuo, e per un
+                // boss non e' una posizione da applicare (`SkipBossFollow`).
+                _remoteTargetsVisit[targetId] = _sceneVisit;
+            }
 
             // Death is treated as a CONSEQUENCE OF HEALTH, not only as its own packet. The death packet
             // proved unreliable in game - the peer kept showing a frozen enemy with full life because the
