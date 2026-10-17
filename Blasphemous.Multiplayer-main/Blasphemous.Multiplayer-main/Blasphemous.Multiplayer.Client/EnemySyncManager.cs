@@ -679,9 +679,19 @@ namespace Blasphemous.Multiplayer.Client
         ///           e la zona e' il prefisso `D##[lettera]Z##` del nome della stanza.
         ///   ⇒ si spegne se UNA delle due e' vera.
         ///
-        /// ⚠️ E NON DEVE MAI SPEGNERE UN BOSS VIVO: prima del `SetActive(false)` c'e' la guardia
+        /// ⚠️ E NON DEVE MAI SPEGNERE UN BOSS VIVO *QUANDO IL FLAG E' SPENTO*: e' la guardia
         /// `BossLooksAlive`, e chi la passa NON viene toccato (e lo si scrive nel log). Un boss che sta
         /// combattendo, infatti, ha sempre il flag spento: il flag e' la conseguenza della morte.
+        ///
+        /// ⭐ FIX ② — E IL VETO NON VALE QUANDO IL FLAG E' ACCESO. La guardia contraddiceva il predicato
+        /// del metodo, e il caso e' misurato: `G1:6719`
+        /// `[BossCorpse] … NON nascosto (ingresso in scena): il boss sembra VIVO (statusDead=False
+        /// flag=D17Z01_BOSSDEAD vita=400) e un boss vivo non si tocca` — cioe' il flag della stanza ACCESO,
+        /// la vita PIENA, e il boss lasciato in piedi in mezzo all'arena. Il flag e' progresso del GIOCO, non
+        /// un'opinione della mod: se e' acceso, quell'oggetto non e' la fight, e' un residuo che la stanza ha
+        /// rimesso per la prima passata di spawn (la FSM legge il flag, ma non sempre prima di questo punto).
+        /// Quindi: con il flag acceso si spegne comunque; con il flag spento la guardia resta intatta e un
+        /// boss vivo non viene sfiorato. Nessuna delle due strade tocca la morte, la vita o il progresso.
         ///
         /// ⛔ MAI `Destroy`: la lezione di `DestroyDeadEnemy` (`:5022-5026`) - l'oggetto della scena non si
         /// distrugge, si spegne. `SetActive(false)` su un oggetto gia' spento e' idempotente.
@@ -714,20 +724,33 @@ namespace Blasphemous.Multiplayer.Client
                     bool statusDead = enemy.Status != null && enemy.Status.Dead;
                     string flag = FirstBossDeadFlagOn(scene);
 
-                    if (!statusDead && flag == null)
-                        continue; // boss normale di una stanza normale: non si tocca niente
-
                     string enemyId = BuildFreeEnemyId(scene, enemy);
                     string tipo = enemy.GetType().Name;
 
-                    // ⚠️ LA GUARDIA DEL MANDATO: un boss VIVO non si nasconde, qualunque cosa dica il flag.
-                    if (BossLooksAlive(enemy))
+                    // ⭐ FIX ② — LA GUARDIA, RIDOTTA AL SUO VERO PERIMETRO.
+                    //
+                    // Il veto vale quando il flag e' SPENTO, ed e' li' che serve: senza flag l'unica prova
+                    // che quel boss sia un residuo e' `Status.Dead`, e un boss vivo non si tocca.
+                    // Con il flag ACCESO il veto non ha piu' niente da difendere: il progresso del gioco
+                    // dice che quella fight e' finita, e l'oggetto che la stanza ha rimesso e' un residuo.
+                    // (Misurato: `G1:6719`, flag `D17Z01_BOSSDEAD` acceso, vita=400, boss lasciato in piedi.)
+                    //
+                    // E' QUI, e non dopo il test "boss normale di una stanza normale", perche' cosi' il veto
+                    // e' VERIFICABILE: prima un boss vivo con il flag spento usciva in silenzio dalla riga
+                    // sotto, e l'unica riga `NON nascosto` del corpus (`G1:6719`) era quella del caso
+                    // ROVESCIO - flag acceso, veto che contraddiceva il flag. Ora la riga dice entrambe le
+                    // cose: "flag spento => intoccato" e "flag acceso => scavalcato".
+                    bool vivoScavalcato = BossLooksAlive(enemy);
+                    if (vivoScavalcato && flag == null)
                     {
                         ModLog.Info($"[BossCorpse] {enemyId} NON nascosto ({where}): il boss sembra VIVO " +
                                     $"(statusDead=False flag={(flag ?? "nessuno")} vita={enemy.CurrentLife:F0}) " +
                                     "e un boss vivo non si tocca");
                         continue;
                     }
+
+                    if (!statusDead && flag == null)
+                        continue; // boss normale di una stanza normale: non si tocca niente
 
                     _hiddenBossCorpses.Add(enemy);
                     bool eraAttivo = enemy.gameObject.activeSelf;
@@ -736,7 +759,10 @@ namespace Blasphemous.Multiplayer.Client
                     ModLog.Info($"[BossCorpse] {enemyId} nascosto ({where}): il boss di questa stanza era " +
                                 $"gia' stato ucciso - statusDead={statusDead} flag={flag ?? "nessuno"} " +
                                 $"tipo={tipo} attivoPrima={(eraAttivo ? "si" : "no: era gia' spento")} " +
-                                "(SetActive(false), nessun Destroy)");
+                                "(SetActive(false), nessun Destroy)" +
+                                (vivoScavalcato
+                                    ? $" · veto SCAVALCATO: il flag e' acceso, il boss sembrava vivo (vita={enemy.CurrentLife:F0})"
+                                    : string.Empty));
                 }
             }
             catch (Exception e)
@@ -1018,6 +1044,42 @@ namespace Blasphemous.Multiplayer.Client
         /// about the live object, and it must not survive the object being replaced.
         /// </summary>
         private static readonly Dictionary<int, float> _frozenGravityScale = new Dictionary<int, float>();
+
+        /// <summary>
+        /// Lo stato dei collisori d'OSTACOLO di un boss, fotografato nel momento in cui questa macchina lo
+        /// riduce a pupazzo, cosi' da ridarglielo esattamente com'era.
+        ///
+        /// PERCHE' UNA FOTOGRAFIA E NON UN "RIACCENDI". `SmartPlatformCollider.enabled` e
+        /// `EnableCollision2D` NON sono sempre accesi: il gioco stesso li spegne e li riaccende intorno ai
+        /// teletrasporti di Crisanta (`Assembly-CSharp.cs:51574-51578`, `:52146-52150`, `:52190-52194`) e
+        /// altri boss li pilotano a mano. La barriera (`blockCollider`) e' ancora piu' esplicita: e' un
+        /// oggetto che le CLIP accendono e spengono (`AnimEvent_ActivateBarrier`,
+        /// `AnimEvent_DeactivateBarrier`, `:55595-55603`). Riaccendere "per default" al risveglio
+        /// rimetterebbe una barriera che l'animazione aveva spento: si restituisce il valore letto, non
+        /// un'ipotesi. Stessa ragione di `_frozenGravityScale`.
+        ///
+        /// Chiave: instance id, come `_frozenGravityScale` - e' un fatto sull'oggetto vivo, e non deve
+        /// sopravvivergli.
+        /// </summary>
+        private struct FrozenCollision
+        {
+            /// <summary>Il corpo fisico del boss (`Enemy.Controller.SmartPlatformCollider`), se c'e'.</summary>
+            public SmartPlatformCollider Smart;
+
+            /// <summary>I due valori che il gioco legge e scrive: `enabled` e `EnableCollision2D`.</summary>
+            public bool SmartEnabled;
+            public bool SmartCollision2D;
+
+            /// <summary>La barriera d'ostacolo figlia del boss (`ElderBrotherAnimatorInyector.blockCollider`).</summary>
+            public GameObject Barrier;
+
+            /// <summary>Se la barriera era ACCESA quando il boss e' diventato pupazzo.</summary>
+            public bool BarrierActive;
+        }
+
+        /// <summary>I collisori d'ostacolo tolti a ogni boss pupazzo, per poterli restituire al risveglio.</summary>
+        private static readonly Dictionary<int, FrozenCollision> _frozenCollision =
+            new Dictionary<int, FrozenCollision>();
 
         /// <summary>Fraction of the remaining gap closed per frame while following a remote snapshot.</summary>
         private const float FOLLOW_LERP = 0.25f;
@@ -1716,6 +1778,14 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void FreezePhysics(Enemy enemy)
         {
+            // ⭐ FIX ① — PRIMA di ogni altra cosa: un pupazzo non deve essere SOLIDO.
+            //
+            // È qui e non altrove perché è qui che la mod spegne la fisica del pupazzo: `controller.enabled
+            // = false` ferma il corpo, `GravityScale = 0` toglie la gravità, ma NESSUNO dei due tocca i
+            // collisori. Il risultato misurato era un boss fermo e indistruttibile di fatto, in piedi in
+            // mezzo all'arena, che blocca il passaggio (e quindi il trigger della bossroom).
+            FreezeCollision(enemy);
+
             var controller = enemy.Controller;
             if (controller == null)
                 return;
@@ -1736,6 +1806,132 @@ namespace Blasphemous.Multiplayer.Client
             physics.HSpeed = 0f;
             physics.VSpeed = 0f;
             physics.GravityScale = 0f;
+        }
+
+        /// <summary>
+        /// ⭐ FIX ① — TOGLIE AL BOSS PUPAZZO I COLLISORI CHE BLOCCANO, e nient'altro.
+        ///
+        /// IL DIFETTO. `FreezePhysics` spegne il `PlatformCharacterController` e la gravità ma lascia
+        /// accesi i collisori: un boss che questa macchina non simula resta FERMO E SOLIDO. Se lo sprite
+        /// finisce davanti a un trigger, il trigger non si raggiunge. E' l'unico oggetto della scena che
+        /// nessuno puo' ne' combattere (la sua AI e' spenta qui) ne' togliere (il veto di C lo protegge).
+        ///
+        /// LE DUE LEVE SONO QUELLE DEL GIOCO, verificate in IL, non inventate:
+        ///   · `SmartPlatformCollider.enabled = false` + `EnableCollision2D = false` — il corpo fisico del
+        ///     boss (`ElderBrother.Collider`, `Assembly-CSharp.cs:55494`/`:55510`). Il gioco usa ESATTAMENTE
+        ///     queste due righe, sugli stessi campi, per rendere non solida Crisanta
+        ///     (`:51574-51575` e `:52146-52147`, con riaccensione simmetrica `:51577-51578` / `:52149-52150`).
+        ///   · `blockCollider.SetActive(false)` — la barriera d'ostacolo figlia del boss, che le clip accendono
+        ///     e spengono (`AnimEvent_DeactivateBarrier`, `:55600-55603`): spegnerla e' cio' che il gioco fa
+        ///     gia' da solo nella sua stessa sequenza.
+        ///
+        /// COSA NON FA, ed e' la ragione per cui e' lecita: nessuna scrittura su `Status`, `Stats.Life`,
+        /// flag di progresso, `Kill()`, `Damage()`, `Behaviour.Death()`, cutscene, `BossFightManager`. Il
+        /// boss resta VIVO, con la sua vita, la sua barra e il suo danno: semplicemente non fa piu' da muro.
+        ///
+        /// SOLO I BOSS (`IsBossByNamespace`, lo stesso test usato altrove in questo file). Un nemico
+        /// normale non viene toccato: il difetto misurato e' del boss, e non c'e' ragione di allargare il
+        /// cambiamento a 60 classi di nemici che nessuno ha misurato.
+        ///
+        /// ⚠️ LA PARTE "Applica comunque" NON E' UNA RIPETIZIONE. Questo metodo gira da `PauseEnemy`, che il
+        /// ciclo di invio e il ramo dei pacchetti chiamano di continuo, quindi la fotografia si fa UNA volta
+        /// sola (chiave instance id) - ma lo spegnimento si RIAPPLICA a ogni chiamata, perche' l'Animator del
+        /// pupazzo continua a girare (e' scritto sopra: `PauseBehaviour` non ferma l'Animator) e una clip
+        /// puo' riaccendere la barriera con `AnimEvent_ActivateBarrier`. `SetActive(false)` su un oggetto
+        /// gia' spento e' idempotente e non costa niente.
+        /// </summary>
+        private static void FreezeCollision(Enemy enemy)
+        {
+            try
+            {
+                if (enemy == null || enemy.gameObject == null)
+                    return;
+
+                if (!IsBossByNamespace(enemy))
+                    return;
+
+                int key = enemy.GetInstanceID();
+
+                FrozenCollision saved;
+                bool primaVolta = !_frozenCollision.TryGetValue(key, out saved);
+
+                if (primaVolta)
+                {
+                    saved = new FrozenCollision();
+
+                    // Il controller puo' mancare su un nemico non ancora inizializzato: non e' un motivo per
+                    // saltare la barriera, che vive altrove, quindi ogni lettura ha la sua guardia.
+                    SmartPlatformCollider smart = null;
+                    PlatformCharacterController controller = enemy.Controller;
+                    if (controller != null)
+                        smart = controller.SmartPlatformCollider;
+
+                    if (smart != null)
+                    {
+                        saved.Smart = smart;
+                        saved.SmartEnabled = smart.enabled;
+                        saved.SmartCollision2D = smart.EnableCollision2D;
+                    }
+
+                    GameObject barrier = BossBarrierOf(enemy);
+                    if (barrier != null)
+                    {
+                        saved.Barrier = barrier;
+                        saved.BarrierActive = barrier.activeSelf;
+                    }
+
+                    _frozenCollision[key] = saved;
+                }
+
+                if (saved.Smart != null)
+                {
+                    saved.Smart.enabled = false;
+                    saved.Smart.EnableCollision2D = false;
+                }
+
+                if (saved.Barrier != null && saved.Barrier.activeSelf)
+                    saved.Barrier.SetActive(false);
+
+                if (primaVolta)
+                {
+                    ModLog.Info($"[BossSolido] {IdOf(enemy)} boss pupazzo: collisori d'OSTACOLO spenti " +
+                                $"(corpo={(saved.Smart == null ? "n/d" : "spento")} " +
+                                $"eraCorpo=enabled:{saved.SmartEnabled}/EnableCollision2D:{saved.SmartCollision2D} " +
+                                $"barriera={(saved.Barrier == null ? "n/d" : (saved.BarrierActive ? "spenta" : "era gia' spenta"))} " +
+                                $"vita={enemy.CurrentLife:F0}) - resta VIVO e con il suo danno: non e' piu' un muro");
+                }
+            }
+            catch (Exception e)
+            {
+                // Un'eccezione qui fermerebbe PauseEnemy, cioe' la sospensione del pupazzo: si scrive e si
+                // prosegue, e il boss resta solido com'era prima del fix (nessun danno nuovo).
+                ModLog.Error($"[BossSolido] spegnimento dei collisori d'ostacolo fallito: " +
+                             $"{e.GetType().Name} - {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// La barriera d'ostacolo del boss, se quel tipo ne ha una.
+        ///
+        /// In tutta `Assembly-CSharp` esiste UN solo campo `blockCollider` (`:55593`), ed e' di
+        /// `ElderBrotherAnimatorInyector`: la barriera del Fratello Maggiore, accesa e spenta dalle clip
+        /// (`:55595-55603`). Non si passa dalla riflessione perche' il tipo e' verificato e il compilatore
+        /// puo' controllarlo: `ElderBrother.AnimatorInyector` e' pubblico (`:55498`, assegnato in `OnAwake`
+        /// `:55513`) e `blockCollider` e' un campo pubblico `:55593`.
+        ///
+        /// Per tutti gli altri boss non c'e' niente da restituire: il loro muro e' il corpo, e lo copre
+        /// `SmartPlatformCollider`. Se un domani un altro boss avesse un campo con quel nome, va aggiunto qui
+        /// con la sua firma verificata - non indovinato con la riflessione.
+        /// </summary>
+        private static GameObject BossBarrierOf(Enemy enemy)
+        {
+            Gameplay.GameControllers.Bosses.ElderBrother.ElderBrother elder =
+                enemy as Gameplay.GameControllers.Bosses.ElderBrother.ElderBrother;
+
+            if (elder == null || elder.AnimatorInyector == null)
+                return null;
+
+            return elder.AnimatorInyector.blockCollider;
         }
 
         /// <summary>
@@ -1971,6 +2167,11 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void ThawPhysics(Enemy enemy)
         {
+            // ⭐ FIX ① (il rovescio, simmetrico): il boss che questa macchina torna a simulare deve essere
+            // solido ESATTAMENTE come lo aveva lasciato. Prima della fisica, perche' e' la stessa coppia di
+            // FreezePhysics e perche' la barriera non dipende dal controller.
+            ThawCollision(enemy);
+
             var controller = enemy.Controller;
             if (controller == null)
                 return;
@@ -1986,6 +2187,52 @@ namespace Blasphemous.Multiplayer.Client
             }
 
             controller.enabled = true;
+        }
+
+        /// <summary>
+        /// ⭐ FIX ① — IL ROVESCIO DI `FreezeCollision`: restituisce al boss i collisori d'ostacolo che gli
+        /// erano stati tolti, con i valori LETTI allora (vedi `FrozenCollision`), non con un "riaccendi".
+        ///
+        /// Si restituisce solo se c'e' una fotografia: se il boss non e' mai diventato pupazzo qui, o se il
+        /// risveglio arriva due volte, questo metodo non tocca niente. E se l'oggetto e' stato distrutto nel
+        /// frattempo, Unity lo confronta come null e la scrittura viene saltata invece di lanciare.
+        /// </summary>
+        private static void ThawCollision(Enemy enemy)
+        {
+            try
+            {
+                if (enemy == null || enemy.gameObject == null)
+                    return;
+
+                int key = enemy.GetInstanceID();
+
+                FrozenCollision saved;
+                if (!_frozenCollision.TryGetValue(key, out saved))
+                    return;
+
+                _frozenCollision.Remove(key);
+
+                if (saved.Smart != null)
+                {
+                    saved.Smart.enabled = saved.SmartEnabled;
+                    saved.Smart.EnableCollision2D = saved.SmartCollision2D;
+                }
+
+                // Se la barriera era gia' spenta quando il boss e' diventato pupazzo, resta spenta: e' un
+                // oggetto che appartiene alle clip, e riaccenderlo sarebbe una decisione presa al posto loro.
+                if (saved.Barrier != null && saved.BarrierActive)
+                    saved.Barrier.SetActive(true);
+
+                ModLog.Info($"[BossSolido] {IdOf(enemy)} boss di nuovo solido " +
+                            $"(corpo={(saved.Smart == null ? "n/d" : "ripristinato")} " +
+                            $"enabled:{saved.SmartEnabled}/EnableCollision2D:{saved.SmartCollision2D} " +
+                            $"barriera={(saved.Barrier == null ? "n/d" : (saved.BarrierActive ? "riaccesa" : "lasciata spenta"))})");
+            }
+            catch (Exception e)
+            {
+                ModLog.Error($"[BossSolido] ripristino dei collisori d'ostacolo fallito: " +
+                             $"{e.GetType().Name} - {e.Message}");
+            }
         }
 
         /// <summary>
@@ -2091,6 +2338,7 @@ namespace Blasphemous.Multiplayer.Client
             _deadReleaseLogged.Clear();  // ditto: keyed by id, and ids do not survive a scene change
             _bossOwnLogged.Clear();      // ditto: [BossProp] e' per id, e l'id di un boss non sopravvive
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
+            _frozenCollision.Clear();    // FIX ①: ditto - la fotografia dei collisori muore con l'oggetto
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
             _bossDeathsApplied.Clear();  // A: ditto - the death of the next scene's boss must be playable again
