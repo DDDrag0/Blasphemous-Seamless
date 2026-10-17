@@ -4457,7 +4457,48 @@ namespace Blasphemous.Multiplayer.Client
             // comportamento normale del gioco.
             if (PlayerDeathSync.IsLocalPlayerDead() && state.OwnedByLocal)
             {
-                if (!OtherPlayerInMyScene())
+                // ⭐⭐⭐ F2 — LA GUARDIA DEL RILASCIO E' LA STESSA GUARDIA DELLA RIPRESA.
+                //
+                // QUESTA RIGA ERA `if (!OtherPlayerInMyScene())`, e con un BOSS era la meta' sbagliata di
+                // una contraddizione fra due predicati che il codice ha gia' e che dicono due cose diverse:
+                //   · `OtherPlayerInMyScene()`       = "qualcuno e' QUI"            (:3309-3325)
+                //   · `OtherPlayerHereAndAlive()`    = "qualcuno e' QUI **E VIVO**" (:3346-3374)
+                // ⇒ il secondo e' un SOTTOINSIEME del primo, e finche' il rilascio usava il primo e la
+                // ripresa (`bossRecovery`, :4516) usava il secondo, con ENTRAMBI i giocatori a TERRA nella
+                // stessa stanza i due rispondevano "si" e "no" NELLO STESSO TICK: riga 4458 ⇒ rilascio
+                // (`morto, lo RILascio`), riga 4516 ⇒ ripresa (`recupero`), e al tick dopo da capo.
+                //
+                // MISURATO (scratch\TRIANGOLAZIONE-SKIP.md §(e) F2, sessione `N_G2`): **82** righe
+                // `morto, lo RILascio` (1 nella run vecchia), **121/119** accensioni/spegnimenti della tree
+                // del boss, `[BossProp] motivo=recupero` 1, e **nessuna** rete che lo rilevi
+                // (`STATO INCOERENTE` = 0): il boss sfarfalla, la sua AI si spegne e si riaccende.
+                //
+                // LA REGOLA, ed e' l'unica cosa che questa riga deve fare: **non si puo' RILASCIARE cio' che
+                // nessuno puo' SIMULARE.** Un giocatore a TERRA non e' un simulatore: la sua copia del boss
+                // BUTTA VIA ogni colpo, perche' il punto d'ingresso del danno del gioco e' guardato dalla
+                // vita del giocatore LOCALE (`if (Status.Dead || ...Life.Current <= 0f) return;`, la guardia
+                // citata per esteso nel ramo qui sopra). Quindi "l'altro e' qui" NON basta per cedergli un
+                // boss: serve che sia qui E VIVO. ⇒ il rilascio usa `OtherPlayerHereAndAlive()`, cioe' **lo
+                // stesso predicato della ripresa**: se i due predicati sono lo stesso, i due rami non
+                // possono piu' contraddirsi, e il ping-pong muore per COSTRUZIONE, non per un timer.
+                //
+                // ⚠️ E NON E' UN RILASCIO BLOCCATO: la valvola di sicurezza resta intatta ed e' l'altra
+                // meta' del fix. Se l'altro e' qui VIVO, il rilascio avviene come prima (il caso "muoio
+                // accanto al boss e il sopravvissuto deve poterlo uccidere" e' esattamente questo); se
+                // l'altro e' qui ma a TERRA, il boss resta al suo padrone e, quando uno dei due si rialza,
+                // il ramo qui sopra torna a rilasciarlo. E la via di ripresa (`bossRecovery`) NON e'
+                // toccata: se il padrone e' l'ALTRO e nessuno e' qui vivo, l'host riprende il boss come
+                // prima, quindi un boss lasciato a un morto non resta mai a un morto.
+                //
+                // ⚠️ NON SI ALLARGA AI NEMICI NORMALI, DI PROPOSITO. Per un nemico qualunque la
+                // contraddizione non esiste - `bossRecovery` richiede `boss` (:4516) e il ramo di cessione
+                // per prossimita' e' chiuso ai boss (:4540) - quindi li' il rilascio resta legato a
+                // `OtherPlayerInMyScene()` e il loro comportamento e' **identico a prima**. Il difetto
+                // misurato e' del boss; cambiare 20 nemici per aggiustarne 1 sarebbe il fix piu' grande
+                // del difetto.
+                bool receiverCanSimulate = boss ? OtherPlayerHereAndAlive() : OtherPlayerInMyScene();
+
+                if (!receiverCanSimulate)
                 {
                     // ⚠️ MARKER OBBLIGATORIO, ED E' IL PUNTO DELLA VOCE 5: senza questa riga "l'orfano e'
                     // risolto" e "il nemico non gira piu'" restano INDISTINGUIBILI. Dice la decisione presa e
