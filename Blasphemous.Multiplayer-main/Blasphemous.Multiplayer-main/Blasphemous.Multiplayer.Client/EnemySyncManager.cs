@@ -337,6 +337,55 @@ namespace Blasphemous.Multiplayer.Client
         private static readonly HashSet<string> _bossKillsApplied = new HashSet<string>();
 
         /// <summary>
+        /// Boss ids la cui SEQUENZA DI MORTE (`Death()`) questa macchina ha gia' recitato. Secondo
+        /// lucchetto, indipendente dal primo: `_bossKillsApplied` dice "il `Kill()` e' passato", questo dice
+        /// "la morte e' stata recitata". Stessa vita del primo (azzerato in `LevelLoaded` e in
+        /// `OnDeathStateReset`), cosi' un boss della scena dopo e' di nuovo recitabile.
+        /// </summary>
+        private static readonly HashSet<string> _bossDeathsApplied = new HashSet<string>();
+
+        /// <summary>
+        /// ⭐⭐ A) LA WHITELIST DELLA MORTE RECITATA: gli UNICI tipi di `EnemyBehaviour` su cui questa mod
+        /// puo' invocare `Death()` dopo il `Kill()`.
+        ///
+        /// IL CRITERIO (mandato): `Death()` deve fare qualcosa SOLO dentro il boss. Vietato tutto cio' che
+        /// tocca il giocatore LOCALE (`Core.Logic.Penitent`, `DrivePlayer`), l'input (`Core.Input.SetBlocker`),
+        /// la camera (`CameraManager`) o il tempo. Quei boss restano AFK di proposito: meglio un AFK noto che
+        /// un effetto collaterale sul giocatore.
+        ///
+        /// VERIFICATI TUTTI E 17 I TIPI con un `Death()` pubblico in
+        /// `Gameplay.GameControllers.Bosses` (elenco completo, con la ragione di ogni esclusione, in
+        /// scratch\REFERTO-A-C-MORTE-BOSS.md). DENTRO (5): la loro `Death()` ferma solo roba propria
+        /// (coroutine, eventi, tree) e lancia il trigger `DEATH` sull'animator, che nella scena del gioco e'
+        /// quello che fa sparire il cadavere (`&lt;Boss&gt;DeathBehaviour.OnStateExit` -> `Destroy`).
+        /// FUORI (12), perche' la loro `Death()` (o cio' che chiama) fa almeno una delle cose vietate:
+        ///   Amanecidas      `Penitent.Status.Invulnerable = true`
+        ///   BurntFace       `Penitent.Status.Invulnerable = true` + `ProCamera2DShake`
+        ///   Crisanta        `Penitent.DrivePlayer.MoveToPosition` (ramo redux / non redux)
+        ///   Isidora         `Penitent.Status.Invulnerable` + `MasterShaderEffects` sul Penitent
+        ///   PontiffGiant    `Penitent.Status.Invulnerable = true`
+        ///   PontiffHusk     `Penitent.Status.Invulnerable` + `SetBlocker("END_BOSS_DEFEATED"/"HW_...")` +
+        ///                   scroll/camera di fine scontro
+        ///   PontiffOldman   `Penitent.Status.Invulnerable = true`
+        ///   PontiffSword    `Invoke("ActivatePlatform")`: tocca la GEOMETRIA della stanza
+        ///   Snake           `Penitent.Status.Invulnerable` + `SetBlocker("TPOReposition")` (Death_EnemyAction)
+        ///   TresAngustias   `Penitent.Status.Invulnerable` + `ProCamera2DShake` + `SetBlocker("CINEMATIC")`
+        ///   WickerWurm      `Penitent.Status.Invulnerable` + `Unattacable` (via `StartDeathSequence`)
+        ///   SingleAnguish   animator + FSM: nessuna cosa vietata, ma non e' un boss di scena: la sua morte
+        ///                   la guida `TresAngustiasMasterBehaviour` (fuori whitelist) e il suo `Kill()`
+        ///                   arriva da li'; invocarla da sola lascerebbe il trio in uno stato intermedio.
+        /// </summary>
+        private static readonly HashSet<string> BossDeathSequenceWhitelist =
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                "ElderBrotherBehaviour",   // StopAllCoroutines + StopMovement + StopBehaviour + SetTrigger("DEATH")
+                "LesmesBehaviour",         // idem: coroutine + eventi + StopBehaviour + SetTrigger("DEATH")
+                "QuirceBehaviour",         // idem + azzera il danno del proiettile in volo (roba sua)
+                "PerpetuaBehaviour",       // coroutine + summon della sua arena + SetTrigger("DEATH")
+                "EsdrasBehaviour"          // + `DismissPerpetua()` -> `PerpetuaBehaviour.Death()` (stessa famiglia)
+            };
+
+        /// <summary>
         /// Applica su QUESTA macchina la morte di un boss annunciata dall'altra (vedi `BossDeathPrefix`).
         ///
         /// LA STRADA E' `Kill()`, ED E' NATIVA:
@@ -449,24 +498,47 @@ namespace Blasphemous.Multiplayer.Client
                 // (`LaunchRandomAction`/`CanExecuteNewAction` non guardano la morte): il boss
                 // combatterebbe da morto. Meglio l'AFK noto che un boss che combatte da cadavere.
                 // ⇒ la strada giusta e' far eseguire alla macchina del morto la sequenza di morte DEL BOSS
-                // (la sua `Damage(Hit)`, o la sua `Death()`), non risvegliarne l'albero: referto
-                // scratch\REFERTO-FIX-AFK.md §3. Non scritta qui di proposito: per boss come lo Snake
-                // `Behaviour.Death()` tocca il `Penitent` LOCALE e accende `Core.Input.SetBlocker(
-                // "TPOReposition")` (SnakeBehaviour.cs:170-219), cioe' proprio le cose vietate.
+                // (la sua `Death()`), non risvegliarne l'albero: referto scratch\REFERTO-FIX-AFK.md §3.
+                // ⚠️ E NON PER TUTTI I BOSS: per lo Snake `Death()` tocca il `Penitent` LOCALE e accende
+                // `Core.Input.SetBlocker("TPOReposition")` (SnakeBehaviour.cs:170-219), cioe' proprio le cose
+                // vietate - e lo stesso vale per altri 11 tipi su 17 (tabella completa e ragioni:
+                // scratch\REFERTO-A-C-MORTE-BOSS.md). Per questo la `Death()` si invoca da una WHITELIST
+                // verificata tipo per tipo (`BossDeathSequenceWhitelist`, sotto), e per i tipi fuori
+                // whitelist non si invoca niente: li' resta l'AFK noto, e ci pensa il fix C.
                 //
                 // ⚠️ IL PUNTO DEL FIX, UNA RIGA. E' anche l'unica scrittura sul gioco di tutto M1, e cade
                 // su un boss che SULL'ALTRA macchina e' gia' morto: non si inventa niente.
                 boss.Kill();
 
+                // ⭐⭐ A) LA MORTE RECITATA — la sequenza DEL GIOCO, dopo il `Kill()`.
+                //
+                // `Kill()` porta `Status.Dead` a vero e fa partire la cutscene (`OnDeath` ->
+                // `BossFightManager.OnDeathBoss`), ma NON passa da `<Boss>Behaviour.Death()`: quella la
+                // chiama solo `<Boss>.Damage(Hit)`, cioe' il colpo letale, che qui non puo' arrivare (la
+                // guardia `Penitent.Stats.Life.Current <= 0` lo scarta). ⇒ senza questa chiamata la
+                // macchina del morto ha un boss con `Status.Dead=true` e NESSUNA animazione di morte: lo
+                // sprite resta acceso, immobile, e la tree ferma. E' l'AFK da correggere.
+                //
+                // L'ORDINE E' QUELLO NATIVO, non una scelta: il gioco rende `Status.Dead` prima
+                // (`DamageArea.TakeDamage`) e recita la morte dopo (`Behaviour.Death()`), che a sua volta
+                // ferma la tree (`StopBehaviour`, idempotente qui perche' e' gia' ferma) e lancia il
+                // trigger nativo (`AnimatorInyector.Death()` = `SetTrigger("DEATH")`).
+                // ⚠️ NON si chiama se `Kill()` non ha ucciso: recitare la morte di un vivo che poi sparisce
+                // sarebbe peggio dell'AFK.
+                bool died = boss.Status.Dead;
+                float lifeAfter = boss.CurrentLife;
+                string deathEsito = died
+                    ? ApplyBossDeathSequence(boss, id)
+                    : "non-invocata:kill-fallito";
+
                 // L'esito va scritto SEMPRE, altrimenti "l'annuncio non e' arrivato" e "e' arrivato e non
                 // ha fatto nulla" restano indistinguibili nel log - ed e' esattamente la differenza che
                 // questo test deve misurare.
-                bool died = boss.Status.Dead;
                 ModLog.Info($"[BossDeath RX] {FullId(id)} applicato (ero morto: si) via={via} " +
                             $"boss={isBoss} tipo={type} vitaPrima={lifeBefore:F0} " +
-                            $"vitaDopo={boss.CurrentLife:F0} StatusDead={died} " +
-                            $"Kill={(died ? "ok" : "nessun-effetto")} treePrima={treePrima} " +
-                            "treeToccata=no (vedi il commento sopra)");
+                            $"vitaDopo={lifeAfter:F0} StatusDead={died} " +
+                            $"Kill={(died ? "ok" : "nessun-effetto")} morte={deathEsito} " +
+                            $"treePrima={treePrima} treeToccata=no (vedi il commento sopra)");
 
                 if (!died)
                 {
@@ -500,6 +572,241 @@ namespace Blasphemous.Multiplayer.Client
                 // per sempre. E' il guasto da 2934 errori, e vale per QUALUNQUE cosa giri su questo canale.
                 ModLog.Error($"[BossDeath RX] {FullId(id)} eccezione in Kill(): {e.GetType().Name} - {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// A) Fa recitare al boss la SUA morte, come fa il gioco: `EnemyBehaviour.Death()` -> `StopBehaviour`
+        /// + `AnimatorInyector.Death()` (`SetTrigger("DEATH")`). Il tipo concreto cambia boss per boss, quindi
+        /// si passa dalla RIFLESSIONE: `GetComponents&lt;EnemyBehaviour&gt;()` +
+        /// `GetMethod("Death", Type.EmptyTypes)` + `Invoke`.
+        ///
+        /// PERCHE' LA RIFLESSIONE E NON UN CAST. `EnemyBehaviour` e' la base comune
+        /// (`Gameplay.GameControllers.Enemies.Framework.IA.EnemyBehaviour`) ma `Death()` NON e' dichiarata li':
+        /// e' un metodo pubblico di ogni sottoclasse, con lo stesso nome e nessun parametro (verificato in 17
+        /// classi di boss). Non esiste un'interfaccia comune da usare, e un `switch` sui 17 tipi sarebbe un
+        /// cast per riga, piu' fragile della reflection gia' usata altrove in questo file (`ReadTreeRunning`).
+        ///
+        /// ⚠️ SOLO WHITELIST (`BossDeathSequenceWhitelist`) E UNA VOLTA PER ID (`_bossDeathsApplied`). Per un
+        /// tipo fuori whitelist NON si invoca niente e si scrive il motivo nel log: la' resta l'AFK, che il
+        /// fix C rende invisibile al rientro.
+        ///
+        /// RITORNA una stringa per il log (`morte=`), perche' "invocata" e "saltata perche' vietata" devono
+        /// restare distinguibili senza dedurle.
+        /// </summary>
+        private static string ApplyBossDeathSequence(Enemy boss, string id)
+        {
+            try
+            {
+                if (!_bossDeathsApplied.Add(id))
+                    return "saltata:gia-recitata";
+
+                EnemyBehaviour[] behaviours = boss.GetComponents<EnemyBehaviour>();
+
+                // Ripiego per i boss il cui `EnemyBehaviour` vive su un figlio: e' il terzo gradino di
+                // `FindBehaviour`, che il resto del file usa gia' per la stessa ragione.
+                if (behaviours == null || behaviours.Length == 0)
+                {
+                    EnemyBehaviour found = FindBehaviour(boss);
+                    behaviours = found == null ? null : new[] { found };
+                }
+
+                if (behaviours == null || behaviours.Length == 0)
+                    return "nessuna-EnemyBehaviour";
+
+                string primo = null;
+
+                for (int i = 0; i < behaviours.Length; i++)
+                {
+                    EnemyBehaviour behaviour = behaviours[i];
+                    if (behaviour == null)
+                        continue;
+
+                    string typeName = behaviour.GetType().Name;
+                    if (string.IsNullOrEmpty(primo))
+                        primo = typeName;
+
+                    if (!BossDeathSequenceWhitelist.Contains(typeName))
+                        continue;
+
+                    MethodInfo death = behaviour.GetType().GetMethod("Death", Type.EmptyTypes);
+                    if (death == null)
+                        return "escluso:" + typeName + "-senza-Death";
+
+                    death.Invoke(behaviour, null);
+                    return "recitata:" + typeName;
+                }
+
+                return "escluso:" + (primo ?? "?") + "-non-in-whitelist";
+            }
+            catch (Exception e)
+            {
+                // Qualunque cosa esca da una `Death()` di un boss non deve uscire da qui: questo codice gira
+                // dentro `NetworkManager.ProcessQueue` (vedi il catch di `ApplyBossDeath`).
+                return "eccezione:" + e.GetType().Name;
+            }
+        }
+
+        // ============================================================================================
+        // C) IL CADAVERE DEL BOSS NON RESTA VISIBILE AL RIENTRO
+        // ============================================================================================
+
+        /// <summary>
+        /// I boss che questo fix ha SPENTO all'ingresso in scena. Serve a due cose, entrambe necessarie:
+        ///   - idempotenza: la seconda passata di spawn dello stesso caricamento non li ri-spegne e non
+        ///     riscrive il marker;
+        ///   - `RegisterEnemy` li SALTA: un boss che abbiamo riconosciuto come cadavere non deve entrare
+        ///     nella tabella di sincronizzazione (altrimenti la mod gli riaccenderebbe la tree e si
+        ///     ritroverebbe un boss invisibile che combatte).
+        /// Azzerato in `LevelLoaded` (gli oggetti non sopravvivono al cambio scena).
+        /// </summary>
+        private static readonly HashSet<Enemy> _hiddenBossCorpses = new HashSet<Enemy>();
+
+        /// <summary>
+        /// C) ALL'INGRESSO IN UNA BOSSROOM: se il boss di questa stanza e' GIA' STATO UCCISO, spegnerlo.
+        ///
+        /// IL SINTOMO CHE CHIUDE. Dopo la morte del boss, la stanza lo rigenera quando ci si rientra, e la
+        /// scena lo lascia li': il "cadavere" resta VISIBILE in mezzo all'arena, su entrambe le macchine,
+        /// perche' la mod non lo simula piu' (esce da `_enemies`) e la FSM della stanza, che decide della
+        /// bossroom, vive dentro l'asset di scena e non e' verificabile dal repo.
+        ///
+        /// IL PREDICATO (il mandato: "il boss e' morto E/O il flag `&lt;scena&gt;_BOSSDEAD` e' acceso"):
+        ///   morto = `Status.Dead` (la stessa nozione usata ovunque in questo file: "la sequenza di morte e'
+        ///           partita", non "la vita e' zero");
+        ///   flag  = `Core.Events.GetFlag(&lt;candidato&gt;)` per i due nomi che il gioco usa davvero per una
+        ///           stanza: `&lt;scena&gt;_BOSSDEAD` (es. `D01Z06S01_BOSSDEAD`) e `&lt;zona&gt;_BOSSDEAD` (es.
+        ///           `D17Z01_BOSSDEAD` per la stanza `D17Z01S11`). Sono le forme presenti in
+        ///           `Data\FlagStates.cs`, righe 37-48: la tabella del mod e' la prova che esistono entrambe,
+        ///           e la zona e' il prefisso `D##[lettera]Z##` del nome della stanza.
+        ///   ⇒ si spegne se UNA delle due e' vera.
+        ///
+        /// ⚠️ E NON DEVE MAI SPEGNERE UN BOSS VIVO: prima del `SetActive(false)` c'e' la guardia
+        /// `BossLooksAlive`, e chi la passa NON viene toccato (e lo si scrive nel log). Un boss che sta
+        /// combattendo, infatti, ha sempre il flag spento: il flag e' la conseguenza della morte.
+        ///
+        /// ⛔ MAI `Destroy`: la lezione di `DestroyDeadEnemy` (`:5022-5026`) - l'oggetto della scena non si
+        /// distrugge, si spegne. `SetActive(false)` su un oggetto gia' spento e' idempotente.
+        ///
+        /// DOVE SI CHIAMA: in `OnEnemiesSpawned`, cioe' all'ingresso (una volta per caricamento, non per
+        /// frame), su ENTRAMBE le macchine perche' quel metodo gira su entrambe.
+        /// </summary>
+        private static void HideDefeatedBosses(string scene, string where)
+        {
+            try
+            {
+                Enemy[] enemies = FindAllEnemiesIncludingInactive();
+                if (enemies == null)
+                    return;
+
+                for (int i = 0; i < enemies.Length; i++)
+                {
+                    Enemy enemy = enemies[i];
+                    if (enemy == null || enemy.gameObject == null)
+                        continue;
+
+                    // Lo stesso criterio di `IsBoss` (namespace), ma senza id e senza cache: qui non c'e'
+                    // ancora un id, e questo test non deve lasciare traccia in nessuna tabella.
+                    if (!IsBossByNamespace(enemy))
+                        continue;
+
+                    if (_hiddenBossCorpses.Contains(enemy))
+                        continue;
+
+                    bool statusDead = enemy.Status != null && enemy.Status.Dead;
+                    string flag = FirstBossDeadFlagOn(scene);
+
+                    if (!statusDead && flag == null)
+                        continue; // boss normale di una stanza normale: non si tocca niente
+
+                    string enemyId = BuildFreeEnemyId(scene, enemy);
+                    string tipo = enemy.GetType().Name;
+
+                    // ⚠️ LA GUARDIA DEL MANDATO: un boss VIVO non si nasconde, qualunque cosa dica il flag.
+                    if (BossLooksAlive(enemy))
+                    {
+                        ModLog.Info($"[BossCorpse] {enemyId} NON nascosto ({where}): il boss sembra VIVO " +
+                                    $"(statusDead=False flag={(flag ?? "nessuno")} vita={enemy.CurrentLife:F0}) " +
+                                    "e un boss vivo non si tocca");
+                        continue;
+                    }
+
+                    _hiddenBossCorpses.Add(enemy);
+                    bool eraAttivo = enemy.gameObject.activeSelf;
+                    enemy.gameObject.SetActive(false);
+
+                    ModLog.Info($"[BossCorpse] {enemyId} nascosto ({where}): il boss di questa stanza era " +
+                                $"gia' stato ucciso - statusDead={statusDead} flag={flag ?? "nessuno"} " +
+                                $"tipo={tipo} attivoPrima={(eraAttivo ? "si" : "no: era gia' spento")} " +
+                                "(SetActive(false), nessun Destroy)");
+                }
+            }
+            catch (Exception e)
+            {
+                // Un'eccezione qui fermerebbe lo spawn di tutta la scena: si scrive e si prosegue.
+                ModLog.Error($"[BossCorpse] ricerca dei cadaveri di boss fallita ({where}): " +
+                             $"{e.GetType().Name} - {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// True quando il boss e' VIVO e operativo: acceso in gerarchia, non morto di stato, con vita, e con
+        /// un `EnemyBehaviour` ACCESO (cioe' un cervello che il gioco sta eseguendo). E' la definizione che
+        /// serve alla guardia di C: il cadavere lasciato dalla scena e' per costruzione una delle due cose
+        /// opposte - spento/inerte (misurato: al rientro la seconda passata di spawn non lo registra piu',
+        /// vedi scratch\DIAGNOSI-BOSS-AFK.md §4) oppure gia' `Status.Dead`.
+        /// </summary>
+        private static bool BossLooksAlive(Enemy enemy)
+        {
+            if (enemy == null || enemy.gameObject == null)
+                return false;
+
+            if (enemy.Status == null || enemy.Status.Dead)
+                return false;
+
+            if (!enemy.gameObject.activeInHierarchy)
+                return false;
+
+            if (enemy.CurrentLife <= 0f)
+                return false;
+
+            EnemyBehaviour behaviour = FindBehaviour(enemy);
+            return behaviour != null && behaviour.enabled;
+        }
+
+        /// <summary>
+        /// Il primo dei due nomi di flag `&lt;...&gt;_BOSSDEAD` che risulta ACCESO per questa scena, o null.
+        ///
+        /// `Core.Events.GetFlag` e' una LETTURA PURA (`EventManager.cs:131-140`: `ContainsKey` + `value`,
+        /// nessuna creazione): chiedere di un flag che non esiste restituisce false e non scrive niente nel
+        /// salvataggio. Ecco perche' si possono provare due nomi senza paura di sporcare la partita.
+        ///
+        /// I DUE NOMI, e perche' due: `Data\FlagStates.cs` elenca i flag dei boss in due forme - a stanza
+        /// intera (`D01Z06S01_BOSSDEAD`, `D09Z01S03_BOSSDEAD`, `D01BZ08S01_BOSSDEAD`) e a ZONA
+        /// (`D17Z01_BOSSDEAD`, per la stanza `D17Z01S11`). Non c'e' una regola unica nell'asset, quindi si
+        /// provano entrambe invece di indovinare: la zona si ricava dal nome stanza con `D##[A-Z]?Z##`.
+        ///
+        /// ⚠️ NON COPERTE: le Amanecidas, il cui flag e' `SANTOS_AMANECIDA_&lt;arma&gt;_DEFEATED` e non si ricava
+        /// dal nome della scena. Per loro resta il solo `Status.Dead`. Limite dichiarato nel referto.
+        /// </summary>
+        private static string FirstBossDeadFlagOn(string scene)
+        {
+            if (string.IsNullOrEmpty(scene))
+                return null;
+
+            string full = scene.ToUpperInvariant() + "_BOSSDEAD";
+            if (Core.Events.GetFlag(full))
+                return full;
+
+            System.Text.RegularExpressions.Match zone = System.Text.RegularExpressions.Regex.Match(
+                scene.ToUpperInvariant(), "^D\\d\\d[A-Z]?Z\\d\\d");
+
+            if (!zone.Success)
+                return null;
+
+            string zoneFlag = zone.Value + "_BOSSDEAD";
+            if (zoneFlag == full)
+                return null;
+
+            return Core.Events.GetFlag(zoneFlag) ? zoneFlag : null;
         }
 
         /// <summary>
@@ -1785,6 +2092,8 @@ namespace Blasphemous.Multiplayer.Client
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
             _bossKillsApplied.Clear();   // M1: ditto - a boss of the next scene must be killable again
+            _bossDeathsApplied.Clear();  // A: ditto - the death of the next scene's boss must be playable again
+            _hiddenBossCorpses.Clear();  // C: ditto - the instances just unloaded must not be remembered
             _deathPendingSince.Clear();  // ditto: the clock belongs to enemies of the scene being unloaded
             _puppetEnemies.Clear();      // the instances of the scene being unloaded
             _orientationLabels.Clear();  // ditto: keyed by instance id
@@ -1903,6 +2212,18 @@ namespace Blasphemous.Multiplayer.Client
             //   attivo=0 e `Post-spawn: 1 enemies`    => c'e' e SPENTO (esiste, non lo simula nessuno);
             //   attivo=0 e `Post-spawn: 0 enemies`    => ASSENTE (distrutto: non c'e' piu').
             LogBossViewBefore();
+
+            // ⭐ C) IL CADAVERE DEL BOSS NON DEVE RESTARE VISIBILE AL RIENTRO.
+            //
+            // Sta ESATTAMENTE FRA I DUE MARKER, che e' il posto giusto per la semantica che i marker hanno:
+            // la riga `[BossView]` sopra e' la scena come la lascia il gioco, quella sotto e' la scena dopo
+            // le azioni della mod. Uno `SetActive(false)` fatto qui e' un'azione della mod come le altre, e la
+            // riga `[BossCorpse]` appena sotto dice che e' stata questa e non `RegisterEnemy`.
+            //
+            // PRIMA DI `RegisterEnemies`, di proposito: il boss riconosciuto come cadavere deve essere gia'
+            // spento quando la registrazione lo incontra, e `RegisterEnemy` lo salta per nome (`_hiddenBossCorpses`)
+            // - cosi' la mod non gli riaccende la tree e non si ritrova un boss invisibile che combatte.
+            HideDefeatedBosses(_scene, "ingresso in scena");
 
             RegisterEnemies(_scene);
 
@@ -2246,6 +2567,8 @@ namespace Blasphemous.Multiplayer.Client
             _announcedBirths.Clear();
             _pendingDeaths.Clear();
             _bossKillsApplied.Clear();   // M1: the world came back, so a boss death applied once must be applicable again
+            _bossDeathsApplied.Clear();  // A: the same for the recited death sequence
+            _hiddenBossCorpses.Clear();  // C: the enemies came back alive, so nothing is a corpse any more
             _killLogged.Clear();
 
             // Always logged, for the same reason as OnEnemiesRespawned: a measurement that stays silent when
@@ -2415,6 +2738,16 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static void RegisterEnemy(string id, Enemy enemy)
         {
+            // ⭐ C) UN CADAVERE DI BOSS CHE ABBIAMO SPENTO NON SI REGISTRA.
+            //
+            // `HideDefeatedBosses` gira prima di questa registrazione, e un oggetto spento NON basta a
+            // fermarla: `IsInertScenery` scarta solo "inattivo E senza `EnemyBehaviour`", mentre un boss ha
+            // il suo `EnemyBehaviour` anche da spento. Senza questa riga il cadavere entrerebbe nella tabella,
+            // riceverebbe `ResumeEnemy` (`behaviour.enabled = true; StartBehaviour()`) e diventerebbe un boss
+            // invisibile che combatte - esattamente il danno che il fix deve evitare.
+            if (_hiddenBossCorpses.Contains(enemy))
+                return;
+
             // Already has an id from an earlier scan: leave it alone. This is what keeps an enemy's id
             // stable while it moves, and stops one enemy being tracked twice under two names.
             string existing;
