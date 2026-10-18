@@ -7394,3 +7394,76 @@ grep 8978107 docs\TODO.md   → 1   ← una sola volta, e non nella lista corta
 - ⛔ **`docs\BUG-NOTI.md` non è stato toccato** · ⛔ **nessuna riga di codice toccata in questa tornata** · ⛔ **nessun build e nessun deploy fatti da me**: build, deploy, sha e marker sono **dei due commit**, e il test in gioco è **dell'utente** *(§1.5)*.
 - ⚠️ **I numeri di riga del codice vanno letti come indizi**: quelli di questa sezione sono **riverificati a HEAD** *(`PauseNotice.cs` per R1-R5 e R0; `Map\MapManager.cs`: `Update:76`, `IsMapOnScreen:135`, `RefreshMap:180`, `CreateMapUI:257`)*. **Citare il metodo** resta la regola.
 - ⚠️ **La data di questa sezione** segue **la serie del file** *(`:7002` = `06:00` → `:7046` = `07:00` → `:7124` = `08:00`)*: è **la successiva**, non l'orologio della macchina *(il commit `50c8ca9` è datato `2026-10-18 23:47`)*. **Il nome della sezione non è una misura**: è un'etichetta.
+
+## [2026-10-19 00:15] 📌 **LO STRUMENTO DI VERIFICA ORA È VERSIONATO** — `marker-check.ps1` passa da `scratch\` *(gitignored: non versionato)* a **`tools\marker-check.ps1`**, con **i percorsi corretti per la nuova base** e **la logica del check intatta**; e **`tools\verify-deploy.ps1` viene CANCELLATO** *(stessa tornata, decisione dell'utente: uno strumento che mente viene usato)*
+
+> **Questa entry è piccola di proposito.** Non chiude nessuna voce della lista corta: **chiude il buco per cui una voce della lista corta — «la casa» — poteva perdere il suo unico strumento che sa dire NO.** Il check era **il gate vero** e viveva in una cartella che **git non guarda**: se il disco fosse morto, sarebbe morto con lui.
+
+### ① ✅ Cosa si è spostato — **un solo posto**, e il resto è un rimando
+
+- ⭐ **`scratch\marker-check.ps1` → `tools\marker-check.ps1`**, **versionato** insieme a `deploy-local.ps1` / `verify-patch-targets.ps1` *(e **non più** con `verify-deploy.ps1`: vedi §⑥)*. Il file era di **51 righe**; ora ne ha **82**, e le righe in più sono **solo commento e la correzione dei percorsi** *(la logica del check è la stessa riga per riga)*.
+- ⛔ **Nessuna doppia copia**: in `scratch\` resta **un rimando di 22 righe** *(nessuna logica: controlla che il file versionato ci sia e gli inoltra `-Dll` e `-Marker`)* ⇒ le invocazioni vecchie **continuano a funzionare** e **il posto della logica resta uno**.
+
+### ② ✅ I percorsi corretti — perché cambiando cartella cambia la base
+
+- ⚠️ **Il fatto**: `scratch\` sta **un livello SOPRA** la radice del repo *(`D:\Codificando\scratch` vs `D:\Codificando\Blasphemous COOP`)*, `tools\` sta **un livello SOTTO** *(`…\Blasphemous COOP\tools`)*. ⇒ **la stessa stringa relativa** puntava a due file diversi. *(Nel file non c'erano percorsi interni: il check riceve sempre `-Dll` da fuori — la base sbagliata era quella del **chiamante**, ed è la ragione per cui un `-Dll` relativo funzionava «per caso» o non funzionava.)*
+- ⭐ **La correzione, minima e dichiarata**: un `-Dll` **relativo** viene risolto, **in quest'ordine**, su **cartella corrente → radice del repo (`$PSScriptRoot\..`) → cartella di gioco** (`D:\SteamLibrary\steamapps\common\Blasphemous`, **la stessa scritta a mano da `deploy-local.ps1:15`**). Un `-Dll` **assoluto** resta com'è ⇒ **le invocazioni di prima non cambiano**.
+- ✅ **I parametri sono gli stessi**: `-Dll` e `-Marker[]`, **entrambi `Mandatory`**. ⇒ `& '.\tools\marker-check.ps1' -Dll 'Modding\plugins\BlasClient.dll' -Marker '[Pausa]','[Map]'` *(relativo, da qualunque cartella)* e `& '…\tools\marker-check.ps1' -Dll 'D:\…\Modding\plugins\BlasClient.dll' -Marker …` *(assoluto, come si è sempre lanciato)* **funzionano entrambe**.
+
+### ③ ✅ La verifica — **l'uscita vera**, non un riassunto
+
+**Sulla DLL DEPLOYATA** *(`Modding\plugins\BlasClient.dll`, lanciato **da `tools\`** con percorso **relativo**)* — `451584` byte, `sha256 f0dc643b864c3d4c931fd98487972df21ee0ff297b45a143e3fe16feb690bc3c`, `mtime 2026-10-18 23:48:02`:
+
+```
+[PRESENTE] "[Pausa]"  UTF-16LE @ 301171,301457,… (24 occorrenze)
+[PRESENTE] "YOUR TEAMMATE IS PAUSED"  UTF-16LE @ 310196,310347,400523
+[PRESENTE] "ho messo in pausa il passivo"  UTF-16LE @ 304525
+[PRESENTE] "ho chiuso e ripreso"  UTF-16LE @ 307448
+[PRESENTE] "sciolta dalla MORTE locale"  UTF-16LE @ 301473
+[PRESENTE] "[Map] richiesta di ridisegno IN CODA e chiamata SALTATA"  UTF-16LE @ 345016
+[PRESENTE] "[Map] CreateMapUI non ha creato niente"  UTF-16LE @ 346419
+[PRESENTE] "mappaAschermoDopo="  UTF-16LE @ 307796
+[PRESENTE] "MAP/SHOW"  UTF-16LE @ 305575
+[PRESENTE] "[BossCorpse]"  UTF-16LE @ 282068,282813,283150
+[PRESENTE] "BOSSFIGHT|"  UTF-16LE @ 288982
+ESITO: TUTTI i marker richiesti sono PRESENTI
+```
+⇒ **`exit 0`**. **11 marker su 11 PRESENTI** *(anche dalla radice del repo, con lo stesso percorso relativo: la base non dipende più dalla cartella corrente)*.
+
+**La DLL deployata È quella di `bin\Debug`** — **confronto fatto, non supposto**: `Blasphemous.Multiplayer.Client\bin\Debug\BlasClient.dll` ha **lo stesso `sha256 f0dc643b…`**, **gli stessi `451584` byte** e **lo stesso `mtime 2026-10-18 23:48:02`** ⇒ **il gioco esegue la build che `deploy-local.ps1` copia** *(è la build di `50c8ca9`, cfr. `_commitmsg.txt` in `scratch\`)*.
+
+**Il controllo negativo — perché un check che non sa dire NO non è un check**: con un marker inesistente *(`marker-che-NON-esiste`)* **la stessa DLL** dà
+```
+[ASSENTE ] "marker-che-NON-esiste"  (nessuna occorrenza)
+ESITO: ALMENO UN marker richiesto e' ASSENTE
+```
+⇒ **`exit 1`**. ⭐ **Il file funziona da `tools\`: cercare e non trovare è la prova che discrimina**, e il risultato **dipende dalla DLL**, non dal percorso da cui è lanciato.
+
+### ④ ⚠️ L'attribuzione — chi ha fatto cosa
+
+- **`HEAD` è `c061249`** *(`s <s@l>`, `2026-10-18 23:59:23`)*, branch **`fix-f1a`**, working tree **pulito** prima di questa tornata.
+- ⛔ **Quello che NON ho fatto**: nessun build, nessun deploy, **nessuna riga di codice toccata**, `docs\BUG-NOTI.md` **non toccato**, `deploy-local.ps1` **non toccato** *("nessun controllo nuovo")*, `verify-patch-targets.ps1` **non toccato** *(è il gate dei bersagli Harmony: blocca il deploy se un tipo manca, **funziona e serve**)*. La DLL in gioco **non è mia**: è la build di `50c8ca9`, deployata alle `23:48:02` da una tornata precedente.
+- ✅ **Quello che ho fatto**: **lo spostamento** del file (`tools\marker-check.ps1`), **i percorsi** (nuova base), **il rimando** in `scratch\`, ⭐ **la cancellazione di `tools\verify-deploy.ps1`** *(§⑥: aggiunta dell'utente nella stessa tornata)*, **questa entry**. ⚠️ **La logica del check è identica**: stesse due codifiche *(UTF-16LE e UTF-8)*, stessi `exit 0`/`exit 1`, **nessun controllo aggiunto**, **nessun marker atteso cambiato**.
+
+### ⑤ 📌 Lo stato — e i due limiti che restano dichiarati
+
+- ✅ **Lo strumento ora è versionato**: `git add tools/marker-check.ps1` **non serve più ricordarlo**, e la voce «la casa» della lista corta **perde due pezzi di rischio** *(lo strumento non versionato, e lo strumento che mentiva — §⑥)*. ⚠️ **Resta aperto il resto della casa**: lo **zip per `G1` che non esiste**, e `deploy-local.ps1:42`/`:48` che copiano da `bin\Debug` **a mano** *(una build `Release` + deploy mette in gioco la `Debug` vecchia, §3.1 della sezione del `09:00`)*.
+- ⚠️ **Limite 1 — nessun elenco di marker**: i marker si passano a mano *(invariato: **non** è stato aggiunto un elenco)*. Un gate automatico è un'altra cosa, e **non è questa tornata**.
+- ⚠️ **Limite 2 — `-File` non passa un array**: `pwsh -NoProfile -File tools\marker-check.ps1 -Marker 'a','b'` prende **un solo valore** ⇒ l'array di marker passa **solo** col call operator `&`. È scritto nell'intestazione del file.
+- ✅ **Aggiunta, non riscrittura**: **solo righe in fondo**, **0 righe cancellate**, **nessuna sezione precedente toccata**.
+
+### ⑥ 🗑️ **E `tools\verify-deploy.ps1` È STATO CANCELLATO** — *la ragione non è «era vecchio», è **che mentiva***
+
+> **Deciso dall'utente nella stessa tornata**: *«sì, fallo assieme, così togliamo tutto di mezzo in un commit»*. ⇒ **una sola tornata, un solo commit.**
+
+- **Cosa è stato cancellato**: `tools\verify-deploy.ps1` — **290 righe**, **10.977 byte**, `sha256 63dccd11e08c3967792feecd7bd62b4e5a113ea5567b5c7682c6ef6a7d2f4530` *(recuperabile da `git show c061249:tools/verify-deploy.ps1`, e da qualunque checkout precedente)*.
+- ⭐ **Il difetto che ha deciso**: **stampa *"Puoi testare"* anche su una DLL sbagliata** *(exit 0)* ⇒ ⚠️ **e noi l'abbiamo usato per giorni**: uno strumento che mente **non viene ignorato, viene usato** — ed è esattamente quello che è successo *(`[2026-10-17 23:40]` §4 voce 3)*. E **non è un caso isolato**, sono tra loro indipendenti:
+  - **i 9 marker sono fermi all'`2026-10-08` → `2026-10-12`** *(`:59-73`)* ⇒ **il livello dei marker non può fallire**: ogni build degli ultimi ~250 commit li contiene tutti *(§3.1 del `09:00`, che li elenca)*;
+  - **l'hash è vincolante solo con `-ExpectedHash`** *(`:181-194`)* ⇒ **senza quello switch il check dell'hash non c'è**;
+  - **senza la sonda `scratch\cecil` i marker si saltano in silenzio** *(`:216`)* ⇒ qualsiasi build recente stampa *"Puoi testare"* *(`:280`)* **ed esce 0**.
+- ⛔ **Perché non «aggiustarlo»**: *aggiustarlo = aggiungere controlli*, ed è **la cosa che l'utente non vuole**. ✅ **Il sostituto esiste già ed è quello che si è sempre usato quando contava**: `tools\marker-check.ps1` — verifica il **CONTENUTO della DLL deployata** *(UTF-16LE **e** UTF-8 sui byte grezzi)* e **sa dire NO** *(§③: `exit 1` sul controllo negativo)*.
+- 📌 **Chi lo citava, e cosa è stato aggiornato** *(`git grep verify-deploy` su tutti i file tracciati, **132**)*:
+  - `docs\RIPRISTINO.md` — **l'unico file che lo INVOCAVA** ⇒ aggiornato in **4 punti**: la procedura di ripristino *(`:24` → `marker-check.ps1`)*, l'avviso *«deve uscire 0»* *(`:36`)*, la **storia** del checkpoint `checkpoint-stabile-falo` *(`:160`, con una nota che dice che lo strumento non esiste più)* e la procedura del **nuovo punto di ripristino** *(`:188`)*;
+  - `docs\TODO.md` — **solo citazioni storiche** *(le sezioni del `12.`, le entry del `2026-10-17` e del `09:00`)* ⇒ ⛔ **NON toccate**: restano come storia, e **questa §⑥ è la riga che dice come stanno le cose adesso**;
+  - **nessun altro**: `deploy-local.ps1` **non lo chiamava** — chiama `verify-patch-targets.ps1` *(`:79-86`)*, che ⛔ **resta e non è stato toccato**: è **il gate dei bersagli Harmony** *(blocca il deploy se un tipo o un metodo mancano, perché un errore lì uccide `PatchAll` a runtime)*.
+- ⭐ **Da ora la verifica è `tools\marker-check.ps1`**, e per l'**hash** dei binari si usa lo strumento di sistema: `Get-FileHash <file> -Algorithm SHA256` *(è quello che stampa anche `marker-check.ps1`, con `size` e `mtime`, in testa a ogni run)*. ⇒ **`tools\` resta con i tre script giusti**: `deploy-local.ps1` *(l'unico modo di mettere qualcosa in gioco)*, `verify-patch-targets.ps1` *(il gate dei bersagli)*, `marker-check.ps1` *(il contenuto)* — più `install-mod-loader.ps1`.

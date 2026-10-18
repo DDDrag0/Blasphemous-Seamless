@@ -21,8 +21,16 @@ cd 'Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main'
 dotnet build .\Blasphemous.Multiplayer.sln
 cd ..\..
 .\tools\deploy-local.ps1
-.\tools\verify-deploy.ps1
+# e poi LA VERIFICA CHE CONTA: il CONTENUTO della DLL deployata, con i marker della
+# versione che stai ripristinando (l'array passa col call operator &, non con -File)
+& '.\tools\marker-check.ps1' -Dll 'Modding\plugins\BlasClient.dll' -Marker '<i marker della versione>'
 ```
+
+> ⚠️ **Dal 2026-10-19 `tools\verify-deploy.ps1` NON ESISTE PIÙ** *(cancellato, vedi `docs\TODO.md`
+> `[2026-10-19 00:15]`)*: stampava *"Puoi testare"* **anche su una DLL sbagliata** *(marker fermi
+> all'8-12/10, hash vincolante solo con `-ExpectedHash`, marker saltati in silenzio senza
+> `scratch\cecil`)* ⇒ **è stato usato per giorni proprio perché mentiva**. Il suo sostituto è
+> **`tools\marker-check.ps1`**, che legge i byte della DLL e **sa dire NO**.
 
 > ⚠️ **Dal 2026-10-16 la build NON tocca più la cartella di gioco.** Il `.csproj` del **client** la
 > copiava a ogni `dotnet build` (target `Development`, `DevFolder` con percorso **assoluto**): bastava
@@ -33,8 +41,10 @@ cd ..\..
 > Se un giorno servisse la vecchia copia fatta dalla build:
 > `dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true`.
 
-⚠️ **`verify-deploy.ps1` deve uscire con codice 0.** Se dice *"questa macchina non esegue il binario
-atteso"*, il deploy non è quello che credi — e un test lì non misurerebbe le funzionalità nuove.
+⚠️ **`marker-check.ps1` deve uscire con codice 0** e stampare *"ESITO: TUTTI i marker richiesti sono
+PRESENTI"*. Se dice **`ASSENTE`**, il deploy non è quello che credi — e un test lì non misurerebbe le
+funzionalità nuove. *(È l'unica verifica del contenuto che abbiamo: `verify-deploy.ps1` è stato
+cancellato il 2026-10-19 perché rispondeva 0 anche su una DLL vecchia.)*
 
 ⚠️ **E per tornare al ramo di lavoro**: `git checkout fix-f1a`.
 
@@ -158,6 +168,8 @@ atteso"*, il deploy non è quello che credi — e un test lì non misurerebbe le
 - **La riga `[Path]` all'avvio**, che rende visibile in quale cartella il gioco sta salvando — e che
   avrebbe risparmiato l'intera indagine sui salvataggi.
 - **`verify-deploy.ps1` allineato** *(cercava un marker rinominato e bloccava ogni test)*.
+  > ⚠️ **Nota del 2026-10-19**: quello strumento **non esiste più** *(cancellato: rispondeva 0 anche su
+  > una DLL vecchia)*. Al suo posto **`tools\marker-check.ps1`**. La riga qui sopra resta come storia.
 
 **Cosa NON contiene / limiti noti**
 - **`pending` dei distruttibili non viene ripulito dal falò**: è il progetto della voce 33, ma nel caso
@@ -185,7 +197,9 @@ il `try/finally` e la dedup.
 ## Come si crea un nuovo punto di ripristino
 
 1. **Working tree pulito** — `git status --short` deve essere vuoto.
-2. **Verifier verde** — `.\tools\verify-deploy.ps1` deve uscire 0.
+2. **Verifica verde** — `& '.\tools\marker-check.ps1' -Dll 'Modding\plugins\BlasClient.dll' -Marker <…>`
+   deve uscire **0** con *"TUTTI i marker richiesti sono PRESENTI"*. *(Prima qui c'era
+   `.\tools\verify-deploy.ps1`: cancellato il 2026-10-19 perché usciva 0 anche su una DLL sbagliata.)*
 3. **Costruire il tag** con un messaggio che dica *cosa contiene* e *quali sono gli hash dei binari*,
    **in caratteri semplici** *(l'accento può dare fastidio a script e shell non UTF-8)*:
    ```powershell
