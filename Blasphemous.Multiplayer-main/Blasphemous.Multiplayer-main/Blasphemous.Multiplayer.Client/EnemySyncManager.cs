@@ -718,11 +718,28 @@ namespace Blasphemous.Multiplayer.Client
         ///
         /// DOVE SI CHIAMA: in `OnEnemiesSpawned`, cioe' all'ingresso (una volta per caricamento, non per
         /// frame), su ENTRAMBE le macchine perche' quel metodo gira su entrambe.
+        ///
+        /// ⭐⭐ LA SCENA CON CUI SI CERCA IL FLAG VIENE DAL GIOCO, NON DA `_scene` (priorità n.1 di
+        /// `scratch\STUDIO-FLAG-AC43.md` §4.4). Prima di questo fix il parametro `modScene` era l'unica
+        /// fonte, e nella PRIMA passata di spawn `_scene` è la stanza PRECEDENTE (misurato 7/7 in G2 e
+        /// 6/6 in G1: `docs\TODO.md:6498-6499`). La causa è dichiarata in `SceneForBossFlags` qui sotto,
+        /// ed è un fatto d'ordine: `_scene` la scrive `LevelLoaded`, che il gioco invoca DOPO lo spawn.
+        /// ⇒ prima, in quella passata, questo predicato accoppiava un boss della stanza NUOVA al flag di
+        /// morte di un'ALTRA stanza — e da FIX ② un flag acceso scavalca il veto "sembra VIVO", quindi
+        /// poteva SPEGNERE UN BOSS VIVO, in modo irreversibile senza ricaricare (`_hiddenBossCorpses`
+        /// a `:682`, il salto in `RegisterEnemy`).
         /// </summary>
-        private static void HideDefeatedBosses(string scene, string where)
+        private static void HideDefeatedBosses(string modScene, string where)
         {
             try
             {
+                // ⭐ La scena per i FLAG, risolta UNA volta per chiamata (e non per nemico: il marker
+                // deve uscire una riga sola). `fonte=gioco` ⇒ nome del gioco; `fonte=ripiego` ⇒ la
+                // `_scene` della mod, cioè il comportamento di HEAD.
+                bool dalGioco;
+                string sceneDaGioco = SceneForBossFlags(modScene, out dalGioco);
+                LogBossCorpseScene(sceneDaGioco, modScene, where, dalGioco);
+
                 Enemy[] enemies = FindAllEnemiesIncludingInactive();
                 if (enemies == null)
                     return;
@@ -742,9 +759,13 @@ namespace Blasphemous.Multiplayer.Client
                         continue;
 
                     bool statusDead = enemy.Status != null && enemy.Status.Dead;
-                    string flag = FirstBossDeadFlagOn(scene);
+                    // ⭐ Il flag si cerca con la scena DEL GIOCO (vedi `SceneForBossFlags`).
+                    string flag = FirstBossDeadFlagOn(sceneDaGioco);
 
-                    string enemyId = BuildFreeEnemyId(scene, enemy);
+                    // L'id resta costruito con la `_scene` della mod: e' solo l'etichetta di questa riga
+                    // (nessuna tabella lo riceve) e cambiarla avrebbe cambiato righe che nessuno ha
+                    // chiesto. La scena vera del predicato e' nel marker `scena-flag=` qui sopra.
+                    string enemyId = BuildFreeEnemyId(modScene, enemy);
                     string tipo = enemy.GetType().Name;
 
                     // ⭐ FIX ② — LA GUARDIA, RIDOTTA AL SUO VERO PERIMETRO.
@@ -819,7 +840,116 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// ⭐⭐ LA SCENA CON CUI SI CERCANO I FLAG DEI BOSS — LETTA DAL GIOCO, NON DA `_scene`.
+        ///
+        /// IL DIFETTO CHE CHIUDE (è la priorità n.1 di `scratch\STUDIO-FLAG-AC43.md` §4.4). `_scene` è
+        /// scritta SOLO da `EnemySyncManager.LevelLoaded` (`:2550`), e il gioco la raggiunge **dopo** lo
+        /// spawn. La catena, verificata sul decompilato:
+        ///   1. `LevelManager.LoadAndActivateLevel` fa `currentLevel = level` (`LevelManager.cs:298`);
+        ///   2. poi `InitializeLevel()` (`:325`) fa `SceneManager.SetActiveScene(currentLevel…)` (`:412`)
+        ///      e SUBITO `Core.Logic.EnemySpawner.SpawnEnemiesOnLoad()` (`:421`) → `OnEnemiesSpawned()`;
+        ///   3. solo MOLTO dopo, a `:357-359`, invoca `LevelManager.OnLevelLoaded(lastLevel, currentLevel)`
+        ///      → `Multiplayer.OnLevelLoaded` → `EnemySyncManager.LevelLoaded(newLevel)` → `_scene = …`.
+        /// ⇒ **nella 1ª passata di spawn `_scene` è la stanza PRECEDENTE.** Non è una deduzione: è
+        /// misurato **7/7 in G2 e 6/6 in G1** (`docs\TODO.md:6498-6499`, `DIAGNOSI-A-C-E-PUNTO-0.md` §1-bis).
+        ///
+        /// ⭐ E il gioco la stanza giusta ce l'ha GIÀ in quel momento: `currentLevel` è assegnato ~60 righe
+        /// prima dello spawn. Non solo: è **la stessa** con cui il gioco scrive i suoi flag
+        /// (`BossFightManager.cs:196/203`, `<currentLevel.LevelName>_BOSSDEAD_AC43`) ed è **la stessa che
+        /// enumera gli oggetti**, perché `FindAllEnemiesIncludingInactive` legge
+        /// `SceneManager.GetActiveScene()` (`:3613`) — che `InitializeLevel` ha appena puntato sulla stanza
+        /// nuova. ⇒ a HEAD il predicato accoppiava **gli oggetti della stanza nuova al flag di morte di
+        /// un'altra stanza**; e da FIX ② un flag acceso **scavalca** il veto "sembra VIVO" (`:784-791`)
+        /// ⇒ poteva **spegnere un boss VIVO**, senza ritorno se non ricaricando (`_hiddenBossCorpses`
+        /// a `:682`; `RegisterEnemy` salta le istanze nascoste).
+        ///
+        /// ⚠️ IL FALLBACK, E PERCHÉ C'È. La lettura dal gioco può mancare: `Core.LevelManager` è un
+        /// singleton che nasce con `Core` (`Core.cs:72/114`), `currentLevel` resta `null` finché il primo
+        /// livello non è caricato (`LevelManager.cs:106`) e `LevelName` può essere vuota. In quei casi NON
+        /// si inventa niente: si torna alla `_scene` della mod — **esattamente il comportamento di HEAD** —
+        /// e il marker lo dichiara (`fonte=ripiego`). Fallire la lettura, quindi, non può peggiorare
+        /// niente: al massimo non migliora.
+        ///
+        /// ⚠️ E IL CAMBIO DI LIVELLO NON È UN BUCO. `Level.DeActivate()` (`Level.cs:124-143`) **scarica** la
+        /// scena LOGIC del livello vecchio (`scene.Unload()`, `:136`) e viene invocato PRIMA di
+        /// `LoadAndActivateLevel` (`:287-288`). Al momento dello spawn, quindi, gli oggetti della stanza
+        /// precedente non esistono più: nome e oggetti sono **entrambi** della stanza nuova, che è
+        /// precisamente la coerenza che questo metodo ristabilisce. L'unica finestra in cui `currentLevel`
+        /// è la stanza nuova e gli oggetti vecchi sono ancora vivi **non contiene uno spawn**: sta fra
+        /// `:298` e `:309`, e `SpawnEnemiesOnLoad` è a `:421`.
+        ///
+        /// ⚠️ E VALE PER **TUTTI** I FLAG, NON SOLO PER QUESTO. In questo file `_scene` alimenta i flag in
+        /// **un punto solo** — la chiamata a `HideDefeatedBosses` (`:2732`) → `FirstBossDeadFlagOn` — e
+        /// tutte le altre letture di flag usano nomi SCRITTI A MANO (`Multiplayer.cs:469-484`,
+        /// `Map\MapPatches.cs:66-72`, `ProgressSync\Helpers\FlagHelper.cs` sulla tabella `FlagStates`) o
+        /// un prefisso fisso (`RemoveJunkDeathFlags`, `ENEMYDEAD|`): nessuna dipende da un nome di scena.
+        /// Gli altri usi di `_scene` (`BuildSpawnPointId` a `:4913`, `RegisterEnemies(_scene)` a `:5681` e `:2734`)
+        /// costruiscono **id**, non interrogano il progresso del gioco: restano com'erano.
+        /// </summary>
+        private static string SceneForBossFlags(string modScene, out bool dalGioco)
+        {
+            dalGioco = false;
+
+            try
+            {
+                if (Core.LevelManager != null && Core.LevelManager.currentLevel != null)
+                {
+                    string live = Core.LevelManager.currentLevel.LevelName;
+                    if (!string.IsNullOrEmpty(live))
+                    {
+                        dalGioco = true;
+                        return live;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Si ripiega sotto: la `_scene` della mod, cioè il predicato di HEAD. Un nome di scena
+                // che non si riesce a leggere non deve fermare lo spawn.
+            }
+
+            return modScene;
+        }
+
+        /// <summary>
+        /// ⭐ MARKER `[BossCorpse] scena-flag=` — UNA riga per chiamata (una per passata di spawn, non per
+        /// frame, non per nemico), e dice le due cose che rendono il fix verificabile in un log:
+        ///   · `fonte=gioco`     ⇒ il nome usato per i flag viene da `Core.LevelManager.currentLevel`;
+        ///   · `fonte=ripiego`   ⇒ la lettura dal gioco non c'era, si è usata la `_scene` della mod
+        ///                          (comportamento di HEAD: se compare, il fix NON ha potuto migliorare);
+        ///   · `divergenza=si`   ⇒ gioco e mod dicevano due stanze DIVERSE. È il reperto del difetto: in
+        ///                          1ª passata la mod è sempre in ritardo di una stanza, e prima del fix era
+        ///                          `mod=` a decidere. Se `divergenza=no` il caso non dimostra niente.
+        /// Non lancia e non tocca niente.
+        /// </summary>
+        private static void LogBossCorpseScene(string scenaFlag, string modScene, string where, bool dalGioco)
+        {
+            try
+            {
+                string fonte = dalGioco
+                    ? "gioco (Core.LevelManager.currentLevel.LevelName)"
+                    : "ripiego: lettura dal gioco non disponibile, uso la scena della mod";
+
+                bool divergenza = !string.Equals(scenaFlag ?? string.Empty, modScene ?? string.Empty,
+                                                 StringComparison.Ordinal);
+
+                ModLog.Info($"[BossCorpse] scena-flag={(scenaFlag ?? "nessuna")} · mod={(modScene ?? "nessuna")} · " +
+                            $"fonte={fonte} · divergenza={(divergenza ? "si" : "no")} · dove={where}");
+            }
+            catch (Exception)
+            {
+                // Un marker che esplode zittisce la misura: qui non c'è niente da salvare.
+            }
+        }
+
+        /// <summary>
         /// Il primo dei due nomi di flag `&lt;...&gt;_BOSSDEAD` che risulta ACCESO per questa scena, o null.
+        ///
+        /// ⭐ IL NOME DEVE VENIRE DAL GIOCO, E QUI VIENE GARANTITO. Il `scene` che arriva è quello che il
+        /// chiamante crede giusto, ma la fonte autorevole è una sola e si rilegge qui: se `_scene` è in
+        /// ritardo (1ª passata), `SceneForBossFlags` restituisce comunque la stanza in cui il boss sta
+        /// entrando. È una difesa in più di proposito — costa una lettura di proprietà per boss e rende
+        /// IMPOSSIBILE, per costruzione, interrogare il progresso con un nome che non venga dal gioco.
         ///
         /// `Core.Events.GetFlag` e' una LETTURA PURA (`EventManager.cs:131-140`: `ContainsKey` + `value`,
         /// nessuna creazione): chiedere di un flag che non esiste restituisce false e non scrive niente nel
@@ -835,15 +965,19 @@ namespace Blasphemous.Multiplayer.Client
         /// </summary>
         private static string FirstBossDeadFlagOn(string scene)
         {
-            if (string.IsNullOrEmpty(scene))
+            // `out _`: qui la provenienza non serve (il marker la stampa una volta sola, in
+            // `HideDefeatedBosses`), ma la LETTURA è la stessa e resta una sola.
+            string scenaDaGioco = SceneForBossFlags(scene, out _);
+
+            if (string.IsNullOrEmpty(scenaDaGioco))
                 return null;
 
-            string full = scene.ToUpperInvariant() + "_BOSSDEAD";
+            string full = scenaDaGioco.ToUpperInvariant() + "_BOSSDEAD";
             if (Core.Events.GetFlag(full))
                 return full;
 
             System.Text.RegularExpressions.Match zone = System.Text.RegularExpressions.Regex.Match(
-                scene.ToUpperInvariant(), "^D\\d\\d[A-Z]?Z\\d\\d");
+                scenaDaGioco.ToUpperInvariant(), "^D\\d\\d[A-Z]?Z\\d\\d");
 
             if (!zone.Success)
                 return null;
@@ -2588,6 +2722,13 @@ namespace Blasphemous.Multiplayer.Client
             // PRIMA DI `RegisterEnemies`, di proposito: il boss riconosciuto come cadavere deve essere gia'
             // spento quando la registrazione lo incontra, e `RegisterEnemy` lo salta per nome (`_hiddenBossCorpses`)
             // - cosi' la mod non gli riaccende la tree e non si ritrova un boss invisibile che combatte.
+            //
+            // ⭐ `_scene` e' SOLO IL RIPIEGO: la scena con cui si cercano i flag la legge
+            // `SceneForBossFlags` DAL GIOCO (`Core.LevelManager.currentLevel.LevelName`), perche' in
+            // QUESTA prima passata `_scene` e' ancora la stanza PRECEDENTE (la scrive `LevelLoaded`, che
+            // il gioco invoca dopo lo spawn: `LevelManager.cs:298` -> `:421` -> `:359`). Prima del fix
+            // era `_scene` a decidere, quindi qui si leggeva il flag di morte di un'altra stanza — e con
+            // FIX ② un flag acceso scavalca il veto "sembra VIVO".
             HideDefeatedBosses(_scene, "ingresso in scena");
 
             RegisterEnemies(_scene);
