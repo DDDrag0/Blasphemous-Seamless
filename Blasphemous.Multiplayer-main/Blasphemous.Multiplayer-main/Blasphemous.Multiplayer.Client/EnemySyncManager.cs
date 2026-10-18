@@ -7,6 +7,7 @@ using Gameplay.GameControllers.Penitent;
 using Gameplay.GameControllers.Penitent.Attack;
 using Gameplay.GameControllers.Enemies.Framework.IA;
 using Gameplay.GameControllers.Enemies.WaxCrawler;
+using Gameplay.GameControllers.Bosses.BossFight;
 using Tools.Level.Layout;
 using Framework.Managers;
 using Blasphemous.ModdingAPI;
@@ -132,6 +133,25 @@ namespace Blasphemous.Multiplayer.Client
             /// the collider is the signal that means "this enemy is now real".
             /// </summary>
             public bool WasReal;
+
+            /// <summary>
+            /// Se la vita di questo BOSS e' gia' stata riallineata nella situazione corrente (questo ingresso
+            /// in scena, questo padrone). Vedi <see cref="AlignBossLife"/>.
+            ///
+            /// Per un nemico normale la vita viaggia a ogni pacchetto e questo campo non conta niente. Per un
+            /// boss no: scriverla a ogni ricezione e' proprio cio' che il divieto vieta (una scrittura a 0
+            /// lascia il boss in piedi con la barra vuota e la stanza bloccata), quindi la si scrive **una
+            /// volta sola** per situazione - all'ingresso in scena e a ogni cambio di padrone - e questo
+            /// latch e' cio' che rende "una volta sola" una cosa vera e non una speranza.
+            /// </summary>
+            public bool BossLifeAligned;
+
+            /// <summary>
+            /// La visita della scena in cui la vita del boss e' stata allineata l'ultima volta. Serve solo a
+            /// dire la CAUSA nel marker: se `BossLifeVisit != _sceneVisit` l'allineamento nasce da un
+            /// INGRESSO in scena, altrimenti da un CAMBIO DI PADRONE.
+            /// </summary>
+            public int BossLifeVisit;
         }
 
         /// <summary>
@@ -1617,6 +1637,7 @@ namespace Blasphemous.Multiplayer.Client
                     state.OwnedByRemote = false;
                     state.OwnershipKnown = true;
                     state.OwnerSince = Time.time;
+                    ForgetBossLifeAlignment(state);   // promozione: la proprieta' e' cambiata su tutto
                 }
             }
             else if (!isHost && wasHost)
@@ -1688,6 +1709,7 @@ namespace Blasphemous.Multiplayer.Client
                     state.OwnershipKnown = false;
                     state.OwnerSince = 0f;
                     state.OwnedByRemote = false;
+                    ForgetBossLifeAlignment(state);   // demozione: la vita va ripresa dal nuovo host
                 }
 
                 // Positions reported by the previous host are not evidence about who is closer now.
@@ -2381,6 +2403,7 @@ namespace Blasphemous.Multiplayer.Client
             _treeStateLogged.Clear();    // diagnostics: keyed by id, meaningless in the next scene
             _deadReleaseLogged.Clear();  // ditto: keyed by id, and ids do not survive a scene change
             _bossOwnLogged.Clear();      // ditto: [BossProp] e' per id, e l'id di un boss non sopravvive
+            _bossLifeZeroLogged.Clear(); // ditto: [BossLife] "vita 0 dal padrone" e' per id
             _frozenGravityScale.Clear(); // keyed by instance id: meaningless once the objects are gone
             _frozenCollision.Clear();    // FIX ①: ditto - la fotografia dei collisori muore con l'oggetto
             _bossIds.Clear();            // keyed by id, and ids do not survive a scene change
@@ -4832,6 +4855,10 @@ namespace Blasphemous.Multiplayer.Client
 
                 state.OwnedByLocal = take;
 
+                // ⭐ La proprieta' e' stata DECISA: se questo e' un boss e il padrone e' l'altro, la prossima
+                // ricezione gli allinea la vita.
+                ForgetBossLifeAlignment(state);
+
                 if (state.OwnedByLocal)
                     AdoptLastKnownPosition(enemy, id);
 
@@ -4926,6 +4953,9 @@ namespace Blasphemous.Multiplayer.Client
                 state.OwnedByLocal = false;
                 state.OwnerSince = Time.time;
 
+                // ⭐ Il padrone e' cambiato (io l'ho lasciato): la prossima ricezione riallinea la vita del boss.
+                ForgetBossLifeAlignment(state);
+
                 // L'altro ramo del marker: qui il rilascio AVVIENE, e la riga dice perche' e' lecito.
                 LogDeadOwnerDecision(enemy, true);
 
@@ -4986,6 +5016,11 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     state.OwnedByLocal = true;
                     state.OwnerSince = Time.time;
+
+                    // ⭐ Il padrone e' cambiato (sono diventato io): se un giorno lo perdo di nuovo, la vita
+                    // va riallineata a chi lo prende. Il latch si riapre qui, non dove si scrive la vita.
+                    ForgetBossLifeAlignment(state);
+
                     AdoptLastKnownPosition(enemy, id);
                     changed = true;
                 }
@@ -5112,6 +5147,181 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
+        // ================================================================================================
+        // ⭐ [BossLife] — LA VITA DEL BOSS VIAGGIA: "STATO + DISEGNO INSIEME"
+        // Referto: scratch\REFERTO-DUE-BARRE.md · diagnosi: scratch\DIAGNOSI-PAUSA-E-DUE-BARRE.md
+        // Studio: scratch\STUDIO-VIA-BOSS-E-TRIGGER.md §5
+        //
+        // IL DIFETTO MISURATO. `ReceiveEnemyUpdate` scriveva la vita con `SetHealth` per OGNI nemico tranne
+        // il boss (`if (!isBoss)`): la vita viaggiava in ogni pacchetto e veniva BUTTATA, e la barra e'
+        // locale (`BossHealth.BarTarget = target.Stats.Life.Current / Final`), quindi due copie = due barre.
+        // Costo misurato in gioco: 110 HP di scarto su 400 (27,5%) costanti per tutto il fight, perche' i
+        // colpi che un giocatore aveva gia' inflitto PRIMA che l'altro entrasse in stanza arrivano quando
+        // l'altro non ha ancora il boss in `_ids` e vengono scartati (`non in _ids`).
+        //
+        // PERCHE' NON A OGNI PACCHETTO. Il divieto ha una ragione scritta e verificata: `SetHealth` chiama
+        // `KillInstanteneously()` quando il valore e' <= 0 (`Entity.cs:297-304`), e una scrittura a zero
+        // lascia un boss IN PIEDI, con la barra vuota e la stanza che non avanza. A ogni pacchetto, poi, si
+        // scriverebbe venti volte al secondo su un oggetto di cui nessuno ha chiesto la proprieta'.
+        // ⇒ si scrive UNA VOLTA per situazione: all'INGRESSO in scena e a ogni CAMBIO DI PADRONE
+        //   (il padrone manda, il pupazzo riceve). Il resto lo fa il relay del danno, che gia' funziona.
+        //
+        // PERCHE' SOLO IN DISCESA. La macchina che entra ha la copia FRESCA (vita piena): il caso misurato
+        // e' "ricevo 290 mentre leggo 400". Una SALITA vorrebbe dire scrivere PIU' vita di quella che il
+        // boss ha qui, cioe' resuscitarlo: e' l'unica cosa che il divieto vieta davvero, e non e' il caso.
+        // ⚠️ Residuo dichiarato: se il pupazzo fosse PIU' BASSO del padrone non si allinea (il latch resta
+        // aperto, non si scrive nulla). Non e' il caso misurato, e non e' una scrittura che si vuole fare.
+        //
+        // E LA FASE — "IL DISEGNO". `SetHealth` non passa da `Damage()`, che e' l'unico chiamante di
+        // `CheckNextPhase()`: la fase del BOSS si riallinea al primo colpo dopo, non qui. `CheckNextPhase`
+        // e' **privata e per tipo** (Crisanta/BurntFace/Esdras/PontiffGiant/PontiffOldman/WickerWurm, sei
+        // metodi diversi, nessuna dichiarazione nella base `EnemyBehaviour`) e almeno una `ChangePhase` ha un
+        // effetto che non e' un semplice cambio di pool (`BurntFaceBehaviour.cs:225-245` infila
+        // `RELEASE_SECOND_HAND` nella coda delle azioni) ⇒ **non si forza**. Quello che si forza e' la fase
+        // DICHIARATA dal manager, che e' pubblica, e' una funzione pura della vita e non fa partire niente:
+        // `BossFightManager.SetCurrentActivePhase()` (vedi `RealignBossPhase`).
+        // ================================================================================================
+
+        /// <summary>Pavimento della vita allineata di un boss: MAI zero. Vedi il blocco qui sopra.</summary>
+        private const float BOSS_LIFE_FLOOR = 1f;
+
+        /// <summary>Id per cui e' gia' stata scritta la riga "il padrone dichiara vita 0": non si ripete.</summary>
+        private static readonly HashSet<string> _bossLifeZeroLogged = new HashSet<string>();
+
+        /// <summary>
+        /// Riapre l'allineamento della vita di un boss: la prossima ricezione dal padrone la riallinea.
+        ///
+        /// Va chiamata dove la proprieta' CAMBIA davvero (non dove viene solo riletta), ed e' l'unico modo
+        /// per ottenere il "ai cambi di padrone" senza scrivere la vita a ogni pacchetto. Per un nemico
+        /// normale e' un campo che nessuno legge.
+        /// </summary>
+        private static void ForgetBossLifeAlignment(EnemyState state)
+        {
+            if (state != null)
+                state.BossLifeAligned = false;
+        }
+
+        /// <summary>
+        /// Allinea la vita LOCALE di un boss a quella dichiarata dal suo padrone, una volta per situazione.
+        ///
+        /// Chiamata solo dal ramo in cui il MITTENTE dichiara di possedere il nemico: chi manda e' il
+        /// padrone, quindi la sua vita e' l'unica che ha senso prendere come riferimento in quel momento.
+        /// </summary>
+        private static void AlignBossLife(Enemy enemy, string id, EnemyState state, float ownerLife)
+        {
+            try
+            {
+                if (enemy == null || state == null || string.IsNullOrEmpty(id))
+                    return;
+
+                // Gia' fatto in questa situazione (ingresso/changed padrone): si esce PRIMA di toccare
+                // niente, ed e' questo che rende la scrittura "una-tantum" invece di venti al secondo.
+                if (state.BossLifeAligned)
+                    return;
+
+                // Mai su un boss gia' morto: il suo stato non e' piu' una funzione della vita.
+                if (enemy.Status.Dead)
+                    return;
+
+                if (ownerLife <= 0f)
+                {
+                    // ⛔ IL DIVIETO, rispettato nel punto in cui si potrebbe violarlo: `SetHealth(0)` chiama
+                    // `KillInstanteneously()`, e da li' il boss resta in piedi con la barra vuota e la stanza
+                    // bloccata. La morte ha gia' il suo canale (kill / `bdead|` / `D17Z01_BOSSDEAD`) e non
+                    // passa da qui: questa riga esiste perche' un giorno qualcuno provi a farla passare.
+                    if (_bossLifeZeroLogged.Add(id))
+                    {
+                        ModLog.Info($"[BossLife] {FullId(id)} il padrone dichiara vita 0: NON allineo " +
+                                    "(mai a 0 - resterebbe in piedi con la barra vuota e la stanza bloccata)");
+                    }
+
+                    return;
+                }
+
+                float localLife = enemy.CurrentLife;
+
+                // Solo in DISCESA, con l'epsilon della vita: sotto di esso non c'e' niente da correggere.
+                // Se il padrone ha PIU' vita di questa copia il latch resta aperto e non si scrive nulla.
+                if (ownerLife >= localLife - LIFE_EPSILON)
+                    return;
+
+                float applied = Mathf.Max(ownerLife, BOSS_LIFE_FLOOR);
+                if (applied >= localLife)
+                    return;
+
+                // Il gioco scrive la vita con il proprio setter, MAI assegnando il campo: e' lo stesso
+                // principio della scrittura dei nemici normali, e sopra il pavimento non uccide nessuno.
+                enemy.SetHealth(applied);
+
+                state.BossLifeAligned = true;
+
+                string causa = state.BossLifeVisit == _sceneVisit ? "padrone-cambiato" : "ingresso-in-scena";
+                state.BossLifeVisit = _sceneVisit;
+
+                string fase = RealignBossPhase(enemy);
+                string delta = (applied - localLife).ToString("+0;-0");
+
+                // ⭐ IL MARKER: una riga quando la vita viene allineata, con DA CHI e A CHE VALORE.
+                // Senza questa riga "le due barre ora coincidono" e "la vita non viene piu' scritta per
+                // niente" sarebbero indistinguibili nel log.
+                ModLog.Info($"[BossLife] {FullId(id)} vita ALLINEATA a {applied:F0} (era {localLife:F0}, " +
+                            $"{delta}) · da=padrone({(IsHost ? "client" : "host")}) · causa={causa} · " +
+                            $"fase={fase} · pavimento={BOSS_LIFE_FLOOR:F0} · vitaRicevuta={ownerLife:F0}");
+            }
+            catch (Exception e)
+            {
+                // Una scrittura che fallisce non deve fermare la ricezione: si perde l'allineamento, non il
+                // pacchetto (che porta anche posizione, animazione e orientamento).
+                ModLog.Error("[BossLife] allineamento non riuscito (" + e.GetType().Name + "): " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// Riallinea la fase DICHIARATA dal manager quando la vita del boss e' stata scritta dall'esterno.
+        ///
+        /// PERCHE' QUESTA E NON `CheckNextPhase()`. `CheckNextPhase` e' privata e distinta per ogni tipo di
+        /// boss (sei metodi, nessuna dichiarazione in `EnemyBehaviour`), e almeno una `ChangePhase` mette in
+        /// coda un attacco (`BurntFaceBehaviour.cs:225-245`): forzarla dall'esterno significa far partire una
+        /// decisione che appartiene alla macchina che SIMULA il boss, in un momento che nessuno ha scelto.
+        /// ⇒ la fase del boss si riallinea al primo colpo dopo, e questo e' dichiarato.
+        ///
+        /// `BossFightManager.SetCurrentActivePhase()` invece e' pubblica, non solleva eventi, non accende
+        /// niente, non manda pacchetti e non tocca la metrica: ricalcola `BossPhase.IsActive` e
+        /// `CurrentBossPhaseId` dalla vita corrente (la stessa cosa che il gioco fa in `Init`, in
+        /// `StartBossFight` e in `OnDamageBoss`). E' l'unico pezzo di "fase" che si puo' forzare senza
+        /// inventarsi una transizione.
+        ///
+        /// ⚠️ Solo sul manager il cui `Boss` e' ESATTAMENTE questo nemico: in una scena con piu' boss
+        /// (Amanecidas) allineare la fase del manager sbagliato sarebbe peggio che non farlo.
+        /// </summary>
+        private static string RealignBossPhase(Enemy boss)
+        {
+            try
+            {
+                BossFightManager[] managers = UnityEngine.Object.FindObjectsOfType<BossFightManager>();
+                if (managers == null || managers.Length == 0)
+                    return "non-forzata-nessun-manager";
+
+                bool found = false;
+                for (int i = 0; i < managers.Length; i++)
+                {
+                    BossFightManager manager = managers[i];
+                    if (manager == null || manager.Boss == null || manager.Boss != boss)
+                        continue;
+
+                    found = true;
+                    manager.SetCurrentActivePhase();
+                }
+
+                return found ? "manager-allineata(boss-al-primo-colpo)" : "non-forzata-manager-di-un-altro-boss";
+            }
+            catch (Exception e)
+            {
+                // La fase e' il "disegno": se non si puo' riallineare, la vita e' comunque scritta.
+                return "errore:" + e.GetType().Name;
+            }
+        }
+
         /// <summary>
         /// Applies the host's ownership token. This is the ONLY thing that sets ownership on a peer, so the
         /// two machines cannot disagree: one enemy, one authority.
@@ -5149,6 +5359,11 @@ namespace Blasphemous.Multiplayer.Client
 
             state.OwnedByLocal = ownedByMe;
             state.OwnerSince = Time.time;
+
+            // ⭐ IL PADRONE E' CAMBIATO: la prossima ricezione riallinea la vita del boss (se e' un boss).
+            // Qui e' il punto giusto e non `PauseEnemy`/`ResumeEnemy`: quelli vengono chiamati anche a ogni
+            // tick di invio per i nemici che non sono nostri, e il latch si riaprirebbe venti volte al secondo.
+            ForgetBossLifeAlignment(state);
 
             Enemy enemy = ResolveEnemy(id);
             if (enemy == null)
@@ -5449,6 +5664,11 @@ namespace Blasphemous.Multiplayer.Client
                     else if (!IsHost && !previous.OwnershipKnown)
                     {
                         previous.OwnedByLocal = true;
+
+                        // ⭐ Auto-risoluzione: sono diventato padrone. Il latch della vita del boss si riapre,
+                        // perche' se questo boss mi venisse tolto la vita va riallineata a chi lo prende.
+                        ForgetBossLifeAlignment(previous);
+
                         AdoptLastKnownPosition(enemy, id);
                         ResumeEnemy(enemy);
                         ApplyAggroTarget(enemy, id);
@@ -5654,6 +5874,13 @@ namespace Blasphemous.Multiplayer.Client
                 // information" ignores that its effect was on control flow.
                 if (claimState != null)
                 {
+                    // ⭐ Se il record diceva ancora "mio", QUESTO pacchetto e' l'istante in cui il boss e'
+                    // passato di mano: la vita che arriva da qui in poi e' quella del nuovo padrone, e va
+                    // presa una volta (vedi AlignBossLife). Il confronto va fatto PRIMA della scrittura,
+                    // perche' dopo `OwnedByLocal` e' false comunque e il cambio non sarebbe piu' visibile.
+                    if (claimState.OwnedByLocal)
+                        ForgetBossLifeAlignment(claimState);
+
                     claimState.OwnedByLocal = false;
                     claimState.OwnerSince = Time.time;
                 }
@@ -5684,6 +5911,10 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     claimState.OwnedByLocal = true;
                     claimState.OwnerSince = Time.time;
+
+                    // ⭐ Sono diventato io il padrone: il latch si riapre, cosi' se lo perdo di nuovo la vita
+                    // viene riallineata a chi lo prende.
+                    ForgetBossLifeAlignment(claimState);
                 }
 
                 ResumeEnemy(enemy);
@@ -5703,6 +5934,22 @@ namespace Blasphemous.Multiplayer.Client
                 // health with Get_Dead() already true - because Entity.Dead is COMPUTED as
                 // !(Life.Current > 0) - but with the death sequence never started.
                 enemy.SetHealth(currentLife);
+            }
+            else if (ownedRemotely)
+            {
+                // ⭐⭐ E IL BOSS, ALLORA? La vita viaggia in OGNI update anche per lui, e fino a qui veniva
+                // BUTTATA (`if (!isBoss)`): due pool di vita locali, quindi due barre, e lo scarto misurato
+                // e' di **110 HP su 400 (27,5%)** costante per tutto il fight.
+                // ■ Il canale: **non ne serve uno nuovo**. `currentLife` e' gia' nella ricezione, e chi manda
+                //   e' il padrone: nessun tipo di pacchetto, nessuna patch al server, nessun protocollo.
+                // ■ Il quando: **non a ogni pacchetto**. Una scrittura sola per situazione, all'ingresso in
+                //   scena e a ogni cambio di padrone (`EnemyState.BossLifeAligned`, riaperto da
+                //   `ForgetBossLifeAlignment`). Il resto lo fa il relay del danno, che gia' funziona.
+                // ■ Il divieto: **mai 0** (pavimento a 1 HP), **mai su un boss morto**, **mai in salita**.
+                //   Tutto dentro `AlignBossLife`, con la ragione scritta la'.
+                // ⚠️ Solo quando il MITTENTE dichiara di possedere il nemico: se dice "il padrone sei tu", la
+                // sua vita non e' un riferimento e non si tocca niente.
+                AlignBossLife(enemy, claimedId, claimState, currentLife);
             }
 
             // Record the snapshot as a TARGET. The position is applied smoothly in Update, once per frame,
