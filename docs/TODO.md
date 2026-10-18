@@ -7040,3 +7040,81 @@ DO NOT PRESS: the boss is dying - the cutscene is about to start
 - **`:6801` · `:6907` · `:6874` restano come storia** *(erano vere quando sono state scritte: la decisione non c'era)* ⇒ ⭐ **le nuove sezioni valgono come stato**.
 - **Che cosa cambia, in pratica**: **niente nel codice, tutto nelle priorità** — la finestra dei 1,5 s **non è più la voce 1 di una lista aperta**: è **una voce chiusa in `BUG-NOTI`**, con la sua via d'uscita e il suo marker da aggiungere **se ricapita**.
 - ⚠️ **La data di questa sezione** segue la serie del file *(`:6719` = `04:20` → `:6934` = `05:40`)*: è **la successiva**, non l'orologio della macchina *(che segnava le `04:28` quando è stata scritta)*. **Il nome della sezione non è una misura**: è un'etichetta.
+
+---
+
+## [2026-10-18 07:00] ⭐⭐ **LA "STRADA DI RISOLUZIONE" DEL RELAY — una strada più larga, non tre hook** — perché il ricevente non sa cos'è un proiettile, **la sonda da fare PRIMA** del fix, e **i 2 marker che restano alla voce 56** *(da chiudere insieme, ma **non oggi**)*
+
+**Fonti**: `docs\BUG-NOTI.md` **voce 7** *(i tre buchi, e la correzione alla fonte)* · `scratch\REFERTO-RELAY-EFFETTI.md` *(il canale, la strada 1 misurata, la strada 3 scartata)* · `scratch\DIAGNOSI-VOCABOLARIO-EFFETTI.md` *(le tre strade a confronto, 53 nomi su 53)* · `scratch\BUGNOTI-3BUCHI-E-23BOSS.md` *(⭐ la correzione importante: **il relay VEDE anche i proiettili dei 3 nemici**)*. **HEAD verificato: `8978107`** *(`git rev-parse HEAD`)* — il mandato indicava `00b9c94`, che è **il commit precedente** *(`2026-10-18 15:02` contro `15:00`)*; branch `fix-f1a`, albero pulito.
+
+⚠️ **E QUESTA SEZIONE NON CORREGGE QUELLE QUI SOPRA** *(`:6719` · `:6934` · `:7002`)* **e non tocca `docs\BUG-NOTI.md`**: la regola del file è **non si riscrive e non si compatta**, quindi qui si **aggiunge**, in fondo, e si **rimanda**. **Nessuna voce è dichiarata chiusa qui sotto** *(in particolare **non la 56**: vedi §4)*.
+
+### 1. ⭐⭐ LA "STRADA DI RISOLUZIONE" — **il problema**, in una riga e poi per esteso
+
+**In una riga**: 🔴 **il relay manda il *nome* del prefab + posizione + rotazione, e il ricevente deve *trovare il prefab* per istanziare la sua copia — ma oggi lo cerca SOLO nei campi del boss.**
+
+- ✅ **Il mittente non decide niente di semantico**: manda *`prefab (nome) + posizione + rotazione`* per **ogni** istanziazione che passa dal `PoolManager` *(un solo `Postfix`, `EffectRelay.cs:54-67`; il perché è scritto in testa al file, `:33-41`)*.
+- ⚠️ **Il ricevente invece deve risolvere** *nome → riferimento*, perché **i prefab non sono in `Resources`**: sono **referenze nei campi serializzati del codice** *(è la ragione per cui la strada 1 esiste, `:596-604`)*.
+- ⛔ **E oggi c'è UNA sola domanda**: *«il nome è un effetto del **mio** boss?»* — `Resolve(name)` *(`:605-623`)* consulta `_catalog` *(`:160-161`)*, che è costruito **solo** dal boss: `BuildCatalog` *(`:625-655`)* → `FindBosses` *(`:685-728`)* filtra gli `Enemy` del namespace `Gameplay.GameControllers.Bosses` *(`:730-735`)* → `HarvestBoss` *(`:743-851`)* riflette sui componenti del boss e segue i riferimenti `EnemyAttack` per **due passi**.
+- ✅ **Funziona per gli effetti del boss**, ed è **misurato**: **5 nomi su 5** del vocabolario di `ElderBrother` risolti dai campi della copia locale, su entrambe le macchine *(`[FxRisolvi] boss=si(campo=…)`)*; nella run di conferma il catalogo era **8 nomi** e il relay ha chiuso **88 mandati / 88 istanziati / 0 non risolti** *(`:6940-6951`)*.
+- ⛔ **NON funziona per altre due famiglie**:
+  - **i proiettili dei nemici comuni** — `BellGhostVariant`, `MeltedLady`, `RangedBoomerang`: il prefab sta nei campi **del nemico**, non del boss;
+  - **gli effetti del Penitente** *(`RangeAttackProjectile`, `ChargedAttackProjectile`, `PenitentFlamePillar`…)*: il prefab sta **nel suo** codice, e il Penitente **non è un `Enemy`** ⇒ non entra in `FindBosses`.
+- 📋 **`[FxRelay] non risolto`** *(`:472-488`)* = *«l'ho ricevuto, ma non so cos'è»*: una riga per nome per scena, il nome, il mittente e il numero di nomi del catalogo. Non è un errore: è **la copia che non nasce**.
+
+⭐ **E la correzione che cambia il fix** *(da `BUG-NOTI` voce 7, §"Una correzione alla fonte")*: **il canale VEDE anche i proiettili dei 3 nemici.** `BellGhostVariantAttack.cs:39`, `MeltedLadyAttack.cs:40`, `RangedBoomerangAttack.cs:40` chiamano `PoolManager.Instance.ReuseObject(projectilePrefab, …)`; il `ProjectilePool` privato **non è usato da nessuno** *(0 chiamate a `Spawn` in tutta `Assembly-CSharp`)* ⇒ il mittente **manda** quei proiettili, e a mancare è **solo la risoluzione** sul ricevente. ⇒ **il buco non è nel canale: è nel catalogo.**
+
+### 2. ⭐⭐ IL FIX — **una strada più larga, non tre hook**
+
+**La forma**: ⭐ **una sola "strada di risoluzione"** che cerca in **più sorgenti, in ordine** — e **si ferma alla prima che risponde**:
+
+| # | sorgente | cosa copre | stato |
+|---|---|---|---|
+| ① | **i campi del boss** | gli effetti del boss *(`CorpsesShockwave`, `MaceImpact`, …)* | ✅ **già c'è**, ed è misurato 5/5 |
+| ② | **i campi dei nemici** | **i proiettili** *(`BellGhostVariant`, `MeltedLady`, `RangedBoomerang`)* | ⛔ da aggiungere |
+| ③ | **i campi del Penitente** | **gli effetti del giocatore** | ⛔ da aggiungere |
+| ④ | ⚠️ **una cache per nome** | il costo delle tre precedenti | ⛔ da aggiungere *(la forma c'è già: `_catalog` è un `Dictionary<string, GameObject>`, `:160-161`)* |
+
+- ⭐ **Un fix → copre i 3 buchi E il Penitente.** Le sorgenti ② e ③ **non sono hook nuovi**: `HarvestBoss(Enemy boss)` *(`:743`)* non usa **nient'altro che `boss.gameObject`** *(`:751`)* e i suoi componenti ⇒ **lo stesso camminatore**, applicato a **più radici**. *(Le altre due famiglie di `BUG-NOTI` voce 7 — i due `InstantiateArea` — restano lavoro meccanico a parte: **quelli non passano dal pool**, quindi nessun catalogo li può vedere.)*
+- ⛔ **E non tre hook**, per la ragione già scritta in `BUG-NOTI` voce 7: un hook sul `ProjectilePool` sarebbe **un hook su codice che il gioco non esegue**.
+- ✅ **La forma del pacchetto non cambia**: il mittente continua a mandare `nome + posizione + rotazione`, il ricevente risolve più largamente, il dedup *(`:490-510`, chiave `prefab@x,y` arrotondata + finestra 0,5 s)* resta **com'è**.
+
+### 3. ⚠️ IL RISCHIO, E IL METODO — **prima la sonda, poi il fix**
+
+- ⚠️ **"Trovare il prefab da un nome" è l'unica cosa che il progetto non è mai riuscito a provare in generale.** La strada 3 — `Resources.FindObjectsOfTypeAll` — risponde `resources=si` su **53 nomi su 53** e sarebbe **la trappola perfetta**: per `LandingFx` restituisce `asset=no`, cioè ha trovato **l'istanza di scena (la copia dentro il pool), non il prefab** *(su 2 nomi su 53; `DIAGNOSI-VOCABOLARIO-EFFETTI.md` §4.1, §4.3)* ⇒ **un catalogo che sembra completo e ha un buco silenzioso**. Per questo `Resolve` **non ripiega su `Resources`** *(`:602-604`)*.
+- ⚠️ **La ricerca larga è lenta**: il camminatore ha un tetto di **96 componenti per radice** *(`MAX_BOSS_COMPONENTS`, `:148`)* e segue i riferimenti `EnemyAttack` per due passi; su **un** boss costa, su **tutti i nemici di una stanza + il Penitente** costa molto di più — e `Resolve` è chiamata **a ogni pacchetto ricevuto**. ⇒ ⭐ **serve la cache** *(e c'è già il posto: `_catalog`, `:160`)*; il ritmo attuale è **2 s** a catalogo vuoto e **10 s** a catalogo pieno *(`:134-137`, `:260`)*, **da rimisurare** con la strada larga.
+- ⚠️ **E va provata**, per un motivo che non è eleganza: se un nome non si risolve, **l'effetto si perde — silenziosamente**. Oggi il silenzio è dichiarato *(`non risolto`)*; con una strada larga il rischio è **peggiore**, perché un catalogo più grande *sembra* aver coperto tutto *(è esattamente l'errore che `LandingFx` insegna)*.
+- 📌 **QUINDI, PRIMA DI TUTTO: una SONDA** che dica **quali nomi si risolvono, e da dove**. ⭐ **Solo dopo, il fix.** È lo stesso metodo che ha funzionato per il canale: **misurare il vocabolario, non indovinarlo** *(`REFERTO-SONDA-EFFETTI.md` → `DIAGNOSI-VOCABOLARIO-EFFETTI.md`: si è partiti da «quale strada?» e si è arrivati a «la 1, 5/5»)*.
+
+**La sonda, nella forma minima** *(osservazione pura: nessuna decisione, nessun istanziato in più)*:
+
+```
+[FxSonda] nome="RangeAttackProjectile" boss=no nemici=si(campo=EnemyAttack.areaPrefab) penitente=si(campo=...) cache=no ms=1,8
+[FxSonda] riepilogo scena=… nomi=K boss=A nemici=B penitente=C nessuno=D msMax=… msTot=…
+```
+
+- **Le righe che contano sono tre**: *(a)* un nome che **oggi** è `non risolto` e **domani** si risolve da ② o ③ → **il fix ha un caso reale**; *(b)* un nome che **non si risolve da nessuna sorgente** → **quel nome va dichiarato perso**, non nascosto; *(c)* il **costo** (`ms`) per nome e per scena → è il numero che decide **se la cache basta**.
+- **Da fare nella stessa scena dei buchi** *(un boss che spara, o i tre nemici)*: la sonda **non inventa** i nomi, li prende dai `[FxRelay] non risolto` e dai `mando` dei log già raccolti.
+
+### 4. ⭐ I **DUE MARKER DELLA VOCE 56** — *da chiudere insieme*, e il pacchetto è di **tre** marker
+
+⚠️ **La voce 56 ha ancora aperto** *«2 marker mancanti (i conteggi del peer)»*: la cella in tabella *(`docs\TODO.md:103`)* la dà **CHIUSA dall'audit del 2026-10-12**, ma **la prova elencata copre i marker 1, 2, 4 e 5** *(il commit stesso si chiama «MARKER 1, 2, 4, 5 — i quattro locali»)*, e il **(3) — *i conteggi del PEER* — è elencato senza prova**. Il resto del file lo dice ancora aperto: `:4795` parla di *«due marker che oggi mancano»* — e, verificato sul codice, **uno dei due c'è** *(`ReportResolveFailure`, `EnemySyncManager.cs:1365-1379`, chiamata a `:5845`)*, mentre **l'altro è il (3)**. **E il codice di oggi conferma**: `IMPRONTA DIVERSA` *(`EnemySyncManager.cs:5835-5839`)* stampa `host=<fingerprint> locale=<fingerprint>` e i conteggi **solo locali** *(`spawn point locali`, `id locali`)*, perché **sul filo viaggia solo l'`int` dell'impronta** *(`NetworkManager.cs:582-591`, `:605-609`)*. ⇒ ⭐ **i "2 marker mancanti" sono i due pezzi del (3)**: *i conteggi del peer* e *il primo id presente su un lato solo*.
+
+**E siamo nel punto giusto per farli**, perché è **la stessa zona del marker dell'importo del danno** *(che serve perché: **176 PV persi, solo 10 documentati** — `:6940-6968` — e il proxy sta a **1,1 unità** dal locale ⇒ **la geometria non dice chi ha perso vita**)*.
+
+**📌 La lista — tre marker, zero comportamento** *(nessuno dei tre cambia una decisione: due sono righe di log, uno ha bisogno di pochi byte di osservazione sul filo; niente li legge per decidere)*:
+
+| # | marker | cosa misura | perché manca oggi | dove |
+|---|---|---|---|---|
+| **A** | **l'importo del danno** — `vitaPrima=` / `vitaDopo=` / `perso=` | **quanti PV** ha perso il `Penitent` **quando l'attaccante NON è un nemico** *(l'area relayata, la trappola, il proiettile)* | `[DannoPeer] APPLICATO` **esiste ma solo per il canale nemico** *(`EnemyHitPeerSync.cs:555-560`)*; per gli altri si ferma a `non inoltrato` *(`:571`, throttled `:580-592`)*, e `[Danno]` misura la vita del **boss** | dove il danno si applica al `Penitent` *(la stessa `PenitentDamageArea.TakeDamage` che il codice cita a `EnemySyncManager.cs:1337`)* |
+| **B** | **i conteggi del peer** *(voce 56, marker 3a)* | quante `spawn point` e quanti `id` ha **l'altro**, accanto ai propri | **non viaggiano**: il pacchetto porta solo `fingerprint` *(`NetworkManager.cs:591`)* | la riga `IMPRONTA DIVERSA` *(`:5835`)* |
+| **C** | **il primo id presente su un lato solo** *(voce 56, marker 3b)* | **quale** id diverge, non solo **che** diverge | come B: senza la lista del peer non si può dire **quale** | idem *(o l'uscita del `multiplayer sync dump` già esistente, `:1207`)* |
+
+- ⚠️ **Onestà sul costo**: **A** è **una riga di log** e basta. **B** e **C** hanno bisogno che **qualche numero del peer** arrivi *(due `int` in più sul pacchetto che esiste già, oppure una richiesta/risposta sul `dump`)*: è **ancora osservazione** — niente decide niente da quei numeri — ma **non è "solo una riga"**, e va detto **prima** di stimarlo. **Se C non si può fare senza la lista del peer, si dice così**: non si finge un marker che indovina.
+- ✅ **E a quel punto — e solo a quel punto — la voce 56 si può chiudere.** ⛔ **NON è chiusa da questa sezione**, e la cella *(`:103`)* **non si tocca**: si chiuderà **quando i tre marker saranno nei log** *(A è della stessa zona ma non è uno dei cinque della 56; B e C sono i due che mancano)*, con la prova nel commit, **come è stato fatto per 1, 2, 4 e 5**.
+
+### 5. 📌 LO STATO, E COSA NON SI FA
+
+- **Stato**: la **forma del fix** è nota *(una strada larga a quattro sorgenti, §2)*; **il primo passo è la sonda** *(§3)*; **i tre marker** *(§4)* sono **indipendenti** dal fix e si possono fare subito. ⛔ **Nessuno dei tre è "in lavorazione" qui**: questa sezione **scrive lo stato**, non apre cantieri.
+- ⛔ **Codice non toccato** *(questa tornata è un'aggiunta al TODO)* · ⛔ **`docs\BUG-NOTI.md` non toccato** · ⛔ **nessuna sezione esistente riscritta o accorciata** — e la voce 56 **solo rimandata**, mai modificata.
+- ⚠️ **La data di questa sezione** segue la serie del file *(`:6719` = `04:20` → `:6934` = `05:40` → `:7002` = `06:00`)*: è **la successiva**, non l'orologio della macchina *(che segnava le `15:0x`)*. Il nome della sezione **non è una misura**: è un'etichetta.
