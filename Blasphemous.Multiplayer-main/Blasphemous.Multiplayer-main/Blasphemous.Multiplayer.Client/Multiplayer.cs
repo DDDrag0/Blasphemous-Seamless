@@ -235,6 +235,19 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // Harmony nuove** (263 bersagli, invariati).
         BossDeathWarning.Tick();
 
+        // ⭐⭐ BossFightDeathWarning (18/10): L'AVVISO "WAIT FOR YOUR TEAMMATES" - la richiesta dell'utente,
+        // cioe' l'avviso che esce **quando il giocatore locale muore in una bossfight** e consiglia di NON
+        // respawnare e di aspettare gli altri. E' un avviso DIVERSO da quello qui sopra, in un momento
+        // diverso (quello e' la morte del BOSS e la sua cutscene, questo e' la morte del GIOCATORE).
+        //
+        // Il segnale e' la transizione vivo->morto (`PlayerDeathSync.IsLocalPlayerDead()`), letta in questo
+        // stesso ciclo per frame: **una per finestra di morte**. Il predicato "in bossfight" e' quello che
+        // la mod ha gia' (`EnemySyncManager.CountLiveBossesInScene()` > 0, costruito su `IsBoss`): senza un
+        // boss vivo in scena l'avviso NON esce. Tace anche se la finestra della cutscene di
+        // `BossDeathWarning` e' aperta, cosi' i due non si sovrappongono mai.
+        // Stesso `NotificationManager` della mod, stesso ciclo: **zero patch Harmony nuove (269)**.
+        BossFightDeathWarning.Tick();
+
         // TEMPORARY (DeathCorpseFollow): LA CAMERA DEL MORTO SEGUE IL COMPAGNO VIVO. Via (c): un
         // cadavere-copia resta sul posto e il Penitent locale (invisibile) si sposta sull'avatar del
         // compagno VIVO, che la mod ha gia' in scena - quindi la camera, legata al Penitent, lo segue da

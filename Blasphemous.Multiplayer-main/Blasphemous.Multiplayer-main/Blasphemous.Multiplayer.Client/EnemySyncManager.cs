@@ -4008,12 +4008,23 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Points an OWNED enemy at whichever player is closer, so its own AI can engage the other player.
+        /// Points an OWNED enemy at whichever player is closer, so its own AI can turn and attack towards
+        /// the other player.
         ///
-        /// This runs only for the machine that simulates the enemy, and only that machine's decision matters:
-        /// the AI then chases and attacks as it normally would, the position and animation are already synced
-        /// to the other machine, and the other player takes damage through the game's local pipeline. No
-        /// protocol, no server, and the damage path is untouched.
+        /// This runs only for the machine that simulates the enemy, and only that machine's decision
+        /// matters: the AI then chases and attacks as it normally would, and the position and animation are
+        /// already synced to the other machine. No protocol, no server, and no change to the damage path.
+        ///
+        /// ⚠️ CORREZIONE (18/10) — QUI C'ERA SCRITTO *"the other player takes damage through the game's
+        /// local pipeline"*, ED E' **FALSO**. Ogni macchina ferisce **il PROPRIO** `Penitent`: il codice
+        /// d'attacco del gioco legge `Core.Logic.Penitent`, cioe' il giocatore di QUESTA macchina, quindi un
+        /// colpo che atterra qui ferisce **il giocatore di chi simula**, mai quello remoto. L'altro prende
+        /// danno **solo quando e' la SUA macchina a simulare** (misurato: in coppia A il peer diventa padrone
+        /// a `L1511` e muore 19 s dopo, `L1641` — `scratch\DIAGNOSI-MEMORIA-NEMICI-E-AGGIO.md` §4.5).
+        /// L'unico percorso che attraversa le due macchine e' l'INOLTRO aggiunto in `1d9e4fa`: il colpo che
+        /// atterra sul proxy che questa funzione riposiziona viene inoltrato al peer, che lo applica al
+        /// **proprio** `Penitent` con la porta d'ingresso del gioco (`EnemyHitPeerSync.cs`). Scrivere che il
+        /// danno passa "dalla pipeline locale" faceva credere che questo proxy bastasse da solo: non basta.
         ///
         /// The proxy is positioned here, in the same pass, so the vision linecast tests a collider that is
         /// where the other player actually is.
@@ -4801,11 +4812,19 @@ namespace Blasphemous.Multiplayer.Client
                 state.OwnerSince = Time.time;
 
                 // VOICE 51: hold off taking when this machine is the CLOSER player but the enemy's position
-                // has not arrived yet. _remoteTargets is emptied by LevelLoaded, so in the instant a player
-                // walks into a room it is empty, and taking then would resume the enemy at its spawn copy and
-                // broadcast that stale position - before any corrective adopt could run. The current owner
-                // keeps transmitting until the handover token, so by the next scan the position is here and
-                // the take lands on the correct spot.
+                // has not arrived yet - the test is `_remoteTargets.ContainsKey(IdOf(enemy))`, i.e. "do I
+                // already know where THIS enemy is?". Taking then would resume the enemy at its spawn copy
+                // and broadcast that stale position - before any corrective adopt could run. The current
+                // owner keeps transmitting until the handover token, so by the next scan the position is
+                // here and the take lands on the correct spot.
+                //
+                // ⚠️ CORREZIONE (18/10) — QUI C'ERA SCRITTO *"_remoteTargets is emptied by LevelLoaded, so in
+                // the instant a player walks into a room it is empty"*, ED E' **FALSO DA FIX 51**:
+                // `_remoteTargets` NON viene svuotata dal caricamento del livello, e la scelta e' dichiarata
+                // a `LevelLoaded` (:2392-2397): gli id sono qualificati dalla SCENA ("sp|D01Z01S03|SPAWN|x|y"),
+                // quindi tenere la memoria e' cio' che rende sicuro il RIENTRO. E comunque questa attesa non
+                // ne dipende: la domanda e' su QUESTO id (`ShouldWaitForPosition`, :3756), non "il dizionario
+                // e' vuoto". Vedi `scratch\DIAGNOSI-MEMORIA-NEMICI-E-AGGIO.md` §6, punto 9.
                 //
                 // ShouldWaitForPosition carries the two guards that keep the wait from stranding the enemy:
                 // no reachable peer (nobody can send the position), or the wait has run too long. The host
