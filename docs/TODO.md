@@ -6996,3 +6996,47 @@ DO NOT PRESS: the boss is dying - the cutscene is about to start
 2. 🎯 **LA GEOMETRIA DELLO STESSO ATTACCO SU DUE MACCHINE** — perché la stessa raffica nasce a **~14 unità** di distanza *(mentre le due pedine stanno a **1,1 unità**)*: è **a monte** del dedup, e finché non si risponde **il doppione resta invisibile al relay**.
 
 ⚠️ **Una nota di metodo**: i log **non hanno un orologio** *(zero righe `HH:MM:SS`)*, quindi gli istanti del §2 sono **adiacenze di riga** *(fortissime: 1-4 righe)*, **non misure in secondi**; e il tempo del §5 è **interpolato** fra due campioni a 2,01 s.
+
+---
+
+## [2026-10-18 06:00] ⭐⭐ **LA DECISIONE È PRESA: SULLA FINESTRA DEI 1,5 s NON SI FA NIENTE** — il timer è **scartato** *(farebbe saltare una cutscene: **lo stesso danno**)*, **la via d'uscita c'è già** *(entrare e uscire)*, e il difetto **vive in `BUG-NOTI` voce 6**
+
+**Referto** *(la fonte)*: `docs\BUG-NOTI.md` **voce 6** — *la misura intera, le firme del log e il marker che manca*; a monte `scratch\TRIANGOLAZIONE-SKIP.md` *(la soglia)* e `scratch\DIAGNOSI-REGRESSIONE-RIENTRO.md` *(il meccanismo)*. **HEAD di questa tornata: `a98ad2b`**, branch `fix-f1a`.
+
+⚠️ **E QUESTA SEZIONE NON CORREGGE QUELLE QUI SOPRA** *(la regola del file: **non si riscrive e non si compatta**)*: `:6801` *(`§2.1`)*, `:6907` *(la lista corta, **voce 1**)* e `:6874` *(«non è più "in attesa di un test", è "in attesa di una decisione"»)* **erano vere quando sono state scritte** — **la decisione non c'era.** Restano **come storia**; le sezioni nuove valgono **come stato**.
+
+### 1. ⭐🛑 LA DECISIONE, in una riga
+
+**Sulla finestra dei 1,5 s non si fa niente.** Non «in attesa di una decisione», non rimandata a una tornata: **scartata per decisione**, e il difetto **resta noto e accettato**.
+
+### 2. 🔴 PERCHÉ NON SI FA — e non è prudenza: è **lo stesso danno**
+
+- **La sola cura proposta** era **una finestra con `Respawn()` automatico** *(quando `FADE` è acceso e `PLAYERDEAD` dura da più di *N* secondi)* — ed è **esattamente l'opzione 1 della voce 1** della lista corta (`:6907`).
+- ⚠️ **E il `Respawn()` che scatta mentre la scena del boss è in corso la cancella**: può **far saltare una cutscene** ⇒ sarebbe **lo stesso danno** che il progetto evita da giorni *(il fatto è già misurato nella voce 5, `docs\TODO.md:6191`)*.
+- ⇒ ⭐ **Sarebbe curare un danno con lo stesso danno.** **SCARTATO per decisione** — e **non** «da valutare».
+
+### 3. ✅ PERCHÉ SI PUÒ — la via d'uscita **esiste già**
+
+- ⭐ **Entrare e uscire**: un **cambio di livello** — *il load è l'unico punto in cui il gioco rimette a posto da solo `ResetManager()`, il `FADE` e `DEAD_SCREEN`, come nella voce 5* — **resetta il fade** ⇒ il giocatore **torna comandabile**.
+- 📌 **Il comportamento è riportato dall'utente; il meccanismo è quello che il gioco usa già** *(non una mitigazione della mod)*. ⇒ **il costo di questa voce è basso: c'è una via d'uscita e non richiede un fix.**
+
+### 4. ⚠️ PERCHÉ È ACCETTABILE — **raro, e non a comando**
+
+- ⚠️ **Non riproducibile a comando**: l'utente **ci ha provato più volte** e **non ci riesce**.
+- ⭐ **E non è una combinazione di tasti: è un confine al decimo di secondo** — **≈1,3 s ⇒ blocca**, **≈2,7 s ⇒ funziona**, **stesso binario** *(la finestra è ≈1,5 s, il **9-15%** del video, **in fondo**: proprio dove si preme per saltare)*.
+- ⇒ **Un difetto così non si insegue con un timer a caso**: si **documenta** *(voce 6)* e si lascia **dov'è**.
+
+### 5. 📌 DOVE VIVE ORA
+
+- **`docs\BUG-NOTI.md` voce 6** — *«Lo skip della cutscene del boss uccide il ritorno in vita»*, titolo **RARO · NON RIPRODUCIBILE · RECUPERABILE** *(PREZZO NOTO, non un difetto in lavorazione)*: sintomo, causa *(`DeadScreenWidget.cs:87-96` → `Fade(1.5 s, → Respawn())` contro `Cinematics.EndCutscene:154-190` → `FadeInOut`; **un solo** `currentTween`, `FadeWidget.cs:48-72`, `:190-222`; `CHERUB_RESPAWN` che blocca il rilascio del `FADE`, `:212-215`)*, la tabella delle due run, le **firme del log** e il contatore `Active: True` **6** / `False` **5** *(16/16 nella run sana)*.
+- ✅ **Ed è il posto giusto**: `BUG-NOTI` si aggiorna **solo su richiesta esplicita**, e la richiesta è arrivata. ⛔ **Il codice non è stato toccato**: qui **non c'è un fix da fare**, c'è **uno stato da scrivere**.
+
+### 6. 📌 E IL MARKER CHE SERVIREBBE, se un giorno ricapita
+
+**Una riga che dica quando il fade è in volo e quando arriva `EndCutscene`.** ⚠️ **Oggi non esiste**: `Called fade function … Active: True` è un marker **d'avvio**, **non** di tween ucciso *(nella finestra n.4 sta **1 frame** dopo il `FADE` acceso, mentre il `Respawn()` arriva **1,4 s** dopo)* ⇒ senza quella riga **un log non distingue** «il tween è stato ucciso» da «il tasto non è arrivato». **Con quella riga**, lo stesso caso si diagnostica da un log invece che da una ricostruzione.
+
+### 7. ⚠️ NOTA PER IL LETTORE
+
+- **`:6801` · `:6907` · `:6874` restano come storia** *(erano vere quando sono state scritte: la decisione non c'era)* ⇒ ⭐ **le nuove sezioni valgono come stato**.
+- **Che cosa cambia, in pratica**: **niente nel codice, tutto nelle priorità** — la finestra dei 1,5 s **non è più la voce 1 di una lista aperta**: è **una voce chiusa in `BUG-NOTI`**, con la sua via d'uscita e il suo marker da aggiungere **se ricapita**.
+- ⚠️ **La data di questa sezione** segue la serie del file *(`:6719` = `04:20` → `:6934` = `05:40`)*: è **la successiva**, non l'orologio della macchina *(che segnava le `04:28` quando è stata scritta)*. **Il nome della sezione non è una misura**: è un'etichetta.
