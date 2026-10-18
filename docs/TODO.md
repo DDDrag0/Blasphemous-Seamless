@@ -7118,3 +7118,138 @@ DO NOT PRESS: the boss is dying - the cutscene is about to start
 - **Stato**: la **forma del fix** è nota *(una strada larga a quattro sorgenti, §2)*; **il primo passo è la sonda** *(§3)*; **i tre marker** *(§4)* sono **indipendenti** dal fix e si possono fare subito. ⛔ **Nessuno dei tre è "in lavorazione" qui**: questa sezione **scrive lo stato**, non apre cantieri.
 - ⛔ **Codice non toccato** *(questa tornata è un'aggiunta al TODO)* · ⛔ **`docs\BUG-NOTI.md` non toccato** · ⛔ **nessuna sezione esistente riscritta o accorciata** — e la voce 56 **solo rimandata**, mai modificata.
 - ⚠️ **La data di questa sezione** segue la serie del file *(`:6719` = `04:20` → `:6934` = `05:40` → `:7002` = `06:00`)*: è **la successiva**, non l'orologio della macchina *(che segnava le `15:0x`)*. Il nome della sezione **non è una misura**: è un'etichetta.
+
+---
+
+## [2026-10-18 08:00] ⭐⭐ **IL PUNTO COMPLETO: quattro voci della lista corta sono già chiuse da tre commit — e due voci nuove che non sta guardando nessuno**: il **nome di scena della 1ª passata** *(che può nascondere un boss VIVO)* e le **63 `NullReferenceException` di `MapManager.RefreshMap`** *(codice nostro)*; più **la casa** *(`verify-deploy` con i marker fermi all'8-12/10)*, **la Colpa** *(voce 63: mai cominciata)* e **la cerimonia** *(studiata e scartata con 3 prove)* — chiusa da **LA LISTA CORTA, RIFATTA**
+
+> **Che cos'è questa sezione**: la fotografia di **tutte** le voci ancora aperte, presa a **HEAD `13f3d52`** *(albero pulito)*, con l'elenco di **quelle che i commit recenti hanno già chiuso e che il TODO non registra**.
+> **Da dove viene**: `scratch\PUNTO-COMPLETO.md` *(297 righe — la tabella delle 32 voci aperte, la casa, la Colpa, la cerimonia)*, `scratch\STUDIO-FLAG-AC43.md` *(§4.1-§4.4: il nome di scena)*, `scratch\REFERTO-MARKER-PACCHETTO.md` *(§2.4: la condizione di chiusura della voce 56)*.
+> ⛔ **Cosa questa sezione NON fa**: non riscrive, non compatta, non corregge **nessuna** sezione precedente *(si leggono come storia)*, **non tocca `docs\BUG-NOTI.md`**, **non tocca una riga di codice**, e **non dichiara chiusa la voce 56** *(serve un log, non un build)*. È **un'aggiunta in fondo, con i rimandi**.
+
+---
+
+### ① ✅ **LE VOCI CHE I COMMIT HANNO CHIUSO** — *il TODO non lo registra*
+
+**Il fatto, in una riga**: la **lista corta `[2026-10-18 04:20]` §5** *(`:6901-6914`)* ha **otto voci**, e a HEAD **quattro non sono più lavoro** — chiuse **da tre commit** che il TODO **non nomina mai** in quel ruolo.
+
+| # | la voce della lista del `04:20` | chi la chiude | prova *(verificata a HEAD)* |
+|---|---|---|---|
+| **2** | ⚠️ **LE DUE BARRE** *(`:6908`)* — *«110 HP = 27,5 % di scarto costanti»* | ⭐ **`9baeb15`** *(P1 — la vita del boss viaggia)* | `EnemySyncManager.cs:5254` *(`[BossLife] — LA VITA DEL BOSS VIAGGIA: "STATO + DISEGNO INSIEME"`)*, `:5313` `AlignBossLife`, `:5322` `state.BossLifeAligned`, `:5361` `causa = padrone-cambiato \| ingresso-in-scena` |
+| **3** | ⭐ **LA FINESTRA DELL'AVVISO** *(`:6909`)* — *«`DO NOT PRESS` parte dal `Kill()`, la cutscene arriva ≈9-21 s dopo … DA SPOSTARE»* | ⭐ **`8978107` ②** — *la finestra non parte più dal `Kill()` ma dalla CUTSCENE*, **zero patch Harmony** | `BossDeathWarning.cs:47-57` *(armamento + tetti `CINEMATIC_ARM_TIMEOUT=60`, `CINEMATIC_WINDOW_MAX=45`)*, `:127-145`; `BossFightDeathWarning.cs:179` `if (BossDeathWarning.CutsceneWindowOpen)` |
+| **7** | 📌 **LE CORREZIONI AI COMMENTI** *(`:6913`)* — i **due commenti falsi**: `ApplyAggroTarget` e la giustificazione di `ShouldWaitForPosition` | ✅ **`8978107` ③** | `EnemySyncManager.cs:4102` → *«⚠️ CORREZIONE (18/10) — QUI C'ERA SCRITTO “the other player takes damage through the game's …»*; `:4905` → *«⚠️ CORREZIONE (18/10) — QUI C'ERA SCRITTO “_remoteTargets is emptied by LevelLoaded …»* — **i due commenti ora dicono il vero** |
+| **6** | 📌 **I BUG PICCOLI** *(`:6912`)* — **la metà `scena=`** *(corretta)* **e la metà “flag a stanza”** *(decaduta)* | ⭐ **`13f3d52` ③** per la prima; **premessa falsa** per la seconda | `SceneForBossView()` *(`EnemySyncManager.cs:2773`)* legge la scena **dal gioco** *(`Core.LevelManager.currentLevel.LevelName`)* e la riga stampa `scena=<nuova> · mod=<quella della mod>` *(`:2645`)*; ⚠️ **`SceneForMarker()` non è stato toccato di proposito** *(`scratch\REFERTO-MARKER-PACCHETTO.md:119`)*. E il *«flag a stanza»*: `…_BOSSDEAD` senza suffisso **esiste 11 volte su 12** ⇒ lo studio dice **«non toccare»** *(`scratch\STUDIO-FLAG-AC43.md:55-78`, `:358-385`)* |
+
+**E la quinta, che però non è un commit**: la **voce 1** della lista *(la finestra dei 1,5 s)* è chiusa **PER DECISIONE**, non per fix — *«sulla finestra dei 1,5 s non si fa niente»* *(`[2026-10-18 06:00]`, `:7002-7041`)*, e vive in **`BUG-NOTI` voce 6** come prezzo noto.
+
+**Il conto torna e va detto**: **8 voci** = **4 chiuse da un commit** *(2, 3, 6, 7)* + **1 chiusa per decisione** *(1)* + **3 ancora aperte** *(4 = i 3 buchi del relay, 5 = i 23 boss, 8 = la casa)*.
+
+⚠️ **E c'è un dato che vale la pena scrivere, perché è la misura esatta di quanto il TODO sia indietro**:
+
+```
+grep 9baeb15 docs\TODO.md   → 0   ← il TODO non nomina MAI il commit che chiude la sua voce n.2
+grep 13f3d52 docs\TODO.md   → 0   ← né il commit di HEAD, che chiude la metà della voce n.6 e i 3 marker
+grep 8978107 docs\TODO.md   → 1   ← una sola volta, e non nella lista corta
+```
+
+⇒ ⭐ **Dichiarato chiaro, come va dichiarato**: **queste 4 voci sono chiuse dai commit `9baeb15`, `8978107` e `13f3d52`** — **la lista corta del `04:20` resta come storia**, non si tocca e non si riscrive. È **uno stato superato**, non un errore: la sezione fu scritta **prima** di quei tre commit.
+
+**E la voce 56 — che NON è una voce della lista — va detta con la stessa precisione**:
+
+- ✅ **i 3 marker dell'ultimo pacchetto sono implementati e nella DLL**: `[DannoVita]` *(`PenitentLifeMarker.cs:72`)* e `[Impronta]` *(`SyncIdListMarker.cs:71`, + `AttackType.SyncIdList = 202`)* — verificati **nel file**, alla riga citata;
+- ⛔ **ma “implementata” non è “provata”**: **la voce 56 NON è chiusa**, perché manca **un log**;
+- ⭐ **la condizione di chiusura è nera su bianco** in `scratch\REFERTO-MARKER-PACCHETTO.md:99-105` *(§2.4)*: *una run in cui **almeno una** `[Impronta] confronto #n` compaia **con i due `primoIdSolo…` valorizzati**, oppure con **entrambi** `(nessuno)` se i conteggi coincidono ma le impronte no*;
+- ⛔ **e la cella `:103` non si tocca**: oggi dice **“✅ CHIUSA”** per i marker 1, 2, 4 e 5, e i due che mancano sono **il (3)**.
+
+---
+
+### ② 🔴 **LE DUE VOCI NUOVE** — *nessuno le sta guardando*
+
+#### A) 🔴 **IL NOME DI SCENA NELLA 1ª PASSATA** — *è la priorità n.1 dello studio AC43, e non è un problema di log*
+
+- ⚠️ **Il difetto**: `HideDefeatedBosses` *(e `FirstBossDeadFlagOn`)* leggono **`_scene`**, e `_scene` è assegnata **solo** in `LevelLoaded` — ma la prima passata di spawn gira **prima** di `OnLevelLoaded`. ⇒ **nella prima passata leggono la stanza PRECEDENTE**. **Misurato: 7 su 7 in `G2`, 6 su 6 in `G1`** *(`scratch\STUDIO-FLAG-AC43.md:313-323`; `docs\TODO.md:6498-6499`)*.
+- 🔴 **E da FIX ② un flag acceso SCAVALCA il veto “sembra VIVO”** — la condizione è nel codice, ed è scritta così *(`:328-333`)*:
+
+  ```csharp
+  bool vivoScavalcato = BossLooksAlive(enemy);
+  if (vivoScavalcato && flag == null)   // ← il veto vale SOLO con il flag spento
+  ```
+
+  ⇒ ⭐ **con un confronto largo, un flag sbagliato acceso + un boss vivo nella stanza nuova = boss NASCOSTO** — e **lo spegnimento è irreversibile nella sessione**: `_hiddenBossCorpses` *(`EnemySyncManager.cs:682`, azzerato solo in `LevelLoaded`)* e `RegisterEnemy` **salta** le istanze nascoste *(`:3362`)* ⇒ **la fight diventa invisibile e non riparte fino a un ricaricamento**. **È il peggior danno possibile.**
+- ⭐ **Il fix, ed è piccolo**: leggere la scena **dal gioco** — `Core.LevelManager.currentLevel.LevelName`, **la stessa sorgente con cui il gioco scrive `_AC43`** e **la stessa che usa già `SceneForBossView`** *(`EnemySyncManager.cs:2773`)* — invece di `_scene`. **≈2 righe** *(`scratch\STUDIO-FLAG-AC43.md:348-354`)*.
+- ⛔ **Ma non è “solo un marker”**: **tocca un predicato che SPEGNE i boss** ⇒ **merita un mandato suo e un test**. E ⚠️ **`13f3d52` non lo copre**: quel commit ha corretto **solo l'etichetta di `[BossView]`**, e **lo dichiara fuori scope** *(`REFERTO-MARKER-PACCHETTO.md:119`)*.
+- 📌 **Da chiudere PRIMA dei 23 boss** *(voce 18 / la voce 5 della lista)*: è **l'unico rischio latente reale** che lo studio ha trovato, e **non si vede in nessun log** finché non morde.
+
+#### B) 🔴 **LE 63 `NullReferenceException` in `Map.MapManager.RefreshMap` ← `Multiplayer.OnLateUpdate`**
+
+- ⚠️ **Il fatto**: **63 eccezioni** in **una** sessione, stanza **`D17Z01S01`**, stack `Map.MapManager.RefreshMap` ← **`Multiplayer.OnLateUpdate`**, tutte fra **`L907` e `L1405`** *(`docs\TODO.md:6609`, `DIAGNOSI-PAUSA-E-DUE-BARRE.md` §6)*.
+- 🔴 **È CODICE NOSTRO**: la mod chiama il `Map` **fuori dalla bossroom**, nel ciclo di rete. **63 volte in una sessione**, **e nessun proprietario**: la voce sta **solo** in una riga di una sezione datata, e **in nessuna lista**.
+- ⭐ **E la sua unica difesa è un'assenza**: *«nella sessione di stasera sono 0»* *(`DIAGNOSI-REGRESSIONE-RIENTRO.md` §6)*. **Zero in una sessione è un'assenza, non una chiusura** — è esattamente la forma di prova che questo progetto ha già pagato altrove.
+- 📌 **E c'è una nota che nessuno ha scritto**: **63 `NullReferenceException` in `OnLateUpdate` non sono solo un log sporco** — un'eccezione per frame **è una perdita di prestazioni**, e `OnLateUpdate` è **il punto in cui la mod scrive ogni giro**. Va messa come **voce di prestazioni**, non come igiene.
+
+---
+
+### ③ 🟡 **LA CASA** — *più seria di come la chiamavamo*
+
+**Il quadro**: **l'unico pezzo di attrezzatura che verifica davvero** è uno script **in `scratch\`**, e **l'unico strumento in `tools\`** che dovrebbe verificare **non discrimina**.
+
+- ⚠️ **`verify-deploy.ps1`**: *non “non controlla”* — **i suoi 9 marker sono fermi al 2026-10-08 → 2026-10-12** *(`tools\verify-deploy.ps1:59-73`)*: `orientSkip=`, `gameOrientBurst=`, `[OrientByEnemy]`, `[GameOrientByEnemy]`, `[AnimByEnemy]`, `[AnimName]`, `[EnemyJoin]`, `[Falo''] memoria nemici`, `IMPRONTA DIVERSA`. **Ogni build degli ultimi ~250 commit li contiene tutti** ⇒ **il livello dei marker non può fallire**;
+- ⚠️ **l'hash è vincolante SOLO con `-ExpectedHash`** *(`:181-194`)*: senza il parametro lo **stampa e basta**;
+- ⚠️ **e senza la sonda in `scratch\cecil`** *(`:49`)* **i marker si saltano IN SILENZIO** *(`:216`: «sonda Mono.Cecil assente: salto il controllo dei marcatori»)*;
+- ⇒ ⭐ **la conseguenza, ed è la frase che conta**: **qualsiasi build recente passa e stampa “Puoi testare”** *(`:280`)* ed **esce 0** — anche una DLL di due settimane fa. *(La frase del TODO «stampa “puoi testare” anche su una DLL sbagliata» è **vera nel risultato** e **imprecisa nel meccanismo**: lo script **sa dire NO**, è il suo **elenco** a essere un reperto archeologico.)*
+- ✅ **Il sostituto esiste e funziona**: `scratch\marker-check.ps1` *(51 righe, `-Dll` + `-Marker[]` **obbligatori**, cerca il **contenuto** sui byte grezzi in UTF-16LE **e** UTF-8, e **sa dire NO**)* — ⚠️ **ma sta in `scratch\`, non in `tools\`**, e **non è versionato insieme al codice**. Finché sta lì, **non è un gate**: è una cosa che **qualcuno si ricorda di lanciare**.
+- ⚠️ **lo zip per `G1` NON ESISTE**: l'unico in `tools\` è `BlasphemousCOOP-enemysync.zip` — **1.112.105 byte, `mtime 2026-10-06 22:18`**, **50 voci**, e le prime sono **`BepInEx\…`**, cioè **il loader**, **non una build**. *(`ModdingTools-win64.zip`, l'altro, è un attrezzo, non la mod.)* ⇒ **non è «lo zip da aggiornare»: è «lo zip che non c'è»**. Serve un artefatto **prodotto dal deploy** — cartella `Modding\` + `SERVER-COOP\`, **con `sha256` e i commit scritti dentro** — non un pacchetto preparato a mano una volta;
+- ✅ **e quello che già funziona, perché va detto anche questo**: il **gate dei bersagli Harmony** sta **dentro** `deploy-local.ps1` ed è **bloccante** *(`:68-85`, `throw` a `:85`)* · **`Modding\data\*` viene copiato** *(quindi `Common.dll` non resta indietro)* · **`DeployToGame=false`** *(la build **non tocca più il gioco**)*.
+
+---
+
+### ④ ⚠️ **LA COLPA (voce 63)** — *mai implementata, e sparita dai radar*
+
+- ⭐ **Che cos'era**, con **la formula dell'utente** *(`docs\TODO.md:5070`)*:
+
+  > *«la **grief sulla vita** in caso di **morte** e **non** seduta al falò»*
+
+- ⇒ ⭐ **È la COLPA** *(la penalità di morte del gioco, le **spine** sulla barra)*, **non il griefing fra i due giocatori**, e la definizione dice **due cose**: **`Stats.Life`, non `Fervour`** · **morendo, non al falò** *(sedersi NON deve aggiungere Colpa)*.
+- ⚠️ **Mai implementata**: **0 commit di codice**. Verificato in due modi indipendenti *(`scratch\PUNTO-COMPLETO.md` §3.2)*: `git log --grep` su *colpa* / *guilt* / *spine* restituisce **solo documentazione**; e `git grep -i guilt` nel client dà **7 occorrenze, tutte in commenti e in una riga di log** *(`PlayerDeathSync.cs:248-283`)* ⇒ **la mod LEGGE i fattori di colpa e li stampa** *(`vita={MaxFactor}` / `fervour={MaxFactor}`)*, **non li scrive e non li sincronizza**. Il commento del codice è esplicito: *«the game's native guilt system … is the only thing that ever moves it»* *(`:261-263`)*.
+- 🔴 **Ed è SPARITA**: ultima menzione il **2026-10-16** — *«Invariata»* *(`:6127`, `:6223`)* — e **assente** dalle liste corte del **17** *(`[2026-10-17 23:40]`)* e del **18** *(`[2026-10-18 04:20]`)*. *(Verificato: `grep "voce 63"` → **16 righe**, **nessuna** nelle due liste.)*
+- ⇒ 📌 **Va dichiarata come è, e questa è la formula**: **«funzionalità mai cominciata — né aperta in lista né chiusa»**. È **lo stato peggiore** per un documento che si dichiara punto unico di verità: se **si fa**, va **rimessa in lista**; se **non si fa**, va **deciso e scritto** — come è stato fatto per la voce 58.
+
+---
+
+### ⑤ ⛔ **LA CERIMONIA DEL BOSS** — *la memoria era giusta a metà*
+
+- ✅ **È stata studiata**, e in **tre** documenti diversi, con **tre oggetti diversi**:
+  1. **`scratch\STUDIO-TUTTI-NELLA-BOSSROOM.md`** — il «punto 0»: **infattibile COME SCRITTO** *(`:45`)*. La catena è **`Collider2D` → FSM → `UnityEvent`** e **tre quarti stanno negli asset di scena**, che **non sono nel repo**;
+  2. **`scratch\STUDIO-VIA-BOSS-E-TRIGGER.md`** — il trigger: **«non si fa»**, rischio **ALTO**, **tre prove**: *il trigger **è già scattato** su ogni macchina che entra* · **`BossBlock` = 0 occorrenze in tutta `Assembly-CSharp`** *(`:174-179`; esiste solo come stringa nei log, accesa da una FSM)* · **`onStartBossFight.Invoke()` è l'ULTIMA riga** del metodo *(`:121`)* e **non imposta `IsFightStarted`** *(`:119`)*;
+  3. **`scratch\STUDIO-PUNTO-0-RESET.md`** — la soluzione vera, ed è **un'altra**: **non trapiantare il boss** *(`3e52fc9`)*. *«Torna nuovo. È nuovo.»* ⇒ **togliendo il corpo dal corridoio, il trigger torna raggiungibile e la cerimonia parte da sé**.
+- ⛔ **Perché no**, in tre righe: **non è decidibile dal repo** *(la scena è `data.unity3d`, LZ4HC, non decodificata)* + **il rischio è una STANZA BLOCCATA** *(`BossBlock` acceso + barriera su + boss spento: non si annulla in un commit)* + ⭐ **il problema che doveva risolvere è stato risolto PER L'ALTRA VIA, e verificato in gioco**.
+- ⚠️ **MA NON È IMPOSSIBILE, e va detto anche questo**: manca **il test** *(5 passi, **mai fatto**: `STUDIO-VIA-BOSS-E-TRIGGER.md` §7.3 — «rientro con la fight in corso»)* e manca **il marker `[Zona]`**. La strada scritta **non è «skippare la cerimonia»: è un gate sul giocatore che ENTRA**. Finché quel test non c'è, **la decisione del progetto è non toccare la cerimonia**, ed è una decisione, non una svista.
+- ⭐ **E il fallback dichiarato è `IntroJump()`** *(`ElderBrotherBehaviour.cs:191-194`; **1 definizione, 1 chiamante**: `ElderBrotherIntroDummy.cs:55`)* — ⚠️ **NON implementato** *(dichiarato: «resta il fallback, fuori da questo commit»)*, **per-boss**, **non idempotente** *(due chiamate = due coroutine + due `jumpAttack.Use`)*, **passa dalle clip** ⇒ **può accendere la barriera**, **non fa la cerimonia** *(si perdono ≈4,7 s di messa in scena)*, e **non è mai stato provato in gioco** *(`scratch\STUDIO-PUNTO-0-RESET.md:282-331`)*.
+- ⚠️ **E va distinto dall'ALTRO fallback**, quello della **voce 58 / M1** *(`:5391-5395`: «riaprire la guardia e mandare il colpo letale»)*: sono **due cose diverse in due catene diverse** — *ingresso del boss → `IntroJump`* contro *morte del boss → colpo letale*. **Chi cerca «il fallback» senza dire quale, sbaglia riga.**
+
+---
+
+### ⑥ 📋 **E LA LISTA CORTA, RIFATTA** — *con lo stato vero*
+
+> **Sette voci**. Le prime due **non sono nella lista del `04:20`** e sono **le più urgenti**; la 3-6 sono **lavori dichiarati**; la 7 è **una decisione presa**. *(Le voci 2, 3, 6 e 7 della vecchia lista **non ci sono più**: le hanno chiuse `9baeb15`, `8978107` e `13f3d52` — §①. La voce 1 è chiusa **per decisione**.)*
+
+| # | cosa | perché qui | rimando |
+|---|---|---|---|
+| **1** | 🔴 **Il nome di scena in 1ª passata** *(può nascondere un boss VIVO)* | **l'unico rischio latente che spegne un boss e non torna indietro senza ricaricare**, e **va chiuso PRIMA dei 23 boss** | §②-A; `STUDIO-FLAG-AC43.md:313-354`; `:6498-6499` |
+| **2** | 🔴 **Le 63 NRE di `RefreshMap`** *(codice nostro)* | **63 in una sessione**, **nessun proprietario**, **in nessuna lista**, e **costa prestazioni** oltre al log | §②-B; `:6609`; `DIAGNOSI-PAUSA-E-DUE-BARRE.md` §6 |
+| **3** | 🟡 **La casa** *(`verify-deploy` · `marker-check` in `tools\` · lo zip per `G1`)* | **l'unica voce che rende false tutte le altre**: con i marker dell'8-12/10, **ogni «verificato» è a rischio** | §③; `tools\verify-deploy.ps1:59-73`, `:181-194`, `:216`; `tools\deploy-local.ps1:68-85` |
+| **4** | 🟡 **La Colpa** *(voce 63 — mai cominciata)* | **la cosa che l'utente ha chiesto**, e **dal 16/10 non è in nessuna lista** | §④; `:5035-5077`, `:6223`; `PlayerDeathSync.cs:248-283` |
+| **5** | 🟡 **Gli eventi del boss** | **le animazioni sono provate**; **gli effetti viaggiano** *(relay, 88/88)*; il residuale è **la strada di risoluzione**, e **prima va la SONDA** | `[2026-10-18 07:00]` `:7046-7120`; `docs\BUG-NOTI.md:317-430`; `:6821-6829` |
+| **6** | 🟡 **I 23 boss** *(la mira)* **e 12 su 17** *(la morte recitata)* — **dopo la 1** | **il lavoro più largo e il meno rischioso**: **un boss per volta, con la forma già provata** su `ElderBrother` | `:6831-6836`; `docs\BUG-NOTI.md:434-553`; voce 18 |
+| **7** | ⛔ **La cerimonia** | **studiata e scartata con 3 prove**; **non impossibile, ma non conveniente** — e **il problema è stato risolto per l'altra via** | §⑤; `STUDIO-VIA-BOSS-E-TRIGGER.md`; `STUDIO-PUNTO-0-RESET.md`; `3e52fc9` |
+
+⚠️ **E due cose che restano fuori di proposito, come prima**: **la finestra dei 1,5 s** *(chiusa per decisione, `BUG-NOTI` voce 6)* e **il flag “a stanza”** *(premessa falsa: 11 su 12)*.
+
+---
+
+### ⑦ 📌 **LO STATO DI QUESTA SEZIONE**
+
+- ✅ **Aggiunta, non riscrittura**: le sezioni precedenti *(compresa la lista corta del `04:20`, che qui è dichiarata **superata**)* **restano intatte e leggibili come storia**. Nessuna riga cancellata, nessuna sezione accorciata.
+- ⛔ **`docs\BUG-NOTI.md` non è stato toccato** *(voci 1-8 già aggiornate)* · ⛔ **nessuna riga di codice toccata** · ⛔ **la voce 56 NON è dichiarata chiusa** *(manca il log, non il build: `REFERTO-MARKER-PACCHETTO.md:99-105`)*.
+- ⚠️ **La data di questa sezione** segue **la serie del file** *(`:7002` = `06:00` → `:7046` = `07:00`)*: è **la successiva**, non l'orologio della macchina. **Il nome della sezione non è una misura**: è un'etichetta.
+- ⚠️ **E i numeri di riga del codice vanno letti come indizi, non come coordinate**: il TODO ne cita già quattro **sbagliati a HEAD** *(`EnemySyncManager.cs:4516`, `:4377`, `:5241`, `:790`)*. **Citare il metodo.**
