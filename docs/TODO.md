@@ -7253,3 +7253,144 @@ grep 8978107 docs\TODO.md   → 1   ← una sola volta, e non nella lista corta
 - ⛔ **`docs\BUG-NOTI.md` non è stato toccato** *(voci 1-8 già aggiornate)* · ⛔ **nessuna riga di codice toccata** · ⛔ **la voce 56 NON è dichiarata chiusa** *(manca il log, non il build: `REFERTO-MARKER-PACCHETTO.md:99-105`)*.
 - ⚠️ **La data di questa sezione** segue **la serie del file** *(`:7002` = `06:00` → `:7046` = `07:00`)*: è **la successiva**, non l'orologio della macchina. **Il nome della sezione non è una misura**: è un'etichetta.
 - ⚠️ **E i numeri di riga del codice vanno letti come indizi, non come coordinate**: il TODO ne cita già quattro **sbagliati a HEAD** *(`EnemySyncManager.cs:4516`, `:4377`, `:5241`, `:790`)*. **Citare il metodo.**
+
+---
+
+## [2026-10-18 09:00] ⭐⭐ **LA PAUSA CONDIVISA È CHIUSA — e con lei la NRE che la teneva muta**: la pausa diventa **una regola** *(`50c8ca9`, testata dall'utente)* e `RefreshMap` **smette di lanciare** *(`bc834f3`)*; più **la lista corta rifatta** *(5 voci, la casa in testa)*, **i 4 flag** che nessuna lista nominava, e **le righe da non dimenticare**
+
+**Fonti**: `scratch\REFERTO-PAUSA-CONDIVISA.md` *(la V2: i sei pezzi, il costo, i test, i residui)* · `scratch\STUDIO-PAUSA-CONDIVISA-V2.md` *(lo studio che l'ha preceduta)* · `scratch\REFERTO-NRE-E-PAUSA.md` *(la NRE e la notifica B)* · `scratch\STUDIO-PAUSA-CONDIVISA.md` *(`§5.1`: perché i timer si fermano)* · `scratch\DIAGNOSI-63-NRE.md` *(la catena della NRE)*. **HEAD verificato: `50c8ca9`** *(`git rev-parse --short HEAD`)*, branch `fix-f1a`, albero pulito.
+
+⚠️ **E QUESTA SEZIONE NON CORREGGE QUELLE QUI SOPRA**: `:7124` *(il punto completo del `08:00`)* e **la sua lista corta a 7 voci** *(`:7236-7244`)* **erano vere quando sono state scritte** — `9ee3ca6`, `bc834f3` e `50c8ca9` sono **arrivati dopo**. Restano **come storia**; qui si **aggiunge** e si **rimanda**. ⛔ **Nessuna sezione riscritta o accorciata** · ⛔ **`docs\BUG-NOTI.md` non toccato** · ⛔ **codice non toccato da questa tornata** *(il codice è quello di `50c8ca9`: qui si registra, non si modifica)*.
+
+---
+
+### ① ✅ **LA PAUSA CONDIVISA — CHIUSA E VERIFICATA DALL'UTENTE**
+
+**Il fatto, in una riga**: **`50c8ca9`** — *la pausa è **una regola***: chi mette in pausa **ferma anche il mondo dell'altro**, e **l'altro viene tirato fuori** quando il primo chiude — da qualunque scheda, in qualunque ordine.
+
+#### 1.1 Il problema, come si vedeva
+
+- il pausante **fermava il mondo per chi era nella stessa stanza**;
+- ⇒ **il passivo vedeva un mondo fermo che non era il suo** — un nemico **congelato** che lo inseguiva, e nessun modo di capire perché;
+- ⇒ ⭐ **e `B` (la notifica `YOUR TEAMMATE IS PAUSED`) lo **descriveva** senza risolverlo**: una riga a schermo, il mondo comunque fermo. **Descrivere non è curare.**
+
+#### 1.2 La causa VERA — trovata strada facendo, e non è un `if`
+
+🔴 **`Time.timeScale = 0`**, cioè **il meccanismo** con cui il gioco mette in pausa:
+
+- `Core.Logic.PauseGame()` scrive `CurrentLevelConfig.TimeScale = 0f` *(`LogicManager.cs:250`)* → il setter scrive `TimeScaleReal` *(`LevelInitializer.cs:130-136`)* → `LevelInitializer.Update()` fa **`Time.timeScale = TimeScaleReal;` ogni frame** *(`:234-237`)*;
+- ⇒ **i timer di invio della mod si fermano per **aritmetica**, non per un `if`**: a `timeScale = 0` **`Time.deltaTime` vale 0** e **`Time.time` non avanza** *(fatto engine, non di questo repo)* — e la mod usa **esattamente quei due valori** come orologi di invio *(`scratch\STUDIO-PAUSA-CONDIVISA.md` §5.1)*;
+- ⚠️ **e la frase «il progetto ha escluso il `timeScale`» va **rovesciata****: la regola vieta **alla mod** di scriverlo *(`:5356` «❌ NON toccare `TimeScale`»; `:6198` «zero `SetBlocker`/`ResetManager`/`TimeScale`»)* — e `PauseGame()` è **la funzione del gioco** che lo fa. **Non esiste una pausa in questa engine che non sia `timeScale = 0`.**
+
+⇒ ⭐ **La conseguenza che ha deciso la forma del fix**: la pausa **non si può «annunciare» e basta**, e **non si possono riscrivere i timer** *(sarebbe rifare il gioco)*. O si **condivide la pausa con il canale del gioco** — cioè `PauseGame()` / `HidePauseMenu()`, gli **stessi** che preme il giocatore — o il mondo fermo resta.
+
+#### 1.3 I sei pezzi — `PauseNotice.cs`, ognuno con la sua prova
+
+| # | riga | cosa fa |
+|---|---|---|
+| **R1** | `ApplyRemotePause` `:394` | ricevuto «in pausa» ⇒ **`Core.Logic.PauseGame()`** + **`_pausedByRemote = true`** *(`:467`)*. **Non** tocca `LogicStates` né i blocker ⇒ lo stato «senza menù» è quello che il gioco produce |
+| **R2** | `CloseAndResume` `:575` (+ retry `RetryClose` `:268`) | ricevuto «riprendi» ⇒ **dispatch a 3 rami**: `IsShowingInventory` → `HideInventory()` · `IsShowingMenu` → `HidePauseMenu()` · altrimenti `ResumeGame()` **solo se `IsPaused`**. Il retry copre i **0,4 s** del fade *(`FadeHide` esce se `IsFading`)*, con tetto **`CLOSE_CAP_SECONDS = 2f`** *(`:110`)*: al tetto si **dichiara** la frenata e la pausa resta — **mai** `ResumeGame()` con un menù aperto |
+| **R3** | `TrySendFront` `:669` — **la riga obbligatoria** | **`\|\| _pausedByRemote`** nella guardia *(`:673`)*: senza, il **passivo** non potrebbe **mai** mandare la sua ripresa *(non ha mai annunciato una pausa)* e **il pausante resterebbe in menù per sempre** |
+| **R4** | `CheckRemoteStillPaused` `:844` + `Disarm` `:902` | la pausa **cade** se: disconnesso · nessun peer connesso · peer in un'altra stanza **o a terra** · ritorno al menù principale. ⛔ **Sono predicati istantanei, NON un timeout**: l'**8 s** che resta è **solo** per la build diversa, che sulla rete è **indistinguibile** *(protocollo `11` uguale per tutte)* |
+| **R5** | `StepRemotePauseGuards` `:214` | niente pausa se: fuori livello / `CurrentLevelConfig` null · `InsideChangeLevel` · `sceneName` vuoto · **io a terra** · già in pausa mia · slow-motion · fade a schermo. **+ il caso «passivo morto»** *(§1.5)* |
+| **R0** | `TryOpenMapOntoPassive` `:507` | `PauseWidget` → `InitialWidget = MAP` · `InitialMapMode = SHOW` → **`FadeShow(checkInput: true)`**, la chiamata **identica** a `UIController.cs:440-442` ⇒ al passivo **si apre la mappa in faccia**: la pausa ha una faccia che si può leggere |
+
+**L'ordine dei quattro passi di `Tick()` `:168` non è cosmetico** *(e chi lo cambia rompe R3 senza accorgersene)*:
+
+```
+① StepRemotePauseGuards()   ← può far cadere la pausa in QUESTO frame
+② ObserveLocalFront()       ← la ripresa del ① parte NELLO STESSO frame (caso «passivo morto ⇒ manda RESUME»)
+③ SettlePausedByRemote()    ← il flag si congeda DOPO il ②, altrimenti il ② non avrebbe più il permesso di R3
+④ CheckRemoteStillPaused()  ← le uscite di R4
+```
+
+#### 1.4 ⭐ Il costo — dichiarato e verificato
+
+**0 patch Harmony** *(269 bersagli, invariati)* · **0 righe di protocollo** *(resta `11`: il canale è `AttackType.PauseRelay = 203`, `PvP\Models\Enums.cs:150`, già introdotto da `bc834f3`)* · **0 righe di server** *(il filtro per stanza è gratis: `Attack` è già filtrato per scena lato server)* · **0 file nuovi** · **0 reflection** · **0 input simulato** · **0 scritture di `Time.timeScale`** *(le scrive il gioco, dentro `PauseGame`)*.
+
+#### 1.5 ✅ Il test — fatto dall'utente, ed è la prima volta in questa voce
+
+- ✅ **l'uscita al menù principale**: la pausa **cade** e **non resta appesa**;
+- ✅ **il crash di G1** ⇒ *la pausa cade **istantaneamente*** — non a 8 s: è la differenza fra il timeout e le uscite di R4;
+- ✅ **«tutto perfetto»** — la formula dell'utente, **non** una deduzione mia.
+- 📌 **E il caso «passivo morto» è la ragione per cui la morte toglie la pausa a tutti**: a `timeScale = 0` la **morte** regge *(usa `Input` e `WaitForSecondsRealtime`)*, ma **il respawn no** *(passa da un tween: `Fade(1.5 s, …)`)* ⇒ senza R5-morte il morto resterebbe **congelato in una schermata di morte**.
+
+#### 1.6 ⚠️ I residui dichiarati — non sono chiusi, e vanno letti
+
+| # | residuo | peso |
+|---|---|---|
+| **1** | **`R0` non è misurata in gioco**: che `FindObjectOfType<PauseWidget>()` restituisca l'istanza giusta è **dedotto** *(`Deactivate()` non disattiva il GameObject)* | 🟡 **e `R0` è l'unico pezzo rimovibile**: basta non chiamare `TryOpenMapOntoPassive` — **una riga** — e tutto il resto resta identico |
+| **2** | **`mappaAschermoDopo=` resta `true`**: dopo la chiusura il GameObject della mappa **resta attivo** *(spostato di 1000 unità)* ⇒ qualche `RefreshMap` in più su un widget invisibile | 🟢 **non è una NRE** *(`RootRenderer_0` esiste comunque)*, e succede **già oggi** chiudendo la mappa a mano |
+| **3** | **le due macchine devono avere lo stesso `50c8ca9`**: il protocollo **non distingue le build** *(resta 11)* ⇒ una macchina vecchia **ignora il 203** e non fa niente | 🟠 **silenzioso**: le difese sono i marker *(`TX` dice che è partito, `RX` che è arrivato)* e il timeout di **8 s** |
+| **4** | **`d07z01s03` (Isidora)**: il gioco **vieta** il menù di pausa lì *(`UIController.cs:1053`)* e la mod **non replica il divieto** *(R1 non ha guardie di livello)* | 🟡 **da misurare** se si gioca Isidora in due |
+| **5** | **tutorial e popup di sblocco mettono in pausa senza che il giocatore lo decida** *(`TutorialManager.cs:110`, `UIController.cs:651`)* ⇒ con la V2 **congelerebbero l'altro per un popup** | 🟡 **non visto succedere**, filtro **non** aggiunto *(sarebbe la forma fragile a cinque stringhe)*: se dà fastidio il discriminante è `Core.Input.HasBlocker("TUTORIAL")` |
+| **6** | **la finestra di 0,4 s del fade**: `IsPaused` è già `false` e il widget è ancora attivo | 🟡 **ereditato dal gioco** *(è la finestra che il gioco ha per sé)*, **non** creato dalla mod |
+
+---
+
+### ② ✅ **E LA NRE — CHIUSA** *(era il grimaldello)*
+
+**Il fatto**: **`bc834f3`** — e la prima riga è quella che cambia l'attribuzione:
+
+- ✅ **`RefreshMap` non esiste nel gioco**: **0 occorrenze** in tutto il decompilato *(**2079** file `.cs`, contati oggi)* ⇒ il `Map.MapManager` nello stack **è la nostra classe**, non una del gioco. **Verificato, non ereditato** *(`scratch\DIAGNOSI-63-NRE.md`)*;
+- **la catena**: `Multiplayer.OnLateUpdate` → `MapManager.Update` `:76` → `RefreshMap` `:180` → la riga `playerMarks.childCount` ⇒ **NRE**, e **una per frame** per tutta la pausa *(l'eccezione usciva **prima** dell'azzeramento del flag)*;
+- **la causa VERA**: ⭐ **la mappa è una scheda del menù di pausa**, e il suo canvas **è disattivato quando non la mostri** *(`PauseWidget.SetChildActive` → `SetActive(false)`)* ⇒ `FindObjectOfType` **non guarda gli oggetti disattivati** ⇒ `CreateMapUI` **usciva muta** *(due `return` senza dire niente)* ⇒ `playerMarks` restava `null` ⇒ **la riga dopo lanciava**;
+- ⚠️ **e la scoperta dell'utente, che il codice conferma**: *si mette in pausa **solo** da **inventario** e **mappa*** ⇒ la finestra del guasto è **«prima della prima apertura della scheda mappa»** in quella sessione. Chi apre la mappa per primo **non vede mai** la NRE;
+- **il fix, in tre pezzi**:
+  - **`CreateMapUI` dice se ce l'ha fatta** *(`private bool`, `:257`)* e `RefreshMap` **esce PRIMA** della riga che lanciava: la guardia era messa **prima** del tentativo, ora è **dopo** — che è l'unica posizione che dice la verità;
+  - **il flag servito, non buttato**: se la mappa non è a schermo la richiesta **resta in coda** e si riprova; quando è a schermo il flag si azzera **prima** della chiamata ⇒ un fallimento residuo costa **una riga**, non una raffica;
+  - **il predicato diventa «la scheda mappa è a schermo»** *(`IsMapOnScreen()` `:135`, `activeInHierarchy`)*, **non `IsPaused`**: `IsPaused` lo alzano **cinque** UI, e **la mappa è una sola**;
+- ⭐ **era anche «la metà che si ammutoliva in pausa»**: **ogni frame che lanciava saltava `SendQueue()`** *(il `try/finally` di `OnLateUpdate` lasciava fuori le **7** chiamate dopo la `:292`)* ⇒ **la notifica `B` non era solo inutile: era **muta** proprio mentre serviva**, e il battito della pausa condivisa non sarebbe mai partito. ⇒ **La NRE è venuta prima della pausa condivisa per questa ragione, non per ordine alfabetico**;
+- 📌 **marker**: `[Map] richiesta di ridisegno IN CODA e chiamata SALTATA … motivo=` *(una per richiesta, non per frame; `motivo` ∈ `inventario-a-schermo` · `tutorial-a-schermo` · `sblocco-a-schermo` · `menu-di-pausa-su-un-altra-scheda` · `mappa-in-game-senza-scheda` · `pausa-senza-mappa` · `gioco-non-in-pausa`)* e `[Map] CreateMapUI non ha creato niente`;
+- ⚠️ **e la correzione al commento che vale più del fix**: *«**0 connessi non è una difesa**»* — `playerMarks.childCount` viene **prima** del ciclo sui giocatori ⇒ **una lista vuota non protegge niente**. La difesa vera è che `mapUpdateQueued` **non si accende senza un peer** *(i suoi tre soli scrittori sono tutti eventi del peer)*.
+
+---
+
+### ③ 📋 **E LA LISTA CORTA, RIFATTA** — *con lo stato vero*
+
+> **Cinque voci**. La **1** è la più utile *(senza la casa, ogni «verificato» è a rischio)*; la **2** è **una sonda prima di un fix**; la **3** non è mai cominciata; la **4** è il lavoro più largo e il meno rischioso; la **5** è un residuo che **nessuna lista nominava**. *(Le voci della lista del `08:00` non sono sparite: il conto è in §3.2.)*
+
+| # | cosa | perché è qui | rimando |
+|---|---|---|---|
+| **1** | 🟡 **LA CASA** *(la più utile: come si mette in produzione)* | **l'unica voce che rende false tutte le altre** | §3.1; `:7192-7202` |
+| **2** | 🟡 **LA STRADA DI RISOLUZIONE** *(i 3 buchi **e** gli effetti del Penitente)* | ⚠️ **sonda prima**, poi il fix | `:7046-7120`; `docs\BUG-NOTI.md` voce 7 |
+| **3** | 🟡 **LA COLPA (voce 63)** | **mai cominciata**, e dal 16/10 **in nessuna lista** | `:7206-7215` |
+| **4** | 🟡 **IL LAVORO PER BOSS** *(la mira **23** · la morte recitata **12 su 17**)* | il più largo e il meno rischioso: **un boss per volta, con la forma già provata** su `ElderBrother` | `:7243`; `docs\BUG-NOTI.md:434-553`; voce 18 |
+| **5** | 🟡 **I 4 FLAG** *(Amanecidas · Perpetua · Pontiff Husk · Viridiana)* | ⭐ **nuova di questa lista**: il loro flag ha **un altro nome** *(`SANTOS_AMANECIDA_*_DEFEATED`, `VIRIDIANA_DEAD_BOSS01…05`)* e **non si ricava dalla scena** ⇒ per loro resta **il solo `Status.Dead`** | `scratch\STUDIO-FLAG-AC43.md:73`, `:228`, `:254`; `scratch\REFERTO-NOME-SCENA.md:137`; `EnemySyncManager.cs:378-386` *(la whitelist: 5 nomi)* |
+
+#### 3.1 🟡 LA CASA — quattro pezzi, e uno è **nuovo**
+
+- ⚠️ **`verify-deploy.ps1` mente**: i suoi **9 marker sono fermi all'2026-10-08 → 2026-10-12** *(`tools\verify-deploy.ps1:59-73`)* ⇒ **il livello dei marker non può fallire**; **l'hash è vincolante solo con `-ExpectedHash`** *(`:181-194`)*; e **senza la sonda in `scratch\cecil` i marker si saltano in silenzio** *(`:216`: «sonda Mono.Cecil assente: salto il controllo dei marcatori»)* ⇒ **qualsiasi build recente stampa «Puoi testare»** *(`:280`)* **ed esce 0**;
+- 🔴 **NUOVO — `deploy-local.ps1` copia da `bin\Debug`**: il percorso è **scritto a mano** *(`:42` `…\bin\Debug\BlasClient.dll`; `:48` `…\bin\Debug\Blasphemous.Multiplayer.Common.dll`)* ⇒ ⚠️ **una build `Release` + deploy = la DLL `Debug` **vecchia** in gioco**, e il deploy **dice comunque «269, tutti validi»** — perché **il gate è vero, ma il soggetto del gate è la DLL sbagliata**;
+- 📌 **`marker-check.ps1` sta in `scratch\`, non in `tools\`** *(51 righe; `-Dll` + `-Marker[]` **obbligatori**; cerca il **contenuto** sui byte grezzi in UTF-16LE **e** UTF-8; **sa dire NO**)*: finché sta lì **non è un gate**, è una cosa che **qualcuno si ricorda di lanciare**;
+- ⚠️ **lo zip per `G1` NON ESISTE**: l'unico in `tools\` è `BlasphemousCOOP-enemysync.zip` — **1.112.105 byte, `mtime 2026-10-06 22:18`**, **50 voci**, e le prime sono `BepInEx\…` *(il loader, **non una build**)*. ⇒ **non è «lo zip da aggiornare»: è «lo zip che non c'è»**.
+
+#### 3.2 📌 Che cosa esce dalla lista del `08:00`, e perché — *nessuna voce è sparita in silenzio*
+
+| la voce del `08:00` | dove è finita |
+|---|---|
+| **1** il nome di scena in 1ª passata *(poteva nascondere un boss VIVO)* | ✅ **chiusa dopo quella sezione** da **`9ee3ca6`**: `SceneForBossFlags` *(`EnemySyncManager.cs:889`)* legge **dal gioco** *(`Core.LevelManager.currentLevel.LevelName`)* con **ripiego dichiarato** su `_scene`, e il marker `[BossCorpse] scena-flag=` *(`:936`)* dice a ogni passata se il nome viene dal gioco. ⚠️ **Il test in gioco non risulta**: il rischio era *un flag sbagliato che spegne un boss vivo* |
+| **2** le 63 NRE di `RefreshMap` | ✅ **chiusa da `bc834f3`** ⇒ §② |
+| **3** la casa | ➡️ **1** di questa lista, con **un pezzo nuovo** *(§3.1)* |
+| **4** la Colpa | ➡️ **3** — **invariata** |
+| **5** gli eventi del boss *(il relay)* | ➡️ **2** — **invariata**: la **sonda non è stata fatta** |
+| **6** i 23 boss · 12 su 17 | ➡️ **4** — **invariata**, più il residuo dei **4 flag** *(**5**)* |
+| **7** la cerimonia | ⛔ **fuori di proposito**: era ed è **una decisione presa** *(studiata e scartata con 3 prove, `:7219-7228`)*, non lavoro — come **la finestra dei 1,5 s** *(`BUG-NOTI` voce 6)* |
+
+---
+
+### ④ ⚠️ **E LE COSE DA NON DIMENTICARE** — *quattro righe per chi legge*
+
+- ⚠️ **la regola «chi esce per primo porta fuori tutti»** ⇒ **chiude anche un menù non suo**: se il passivo preme una volta, **il menù del pausante si chiude da solo** — *anche se stava su un'altra scheda, anche se era il suo*. È **voluto** *(è la richiesta dell'utente alla lettera)* e il costo è **una pressione di tasto**. L'alternativa *(chiudere solo la pausa remota)* è **un `if` in `Disarm`**.
+- ⚠️ **la morte toglie la pausa a tutti**: due giocatori, uno è a terra, **la partita va avanti** — e il respawn del morto **non reggerebbe** a `timeScale = 0`. Il pausante lo legge nel log come `pausa caduta, motivo=…`.
+- ⚠️ **e `R0` (la mappa sul passivo) non è misurata** ⇒ **ma è rimovibile in una riga**: basta non chiamare `TryOpenMapOntoPassive` e **il resto resta identico**. È **l'unico pezzo di tutta la V2 che si toglie senza toccare nient'altro**.
+- ⚠️ **«0 in un'altra sessione» NON è una chiusura: è **assenza**** — e qui la forma di prova ha un nome preciso: per la NRE la finestra era **«prima della prima apertura della scheda mappa»** ⇒ **una sessione in cui la mappa era già stata aperta non poteva produrre la NRE, nemmeno con il difetto al suo posto.** È la ragione per cui `bc834f3` è un **fix** e «0 di stasera» no.
+
+---
+
+### ⑤ 📌 **LO STATO DI QUESTA SEZIONE**
+
+- ✅ **Aggiunta, non riscrittura**: le sezioni precedenti — comprese **la lista corta del `04:20`** *(`:6901-6914`)* e **quella del `08:00`** *(`:7236-7244`)*, qui dichiarate **superate** — **restano intatte e leggibili come storia**. **Nessuna riga cancellata, nessuna sezione accorciata.**
+- ⛔ **`docs\BUG-NOTI.md` non è stato toccato** · ⛔ **nessuna riga di codice toccata in questa tornata** · ⛔ **nessun build e nessun deploy fatti da me**: build, deploy, sha e marker sono **dei due commit**, e il test in gioco è **dell'utente** *(§1.5)*.
+- ⚠️ **I numeri di riga del codice vanno letti come indizi**: quelli di questa sezione sono **riverificati a HEAD** *(`PauseNotice.cs` per R1-R5 e R0; `Map\MapManager.cs`: `Update:76`, `IsMapOnScreen:135`, `RefreshMap:180`, `CreateMapUI:257`)*. **Citare il metodo** resta la regola.
+- ⚠️ **La data di questa sezione** segue **la serie del file** *(`:7002` = `06:00` → `:7046` = `07:00` → `:7124` = `08:00`)*: è **la successiva**, non l'orologio della macchina *(il commit `50c8ca9` è datato `2026-10-18 23:47`)*. **Il nome della sezione non è una misura**: è un'etichetta.
