@@ -121,10 +121,10 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnLevelLoaded(string oldLevel, string newLevel)
     {
-        // TEMPORARY (EffectPoolProbe): SONDA DI SOLO LOG. Riapre un ciclo di misura per scena e chiude
-        // il riepilogo di quella lasciata. Zero bersagli Harmony (quello della sonda e' il solo Postfix
-        // su PoolManager.ReuseObject, in EffectPoolProbe.cs). Da rimuovere insieme a quel file.
-        EffectPoolProbe.LevelLoaded(newLevel);
+        // ⭐ P1 - IL RELAY DEGLI EFFETTI (EffectRelay.cs). Riapre lo stato per la scena nuova e chiude
+        // il riepilogo di quella lasciata. Zero bersagli Harmony qui: il relay e' UN Postfix su
+        // `PoolManager.ReuseObject`, che vive in quel file.
+        EffectRelay.LevelLoaded(newLevel);
 
         EnemySyncManager.LevelLoaded(newLevel);
         CurrentlyInLevel = newLevel != "MainMenu";
@@ -192,12 +192,11 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // delle sonde qui sotto, quindi **zero patch Harmony nuove** (263 bersagli, invariati).
         BossJoinMarker();
 
-        // TEMPORARY (EffectPoolProbe): SONDA DI SOLO LOG degli effetti/proiettili in pool. Legge la coda
-        // delle letture differite (WeaponOwner dopo ReuseObject), il censimento dei pool, i campi del
-        // boss e la risoluzione nome -> riferimento. Riusa QUESTO ciclo per frame di proposito: nessun
-        // MonoBehaviour nuovo, e il costo della sonda non entra nella misura di PerformanceProbe qui
-        // sotto. Da rimuovere insieme a EffectPoolProbe.cs.
-        EffectPoolProbe.Tick();
+        // ⭐ P1 - IL RELAY DEGLI EFFETTI. Nel ciclo per frame fa UNA cosa sola: arma il catalogo
+        // nome → prefab appena il boss esiste davvero (nasce dopo la cutscene, quindi non c'e' al
+        // caricamento del livello) e lo rinfresca ogni tanto. Non manda, non istanzia, non tocca
+        // niente; riusa QUESTO ciclo di proposito, quindi **zero bersagli Harmony nuovi**.
+        EffectRelay.Tick();
 
         // TEMPORARY (CutsceneProbe): PROBE #0 - one log line ONLY when the CINEMATIC input blocker
         // changes, read from two PUBLIC values (HasBlocker / InputBlocked). It reuses this per-frame

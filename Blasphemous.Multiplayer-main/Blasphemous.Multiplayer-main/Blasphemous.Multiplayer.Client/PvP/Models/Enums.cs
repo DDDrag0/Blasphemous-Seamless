@@ -74,6 +74,30 @@ public enum AttackType
     /// </summary>
     EnemyHit = 200,
 
+    // ================================================================================================
+    // ⭐⭐ P1 — IL RELAY DEGLI EFFETTI GENERICO (2026-10-19): un effetto del pool e' nato su una
+    // macchina e va ricostruito sull'altra.
+    //
+    // NON e' un attacco e non ferisce nessuno: e' il TERZO verso del canale Attack, e ne usa la stessa
+    // infrastruttura per la stessa ragione del ②. Il server inoltra questo canale a tutti i peer della
+    // STESSA SCENA **escludendo il mittente**, col nome del mittente premesso (`Server.cs:676-699`):
+    // e' esattamente il viaggio che serve a `prefab + posizione + rotazione`, e non chiede una riga di
+    // protocollo (resta 11) ne' una riga di server. Un client vecchio non trova 201 in `attacks.json`
+    // ed esce da solo (`AttackManager.cs:31`); un server vecchio inoltra i byte senza interpretarli.
+    //
+    // ⚠️ NON e' un broadcast a chiunque: lo e' il CANALE, e il ricevente non si fida — ricostruisce
+    // l'effetto solo se il nome e' un effetto del **suo** boss e solo se non ce l'ha **gia'**
+    // (`EffectRelay.cs`: catalogo + dedup). Questo byte, da solo, non istanzia niente.
+    //
+    // 201 e non 202 perche' sta accanto al ② (200, nemico→giocatore) nella stessa famiglia: due versi
+    // che si distinguono per lo stesso byte iniziale, letti nello stesso punto (`ReceiveAttack`).
+    // ================================================================================================
+    /// <summary>
+    /// Un EFFETTO in pool e' nato su un'altra macchina: il ricevente lo ricostruisce dal proprio pool
+    /// se lo riconosce come effetto del proprio boss e se non ce l'ha gia'. Vedi `EffectRelay`.
+    /// </summary>
+    CoopEffectRelay = 201,
+
     NoDamage = 255
 }
 

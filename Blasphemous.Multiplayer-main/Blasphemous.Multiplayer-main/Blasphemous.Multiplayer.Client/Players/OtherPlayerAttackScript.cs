@@ -1266,6 +1266,14 @@ namespace Blasphemous.Multiplayer.Client.Players
             // caso "pool assente".
             if (slide.GuardSlideImpactEffect != null)
             {
+                // ⭐ P1 - L'ANCORA DEL CANALE ESISTENTE. Questo effetto l'ha istanziato il canale
+                // `EffectType`, non il relay del pool; ma se un domani anche il relay lo portasse
+                // (perche' il filtro si e' allargato, o perche' il prefab acquista una `Weapon`), il
+                // secondo arrivato deve SAPERE che il primo c'e' gia'. La chiave e' la stessa
+                // (`prefab + posizione arrotondata`), quindi la tabella del dedup copre **entrambe le
+                // vie** e vince chi arriva prima.
+                EffectRelay.NoteLocalSpawn(slide.GuardSlideImpactEffect, world);
+
                 PoolManager.ObjectInstance instance =
                     pool.ReuseObject(slide.GuardSlideImpactEffect, world, Quaternion.identity, false, 1);
 
@@ -1346,6 +1354,9 @@ namespace Blasphemous.Multiplayer.Client.Players
             // ⚠️ Il ritorno si CATTURA ora, per due motivi: orientare l'effetto (vedi OrientEffect) e
             // smettere di perdere in silenzio il caso "pool assente", in cui ReuseObject restituisce null
             // senza dire nulla.
+            // ⭐ P1 - e si REGISTRA nella tabella del dedup del relay: vedi PlaySlideDust.
+            EffectRelay.NoteLocalSpawn(prefab, world);
+
             PoolManager.ObjectInstance instance =
                 pool.ReuseObject(prefab, world, Quaternion.identity, false, 1);
 
@@ -1451,6 +1462,8 @@ namespace Blasphemous.Multiplayer.Client.Players
                 Vector3 offset =
                     Core.Logic.Penitent.DamageArea.TopCenter - Core.Logic.Penitent.transform.position;
 
+                EffectRelay.NoteLocalSpawn(vertical.VerticalAttackBeamEffectPrefab, world + offset);
+
                 pool.ReuseObject(
                     vertical.VerticalAttackBeamEffectPrefab,
                     world + offset,
@@ -1463,7 +1476,11 @@ namespace Blasphemous.Multiplayer.Client.Players
             // same guard belongs here - and it is load-bearing: ReuseObject dereferences the prefab.
             GameObject prefab = beam ? vertical.HardLandingEffectUpgradedPrefab : vertical.HardLandingEffectPrefab;
             if (prefab != null)
+            {
+                // ⭐ P1 - l'ancora del dedup anche per l'impatto a terra: vedi PlaySlideDust.
+                EffectRelay.NoteLocalSpawn(prefab, world);
                 pool.ReuseObject(prefab, world, Quaternion.identity, false, 1);
+            }
 
             string sound = LandingSound(vertical, effect);
             if (!string.IsNullOrEmpty(sound))

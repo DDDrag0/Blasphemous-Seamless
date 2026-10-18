@@ -476,6 +476,17 @@ namespace Blasphemous.Multiplayer.Client.Network
                 return;
             }
 
+            // ⭐ P1 - IL TERZO VERSO: un EFFETTO in pool nato su un'altra macchina. Stessa ragione del
+            // ② per stare qui e non dopo: il payload ha una forma sua (nome del prefab + posizione +
+            // rotazione) e i suoi byte non sono un nome di giocatore, quindi il ramo PvP lo
+            // interpreterebbe come spazzatura. Il ricevente decide da solo se ricostruirlo
+            // (`EffectRelay.ApplyFromWire`: catalogo del boss locale + dedup).
+            if (attackType == AttackType.CoopEffectRelay)
+            {
+                EffectRelay.ApplyFromWire(attackerName, data, startIdx);
+                return;
+            }
+
             byte damageAmount = data[startIdx + 1];
             string receiverName = Encoding.UTF8.GetString(data, startIdx + 2, data.Length - startIdx - 2);
 
