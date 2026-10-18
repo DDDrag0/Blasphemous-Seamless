@@ -3647,6 +3647,32 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// ⭐ <see cref="FindAllEnemiesIncludingInactive"/> PER CHI NE HA BISOGNO FUORI DA QUESTA
+        /// CLASSE: lo usa la risoluzione `nome → prefab` del relay degli effetti
+        /// (`EffectRelay`, sorgente ② «i campi dei nemici»), che deve scandire i nemici COMUNI della
+        /// scena — anche quelli spenti, perche' il `projectilePrefab` sta nei campi di un
+        /// `EnemyAttack` che il nemico si porta addosso.
+        ///
+        /// ⚠️ NON e' un comportamento nuovo e NON aggiunge bersagli Harmony (269 restano 269): e' la
+        /// STESSA funzione, gia' usata dallo scan degli id, con un `catch` in piu' perche' il
+        /// chiamante e' dentro un `Postfix` del `PoolManager` e non deve poter rompere `Update`.
+        /// Le stesse domande e le stesse risposte: TUTTI i nemici della scena, attivi e non, non
+        /// «solo quelli sincronizzati» — il relay non ha bisogno che un nemico sia tracciato, ha
+        /// bisogno dei riferimenti ai prefab che quell'istanza si porta dietro.
+        /// </summary>
+        internal static Enemy[] AllEnemiesIncludingInactive()
+        {
+            try
+            {
+                return FindAllEnemiesIncludingInactive();
+            }
+            catch (Exception)
+            {
+                return new Enemy[0];
+            }
+        }
+
+        /// <summary>
         /// Identity of a spawn-point enemy. The spawn point is authored scene data, so name and position
         /// are the same on both machines.
         /// </summary>

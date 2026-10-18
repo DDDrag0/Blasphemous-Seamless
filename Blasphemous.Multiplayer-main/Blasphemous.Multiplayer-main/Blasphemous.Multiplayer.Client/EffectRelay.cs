@@ -33,13 +33,27 @@ namespace Blasphemous.Multiplayer.Client
     // ⇒ QUINDI. Il mittente **non decide niente di semantico**: manda `prefab (nome) + posizione +
     // rotazione` per OGNI istanziazione che passa dal pool. E' il RICEVENTE a filtrare, con due
     // domande sole, entrambe locali:
-    //   ①  **il nome e' un effetto del MIO boss?**   -> il catalogo (strada 1, sotto);
-    //   ②  **ce l'ho GIA' / l'ho appena fatto?**      -> la tabella di dedup (prefab + posizione
-    //                                                   arrotondata + finestra di 0,5 s).
+    //   ①  **il nome e' un effetto che so ricostruire?** -> la RISOLUZIONE, che ha QUATTRO sorgenti
+    //                                                     in ordine (boss, nemici, penitente, cache);
+    //   ②  **ce l'ho GIA' / l'ho appena fatto?**         -> la tabella di dedup (prefab + posizione
+    //                                                     arrotondata + finestra di 0,5 s).
     // Se la risposta a ① e' no, l'effetto non e' nostro e si salta. Se a ② e' si', l'effetto c'e'
     // gia' su questa macchina (o l'ha appena fatto il gioco stesso) e si salta. Altrimenti lo
     // ISTANZIA **LA SUA COPIA**, dal **suo** pool, con **i suoi** riferimenti.
     //
+    // ⭐⭐ LA ① E' STATA ALLARGATA (questo lavoro), e non con tre hook: con UNA strada piu' larga. Una
+    // volta il ricevente sapeva rispondere SOLO con i campi del boss locale ("strada 1", misurata
+    // 5/5), quindi NON trovava i proiettili dei tre nemici comuni (il `projectilePrefab` sta nei
+    // campi del LORO `EnemyAttack`) ne' gli effetti del `Penitent` (stanno nei SUOI campi) — e
+    // scriveva `non risolto`, che vuol dire "l'ho ricevuto, ma non so cos'e'".
+    // Ora la risoluzione prova in ordine e si ferma alla prima che riesce:
+    //   ① i campi della copia locale del BOSS  ② i campi dei NEMICI in scena
+    //   ③ i campi del PENITENTE locale         ④ una CACHE per nome
+    // e lo DICE: `[FxRelay] RISOLTO "<nome>" da=<boss|nemici|penitente|cache> in=<ms>ms`, oppure
+    // `[FxRelay] NON RISOLTO "<nome>" provate: boss,nemici,penitente`. ⇒ **il test e' la misura**:
+    // dice quali sorgenti servono, e non serve una sonda separata.
+    // ⚠️ E la ricerca larga (②③, riflessione) NON gira per frame NE' a ogni pacchetto: una volta per
+    // OGGETTO, e la cache risponde a tutti i pacchetti successivi. E' il costo che va tenuto d'occhio.
     // ⛔ COSA QUESTO FILE NON FA, E NON DEVE FARE: nessun `Kill`, `Damage`, `Death`, `SetHealth(<=0)`,
     // `Init()`, nessuna scrittura di vita, nessun danno iniettato. **L'effetto ferisce da se'**: la
     // copia e' il prefab vero del gioco, istanziato dal pool vero, e la sua `AttackArea` colpisce chi
@@ -95,10 +109,26 @@ namespace Blasphemous.Multiplayer.Client
         internal const string VerbSend = "mando";             // l'effetto parte verso il peer
         internal const string VerbInstantiate = "istanzio";   // la copia locale nasce da un pacchetto
         internal const string VerbDedup = "salto per dedup";  // la copia c'e' gia' (o e' appena nata)
-        internal const string VerbUnresolved = "non risolto"; // il nome non e' un effetto del mio boss
         internal const string VerbSkip = "non applicato";     // un altro motivo, dichiarato
         internal const string VerbBrake = "freno";            // il tetto di traffico
         internal const string VerbCatalog = "catalogo";       // cosa so risolvere in questa scena
+
+        // ⭐ LA MISURA DELLA RISOLUZIONE. Prima di questo lavoro c'era UNA sola riga, `non risolto`,
+        // che diceva «l'ho ricevuto, ma non so cos'è» e non diceva NE' da dove si sarebbe potuto
+        // risolverlo NE' quanto era costato cercarlo. Ora la risoluzione ha QUATTRO sorgenti
+        // (boss → nemici → penitente → cache) e la riga dice **quale ha vinto** e **in quanti ms**:
+        // e' il test a dire quali sorgenti servono, senza una sonda separata.
+        internal const string VerbResolved = "RISOLTO";       // il nome ha trovato il suo prefab
+        internal const string VerbUnresolved = "NON RISOLTO"; // nessuna delle sorgenti conosce il nome
+
+        /// <summary>
+        /// I NOMI DELLE SORGENTI, e sono **contrattuali**: finiscono nel marker (`da=…`) e il test li
+        /// legge. `cache` non e' una sorgente: e' la memoria della sorgente che ha vinto.
+        /// </summary>
+        internal const string SourceBoss = "boss";
+        internal const string SourceEnemies = "nemici";
+        internal const string SourcePenitent = "penitente";
+        internal const string SourceCache = "cache";
 
         // =============================================================================================
         //  LE COSTANTI, e il perche' di ognuna.
@@ -147,6 +177,43 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>Quanti componenti del boss si riflettono al massimo (una guardia, non una misura).</summary>
         private const int MAX_BOSS_COMPONENTS = 96;
 
+        /// <summary>
+        /// ⚠️ IL TETTO DELLA RICERCA LARGA — e sono due tetti, perche' le due sorgenti larghe hanno
+        /// forme diverse.
+        ///
+        /// `MAX_ENEMY_COMPONENTS` (per nemico): un nemico comune non e' un boss. Il campo che serve
+        /// (`projectilePrefab`) sta su un `EnemyAttack` che il nemico si porta addosso, cioe' fra i
+        /// primi componenti: 64 lascia dentro anche i nemici piu' componibili, e taglia i prefab di
+        /// scena enormi (il `RangedBoomerang` non lo e').
+        ///
+        /// `MAX_PENITENT_COMPONENTS`: il `Penitent` e' l'oggetto piu' grosso del gioco (abilita',
+        /// preghiere, audio, animator, effetti). 128 e' il doppio del boss perche' gli effetti del
+        /// giocatore vivono negli stessi componenti delle sue abilita', e tagliare li' vorrebbe dire
+        /// non risolvere proprio i nomi per cui esiste la sorgente ③.
+        /// </summary>
+        private const int MAX_ENEMY_COMPONENTS = 64;
+        private const int MAX_PENITENT_COMPONENTS = 128;
+
+        /// <summary>
+        /// Quanti NEMICI si scandiscono in un solo tentativo. Non e' una misura: e' un tetto perche'
+        /// una stanza con cinquanta nemici non deve fare cinquanta riflessioni dentro un `Postfix`.
+        /// Ogni nemico si scandisce UNA VOLTA per scena (i nomi trovati restano in cache), quindi una
+        /// stanza affollata si completa in due tentativi, e il secondo arriva dopo
+        /// <see cref="WIDE_RETRY_SECONDS"/>.
+        /// </summary>
+        private const int MAX_ENEMIES_PER_SEARCH = 32;
+
+        /// <summary>
+        /// ⚠️ OGNI QUANTO SI RITENTA UN NOME CHE NESSUNA SORGENTE HA TROVATO. E' il numero che tiene
+        /// vera la frase «la ricerca larga si fa **una volta per nome**»: positivo ⇒ la cache risponde
+        /// e non si cerca piu'; negativo ⇒ non si cerca a ogni pacchetto (che con una raffica di
+        /// proiettili sarebbe una scansione di riflessione per proiettile), ma nemmeno si rinuncia per
+        /// SEMPRE, perche' il primo tentativo puo' arrivare prima che il nemico che ha sparato sia in
+        /// scena su questa macchina. Il costo e' dichiarato: al massimo una ricerca larga per nome
+        /// ogni 10 secondi.
+        /// </summary>
+        private const float WIDE_RETRY_SECONDS = 10f;
+
         // =============================================================================================
         //  STATO. Tutto per scena; `_interesting` e `_typeHasGo` sono cache di TIPO e non si azzerano
         //  (un prefab e' un asset: la risposta non cambia).
@@ -160,14 +227,48 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>⭐ IL CATALOGO: nome del prefab → riferimento LOCALE, preso dai campi del boss.</summary>
         private static readonly Dictionary<string, GameObject> _catalog = new Dictionary<string, GameObject>();
 
+        /// <summary>
+        /// ⭐⭐ LA CACHE (sorgente ④): nome → prefab risolto da una sorgente LARGA (② nemici o ③
+        /// penitente). Non contiene i nomi del boss: quelli stanno gia' in <see cref="_catalog"/>, che
+        /// e' il primo posto in cui si guarda. Vive per scena.
+        ///
+        /// ⚠️ E non contiene solo il nome CERCATO: la riflessione su un nemico restituisce **tutti** i
+        /// suoi prefab, e si mettono in cache tutti. E' cio' che rende il costo «una volta per
+        /// OGGETTO» e non «una volta per nome»: il secondo proiettile dello stesso nemico arriva con
+        /// `da=cache` e costa zero.
+        /// </summary>
+        private static readonly Dictionary<string, GameObject> _cache = new Dictionary<string, GameObject>();
+
+        /// <summary>Quando un nome ha fallito TUTTE le sorgenti: e' il tetto della ricerca larga.</summary>
+        private static readonly Dictionary<string, float> _missAt = new Dictionary<string, float>();
+
+        /// <summary>I nemici gia' scanditi in questa scena (per `GetInstanceID`, come `_interesting`).</summary>
+        private static readonly HashSet<int> _harvested = new HashSet<int>();
+
         /// <summary>I nomi gia' detti una volta come "non risolti": una riga per nome per scena.</summary>
         private static readonly HashSet<string> _unresolved = new HashSet<string>();
+
+        /// <summary>I nomi gia' detti una volta come RISOLTI (e da quale sorgente): una riga per nome.</summary>
+        private static readonly HashSet<string> _reported = new HashSet<string>();
+
+        /// <summary>
+        /// Il cronometro della RISOLUZIONE. E' la misura del mandato, e sta qui e non nel chiamante
+        /// perche' deve misurare la ricerca e nient'altro (nessuna serializzazione, nessun log).
+        /// </summary>
+        private static readonly System.Diagnostics.Stopwatch _timer = new System.Diagnostics.Stopwatch();
 
         /// <summary>Il filtro strutturale del mittente, in cache per prefab.</summary>
         private static readonly Dictionary<int, bool> _interesting = new Dictionary<int, bool>();
 
         /// <summary>Quali tipi portano un campo `GameObject`, in cache per tipo.</summary>
         private static readonly Dictionary<Type, bool> _typeHasGo = new Dictionary<Type, bool>();
+
+        /// <summary>
+        /// ⚠️ I CAMPI DI UN TIPO, in cache per TIPO. Prima questa `GetFields` girava a ogni componente
+        /// di ogni scansione: con quattro sorgenti e tutti i nemici della scena sarebbe diventato il
+        /// costo dominante. I campi di un tipo non cambiano a runtime ⇒ si leggono una volta sola.
+        /// </summary>
+        private static readonly Dictionary<Type, FieldInfo[]> _fieldsOfType = new Dictionary<Type, FieldInfo[]>();
 
         /// <summary>
         /// ⚠️ IL GUARDIA DI RIENTRANZA. Quando istanzio la copia di un effetto ricevuto, il mio
@@ -186,14 +287,40 @@ namespace Blasphemous.Multiplayer.Client
 
         private static float _lastBrakeLog = -1000f;
         private static float _lastSkipLog = -1000f;
-        private static float _lastUnresolvedLog = -1000f;
 
-        // I contatori della misura (finiscono nel log e nel referto).
+        // ---- LE SORGENTI LARGHE (② nemici, ③ penitente) ---------------------------------------------
+        /// <summary>Il `Penitent` locale si scandisce UNA volta per scena: e' uno solo e non cambia.</summary>
+        private static bool _penitentHarvested;
+
+        // ---- I CONTATORI DELLA MISURA (finiscono nel log e nel referto) ------------------------------
         private static int _sends;
         private static int _instantiated;
         private static int _deduped;
         private static int _unresolvedCount;
         private static int _braked;
+
+        /// <summary>
+        /// Quante risoluzioni hanno vinto, per sorgente: `boss`, `nemici`, `penitente`, `cache`.
+        /// </summary>
+        private static readonly Dictionary<string, int> _bySource = new Dictionary<string, int>();
+
+        /// <summary>
+        /// ⭐ QUANTI NOMI OGNI SORGENTE HA PORTATO — la seconda metà della misura, e la più utile da
+        /// leggere: dice se una sorgente serve (porta nomi) o se è costo senza risultati (zero nomi).
+        /// </summary>
+        private static readonly Dictionary<string, int> _namesBySource = new Dictionary<string, int>();
+
+        /// <summary>Le risoluzioni misurate: quante, il totale e il peggiore (ms).</summary>
+        private static int _resolves;
+        private static double _resolveTotalMs;
+        private static double _resolveMaxMs;
+
+        /// <summary>Quante volte la ricerca LARGA e' stata davvero eseguita, e quante volte saltata dal tetto.</summary>
+        private static int _wideSearches;
+        private static int _wideSkipped;
+
+        /// <summary>Quanti nemici sono stati riflessi in questa scena (la voce "costo" del referto).</summary>
+        private static int _enemiesScanned;
 
         // =============================================================================================
         //  CICLO DI VITA. Chiamati da `Multiplayer.cs` (OnLevelLoaded / OnLateUpdate): nessun
@@ -216,28 +343,43 @@ namespace Blasphemous.Multiplayer.Client
 
                 _seen.Clear();
                 _catalog.Clear();
+                _cache.Clear();
+                _missAt.Clear();
+                _harvested.Clear();
                 _unresolved.Clear();
+                _reported.Clear();
                 _catalogAt = -1000f;
                 _catalogHasNames = false;
                 _catalogLogged = string.Empty;
                 _sendWindowCount = 0;
                 _sendWindowAt = -1000f;
                 _applyingFromWire = false;
+                _penitentHarvested = false;
 
                 _sends = 0;
                 _instantiated = 0;
                 _deduped = 0;
                 _unresolvedCount = 0;
                 _braked = 0;
+                _bySource.Clear();
+                _namesBySource.Clear();
+                _resolves = 0;
+                _resolveTotalMs = 0d;
+                _resolveMaxMs = 0d;
+                _wideSearches = 0;
+                _wideSkipped = 0;
+                _enemiesScanned = 0;
 
                 if (_inLevel)
                 {
                     ModLog.Info($"{Marker} armato scena={_scene} finestraDedup={DEDUP_SECONDS:F1}s " +
                                 $"freno={MAX_SENDS_PER_SECOND}/s (il filtro e' sul RICEVENTE: " +
-                                $"catalogo del boss + dedup)");
+                                $"risoluzione nome→prefab da {SourceBoss}|{SourceEnemies}|" +
+                                $"{SourcePenitent}|{SourceCache} + dedup)");
                 }
 
-                // `_interesting` e `_typeHasGo` NON si azzerano: riguardano gli ASSET, non la scena.
+                // `_interesting`, `_typeHasGo` e `_fieldsOfType` NON si azzerano: riguardano gli ASSET
+                // (e i TIPI), non la scena.
             }
             catch (Exception e)
             {
@@ -461,30 +603,61 @@ namespace Blasphemous.Multiplayer.Client
 
                 Vector3 position = new Vector3(x, y, z);
 
-                // ---- ① IL NOME E' UN EFFETTO DEL **MIO** BOSS? ----------------------------------
+                // ---- ① IL NOME, QUALUNQUE SORGENTE LO CONOSCA --------------------------------------
                 //
-                // Questa e' la strada 1 dello studio, l'unica MISURATA (5/5 nomi del boss): il
-                // riferimento al prefab sta nei campi serializzati della copia LOCALE del boss, e si
-                // legge per riflessione. Niente `GameObject.Find`, e soprattutto niente
-                // `Resources.FindObjectsOfTypeAll`: quella risolve si' 53 nomi su 53, ma per
-                // `LandingFx` restituisce l'istanza di scena e non l'asset (`asset=no`), cioe' un
-                // catalogo che sembra completo e ha un buco silenzioso proprio su un prefab del boss.
-                GameObject prefab = Resolve(name);
+                // QUATTRO SORGENTI IN ORDINE, si ferma alla prima che riesce (vedi `Resolve`):
+                //   ① i campi del MIO boss   — la strada 1, l'unica MISURATA (5/5 nomi del boss)
+                //   ② i campi dei NEMICI     — i proiettili dei 3 nemici (`projectilePrefab` sta li')
+                //   ③ i campi del PENITENTE  — gli effetti del giocatore
+                //   ④ la CACHE per nome      — trovato una volta, si ricorda
+                // E il marker dice **quale ha vinto** e **in quanti ms**: e' la misura del mandato.
+                string source;
+                double resolveMs;
+                GameObject prefab = Resolve(name, out source, out resolveMs);
+
                 if (prefab == null)
                 {
                     // Non e' un errore: e' un effetto che su QUESTA macchina non so ricostruire (un
-                    // proiettile del giocatore, una trappola, un boss che qui non c'e'). Una riga per
-                    // nome per scena, e il contatore nel riepilogo.
+                    // proiettile del giocatore, una trappola, un boss che qui non c'e'). UNA riga per
+                    // nome per scena — e dice le sorgenti PROVATE, cosi' il test sa cosa manca.
                     _unresolvedCount++;
                     if (_unresolved.Add(name))
                     {
-                        LogThrottled(ref _lastUnresolvedLog,
-                                     $"{Marker} {VerbUnresolved} prefab=\"{name}\" da={senderName}: non e' " +
-                                     $"nel catalogo del boss locale ({_catalog.Count} nomi), quindi non lo " +
-                                     $"ricostruisco (nomi non risolti finora={_unresolvedCount})");
+                        string penitentState = _penitentHarvested ? "si" : "no";
+
+                        ModLog.Info($"{Marker} {VerbUnresolved} \"{name}\" provate: " +
+                                    $"{SourceBoss},{SourceEnemies},{SourcePenitent} mittente={senderName} " +
+                                    $"(in={F3(resolveMs)}ms, catalogo {SourceBoss}={_catalog.Count} nomi, " +
+                                    $"{SourceEnemies} scanditi={_enemiesScanned}, {SourcePenitent}={penitentState}, " +
+                                    $"cache={_cache.Count}, non risolti finora={_unresolvedCount})");
                     }
 
                     return;
+                }
+
+                // ⭐ LA RIGA DELLA MISURA: una per nome, la prima volta. Chi legge il log sa DA DOVE
+                // viene il prefab e QUANTO e' costato trovarlo, senza una sonda separata.
+                //
+                // ⚠️ E il blocco ha il SUO `try/catch`, che sembra eccessivo e non lo e': qui siamo
+                // DOPO la risoluzione e PRIMA della copia, quindi un'eccezione nel log butterebbe via
+                // un effetto che si poteva istanziare. Un marker non deve mai costare un effetto.
+                try
+                {
+                    if (_reported.Add(name))
+                    {
+                        int seen;
+                        _bySource.TryGetValue(source, out seen);
+                        _bySource[source] = seen + 1;
+
+                        ModLog.Info($"{Marker} {VerbResolved} \"{name}\" da={source} in={F3(resolveMs)}ms " +
+                                    $"mittente={senderName} (catalogo {SourceBoss}={_catalog.Count} nomi, " +
+                                    $"{SourceEnemies} scanditi={_enemiesScanned}, cache={_cache.Count}, " +
+                                    $"risolti finora={_reported.Count})");
+                    }
+                }
+                catch (Exception e)
+                {
+                    Fail("riga RISOLTO", e);
                 }
 
                 // ---- ② CE L'HO GIA'? --------------------------------------------------------------
@@ -587,52 +760,270 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         // =============================================================================================
-        //  ③ LA RISOLUZIONE nome → prefab: LA STRADA 1, i campi della COPIA LOCALE del boss.
+        //  ③ LA RISOLUZIONE nome → prefab: QUATTRO SORGENTI IN ORDINE, si ferma alla prima che riesce.
+        //
+        //   ① i campi della COPIA LOCALE DEL BOSS   (la strada 1, MISURATA 5/5) -> `_catalog`
+        //   ② i campi dei NEMICI IN SCENA           (i proiettili dei 3 nemici)  -> `_cache`
+        //   ③ i campi del PENITENTE LOCALE          (gli effetti del giocatore)  -> `_cache`
+        //   ④ la CACHE per nome                    (trovato una volta, si ricorda)
+        //
+        // ⚠️ PERCHE' QUESTO ORDINE, E NON UN ALTRO: la ① e la ④ sono due lookup in un dizionario
+        // (decine di nanosecondi); la ② e la ③ sono RIFLESSIONE (millisecondi). ⇒ la ricerca larga si
+        // paga SOLO per i nomi che oggi finivano in `non risolto`, e UNA VOLTA per oggetto: la cache
+        // della ④ risponde a tutti i pacchetti successivi. La ricerca larga NON gira per frame — non
+        // gira nemmeno a ogni pacchetto, perché un nome già trovato non si cerca più.
+        //
+        // ⚠️ E «VINCE LA PRIMA»: se due sorgenti conoscono lo stesso nome, il prefab è quello della
+        // sorgente che viene PRIMA (boss > nemici > penitente > cache). Non è un pareggio da
+        // arbitrare: due prefab con lo stesso nome in due posti diversi sono due asset diversi, e
+        // l'ordine è la regola. Il marker lo dichiara, perché scrive `da=`.
         // =============================================================================================
 
         /// <summary>
-        /// Il nome arriva dal peer, il riferimento lo da' questa macchina: si cerca il nome fra i
-        /// `GameObject` che i componenti del boss locale portano nei loro campi serializzati — anche
-        /// annidati (`objectsToInstantiate[].prefabToInstantiate`) e anche dentro i componenti
-        /// d'attacco che il boss referenzia (`areaAttack.areaPrefab`, `maceImpact.areaPrefab`).
-        ///
-        /// MISURATO (`[FxRisolvi] boss=si(campo=…)`): **5 nomi su 5** del vocabolario di ElderBrother,
-        /// su entrambe le macchine, compresi i **2** che la fight usa davvero.
-        ///
-        /// ⚠️ E se il nome non c'e', NON si ripiega su `Resources`: un catalogo che si riempie di
-        /// oggetti di scena qualunque e' peggio di un catalogo corto, perche' sbaglia in silenzio.
+        /// Il nome arriva dal peer, il riferimento lo dà questa macchina. Prova le sorgenti in ordine
+        /// e si ferma alla prima che riesce; dice **quale** è stata (<paramref name="source"/>) e
+        /// **quanto è costato** (<paramref name="ms"/>). Non lancia mai: una risoluzione non deve
+        /// rompere un effetto.
         /// </summary>
-        private static GameObject Resolve(string name)
+        private static GameObject Resolve(string name, out string source, out double ms)
+        {
+            source = null;
+            ms = 0d;
+
+            _timer.Reset();
+            _timer.Start();
+
+            GameObject prefab;
+            try
+            {
+                prefab = ResolveCore(name, ref source);
+            }
+            catch (Exception e)
+            {
+                // L'ultima difesa: se la riflessione esplode, il nome resta non risolto e il gioco
+                // non se ne accorge (l'effetto del peer non nasce, come prima di questo lavoro).
+                Fail("Resolve", e);
+                prefab = null;
+            }
+
+            _timer.Stop();
+            ms = _timer.Elapsed.TotalMilliseconds;
+
+            // ⭐ LA MISURA VA CONTATA SEMPRE, anche sui fallimenti: `_resolveMaxMs` è il numero che
+            // dice quanto è costata la risoluzione peggiore, ed è quello che finisce nel riepilogo.
+            _resolves++;
+            _resolveTotalMs += ms;
+            if (ms > _resolveMaxMs)
+                _resolveMaxMs = ms;
+
+            return prefab;
+        }
+
+        /// <summary>
+        /// Il corpo della risoluzione, con le sue uscite anticipate. `ref` invece di `out` perché ogni
+        /// sorgente che vince deve poter scrivere la propria etichetta.
+        /// </summary>
+        private static GameObject ResolveCore(string name, ref string source)
         {
             GameObject prefab;
-            if (_catalog.TryGetValue(name, out prefab) && prefab != null)
-                return prefab;
 
-            // Il nome non c'e': o il catalogo e' vecchio, o il boss qui non ha quel campo. Si ritenta
-            // con un tetto di tempo, perche' scandire la scena a ogni pacchetto sarebbe un costo
-            // dentro una fight.
+            // ---- ① I CAMPI DEL BOSS ------------------------------------------------------------
+            //
+            // La strada 1 dello studio, l'unica MISURATA (5/5 nomi del boss): il riferimento al
+            // prefab sta nei campi serializzati della copia LOCALE del boss, e si legge per
+            // riflessione. Niente `GameObject.Find`, e soprattutto niente
+            // `Resources.FindObjectsOfTypeAll`: quella risolve sì 53 nomi su 53, ma per `LandingFx`
+            // restituisce l'istanza di scena e non l'asset (`asset=no`), cioè un catalogo che sembra
+            // completo e ha un buco silenzioso proprio su un prefab del boss.
+            if (_catalog.TryGetValue(name, out prefab) && prefab != null)
+            {
+                source = SourceBoss;
+                return prefab;
+            }
+
+            // Il nome non c'è: o il catalogo è vecchio, o il boss qui non ha quel campo. Si ritenta
+            // con un tetto di tempo, perché scandire la scena a ogni pacchetto sarebbe un costo
+            // dentro una fight. ⚠️ LA CADENZA È QUELLA DI PRIMA (2 s a catalogo vuoto, 10 s quando
+            // ha già dei nomi): questa sorgente non è stata toccata da questo lavoro.
             if (Time.unscaledTime - _catalogAt >= CATALOG_FAST_SECONDS)
             {
                 BuildCatalog();
 
                 if (_catalog.TryGetValue(name, out prefab) && prefab != null)
+                {
+                    source = SourceBoss;
                     return prefab;
+                }
             }
 
+            // ---- ④ LA CACHE (prima delle sorgenti LARGHE: è il suo unico scopo) ----------------
+            if (_cache.TryGetValue(name, out prefab))
+            {
+                if (prefab != null)
+                {
+                    source = SourceCache;
+                    return prefab;
+                }
+
+                _cache.Remove(name); // l'asset è stato scaricato: la voce non vale più
+            }
+
+            // ⚠️ IL TETTO DELLA RICERCA LARGA. Un nome che nessuna sorgente conosce verrebbe cercato a
+            // OGNI pacchetto, e una raffica di proiettili non risolti diventerebbe una scansione di
+            // riflessione per proiettile. Il nome si ritenta al massimo ogni `WIDE_RETRY_SECONDS`:
+            // è il numero che tiene vera la frase «una volta per nome» anche quando il nome NON si
+            // trova, e che lascia una porta aperta al nemico non ancora in scena al primo tentativo.
+            float now = Time.unscaledTime;
+            float missedAt;
+            if (_missAt.TryGetValue(name, out missedAt) && now - missedAt < WIDE_RETRY_SECONDS)
+            {
+                _wideSkipped++;
+                return null;
+            }
+
+            // ---- ② I CAMPI DEI NEMICI, poi ---- ③ I CAMPI DEL PENITENTE ------------------------
+            _wideSearches++;
+
+            if (SearchEnemies(name, out prefab))
+            {
+                source = SourceEnemies;
+                return prefab;
+            }
+
+            if (SearchPenitent(name, out prefab))
+            {
+                source = SourcePenitent;
+                return prefab;
+            }
+
+            _missAt[name] = now;
             return null;
+        }
+
+        // =============================================================================================
+        //  ② I CAMPI DEI NEMICI. «Quali nemici?» — TUTTI quelli in scena, attivi e non: il prefab del
+        //  proiettile sta su un `EnemyAttack` che il nemico si porta addosso (`projectilePrefab`), e
+        //  non c'è bisogno che quel nemico sia tracciato dal sync perché il RIFERIMENTO ci sia.
+        //  ⚠️ I boss si saltano: quelli sono la ① e rifletterli qui sarebbe pagare due volte la cosa
+        //  più grossa della scena.
+        // =============================================================================================
+        private static bool SearchEnemies(string name, out GameObject found)
+        {
+            found = null;
+
+            Enemy[] all;
+            try
+            {
+                all = EnemySyncManager.AllEnemiesIncludingInactive();
+            }
+            catch (Exception e)
+            {
+                Fail("SearchEnemies", e);
+                return false;
+            }
+
+            if (all == null)
+                return false;
+
+            int scanned = 0;
+            for (int i = 0; i < all.Length && scanned < MAX_ENEMIES_PER_SEARCH; i++)
+            {
+                Enemy enemy = all[i];
+                if (enemy == null)
+                    continue;
+
+                if (IsBossType(enemy))
+                    continue;
+
+                // Già scandito in questa scena: i suoi nomi sono già nella cache, e rileggerli non
+                // aggiungerebbe niente. È questo — non il tetto dei nemici — che rende il costo
+                // «una volta per oggetto».
+                int id;
+                try
+                {
+                    id = enemy.GetInstanceID();
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                if (!_harvested.Add(id))
+                    continue;
+
+                scanned++;
+                _enemiesScanned++;
+
+                try
+                {
+                    Harvest(enemy, MAX_ENEMY_COMPONENTS, _cache, SourceEnemies);
+                }
+                catch (Exception e)
+                {
+                    Fail("Harvest/Enemy", e);
+                }
+
+                if (_cache.TryGetValue(name, out found) && found != null)
+                    return true;
+            }
+
+            return false;
+        }
+
+        // =============================================================================================
+        //  ③ I CAMPI DEL PENITENTE. `Core.Logic.Penitent` è il giocatore LOCALE: l'altro non è un
+        //  `Penitent`, è un avatar nudo (`OtherPlayerScript`), quindi non c'è un «Penitente remoto»
+        //  da scandire — e non serve: i prefab che il relay deve ricostruire sono ASSET del gioco,
+        //  e i riferimenti serializzati sul MIO `Penitent` sono gli stessi che ha il suo.
+        // =============================================================================================
+        private static bool SearchPenitent(string name, out GameObject found)
+        {
+            found = null;
+
+            Gameplay.GameControllers.Penitent.Penitent local;
+            try
+            {
+                local = Core.Logic != null ? Core.Logic.Penitent : null;
+            }
+            catch (Exception)
+            {
+                local = null;
+            }
+
+            if (local == null)
+                return false;
+
+            // ⚠️ UNA VOLTA PER SCENA. Il `Penitent` è UNO e i riferimenti ai prefab che porta sono
+            // asset: non cambiano mentre si gioca. Scandirlo a ogni nome non risolverebbe niente in
+            // più e costerebbe quanto un boss, ogni volta.
+            if (_penitentHarvested)
+                return false;
+
+            try
+            {
+                Harvest(local, MAX_PENITENT_COMPONENTS, _cache, SourcePenitent);
+                _penitentHarvested = true;
+            }
+            catch (Exception e)
+            {
+                Fail("Harvest/Penitent", e);
+            }
+
+            return _cache.TryGetValue(name, out found) && found != null;
         }
 
         private static void BuildCatalog()
         {
             _catalogAt = Time.unscaledTime;
             _catalog.Clear();
+            _namesBySource[SourceBoss] = 0; // il catalogo si ricostruisce: il conteggio riparte con lui
 
             List<Enemy> bosses = FindBosses();
             for (int i = 0; i < bosses.Count; i++)
             {
                 try
                 {
-                    HarvestBoss(bosses[i]);
+                    Harvest(bosses[i], MAX_BOSS_COMPONENTS, _catalog, SourceBoss);
                 }
                 catch (Exception e)
                 {
@@ -735,31 +1126,43 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// I campi del boss. Si riflette sui suoi componenti (figli compresi), e si SEGUONO i
-        /// riferimenti ai componenti d'attacco (`areaAttack`, `maceImpact`, `jumpAttack`…): e' la'
-        /// che vivono `areaPrefab` e `objectsToInstantiate`, cioe' il vocabolario vero del boss.
+        /// I campi di un oggetto: si riflette sui suoi componenti (figli compresi), e si SEGUONO i
+        /// riferimenti ai componenti d'attacco (`areaAttack`, `maceImpact`, `jumpAttack`…): è là che
+        /// vivono `areaPrefab` e `objectsToInstantiate`, cioè il vocabolario vero dell'attaccante.
         /// Due passi al massimo, per non tirare dentro la scena intera dalle loro referenze.
+        ///
+        /// ⚠️ QUESTA FUNZIONE ERA `HarvestBoss(Enemy)` E SI CHIAMAVA COSÌ PERCHÉ ANDAVA SOLO SUL BOSS.
+        /// Il camminatore era già generico (`boss.gameObject`): allargarlo ai nemici e al `Penitent`
+        /// non ha richiesto una riga di riflessione nuova — solo di dire DOVE si scrivono i nomi
+        /// trovati (`sink`) e QUANTI componenti si guardano (`maxComponents`).
         /// </summary>
-        private static void HarvestBoss(Enemy boss)
+        /// <param name="root">L'oggetto da scandire (boss, nemico comune, `Penitent`).</param>
+        /// <param name="maxComponents">Il tetto dei componenti: per il boss 96, per un nemico 64, per il `Penitent` 128.</param>
+        /// <param name="sink">Dove si scrivono i nomi trovati: `_catalog` per il boss, `_cache` per le sorgenti larghe.</param>
+        /// <param name="source">L'etichetta della sorgente, e serve a una cosa sola: leggere nel log da dove viene un nome.</param>
+        private static void Harvest(Component root, int maxComponents, Dictionary<string, GameObject> sink, string source)
         {
-            if (boss == null)
+            if (root == null || sink == null)
                 return;
 
             Component[] own;
             try
             {
-                own = boss.gameObject.GetComponentsInChildren<Component>(true);
+                own = root.gameObject.GetComponentsInChildren<Component>(true);
             }
             catch (Exception)
             {
                 return;
             }
 
+            if (own == null)
+                return;
+
             List<CompRef> queue = new List<CompRef>();
             HashSet<Component> visited = new HashSet<Component>();
             HashSet<object> visitedData = new HashSet<object>();
 
-            int count = own.Length < MAX_BOSS_COMPONENTS ? own.Length : MAX_BOSS_COMPONENTS;
+            int count = own.Length < maxComponents ? own.Length : maxComponents;
             for (int i = 0; i < count; i++)
             {
                 Component component = own[i];
@@ -770,22 +1173,15 @@ namespace Blasphemous.Multiplayer.Client
                     queue.Add(new CompRef(component, 0));
             }
 
-            for (int qi = 0; qi < queue.Count && qi < MAX_BOSS_COMPONENTS; qi++)
+            for (int qi = 0; qi < queue.Count && qi < maxComponents; qi++)
             {
                 CompRef reference = queue[qi];
                 if (reference.Comp == null)
                     continue;
 
-                FieldInfo[] fields;
-                try
-                {
-                    fields = reference.Comp.GetType().GetFields(
-                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                }
-                catch (Exception)
-                {
+                FieldInfo[] fields = FieldsOf(reference.Comp.GetType());
+                if (fields == null)
                     continue;
-                }
 
                 for (int fi = 0; fi < fields.Length; fi++)
                 {
@@ -805,7 +1201,7 @@ namespace Blasphemous.Multiplayer.Client
 
                     if (fieldType == typeof(GameObject))
                     {
-                        Add(value as GameObject);
+                        Add(value as GameObject, sink, source);
                         continue;
                     }
 
@@ -819,12 +1215,12 @@ namespace Blasphemous.Multiplayer.Client
                         if (element == typeof(GameObject))
                         {
                             for (int i = 0; i < list.Count; i++)
-                                Add(list[i] as GameObject);
+                                Add(list[i] as GameObject, sink, source);
                         }
                         else if (IsPlainData(element) && TypeHasGameObject(element, 1))
                         {
                             for (int i = 0; i < list.Count; i++)
-                                AddPlainData(list[i], visitedData, 1);
+                                AddPlainData(list[i], visitedData, 1, sink, source);
                         }
 
                         continue;
@@ -833,7 +1229,7 @@ namespace Blasphemous.Multiplayer.Client
                     if (IsPlainData(fieldType) && TypeHasGameObject(fieldType, 1))
                     {
                         if (value != null)
-                            AddPlainData(value, visitedData, 1);
+                            AddPlainData(value, visitedData, 1, sink, source);
 
                         continue;
                     }
@@ -850,7 +1246,36 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        private static void AddPlainData(object value, HashSet<object> visited, int depth)
+        /// <summary>
+        /// I campi di un tipo, in cache per tipo. È la differenza fra «una `GetFields` per componente»
+        /// e «una `GetFields` per tipo»: con la ricerca larga su tutti i nemici la prima sarebbe
+        /// diventata il costo dominante, e i campi di un tipo non cambiano a runtime.
+        /// </summary>
+        private static FieldInfo[] FieldsOf(Type type)
+        {
+            if (type == null)
+                return null;
+
+            FieldInfo[] cached;
+            if (_fieldsOfType.TryGetValue(type, out cached))
+                return cached;
+
+            FieldInfo[] fields;
+            try
+            {
+                fields = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
+            _fieldsOfType[type] = fields;
+            return fields;
+        }
+
+        private static void AddPlainData(object value, HashSet<object> visited, int depth,
+                                         Dictionary<string, GameObject> sink, string source)
         {
             if (value == null || depth > 2)
                 return;
@@ -860,16 +1285,9 @@ namespace Blasphemous.Multiplayer.Client
             if (!value.GetType().IsValueType && !visited.Add(value))
                 return;
 
-            FieldInfo[] fields;
-            try
-            {
-                fields = value.GetType().GetFields(
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            }
-            catch (Exception)
-            {
+            FieldInfo[] fields = FieldsOf(value.GetType());
+            if (fields == null)
                 return;
-            }
 
             for (int i = 0; i < fields.Length; i++)
             {
@@ -887,7 +1305,7 @@ namespace Blasphemous.Multiplayer.Client
                         continue;
                     }
 
-                    Add(raw as GameObject);
+                    Add(raw as GameObject, sink, source);
                     continue;
                 }
 
@@ -904,26 +1322,42 @@ namespace Blasphemous.Multiplayer.Client
                     continue;
                 }
 
-                AddPlainData(inner, visited, depth + 1);
+                AddPlainData(inner, visited, depth + 1, sink, source);
             }
         }
 
         /// <summary>
-        /// Un nome nuovo nel catalogo. La chiave e' il nome del PREFAB (ripulito dai suffissi
+        /// Un nome nuovo nella destinazione. La chiave e' il nome del PREFAB (ripulito dai suffissi
         /// d'istanza), che e' esattamente cio' che viaggia nel pacchetto: il peer manda un nome, non
         /// un handle, perche' gli handle non sono gli stessi su due macchine.
+        ///
+        /// ⚠️ «VINCE LA PRIMA»: se il nome c'e' gia', non si sovrascrive. Vale fra sorgenti diverse
+        /// (boss > nemici > penitente) e vale dentro la stessa: il primo prefab con quel nome e'
+        /// quello che si usa, e il marker lo dichiara con `da=`.
         /// </summary>
-        private static void Add(GameObject go)
+        private static void Add(GameObject go, Dictionary<string, GameObject> sink, string source)
         {
-            if (go == null)
+            if (go == null || sink == null)
                 return;
 
             string name = Clean(go.name);
             if (string.IsNullOrEmpty(name))
                 return;
 
-            if (!_catalog.ContainsKey(name))
-                _catalog[name] = go;
+            if (sink.ContainsKey(name))
+                return;
+
+            sink[name] = go;
+
+            // Il conteggio per sorgente: `_catalog` si svuota a ogni ricostruzione, quindi il numero
+            // del boss viene azzerato in `BuildCatalog` e questo contatore resta la misura vera di
+            // «quanti nomi ha portato QUESTA sorgente».
+            if (source == null)
+                return;
+
+            int seen;
+            _namesBySource.TryGetValue(source, out seen);
+            _namesBySource[source] = seen + 1;
         }
 
         // =============================================================================================
@@ -1214,6 +1648,16 @@ namespace Blasphemous.Multiplayer.Client
             return value.ToString("F1", CultureInfo.InvariantCulture);
         }
 
+        /// <summary>
+        /// I millisecondi della risoluzione, con la virgola decimale INGLESE e tre decimali: una
+        /// ricerca di riflessione su un oggetto sta fra 0,05 e 3 ms, quindi con un solo decimale
+        /// (o con la virgola italiana) non si leggerebbe.
+        /// </summary>
+        private static string F3(double value)
+        {
+            return value.ToString("F3", CultureInfo.InvariantCulture);
+        }
+
         private static void LogThrottled(ref float last, string line)
         {
             float now = Time.unscaledTime;
@@ -1229,11 +1673,37 @@ namespace Blasphemous.Multiplayer.Client
             LogThrottled(ref _lastSkipLog, $"{Marker} {VerbSkip}: {why}");
         }
 
+        /// <summary>
+        /// Il riepilogo di fine scena: i conteggi di prima **più la misura della risoluzione** — chi ha
+        /// vinto, quanti nomi ha portato ciascuna sorgente, quante volte la ricerca larga è girata e
+        /// qual è stata la peggiore (ms). È il numero che va nel referto, e non si può stimare.
+        /// </summary>
         private static void PrintSummary()
         {
+            double average = _resolves > 0 ? _resolveTotalMs / _resolves : 0d;
+
             ModLog.Info($"{Marker} riepilogo scena={_scene} mandati={_sends} istanziati={_instantiated} " +
                         $"scartatiPerDedup={_deduped} nonRisolti={_unresolvedCount} frenati={_braked} " +
-                        $"catalogo={_catalog.Count}");
+                        $"catalogo={_catalog.Count} risolti=[{Counts(_bySource)}] " +
+                        $"nomi=[{Counts(_namesBySource)}] risoluzioni={_resolves} " +
+                        $"max={F3(_resolveMaxMs)}ms medio={F3(average)}ms " +
+                        $"ricercheLarghe={_wideSearches} saltateDalTetto={_wideSkipped} " +
+                        $"nemiciScanditi={_enemiesScanned} nomiNonRisolti={_unresolved.Count}");
+        }
+
+        /// <summary>I quattro numeri di una tabella per sorgente, sempre tutti e quattro, anche a zero.</summary>
+        private static string Counts(Dictionary<string, int> table)
+        {
+            return SourceBoss + ":" + Count(table, SourceBoss) + " " +
+                   SourceEnemies + ":" + Count(table, SourceEnemies) + " " +
+                   SourcePenitent + ":" + Count(table, SourcePenitent) + " " +
+                   SourceCache + ":" + Count(table, SourceCache);
+        }
+
+        private static int Count(Dictionary<string, int> table, string key)
+        {
+            int value;
+            return table.TryGetValue(key, out value) ? value : 0;
         }
 
         /// <summary>
