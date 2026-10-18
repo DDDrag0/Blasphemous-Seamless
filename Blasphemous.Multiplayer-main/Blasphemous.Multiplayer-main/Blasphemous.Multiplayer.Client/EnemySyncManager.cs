@@ -2951,6 +2951,22 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// B — LA NOTIFICA "L'ALTRO E' IN PAUSA": il predicato **stanza + vivo**, esposto perche' serve a
+        /// `PauseNotice` (che vive fuori da questo file). Esattamente come `AnyOtherPlayerInMyScene` qui
+        /// sopra: **nessuna logica nuova**, e' un inoltro di una riga a `OtherPlayerHereAndAlive()`.
+        ///
+        /// PERCHE' SERVE LA SECONDA META' (il vivo). Un giocatore **a terra** non puo' essere il socio di
+        /// una pausa: la morte **FORZA** `ResumeGame()` (`UIController.OnDead:462-469` chiude ogni widget
+        /// bloccante e `FadeHide` chiama `ResumeGame`), quindi il suo fronte di pausa durerebbe un istante
+        /// e la notifica arriverebbe su una macchina che sta gia' respawnando. La documentazione completa
+        /// del predicato - compreso perche' "sconosciuto" legge come "vivo" - sta su `OtherPlayerHereAndAlive`.
+        /// </summary>
+        internal static bool AnyOtherPlayerHereAndAlive()
+        {
+            return OtherPlayerHereAndAlive();
+        }
+
+        /// <summary>
         /// [BossJoin] — il secondo numero di `peerInScena=N/TOT`: quanti peer sono connessi in tutto.
         /// </summary>
         internal static int ConnectedPlayersCount()

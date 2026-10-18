@@ -498,6 +498,20 @@ namespace Blasphemous.Multiplayer.Client.Network
                 return;
             }
 
+            // ⭐⭐ B — LA NOTIFICA "L'ALTRO E' IN PAUSA" (il quinto verso del canale Attack).
+            // Stessa ragione dei tre qui sopra per stare QUI e non dopo: il payload ha una forma sua
+            // (un byte di verso) e il ramo PvP lo interpreterebbe come `damageAmount` + nome del
+            // bersaglio. E una ragione in piu': un fronte di pausa deve arrivare **anche durante un fade
+            // o un blocker** (`AttackManager.ReceiveAttack` si ferma su `HasBlocker("ANY")`), perche' non
+            // e' un colpo e non c'e' niente da filtrare.
+            // Il filtro per stanza NON e' qui: lo fa il server (`Server.cs:676-687`). Vedi `PauseNotice`:
+            // qui si consegna e basta, l'interpretazione (e il timeout) stanno di la'.
+            if (attackType == AttackType.PauseRelay)
+            {
+                PauseNotice.ApplyFromWire(attackerName, data, startIdx);
+                return;
+            }
+
             byte damageAmount = data[startIdx + 1];
             string receiverName = Encoding.UTF8.GetString(data, startIdx + 2, data.Length - startIdx - 2);
 

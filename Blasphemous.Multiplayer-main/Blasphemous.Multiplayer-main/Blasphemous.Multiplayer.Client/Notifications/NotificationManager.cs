@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.ProgressSync;
 using Gameplay.UI.Others.UIGameLogic;
 using System.Collections.Generic;
@@ -19,6 +19,13 @@ namespace Blasphemous.Multiplayer.Client.Notifications
         // Current message status
         private readonly List<NotificationLine> currentMessages = new ();
 
+        // ⭐⭐ B — LA RIGA PERSISTENTE ("l'altro e' in pausa"). Le altre notifiche nascono con una
+        // scadenza (`config.notificationDisplaySeconds`, 4 s) e sfumano: questa NO, perche' deve dire
+        // **uno stato**, non un evento — «resta finche' l'altro e' in pausa, e sparisce quando riprende».
+        // Una notifica a tempo avrebbe lasciato la frase a schermo dopo la ripresa (e l'avrebbe tolta
+        // mentre l'altro era ancora in pausa): due bugie, una per lato.
+        private NotificationLine stickyMessage;
+
         // Add a new notification to the list
         public void DisplayNotification(string notification)
         {
@@ -29,8 +36,52 @@ namespace Blasphemous.Multiplayer.Client.Notifications
             currentMessages.Insert(0, line);
 
             // Remove first one if overfull
+            // ⚠️ La riga PERSISTENTE non si toglie mai per fare posto (vedi stickyMessage): si scarta
+            // l'ultima riga a tempo, che e' quella piu' vecchia e gia' in dissolvenza.
             if (currentMessages.Count > MAX_LINES)
-                currentMessages.RemoveAt(currentMessages.Count - 1);
+            {
+                int idx = currentMessages.Count - 1;
+                if (currentMessages[idx] == stickyMessage && idx > 0)
+                    idx--;
+                currentMessages.RemoveAt(idx);
+            }
+        }
+
+        /// <summary>
+        /// ⭐ B — Mostra una notifica che **non scade**: resta a schermo finche' non arriva
+        /// <see cref="ClearStickyNotification"/>. Idempotente sullo stesso testo: chiamarla a ogni
+        /// battito di conferma non crea righe in piu' e non la rianima in cima (basta che ci sia).
+        /// Serve a `PauseNotice`: la frase "YOUR TEAMMATE IS PAUSED" e' uno STATO da mostrare e togliere,
+        /// non un evento da far sfumare da solo.
+        /// </summary>
+        public void DisplayStickyNotification(string notification)
+        {
+            if (string.IsNullOrEmpty(notification))
+                return;
+
+            if (stickyMessage != null && stickyMessage.Text == notification)
+                return;
+
+            ClearStickyNotification();
+
+            ModLog.Info("Notification (persistent): " + notification);
+            // `float.PositiveInfinity` e non 0: se un giorno questa riga finisse nel ramo che sottrae il
+            // tempo (perche' il confronto qui sotto non la riconosce piu'), non scadrebbe lo stesso.
+            stickyMessage = new NotificationLine(notification, float.PositiveInfinity);
+            currentMessages.Insert(0, stickyMessage);
+        }
+
+        /// <summary>
+        /// ⭐ B — Toglie la riga persistente, se c'e'. Chiamarla quando non c'e' non fa niente: e' il
+        /// caso normale (una ripresa ricevuta senza una pausa ricevuta).
+        /// </summary>
+        public void ClearStickyNotification()
+        {
+            if (stickyMessage == null)
+                return;
+
+            currentMessages.Remove(stickyMessage);
+            stickyMessage = null;
         }
 
         // Add a new notification for a progress update, but calculate it first
@@ -66,6 +117,14 @@ namespace Blasphemous.Multiplayer.Client.Notifications
                 textLines[i].text = currentLine.Text;
                 if (textLines[i].preferredWidth > maxWidth)
                     maxWidth = textLines[i].preferredWidth;
+
+                // ⭐ B — la riga PERSISTENTE non sottrae tempo e non sfuma: e' uno stato, e lo toglie
+                // `ClearStickyNotification` (da `PauseNotice`), non l'orologio.
+                if (currentLine == stickyMessage)
+                {
+                    textLines[i].color = Color.white;
+                    continue;
+                }
 
                 // Decrease the amount of time left on this notification line
                 currentLine.SubtractTime(Time.unscaledDeltaTime);

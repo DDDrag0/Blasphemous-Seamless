@@ -291,6 +291,21 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
             MapManager.Update();
             NotificationManager.Update();
+
+            // ⭐⭐ B — LA NOTIFICA "L'ALTRO E' IN PAUSA" (solo informazione: NON condivide la pausa).
+            // Sta QUI, e non prima, per due ragioni d'ordine:
+            //   - **dopo** `NetworkManager.ProcessQueue()` (`:290`): un fronte arrivato dal filo in questo
+            //     frame e' gia' stato applicato quando lo si guarda;
+            //   - **dopo** `NotificationManager.Update()` (`:293`): la riga persistente viene disegnata
+            //     nello stesso frame in cui la si accoda, senza un frame di ritardo.
+            // Il polling di `Core.Logic.IsPaused` si fa la' dentro, una volta per frame: le vie di pausa
+            // sono SETTE e le riprese DODICI (`scratch\STUDIO-PAUSA-CONDIVISA.md` §1.2) e non c'e' una
+            // porta sola da patchare ⇒ **zero patch Harmony nuove** (269 bersagli, invariati), e `Tick()`
+            // gira anche a `timeScale = 0` perche' un `LateUpdate` non e' scalato dal tempo di gioco.
+            // ⛔ Questa classe NON chiama `PauseGame`/`ResumeGame` e non tocca `Time.timeScale`: riceve e
+            // manda un fronte, e accende una riga di testo. Vedi `PauseNotice.cs`.
+            PauseNotice.Tick();
+
             PingManager.OnUpdate();
             if (CurrentlyInLevel)
             {

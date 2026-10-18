@@ -123,6 +123,32 @@ public enum AttackType
     /// </summary>
     SyncIdList = 202,
 
+    // ================================================================================================
+    // ⭐⭐ B — LA NOTIFICA "L'ALTRO E' IN PAUSA" (2026-10-19): un fronte di pausa del giocatore locale,
+    // che arriva all'altro solo per ESSERE LETTO. Non mette in pausa nessuno: **e' un'informazione**.
+    //
+    // NON e' un attacco e non ferisce nessuno: e' il QUINTO verso del canale Attack, e ne usa la stessa
+    // infrastruttura per la stessa ragione del ②, del ③ e del ④ — **e' il canale che fa il viaggio che
+    // serve**: il server lo inoltra ai peer della STESSA SCENA **escludendo il mittente**, col nome del
+    // mittente premesso (`Server.cs:676-699`, `PlayerInfo.isInSameScene`) ⇒ **il filtro "solo chi e' nella
+    // mia stanza" e' gratis e sta gia' dall'altra parte**, e non serve una riga di protocollo (resta 11)
+    // ne' una riga di server (un server vecchio inoltra i byte senza interpretarli; un client vecchio non
+    // trova 203 in `attacks.json` ed esce da solo, `AttackManager.cs:31`).
+    //
+    // ⚠️ IL PAYLOAD E' DI UN BYTE, ed e' un VERSO (1 = in pausa, 0 = ripresa), non uno STATO: e' la
+    // differenza che rende impossibile un rimbalzo. Vedi `PauseNotice` per il ciclo completo, per il
+    // battito che tiene viva la notifica e per il timeout che la fa cadere se il peer sparisce.
+    //
+    // 203 sta accanto a 200/201/202 nello stesso blocco, e resta fuori dai blocchi 0..140 e da
+    // `NoDamage = 255`, perche' il byte viaggia come `(byte)attackType`.
+    // ================================================================================================
+    /// <summary>
+    /// Il fronte di pausa del giocatore locale ("sono in pausa" / "non lo sono piu'"), per la notifica
+    /// a schermo sull'altra macchina. Vedi <see cref="Blasphemous.Multiplayer.Client.PauseNotice"/>:
+    /// informazione, mai pausa condivisa.
+    /// </summary>
+    PauseRelay = 203,
+
     NoDamage = 255
 }
 
