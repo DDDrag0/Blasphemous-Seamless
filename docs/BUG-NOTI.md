@@ -314,6 +314,244 @@ fa**, e il difetto **resta noto e accettato**. *(La voce nel `TODO.md` resta dov
 
 ---
 
+## 7. ⚠️ I **TRE BUCHI** DEL RELAY DEGLI EFFETTI — effetti e proiettili che **non arrivano all'altra macchina** *(LIMITE DICHIARATO, prezzo accettato — NON un difetto in lavorazione)*
+
+> **Va detto per primo, come per la voce 5 e la 6.** Le voci 1-4 sono difetti **chiusi** o **residui rari**, da
+> riconoscere se ricapitano; la 5 e la 6 sono **prezzi accettati**. **Questa è della stessa famiglia, in una forma
+> più semplice**: non c'è nessuna decisione da prendere, perché **la forma del lavoro è già nota** *(due hook
+> mirati e una strada di risoluzione, §"Il fix" qui sotto)*. È nei bug noti **per decisione dell'utente**, con
+> queste parole: *«penso che non lo testeremo per adesso: da testare assieme a tutti i boss»*. ⇒ **è un LIMITE
+> DICHIARATO**, non un lavoro rimandato, e **se ricapita non è una regressione**: è il comportamento noto qui sotto.
+
+**Cosa si vede.** Il relay degli effetti *(`958a07f`)* copre **solo** ciò che passa dal `PoolManager`. Tre
+categorie **non ci passano** (o non ci arrivano), e il risultato sul giocatore è **doppio**:
+- **gli effetti** di quelle categorie **non compaiono** sulla macchina dell'altro giocatore: il giocatore vede il
+  boss caricare, e **il colpo materializzarsi a metà** — o non materializzarsi affatto;
+- **i proiettili** sono peggio, e sono **due sintomi distinti**: **(a)** il proiettile **non si vede**, e
+  **(b)** *a seconda di chi è l'attaccante dell'`Hit`* **il danno non arriva affatto** — vedi la correzione qui
+  sotto, che è la parte da leggere prima di metterci mano.
+
+### ⚠️ Le tre categorie, una per una
+
+| # | buco | dove | perché resta fuori |
+|---|---|---|---|
+| **1** | `BossJumpAttack.InstantiateArea` — i **due `Object.Instantiate`** degli oggetti del salto | `BossJumpAttack.cs:269-277` | non passa dal `PoolManager` ⇒ **nessun hook lo vede**. Per `ElderBrother` **non è esercitabile** *(`instantiateOnStart`/`instantiateOnEnd` = `<null>`)*; **per le Amanecidas sì** |
+| **2** | `BossTeleportAttack.InstantiateArea` — gli oggetti del teletrasporto | `BossTeleportAttack.cs:73-81` | idem, un `Instantiate` grezzo. **Nessun boss misurato lo usa** |
+| **3** | i **proiettili dei nemici comuni** — la famiglia dichiarata come «`ProjectilePool` privato»: **`BellGhostVariant` · `RangedBoomerang` · `MeltedLady`** | `ProjectilePool.cs:12-33` · i tre attacchi (sotto) | **il buco è vero, la causa scritta nei referti no** — la correzione qui sotto è la ragione per cui quei proiettili non arrivano |
+
+- ⚠️ **E restano fuori, per dichiarazione esplicita** *(come già scritto nel referto)*: i **~18 `Object.Instantiate`
+  grezzi** nei boss *(Piety 3, Snake 2, Crisanta 2…)*, i **cosmetici** fuori dal filtro *(`CorpseAnimationFx`,
+  `LandingFx`, `CorpsesParticlesJump` — i loro pool **esistono**, 30 / 1 / 1 istanze, ma non feriscono)*,
+  **camera e audio**, e **tutto il canale del giocatore** *(`EffectType`: solo **3** membri istanziano un prefab dal
+  pool, e sono tutti cosmetici)*.
+
+### ⚠️ Una correzione alla fonte, perché un hook che non serve si paga due volte
+
+**Il referto dice** *(`scratch\REFERTO-RELAY-EFFETTI.md` §6, ripetuto in `DIAGNOSI-VOCABOLARIO-EFFETTI.md` §a)*:
+*«`ProjectilePool` **privato**, usato da **3 nemici** ⇒ i loro proiettili non sono sincronizzati»*. **Sul
+decompilato questo non regge, e va corretto qui** *(è la stessa lezione di `docs\TODO.md` §4: «una catena
+plausibile non è la catena vera»)*:
+
+- **`ProjectilePool.Spawn` non è chiamato da nessuna parte** nel gioco: **0 chiamate** su tutta `Assembly-CSharp`
+  *(`ProjectilePool.cs:15-32`)*, e `Initialize`/`StoreProjectile` sono chiamati **solo dentro la classe stessa**
+  *(`:34-50`)* ⇒ **quel pool, nella build che giochiamo, non si usa.**
+- **I tre nemici passano dal `PoolManager`**, non dal pool privato: `BellGhostVariantAttack.cs:39`,
+  `MeltedLadyAttack.cs:40`, `RangedBoomerangAttack.cs:40` chiamano tutti
+  `PoolManager.Instance.ReuseObject(projectilePrefab, …)`, e creano il loro pool con
+  `PoolManager.Instance.CreatePool(projectilePrefab, 1|2)` *(`:31`, `:25`, `:25`)*.
+- Il campo `ProjectilePool` che dichiarano **serve solo come ancoraggio di posizione**:
+  `PoolManager.Instance.ReuseObject(projectilePrefab, pool.transform.position, …)` — **è un `Transform`, non un
+  pool**.
+- ⇒ ⭐ **il canale del relay VEDE quelli spawn** *(`IsInteresting`: `Projectile`/`Weapon` nei figli del prefab,
+  `EffectRelay.cs:289-296`)*. **E allora perché non arrivano?**
+
+**Perché il ricevente non sa ricostruirli.** Il catalogo del relay è costruito **solo dai prefab del boss
+locale** *(`FindBosses`, namespace `Gameplay.GameControllers.Bosses`; `EffectRelay.cs:630-734`)*, e la risoluzione
+è **una sola domanda**: *«il nome è un effetto del **mio** boss?»* *(`:472-488`)*. Un proiettile di un **nemico
+comune** non sta in nessun campo di nessun boss ⇒ ***`[FxRelay] non risolto`*** ⇒ **la copia non nasce, e sull'altra
+macchina il proiettile non esiste.**
+
+**⚠️ E la conseguenza, che cambia il fix**: la cura **non è un hook sul `ProjectilePool`** *(sarebbe un hook su
+codice che il gioco non esegue)*: è **allargare il catalogo del ricevente ai nemici comuni**, oppure dargli una
+seconda strada di risoluzione. **Il buco resta dichiarato lo stesso**, e per una ragione che vale a prescindere:
+**`ProjectilePool` è fuori dal `PoolManager`**, quindi **se un giorno qualcosa ci passasse davvero, nessun hook lo
+vedrebbe**.
+
+### ⚠️ Perché è un buco di **gameplay**, non solo di immagine
+
+- **Per le aree relayate** il danno **arriva dalla copia del ricevente** *(non da un pacchetto:
+  `REFERTO-RELAY-EFFETTI.md` §4)*. ⇒ **se la copia non nasce, non c'è nessuno che ferisca** il `Penitent` del
+  peer: **manca l'effetto = manca il colpo**. Non è un problema di disegno.
+- **Per i proiettili** il conto si fa in due, e va detto con precisione perché è la differenza fra un buco visivo
+  e un buco di danno:
+  - **`MeltedLady` e `RangedBoomerang`**: l'`Hit` è costruito con **`AttackingEntity = il proiettile`**
+    *(`MeltedLadyAttack.cs:42`, `RangedBoomerangAttack.cs:42`)*. Il filtro del ② vuole un **`Enemy`** fra i parent
+    dell'attaccante *(`EnemyHitPeerSync.cs:288-294`)*, e il proiettile nasce **sotto il pool**, non sotto il
+    nemico ⇒ il `[DannoPeer]` lo **scarta** *(`non inoltrato: l'attaccante non e' un NEMICO`)*. ⇒ **effetto
+    assente + danno assente: buco di gameplay pieno.**
+  - **`BellGhostVariant`**: `SetOwner(owner.gameObject)` mette **il nemico** come `AttackingEntity`
+    *(`ProjectileWeapon.cs:415-418`, `BellGhostVariantAttack.cs:42`)* ⇒ il ② **può** inoltrarne il danno. ⚠️ **Il
+    danno può quindi arrivare anche se il proiettile non si vede**: è **una delle cose da misurare** nella run dei
+    boss, non da dare per scontata in nessuna delle due direzioni.
+
+### ⭐ Il fix, che è noto: **due hook e una risoluzione**
+
+1. **`BossJumpAttack.InstantiateArea`** e **`BossTeleportAttack.InstantiateArea`**: **un `Postfix` per metodo**,
+   che manda `prefab + posizione` sul **canale che esiste già** *(tipo `CoopEffectRelay`, 201)*. È **lavoro
+   meccanico**: non è ricerca, la forma è quella del relay.
+2. **I proiettili dei nemici comuni**: **una strada di risoluzione in più sul ricevente** *(il catalogo non è più
+   «solo il boss»)*. ⚠️ **Non un hook sul pool privato**, per la ragione qui sopra.
+
+⇒ **Tre punti, tutti confinati**, e **nessuno dei tre tocca la vita, la morte o il flag**: sono istanziazioni.
+
+### 📌 E cosa fare nel frattempo: **niente da nascondere**
+
+**Si sa, e si dichiara.** Se un giocatore riporta *«il proiettile non si vede»* o *«quel colpo non mi ha fatto
+niente»*, **non è una regressione e non va re-indagato**: è uno di questi tre buchi, ed è già tutto scritto qui.
+**Nessun log da raccogliere per riconoscerlo** — le firme qui sotto bastano.
+
+### 🔎 Se ricapita, queste sono le firme nel log
+
+```
+[FxRelay] mando n=… prefab="<il nome del proiettile>" …     <- c'e' sul mandante: il canale lo vede
+   e sull'altra macchina NIENTE "istanzio" per quel nome, ma:
+[FxRelay] non risolto prefab="<idem>" da=<peer>: non e' nel catalogo del boss locale (N nomi)
+[FxRelay] riepilogo scena=… mandati=N istanziati=0 scartatiPerDedup=0 nonRisolti=M catalogo=K
+```
+
+**⚠️ E per i due boomerang, la riga che dice che il danno non c'è**: nessun `[DannoPeer] colpo del NEMICO
+inoltrato`, e al suo posto *(throttled)* `[DannoPeer] … non inoltrato: l'attaccante non e' un NEMICO`. **Per gli
+`InstantiateArea` invece il segnale è il silenzio**: nessuna riga `mando` per quei prefab, perché **l'hook non
+esiste** — *è il buco che nessun log può vedere*.
+
+**Stato.** **LIMITE DICHIARATO — prezzo accettato.** ⛔ **Non è un difetto in lavorazione**: la sua forma è nota
+*(due hook + una risoluzione)* ed è **in attesa del test assieme ai boss**, per decisione dell'utente. 📌 **La voce
+di lavoro resta in `docs\TODO.md` §2.4**, che **non è stata toccata**: qui c'è **cosa dichiarare**, là c'è **cosa
+fare**.
+
+---
+
+## 8. ⚠️ I **BOSS**: la **mira** resta sul padrone *(23)* e **12 su 17** senza la **morte recitata** — *(LIMITE DICHIARATO, prezzo accettato — NON un difetto in lavorazione)*
+
+> **Stessa premessa della voce 7, e vale per entrambi i punti.** Non sono difetti che stiamo inseguendo: sono
+> **due limiti per boss**, **non testati in massa**, e l'utente ha deciso di dichiararli invece di lavorarci adesso:
+> *«penso che non lo testeremo per adesso: da testare assieme a tutti i boss»*. ⇒ **limiti dichiarati, non difetti
+> in lavorazione**: se un giocatore li riporta, **è questo**, e **non è una regressione**.
+
+**Cosa si vede.** Due cose diverse, entrambe **per boss**:
+- **A)** il boss **sembra ignorare** l'altro giocatore: continua a girare, saltare e caricare **addosso al
+  giocatore della macchina che lo simula**, anche quando l'altro gli sta più vicino;
+- **B)** nella macchina del giocatore **morto**, il boss **resta "in piedi"**: `Kill()` è passato, ma **la
+  sequenza di morte del gioco non parte** ⇒ niente animazione, sprite acceso. Il cadavere del boss **non resta
+  visibile al rientro** *(`[BossCorpse]`, il fix C)*, ma **la morte non è recitata**.
+
+### A) ⚠️ LA MIRA RESTA SUL PADRONE — **un boss su ventiquattro**
+
+**Cosa.** Solo `ElderBrother` ha la mira che segue il **proxy d'aggio**: `f3084ea` *(il `Postfix` su
+`GetTargetPredictedPos`, `BossJumpAimPatch.cs:53-60`)*. **Gli altri 23 no**: la loro mira legge
+**`Core.Logic.Penitent` direttamente** — **233 letture dirette** nei namespace `Gameplay.GameControllers.Bosses.*`
+*(conteggio sul decompilato, `scratch\REFERTO-SALTO-PROXY.md` §5)*:
+
+| classe | letture dirette di `Core.Logic.Penitent` |
+|---|---|
+| `Bosses.Amanecidas.AmanecidasBehaviour` | 50 |
+| `Bosses.Snake.SnakeBehaviour` | 25 |
+| `Bosses.Isidora.IsidoraBehaviour` | 17 |
+| `Bosses.Crisanta.CrisantaBehaviour` | 17 |
+| `Bosses.PontiffHusk.PontiffHuskBossBehaviour` | 17 |
+| `Bosses.PontiffOldman.PontiffOldmanBehaviour` | 11 |
+| `Bosses.BlindBaby.WickerWurmBehaviour` | 11 |
+| `Bosses.PontiffGiant.PontiffGiantBehaviour` | 10 |
+| *altre 40 classi* *(BurntFace, PontiffSword, HighWills, Perpetua, Quirce, Esdras, Lesmes, TresAngustias, BejeweledSaint, PietyMonster…)* | 75 |
+| **totale** | **233** |
+
+**Effetto sul giocatore.** ⇒ **il boss insegue sempre il giocatore della macchina che simula**: per l'altro, il
+boss **è come se non lo vedesse**. *(L'aggio però è a posto: `ApplyAggroTarget` scrive `enemy.Target = proxy` per
+ogni nemico, boss compresi, e dopo il ② quel bersaglio **è anche feribile** ⇒ **il boss che mira al peer lo
+colpisce**. Solo **la mira** dei 23 non legge `Target`.)*
+
+**⭐ Il fix, per ogni boss.** **La stessa forma di `f3084ea`** — un `Postfix` sul punto di mira che scrive la
+posizione del **proxy** quando il target *è* il proxy, e **niente** quando non lo è — **ma va trovato il punto
+giusto per ognuno**: `GetTargetPredictedPos` **esiste una volta sola** in tutta `Assembly-CSharp` *(`:56000`)*, e
+nel decompilato non c'è nessun altro membro con `Predict` nel nome ⇒ **non si copia**: si guarda **quale metodo**
+quella classe usa per mirare, e si patcha quello. Le **233 letture sono la mappa di dove guardare**, non 233
+modifiche.
+
+**⚠️ E per il test è una cosa per boss, non una run**: la prova è *«il boss carica addosso al giocatore che sta
+bersagliando»*, e va guardata **sulla macchina che simula**.
+
+### B) ⚠️ 12 BOSS SU 17 SENZA LA **MORTE RECITATA**
+
+**Cosa.** La lista bianca di `Death()` copre **5 tipi** *(`EnemySyncManager.cs:398-406`)*: **`ElderBrotherBehaviour`
+· `LesmesBehaviour` · `QuirceBehaviour` · `PerpetuaBehaviour` · `EsdrasBehaviour`*. **Gli altri 12 sono esclusi di
+proposito** — il loro `Death()` tocca il **`Penitent`**, l'**input** o la **camera**, e **avrebbe fatto più danni
+che l'AFK che lascia**:
+
+| tipo escluso | cosa fa il suo `Death()` *(e perché è vietato)* |
+|---|---|
+| `Amanecidas` | `Penitent.Status.Invulnerable = true` |
+| `BurntFace` | `Invulnerable` **+** `ProCamera2DShake` |
+| `Crisanta` | `Penitent.DrivePlayer.MoveToPosition` *(ramo redux e non redux)* |
+| `Isidora` | `Invulnerable` **+** `MasterShaderEffects` **sul `Penitent`** |
+| `PontiffGiant` | `Invulnerable` |
+| `PontiffHusk` | `Invulnerable` **+** `SetBlocker("END_BOSS_DEFEATED"/"HW_…")` **+** scroll/camera di fine scontro |
+| `PontiffOldman` | `Invulnerable` |
+| `PontiffSword` | `Invoke("ActivatePlatform")`: tocca la **geometria della stanza** |
+| `Snake` | `Invulnerable` **+** `SetBlocker("TPOReposition")` |
+| `TresAngustias` | `Invulnerable` **+** `ProCamera2DShake` **+** `SetBlocker("CINEMATIC")` |
+| `WickerWurm` | `Invulnerable` **+** `Unattacable` *(via `StartDeathSequence`)* |
+| `SingleAnguish` | niente di vietato, **ma non è un boss di scena**: la sua morte la guida `TresAngustiasMasterBehaviour` *(fuori whitelist)*, e invocarla da sola lascerebbe **il trio in uno stato intermedio** |
+
+*(Tabella verificata tipo per tipo sul decompilato: `scratch\REFERTO-A-C-MORTE-BOSS.md` §2; il motivo per esteso è
+nel commento del codice, `EnemySyncManager.cs:378-397`.)*
+
+**Effetto sul giocatore.** Per quei 12, **sulla macchina del morto il boss non recita la morte**: `Kill()` porta
+`Status.Dead` a vero e fa partire la cutscene, ma **non passa da `Behaviour.Death()`** *(la chiama solo il colpo
+letale di `Damage(Hit)`, che lì non può arrivare: la guardia `Penitent.Life <= 0` lo scarta)*. ⇒ **il boss resta
+"in piedi"**, immobile, con lo sprite acceso e la tree ferma. **Il fix C lo copre in parte** *(il cadavere non
+resta visibile al rientro, `[BossCorpse]`)* — *in parte*: **la morte recitata è un'altra cosa**, ed è quella che
+manca.
+
+**⭐ Il fix.** **Un tipo alla volta, guardando cosa fa il suo `Death()`**: la whitelist si allarga **solo** se quel
+metodo non tocca il `Penitent`, l'input, la camera o la geometria. Per i 12 qui sopra **non è una svista**: è la
+lettura che dice di no. ⇒ **il lavoro è leggere 12 metodi**, non allargare un elenco.
+
+### ⚠️ I due conteggi non si sommano, e confonderli fa sbagliare i lavori
+
+**17** sono le **classi di boss censite per la morte recitata** *(5 dentro, 12 fuori)*; **23** sono gli **altri boss
+della famiglia della mira** *(`ElderBrother` + 23)*. **Non sono lo stesso insieme** e **non si sommano**: un boss
+può stare nel primo elenco e non nel secondo, e viceversa.
+
+### 🔎 Se ricapita, le firme nel log
+
+```
+[SaltoProxy] il salto mira al PENITENT locale come il gioco: ElderBrother … distanza=0.1
+   <- questa riga esiste SOLO per ElderBrother: per gli altri 23 il marker non c'e', perche' la patch non c'e'
+```
+
+```
+[BossDeath RX] en|…|D17Z01S11|… morte=recitata:EsdrasBehaviour        <- la morte E' stata recitata
+[BossDeath RX] en|…|<Scena>|…      morte=escluso:SnakeBehaviour-non-in-whitelist   <- ⚠️ il boss resta in piedi
+```
+
+**⚠️ E la riga `[BossDeath RX]` esce solo sulla macchina del giocatore MORTO** *(`ApplyBossDeath` esce prima con
+`motivo=giocatore-locale-vivo`)*: cercarla sulla macchina viva **non trova niente, e non è un guasto**.
+
+### 📌 E perché sono nei BUG NOTI
+
+**Perché l'utente l'ha detto, e la ragione è sua:** *«penso che non lo testeremo per adesso: **da testare assieme a
+tutti i boss**»*. ⇒ ⭐ **sono LIMITI DICHIARATI, non difetti in lavorazione**: due lavori **per boss**, con la forma
+già provata su `ElderBrother` e con la lista dei 12 già letta. **Se un giocatore riporta** *«il boss mi ignora»* o
+*«il boss è rimasto in piedi da morto»*, **è questo** — **non serve un log nuovo per riconoscerlo**.
+
+**Stato.** **LIMITE DICHIARATO — prezzo accettato.** ⛔ **Non è un difetto in lavorazione**: la mira è **provata su
+un boss** *(`f3084ea`)* e per gli altri è **il conteggio dei 233 siti**, non una run; la morte recitata è **provata
+su un tipo**, e per gli altri è **la tabella**, non una misura *(sta già scritto in `docs\TODO.md` §6, punti 4 e
+5)*. 📌 **Le voci di lavoro restano in `docs\TODO.md` §2.5**, che **non è stata toccata**: qui c'è **cosa
+dichiarare**, là c'è **cosa fare**.
+
+---
+
 ## Come si riporta un difetto *(per chi gioca e per i tester)*
 
 **Quello che serve**, in ordine di utilità:
