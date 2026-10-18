@@ -121,6 +121,11 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnLevelLoaded(string oldLevel, string newLevel)
     {
+        // TEMPORARY (EffectPoolProbe): SONDA DI SOLO LOG. Riapre un ciclo di misura per scena e chiude
+        // il riepilogo di quella lasciata. Zero bersagli Harmony (quello della sonda e' il solo Postfix
+        // su PoolManager.ReuseObject, in EffectPoolProbe.cs). Da rimuovere insieme a quel file.
+        EffectPoolProbe.LevelLoaded(newLevel);
+
         EnemySyncManager.LevelLoaded(newLevel);
         CurrentlyInLevel = newLevel != "MainMenu";
         NotificationManager.LevelLoaded();
@@ -186,6 +191,13 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // e perche' quando non c'e' niente armato costa un solo confronto booleano. Stesso ciclo per frame
         // delle sonde qui sotto, quindi **zero patch Harmony nuove** (263 bersagli, invariati).
         BossJoinMarker();
+
+        // TEMPORARY (EffectPoolProbe): SONDA DI SOLO LOG degli effetti/proiettili in pool. Legge la coda
+        // delle letture differite (WeaponOwner dopo ReuseObject), il censimento dei pool, i campi del
+        // boss e la risoluzione nome -> riferimento. Riusa QUESTO ciclo per frame di proposito: nessun
+        // MonoBehaviour nuovo, e il costo della sonda non entra nella misura di PerformanceProbe qui
+        // sotto. Da rimuovere insieme a EffectPoolProbe.cs.
+        EffectPoolProbe.Tick();
 
         // TEMPORARY (CutsceneProbe): PROBE #0 - one log line ONLY when the CINEMATIC input blocker
         // changes, read from two PUBLIC values (HasBlocker / InputBlocked). It reuses this per-frame
