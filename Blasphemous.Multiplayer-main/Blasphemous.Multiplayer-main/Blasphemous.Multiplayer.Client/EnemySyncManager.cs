@@ -1312,6 +1312,21 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// La copia LOCALE del nemico che un handle nomina, o null. Serve al nuovo verso
+        /// nemico→giocatore: il pacchetto porta l'handle dell'attaccante, e il ricevente ne ha bisogno
+        /// per un motivo che non e' cosmetico — `PenitentDamageArea.TakeDamage` fa
+        /// `hit.AttackingEntity.transform.position` per orientare il dolore e lo spintone, quindi
+        /// l'attaccante deve essere un GameObject VERO. La copia locale del boss ha la stessa posizione
+        /// e lo stesso nome, ed e' la scelta che non inventa niente.
+        /// Silenziosa come `ResolveByHandle`: un nemico puo' essere gia' sparito da questa scena, e non
+        /// e' un errore (il chiamante ha il suo ripiego).
+        /// </summary>
+        public static Enemy EnemyForHandle(uint handle)
+        {
+            return ResolveByHandle(handle);
+        }
+
+        /// <summary>
         /// Reports, once per handle, that a packet could not be matched to an enemy here.
         ///
         /// This is OBSERVATION, not a verdict. Two cases are kept apart on purpose:
@@ -3657,6 +3672,52 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// Il nome del giocatore remoto che sta QUI e non e' a terra — il destinatario del nuovo verso
+        /// nemico→giocatore, oppure `false` quando non ce n'e' nessuno.
+        ///
+        /// PERCHE' UNA VARIANTE DI `OtherPlayerHereAndAlive()` INVECE DI USARLO. Quello risponde alla
+        /// domanda giusta ("l'altro puo' simulare?") ma non dice CHI, e il colpo inoltrato deve portare
+        /// un destinatario: il canale Attack e' un broadcast di scena, quindi senza un nome il danno
+        /// andrebbe a chiunque sia nella stanza. La regola e' la stessa, riga per riga: stessa scena,
+        /// non morto (`IsDead` e' l'annuncio `pdead|nome`, l'unica prova di vita che esiste per un
+        /// avatar che non e' un `Penitent`). Un giocatore sconosciuto legge come vivo, che e' il verso
+        /// prudente: meglio un colpo inoltrato a chi c'e' che un colpo perso.
+        /// </summary>
+        internal static bool TryGetRemotePlayerHereAndAlive(out string name)
+        {
+            name = null;
+
+            try
+            {
+                string myScene = Core.LevelManager.currentLevel == null
+                    ? null
+                    : Core.LevelManager.currentLevel.LevelName;
+
+                if (string.IsNullOrEmpty(myScene))
+                    return false;
+
+                if (Main.Multiplayer == null || Main.Multiplayer.OtherPlayerManager == null)
+                    return false;
+
+                foreach (PlayerStatus player in Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers)
+                {
+                    if (player == null || player.CurrentScene != myScene || player.IsDead)
+                        continue;
+
+                    name = player.Name;
+                    return !string.IsNullOrEmpty(name);
+                }
+
+                return false;
+            }
+            catch (Exception)
+            {
+                name = null;
+                return false;
+            }
+        }
+
+        /// <summary>
         /// True when this machine should hold off taking an enemy because its position has not arrived yet.
         ///
         /// The rule is deliberately three-sided, because each side of it was a real failure:
@@ -3687,10 +3748,13 @@ namespace Blasphemous.Multiplayer.Client
         /// machine only ever notices that machine's player and stands idle while the other player is right
         /// next to it.
         ///
-        /// This proxy closes that gap without touching the damage: it is a plain object on the "Penitent"
-        /// layer, so the vision check finds the layer it insists on and the distance check measures to it,
-        /// but it carries no Entity and no IDamageable - so nothing can be hurt through it. The damage stays
-        /// exactly as it was: every machine wounds its OWN Penitent through the game's normal pipeline.
+        /// This proxy closes that gap, and since the step ② of the boss damage it does the one thing that
+        /// was missing: it is ALSO the place where a blow aimed at the other player can be intercepted. It
+        /// is a plain object on the "Penitent" layer - so the vision check finds the layer it insists on
+        /// and the distance check measures to it - and it carries <see cref="CoopRemoteTargetDamageable"/>,
+        /// an IDamageable that never touches the LOCAL Penitent and instead FORWARDS the blow to the peer
+        /// (see EnemyHitPeerSync.cs). Without that component the proxy is still exactly what it used to be:
+        /// a collider nothing can be hurt through.
         /// </summary>
         private static GameObject _remoteTargetProxy;
 
@@ -3710,6 +3774,21 @@ namespace Blasphemous.Multiplayer.Client
             collider.size = new Vector2(1.2f, 2.4f);
             collider.isTrigger = true;
 
+            // ⭐ STEP ② — IL PROXY DIVENTA DANNEGGIABILE, E NON PER IL GIOCO: PER NOI.
+            //
+            // Prima di questa riga il proxy era l'unico collider del mod su layer "Penitent" SENZA un
+            // `IDamageable`, e questo aveva due conseguenze opposte, entrambe vere:
+            //   - il gioco, che filtra SOLO per layer, lo trovava e poi buttava via il colpo (o andava in
+            //     eccezione, `BossJumpAttack.OnPenitentEntersArea` senza null-check: chiuso da `c89c368`);
+            //   - il colpo del boss mirato al peer non aveva NESSUN posto dove atterrare: zero danno,
+            //     per costruzione (`scratch\DIAGNOSI-DANNO-BOSS-COOP.md` §2).
+            //
+            // Con il componente il colpo atterra, ma su un `IDamageable` che non e' il `Penitent` locale:
+            // fa solo l'INOLTRO al peer, che lo applica al proprio `Penitent`. E' lo stesso punto in cui
+            // il gioco decide "questo colpo e' atterrato", quindi vale per QUALUNQUE nemico e QUALUNQUE
+            // boss, senza sapere quale sia (EnemyHitPeerSync.cs).
+            _remoteTargetProxy.AddComponent<CoopRemoteTargetDamageable>();
+
             return _remoteTargetProxy;
         }
 
@@ -3721,10 +3800,12 @@ namespace Blasphemous.Multiplayer.Client
         /// `ContactDamage.OnTriggerEnter2D`, which does
         /// `IDamageable c = other.GetComponentInParent&lt;IDamageable&gt;(); ... EntityContactDamage(c);`
         /// and `EnemyAttack.ContactAttack` then calls `damageable.Damage(...)` with NO null check - so when
-        /// the collider that entered is the proxy, which deliberately has no IDamageable, that call throws.
-        /// Worse, `IsTargetOverlapped` is raised before the null is reached, and the attack that reads it
-        /// hits `Core.Logic.Penitent` without ever measuring the distance: the proxy walked into a trigger
-        /// and the LOCAL player, twenty units away, took the hit. Ignoring the proxy here is what stops both.
+        /// the collider that entered is the proxy, that call used to throw. Worse, `IsTargetOverlapped` is
+        /// raised before the null is reached, and the attack that reads it hits `Core.Logic.Penitent`
+        /// without ever measuring the distance: the proxy walked into a trigger and the LOCAL player,
+        /// twenty units away, took the hit. Ignoring the proxy in the CONTACT path is what stops both, and
+        /// it is unchanged by step ②: the proxy is damageable now, but contact damage is still skipped
+        /// there on purpose (see AggroProxyPatches.cs).
         /// </summary>
         public static bool IsRemoteTargetProxy(GameObject go)
         {
@@ -3732,6 +3813,29 @@ namespace Blasphemous.Multiplayer.Client
                 return false;
 
             return go == _remoteTargetProxy || go.transform.IsChildOf(_remoteTargetProxy.transform);
+        }
+
+        /// <summary>
+        /// Dove sta il proxy, in una riga leggibile, per i marker del verso nemico→giocatore. Serve a
+        /// PROVARE NELLO STESSO LOG la geometria su cui poggia tutto il fix: il colpo e' atterrato in
+        /// quel punto, e quel punto e' dove la macchina crede che stia l'altro giocatore. Se il proxy
+        /// non esiste ancora, `?` (nessuna eccezione: un marker non deve fermare un colpo).
+        /// </summary>
+        internal static string RemoteTargetProxyPosition()
+        {
+            try
+            {
+                if (_remoteTargetProxy == null)
+                    return "?";
+
+                Vector3 position = _remoteTargetProxy.transform.position;
+                return "(" + position.x.ToString("F1", CultureInfo.InvariantCulture) + ", " +
+                             position.y.ToString("F1", CultureInfo.InvariantCulture) + ")";
+            }
+            catch
+            {
+                return "?";
+            }
         }
 
         /// <summary>Marks a birth announcement on the enemy-death channel - the sixth prefix of the series.</summary>

@@ -46,6 +46,34 @@ public enum AttackType
     Cherubs = 130,
     CanteJondo = 140,
 
+    // ================================================================================================
+    // ⭐⭐ IL VERSO NUOVO: UN NEMICO HA FERITO UN GIOCATORE (passo ② del danno del boss, 2026-10-18).
+    //
+    // NON e' un attacco fra giocatori: e' il colpo che il BOSS (o qualunque nemico) ha messo a segno
+    // sul proxy dell'altro giocatore, inoltrato alla macchina dell'altro perche' lo applichi al PROPRIO
+    // `Penitent`. Prima di questo valore quel canale non esisteva affatto
+    // (`scratch\DIAGNOSI-DANNO-BOSS-COOP.md`), e il danno al peer era zero per costruzione.
+    //
+    // PERCHE' UN VALORE DI `AttackType` E NON UN `NetworkType` NUOVO. Il canale Attack e' gia' quello
+    // che il server inoltra alla stessa scena escludendo il mittente, con il nome del mittente
+    // premesso: e' esattamente il viaggio che serve. Aggiungere un tipo di pacchetto avrebbe voluto
+    // dire toccare l'enum condiviso, il client E il server (e il server va ripubblicato su entrambe
+    // le macchine). Cosi' invece **non cambia una riga di protocollo** (resta 11) e **non cambia una
+    // riga di server**: il payload del nuovo verso e' auto-descritto dal primo byte, e le due macchine
+    // possono anche essere disallineate senza danni — un client vecchio non trova 200 in `attacks.json`
+    // ed esce (`AttackManager.cs:31`), un server vecchio inoltra i byte senza interpretarli.
+    //
+    // ⚠️ IL VALORE E' SCELTO FUORI DAI BLOCCHI USATI (0..140) E NON E' `NoDamage` (255), perche' il
+    // byte viaggia come `(byte)attackType`: 200 e' libero e non collide con nessuna delle famiglie
+    // esistenti. Non si ricicla un valore esistente: un `Slash` in piu' sarebbe un colpo PvP applicato
+    // a chi non ha chiesto il PvP.
+    // ================================================================================================
+    /// <summary>
+    /// Un NEMICO ha messo a segno un colpo su di me: e' la variante del canale Attack che va da
+    /// nemico a giocatore, e il suo payload NON e' quello PvP (vedi `EnemyHitPeer.BuildPayload`).
+    /// </summary>
+    EnemyHit = 200,
+
     NoDamage = 255
 }
 

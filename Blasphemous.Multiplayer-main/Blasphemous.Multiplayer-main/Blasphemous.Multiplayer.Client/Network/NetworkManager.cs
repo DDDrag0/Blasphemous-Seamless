@@ -437,10 +437,45 @@ namespace Blasphemous.Multiplayer.Client.Network
             QueueMesssage(bytes.ToArray(), NetworkType.Attack);
         }
 
+        /// <summary>
+        /// Manda un payload già pronto sul canale Attack, per il verso NUOVO nemico→giocatore.
+        ///
+        /// Perché un metodo separato e non un `NetworkType` nuovo: questo canale fa esattamente il
+        /// viaggio che serve — il server lo inoltra a tutti i peer della STESSA SCENA tranne il mittente
+        /// e ci PREMETTE il nome del mittente (`Server.cs:676-699`) — quindi non c'è niente da
+        /// aggiungere né al protocollo (resta 11) né al server. Il verso si distingue per il primo byte
+        /// del payload (`AttackType.EnemyHit`), che è un byte libero dell'enum.
+        ///
+        /// La forma del payload è in `EnemyHitPeer.BuildPayload` (EnemyHitPeerSync.cs), insieme alla
+        /// sua spiegazione: qui non si interpreta niente, si consegna.
+        /// </summary>
+        public void SendAttackPayload(byte[] payload)
+        {
+            if (payload == null || payload.Length == 0)
+                return;
+
+            QueueMesssage(payload, NetworkType.Attack);
+        }
+
         private void ReceiveAttack(byte[] data)
         {
             int startIdx = ExtractNameFromData(data, out string attackerName);
             AttackType attackType = (AttackType)data[startIdx];
+
+            // ⭐ IL VERSO NUOVO, prima di ogni altra cosa: un colpo di NEMICO su un giocatore.
+            //
+            // Va riconosciuto e dirottato PRIMA della lettura che segue, non dopo, per due ragioni:
+            //   - il payload di questo verso ha una forma sua (danno float, bandiere, handle, nome del
+            //     destinatario, id del suono) e i suoi byte non sono un nome di giocatore;
+            //   - il ramo PvP di `AttackManager.ReceiveAttack` scarta tutto ciò che non è in
+            //     `attacks.json` e si ferma su `InputManager.HasBlocker("ANY")`: un colpo di boss
+            //     arrivato durante un fade NON deve essere buttato via come un colpo fra giocatori.
+            if (attackType == AttackType.EnemyHit)
+            {
+                EnemyHitPeer.ApplyFromWire(attackerName, data, startIdx);
+                return;
+            }
+
             byte damageAmount = data[startIdx + 1];
             string receiverName = Encoding.UTF8.GetString(data, startIdx + 2, data.Length - startIdx - 2);
 

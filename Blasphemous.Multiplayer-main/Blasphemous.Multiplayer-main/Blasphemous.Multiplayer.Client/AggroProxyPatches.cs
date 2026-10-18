@@ -14,22 +14,28 @@ namespace Blasphemous.Multiplayer.Client
     /// Keeps the game's CONTACT damage away from the mod's aggro proxy.
     ///
     /// The proxy is a plain collider on the "Penitent" layer that exists only so the enemies' vision can
-    /// find the other player. It has no Entity and no IDamageable on purpose, so nothing can be hurt
-    /// through it. But a collider is a collider to the physics engine, and the game arms its contact
-    /// attacks from OnTriggerEnter2D:
+    /// find the other player. Since step ② it DOES carry an IDamageable (CoopRemoteTargetDamageable, which
+    /// forwards the blow to the peer) — but NOT for this path, and the exception is deliberate. A contact
+    /// attack is armed by OnTriggerEnter2D:
     ///
     ///     IDamageable c = other.GetComponentInParent&lt;IDamageable&gt;();
     ///     ...
     ///     EntityContactDamage(c);          ->  EnemyAttack.ContactAttack(c)  ->  c.Damage(ContactHit)
     ///
     /// Two things go wrong when that `other` is the proxy, and this prefix closes both:
-    ///   - `c` is null (the proxy has no IDamageable) and the call is made anyway, throwing a
+    ///   - `c` used to be null (the proxy had no IDamageable) and the call was made anyway, throwing a
     ///     NullReferenceException out of a Unity trigger callback;
     ///   - even before that, IsTargetOverlapped has already been raised, and the attacks that read it
     ///     strike Core.Logic.Penitent without measuring any distance - so the LOCAL player, standing
     ///     twenty units away, took a hit from an enemy that only ever "felt" the proxy.
     ///
     /// Returning false skips the original method, so the proxy is simply not a damageable contact.
+    ///
+    /// ⚠️ WHY THIS ONE IS *NOT* DIVERTED LIKE THE FOUR BELOW. Sending contact damage through the proxy
+    /// would mean letting the original run, and the original is precisely the code that raises
+    /// IsTargetOverlapped before damaging anything. Opening it again would re-open the measured defect
+    /// that `c89c368` closed (the LOCAL player taking a hit from twenty units away). ⇒ enemies whose only
+    /// way to hurt someone is `DamageByContact` still cannot hurt the peer. Declared, not forgotten.
     /// </summary>
     [HarmonyPatch(typeof(ContactDamage), "OnTriggerEnter2D")]
     class ContactDamageProxyIgnore_Patch
@@ -41,63 +47,62 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     // =====================================================================================================
-    // ⭐⭐ LO STESSO BUCO, PER LE AREE D'ATTACCO — «il colpo del boss che evapora quando mira al proxy».
+    // ⭐⭐ IL COLPO DEL BOSS CHE MIRA AL PROXY NON SI PERDE PIU' — adesso lo PRENDE IL PROXY, e lo porta
+    // al peer.
     //
-    // ⚠️ QUESTO E' IL PASSO ① DEL REFERTO (`scratch\DIAGNOSI-DANNO-BOSS-COOP.md` §6-①): si toglie
-    // l'ECCEZIONE, NON si da' il danno all'altro giocatore. Il danno vero — il proxy che diventa
-    // `IDamageable` e INOLTRA il colpo al peer — e' il passo ② e tocca il protocollo: NON e' qui.
+    // STORIA DI QUESTO BLOCCO, in due passi, perche' il secondo ha cambiato il significato del primo:
+    //   ① (`c89c368`) il colpo che mirava al proxy veniva SALTATO: tolta l'eccezione, zero danno. Il
+    //     difetto era che `IDamageable` sul proxy non c'era, quindi il gioco o lanciava
+    //     (`BossJumpAttack.OnPenitentEntersArea`, nessun null-check) o scartava il colpo in silenzio.
+    //   ② (questo) il proxy E' danneggiabile (`CoopRemoteTargetDamageable`, EnemyHitPeerSync.cs) e
+    //     INOLTRA il colpo al peer. ⇒ la guardia non deve piu' SALTARE il colpo: deve LASCIARLO PASSARE
+    //     fino al proxy e fermarlo li'. Il colpo non va al `Penitent` locale — quello non e' mai stato
+    //     in gioco: il proxy sta dove sta l'altro giocatore.
     //
     // LA MISURA, dai log dell'host: `BossJumpAttack.OnPenitentEntersArea` fa
     //
     //     GameObject gameObject = e.Collider2DArg.gameObject;             // Assembly-CSharp.cs:75348
     //     _hit.OnGuardCallback = OnGuard;                                 //             :75349
-    //     gameObject.GetComponentInParent<IDamageable>().Damage(_hit);    //             :75350  ← senza null-check
+    //     gameObject.GetComponentInParent<IDamageable>().Damage(_hit);    //             :75350
     //
-    // e il proxy (`_coop_remote_target`, layer `Penitent`, `BoxCollider2D` trigger, `EnemySyncManager.cs`)
-    // non ha `IDamageable` PER PROGETTO ⇒ la chiamata e' su `null` ⇒ `NullReferenceException` DENTRO la
-    // callback del trigger ⇒ **il colpo si perde su ENTRAMBE le macchine** (3 volte in `G1:L2201, L2255,
-    // L2308`). Il filtro che il proxy attraversa e' solo di layer: `AttackArea.OnTriggerEnter2D` fa
+    // Il filtro che il proxy attraversa e' solo di layer: `AttackArea.OnTriggerEnter2D` fa
     // `if ((enemyLayerMask.value & (1 << col.gameObject.layer)) > 0)` (`:125922-125928`), e il proxy e'
     // sul layer `Penitent` — cioe' esattamente quello che il mask contiene.
     //
-    // LA FORMA DEL FIX E' QUELLA GIA' USATA SOPRA PER IL CONTATTO: un `Prefix` che, quando il bersaglio
-    // e' il proxy, fa `return false` e salta il colpo. Niente `Damage()`, niente `Kill()`, niente stato:
-    // il colpo semplicemente non ha nessuno su cui atterrare, ed e' la verita' — l'altro giocatore, su
-    // QUESTA macchina, non esiste.
+    // ⚠️ LA GUARDIA RESTA, E SERVE: la via 2 (`GetComponentInParent<IDamageable>() == null`) resta la
+    // rete di sicurezza per qualunque ALTRO oggetto nudo sul layer `Penitent` (di un'altra mod, o di
+    // un futuro senza inoltro), e la via 1 protegge il caso in cui il componente mancasse (proxy creato
+    // da una build precedente, `AddComponent` fallito): in quel caso il colpo viene ancora SALTATO,
+    // non fatto esplodere.
     //
-    // ⚠️ E NON SI TOCCA IL DANNO NORMALE: la guardia salta SOLO se il bersaglio e' il proxy, oppure se
-    // non ha nessun `IDamageable` fra i parent — cioe' i soli casi in cui il gioco, senza di noi,
-    // andrebbe in eccezione. Un `IDamageable` VERO (il `Penitent` locale) passa e prende il suo colpo
-    // esattamente come prima.
+    // ⚠️ E NON SI TOCCA IL DANNO NORMALE: un `IDamageable` VERO (il `Penitent` locale) non e' il proxy
+    // ⇒ la patch non fa niente e il colpo va esattamente come prima.
     //
     // I QUATTRO SITI (tutti quelli raggiungibili dal proxy nella direzione nemico -> giocatore, con
-    // `GetComponentInParent<IDamageable>().Damage()` e nessun null-check). Gli altri tre della stessa
-    // forma (`CowardTrap.OnEnter:97649`, `JumperAttack:107898`, `ReekLeaderAttack:118785`) sono dietro
-    // un `CompareTag("Penitent")` che il proxy NON soddisfa (nasce `Untagged`): non li tocca, e restano
-    // fuori di proposito.
+    // `GetComponentInParent<IDamageable>().Damage()`). Gli altri tre della stessa forma
+    // (`CowardTrap.OnEnter:97649`, `JumperAttack:107898`, `ReekLeaderAttack:118785`) sono dietro un
+    // `CompareTag("Penitent")` che il proxy NON soddisfa (nasce `Untagged`): non lo toccano.
     //
-    // ⭐ E C'E' UNA RIGA DI LOG, `[ProxyGuard]`, perche' senza quella il fix sarebbe INVISIBILE: si conta
-    // quante volte la guardia e' scattata, e su quale attacco.
-    //
-    // ⚠️ COSTO: **quattro bersagli Harmony in piu'** (263 -> 267), e sono il prezzo di questa via: un
-    // `Prefix` per metodo patchato e' l'unico modo di fermare una callback di trigger PRIMA che chiami
-    // `Damage()` senza null-check. La via a zero patch (il proxy che diventa `IDamageable`) e' il passo
-    // ② — tocca il protocollo e cambia il significato del proxy per TUTTE le armi del gioco.
+    // ⚠️ COSTO: **zero bersagli Harmony nuovi** (restano 268: i quattro `Prefix` sono quelli di
+    // `c89c368`, cambia solo cosa rispondono), e il proxy prende un componente in piu'.
     // =====================================================================================================
 
     /// <summary>
-    /// La decisione, in un posto solo: «questo colpo non ha dove atterrare».
+    /// La decisione, in un posto solo: «questo colpo lo prende il proxy (e va al peer), oppure non ha
+    /// dove atterrare?»
     ///
-    /// Due vie, e la seconda e' la rete di sicurezza della prima:
-    ///   1. **identita'** — `EnemySyncManager.IsRemoteTargetProxy` confronta il RIFERIMENTO con
-    ///      `_coop_remote_target` (piu' `IsChildOf`): nessun nome, nessun tag, nessun layer da fidarsi;
-    ///   2. **struttura** — `GetComponentInParent&lt;IDamageable&gt;()` nullo: e' il caso che il gioco non
-    ///      gestisce. Copre il proxy anche se la via 1 non lo riconoscesse (proxy non ancora creato) e
-    ///      qualunque altro oggetto nudo di un'altra mod finito sul layer `Penitent`.
+    /// Tre vie:
+    ///   1. **identita' + inoltro** — `EnemySyncManager.IsRemoteTargetProxy` confronta il RIFERIMENTO
+    ///      con `_coop_remote_target` (piu' `IsChildOf`): nessun nome, nessun tag, nessun layer da
+    ///      fidarsi. Se il proxy ha il suo `IDamageable` (l'inoltro), il colpo si **lascia passare**
+    ///      (`false`): lo prendera' il proxy, che non tocca il `Penitent` locale e lo manda al peer.
+    ///   2. **identita' senza inoltro** — e' il proxy ma il componente non c'e' (non ancora aggiunto,
+    ///      o aggiunta fallita): si SALTA come prima, perche' il gioco andrebbe in eccezione sul null.
+    ///   3. **struttura** — `GetComponentInParent&lt;IDamageable&gt;()` nullo: e' il caso che il gioco non
+    ///      gestisce. Copre qualunque altro oggetto nudo finito sul layer `Penitent`.
     ///
-    /// ⚠️ In caso di dubbio NON si salta: se la guardia stessa si rompe, si torna al comportamento di
-    /// prima (`return false` = la patch non fa niente). Un colpo tolto per errore a un `IDamageable` vero
-    /// sarebbe peggio dell'eccezione che stiamo chiudendo.
+    /// ⚠️ In caso di dubbio NON si rompe niente: se la guardia stessa si rompe, si torna al
+    /// comportamento di prima (`false` = la patch non fa niente, il gioco prosegue).
     /// </summary>
     internal static class ProxyDamageGuard
     {
@@ -111,7 +116,10 @@ namespace Blasphemous.Multiplayer.Client
             return e.Collider2DArg.gameObject;
         }
 
-        /// <summary>True quando il colpo va SALTATO: il bersaglio e' il proxy, o non e' danneggiabile.</summary>
+        /// <summary>
+        /// True quando il colpo va SALTATO: il bersaglio e' il proxy SENZA inoltro, o non e' danneggiabile.
+        /// False quando il colpo ha dove atterrare (il `Penitent` locale, oppure il proxy che inoltra).
+        /// </summary>
         internal static bool MustIgnore(GameObject target, string site)
         {
             try
@@ -122,9 +130,18 @@ namespace Blasphemous.Multiplayer.Client
                     return true;
                 }
 
-                if (EnemySyncManager.IsRemoteTargetProxy(target))
+                bool isProxy = EnemySyncManager.IsRemoteTargetProxy(target);
+
+                if (isProxy)
                 {
-                    Report(site, "il bersaglio E' il proxy dell'altro giocatore (_coop_remote_target)");
+                    // ⭐ IL PUNTO DEL PASSO ② — e la differenza con `c89c368` sta tutta qui.
+                    if (target.GetComponentInParent<IDamageable>() != null)
+                    {
+                        ReportDiverted(site);
+                        return false; // il colpo DEVE arrivare al proxy: e' lui che lo porta al peer
+                    }
+
+                    Report(site, "il bersaglio E' il proxy ma non ha l'inoltro (IDamageable assente)");
                     return true;
                 }
 
@@ -163,11 +180,31 @@ namespace Blasphemous.Multiplayer.Client
             {
             }
         }
+
+        /// <summary>
+        /// La riga del passo ②: il colpo NON e' saltato, e' DIROTTATO. Non e' una riga di errore, e il
+        /// verbo e' cambiato apposta: "SALTATO" descriveva un colpo perso, "DIROTTATO" descrive un
+        /// colpo che ha preso la strada del peer. Se nei log si legge ancora "SALTATO" su questo sito,
+        /// l'inoltro non e' in esecuzione (componente assente / DLL vecchia).
+        /// </summary>
+        private static void ReportDiverted(string site)
+        {
+            try
+            {
+                ModLog.Info(Marker + " colpo DIROTTATO (" + site + "): il bersaglio e' il proxy, " +
+                            "il colpo va al peer (il Penitent locale non viene toccato)");
+            }
+            catch
+            {
+            }
+        }
     }
 
     /// <summary>
     /// `BossJumpAttack.OnPenitentEntersArea` — IL sito misurato (il salto dell'ElderBrother).
-    /// Senza questo `Prefix`: `NullReferenceException` a `Assembly-CSharp.cs:75350`, colpo perso.
+    /// Con il proxy danneggiabile (passo ②) il `Prefix` fa passare il colpo, che il proxy inoltra al
+    /// peer; senza l'inoltro lo salterebbe, perche' `GetComponentInParent&lt;IDamageable&gt;()` sarebbe
+    /// nullo e `Assembly-CSharp.cs:75350` andrebbe in `NullReferenceException`.
     /// </summary>
     [HarmonyPatch(typeof(BossJumpAttack), "OnPenitentEntersArea")]
     class BossJumpAttackProxyIgnore_Patch
@@ -190,7 +227,7 @@ namespace Blasphemous.Multiplayer.Client
     /// <summary>
     /// `BossDashAttack.OnPenitentEntersArea` — stessa identica forma (`Assembly-CSharp.cs:74501`, nessun
     /// null-check), stesso hook `AttackArea.OnEnter` filtrato per solo layer ⇒ il proxy lo attraversa.
-    /// Il dash di Quirce/Perpetua ha lo stesso buco del salto.
+    /// Il dash di Quirce/Perpetua ha lo stesso buco del salto, e adesso lo stesso inoltro.
     /// </summary>
     [HarmonyPatch(typeof(BossDashAttack), "OnPenitentEntersArea")]
     class BossDashAttackProxyIgnore_Patch
