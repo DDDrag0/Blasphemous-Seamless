@@ -223,6 +223,97 @@ tutto scritto qui. **Nessun log da raccogliere, nessun fix da cercare.**
 
 ---
 
+## 6. ⚠️ Lo **skip** della cutscene del boss **uccide il ritorno in vita** — **RARO · NON RIPRODUCIBILE · RECUPERABILE** *(PREZZO NOTO, non un difetto in lavorazione)*
+
+> **Va detto per primo, come per la voce 5.** Le voci 1-4 sono difetti **chiusi** o **residui rari** che restano
+> qui *per essere riconosciuti se ricapitano*; la 5 è un **prezzo accettato**. **Questa è un prezzo noto della
+> stessa famiglia:** il difetto **non si riproduce a comando**, e **l'unica cura proposta** — *una finestra con
+> `Respawn()` automatico* — **è stata scartata per decisione**, perché **causerebbe lo stesso danno che stiamo
+> evitando da giorni** *(una cutscene che salta)*. ⇒ **Non è un lavoro rimandato e non è in lavorazione.**
+> **Se ricapita, NON è una regressione**: è il comportamento noto qui sotto, e **la via d'uscita c'è.**
+
+**Cosa si vede.** Durante la **cutscene di morte del boss** il giocatore è **a terra** *(la schermata di morte
+aspetta un tasto)*. Se **preme per saltare la cutscene**, la cutscene **si chiude** ma **il ritorno in vita non
+arriva**: **resta lì**, schermo fermo e **tasti bloccati**. Nella sessione in cui è stato misurato è rimasto così
+**131,81 s**, fino alla chiusura del gioco *(`O_G2:2577` → `O_G2:4067`)*.
+
+**⭐ Il sintomo, nei termini misurati.** *Se **salti la cutscene del boss < 1,5 s prima della sua fine**, il
+**ritorno in vita non arriva**: `Penitent.Respawn()` **non viene chiamato**, il blocker **`FADE` resta acceso**,
+lo stato resta **`PLAYERDEAD`** ⇒ ⚠️ **il giocatore resta lì.***
+
+**⭐ La causa, misurata.** Il fade della **schermata di morte** dura **1,5 s** e **finisce in `Respawn()`**
+*(`DeadScreenWidget.cs:87-96`: `Fade(toBlack: true, 1.5f, 0f, … Respawn())`)*. La cutscene, quando viene
+**annullata**, si chiude passando da **`FadeInOut`** *(`Cinematics.EndCutscene:154-190`)*. E **`FadeWidget` ha
+UNA SOLA `currentTween`, e chi chiama dopo la uccide** *(`FadeWidget.cs:48-72` e `:190-222`)*. ⇒ Se
+`Cinematics.EndCutscene` arriva **mentre quel fade è ancora in volo**, il suo `FadeInOut` **uccide il tween** ⇒
+**`OnComplete` non parte** ⇒ **`Respawn()` mai**. E `CHERUB_RESPAWN` *(che **la morte stessa accende**)* è
+**esattamente** la condizione che **impedisce a `FadeInOut` di rilasciare il blocker `FADE`**
+*(`FadeWidget.cs:212-215`)* ⇒ **schermo nero e input bloccato anche se il giocatore potesse ancora premere.**
+
+**📋 La misura — due sessioni, due esiti opposti dalla stessa causa** *(la fonte: `scratch\TRIANGOLAZIONE-SKIP.md`)*:
+
+| run | tasto → `EndCutscene` | esito |
+|---|---|---|
+| **vecchia** *(`O_G2`)* | **≈1,3 s** *(il fade da 1,5 s era al ~87%)* | tween **ucciso** ⇒ `Respawn()` **mai**, `FADE` **mai** rilasciato, `PLAYERDEAD` per **131,81 s** |
+| **nuova** *(`N_G2`, finestra n.4)* | **≈2,7 s** *(il fade finisce **1,2 s prima**)* | `Respawn()` **chiamato** *(`8475`)*, `FADE` **rilasciato** *(`8535`)*, `PLAYING` *(`8568`)* |
+
+**⇒ La soglia, misurata:** tasto a **≈1,3 s** prima di `VideoEnded` ⇒ **blocca** · a **≈2,7 s** ⇒ **funziona**.
+**⭐ E la finestra è ≈9-15% del video** *(1,5 s su 16,5 s di video nella vecchia, su 9,8 s nella nuova)*, **alla
+fine** — cioè **proprio dove si preme per saltare**.
+
+**⭐ Quanto è raro.** **Non riproducibile a comando**: l'utente ci ha provato **più volte** e **non ci riesce**.
+**⭐ E non è una combinazione di tasti: è un confine al decimo di secondo** — la stessa pressione «a fine video»
+cade **di qua o di là** della soglia, e da che parte cade **non si vede**. *(E le due run sono la **stessa build**:
+provato in `scratch\TRIANGOLAZIONE-SKIP.md` §1 — il codice è lo stesso, cambia il decimo di secondo. Nella
+sessione nuova convivono **4 finestre di morte** e **2 cutscene**: il caso che funziona e quello che blocca hanno
+la stessa causa.)*
+
+**🔴 E perché NON si cura con un timer.** La proposta naturale — **una finestra con `Respawn()` automatico**
+quando `FADE` è acceso e `PLAYERDEAD` dura da più di *N* secondi — **è stata scartata per decisione**: quel
+`Respawn()` **può far saltare una cutscene**, cioè **lo stesso danno** che il progetto evita da giorni *(un
+respawn che scatta mentre la scena del boss è in corso **la cancella**: è lo stesso fatto già misurato nella
+voce 5, `docs\TODO.md:6191`)*. ⇒ **Sarebbe curare un danno con lo stesso danno.** **SCARTATO per decisione,
+non rimandato.**
+
+**✅ E la via d'uscita che esiste già.** ⭐ **Entrare e uscire**: un **cambio di livello** — *e il load è l'unico
+punto in cui il gioco rimette a posto da solo `ResetManager()`, il `FADE` e `DEAD_SCREEN`, come è scritto nella
+voce 5* — **resetta il fade** ⇒ il giocatore torna comandabile. *(Il comportamento è **riportato dall'utente**;
+il meccanismo è quello che il gioco usa già, **non** una mitigazione della mod.)* ⇒ **il costo di questa voce è
+basso: c'è una via d'uscita, e non richiede un fix.**
+
+**🔎 Se ricapita, queste sono le firme nel log** *(canale della morte; righe misurate nella run bloccata)*:
+
+```
+[TRACE][INPUT] … FADE … has been enabled.            <- IL TASTO: parte Fade(1.5 s, → Respawn)
+[TRACE][FADE] Called fade function. Active: True     <- ⚠️ marker d'AVVIO (1 frame dopo), NON di tween ucciso
+[TRACE][CUTSCENE] Ending cinematic video.            <- EndCutscene: qui FadeInOut uccide il tween (≈1,3 s dopo)
+[Cutscene EV] … VideoEnded · CinematicEnded cancelled=True
+   e poi NIENTE: nessun "[Morte] il giocatore e' morto", nessun "FADE … has been disabled", nessun PLAYING
+```
+
+**⚠️ E il contatore che lo riassume:** `Called fade function. Active: True` **6** contro `… False` **5** nella run
+bloccata ⇒ **un fade acceso non è mai tornato** *(quello del tasto)*; nella run che funziona sono **16 e 16**,
+bilanciati. **Un fade che non torna = un respawn che non c'è.**
+
+**📌 E il marker che servirebbe** *(oggi **non esiste**)*. Una riga che dica **quando** il fade è **in volo** e
+**quando** arriva `EndCutscene`: `Called fade function` **è un marker d'avvio, non di tween ucciso** *(misurato:
+nella finestra n.4 sta **1 frame dopo** il `FADE` acceso, mentre il `Respawn()` arriva **1,4 s dopo** ⇒ si stampa
+all'inizio, non alla fine)*. **È l'unica riga che renderebbe questo caso diagnosticabile da un log** invece che da
+una ricostruzione: senza, un log **non distingue** «il tween è stato ucciso» da «il tasto non è arrivato».
+
+**Stato.** **RARO · NON RIPRODUCIBILE · RECUPERABILE.** ⛔ **Non è un difetto in lavorazione**: la sola cura
+proposta *(il `Respawn()` a timer)* è **scartata per decisione**, perché **farebbe saltare le cutscene**. ✅ **E
+non lascia bloccati**: **entrare e uscire** resetta il fade. 📌 **Se un giocatore lo riporta** — *"ho premuto per
+saltare la cutscene del boss mentre ero morto, ed è rimasto lì"* — **è questo**, ed è già tutto scritto qui:
+**serve il log, non un fix a naso.**
+
+**⚠️ E il legame con `docs\TODO.md`, dichiarato invece che taciuto.** In `docs\TODO.md` *(§2.1, `:6801`, e la
+lista corta a `:6907`)* la finestra dei 1,5 s compare **ancora come "in attesa di una decisione"**, e la sua
+opzione 1 è **proprio** il `Respawn()` automatico. **Questa voce registra la decisione presa**: il timer **non si
+fa**, e il difetto **resta noto e accettato**. *(La voce nel `TODO.md` resta dov'è: **non è stata toccata**.)*
+
+---
+
 ## Come si riporta un difetto *(per chi gioca e per i tester)*
 
 **Quello che serve**, in ordine di utilità:
