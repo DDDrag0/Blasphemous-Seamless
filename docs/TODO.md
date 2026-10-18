@@ -6928,3 +6928,71 @@ DO NOT PRESS: the boss is dying - the cutscene is about to start
 7. ⚠️ **Il punto 0**: la prova nei log è **l'assenza del trapianto** *(`[Insegue]` 5 righe)*, non **l'ingresso del boss**: nei quattro log `[Insegue]` **non porta un hash** ⇒ il binario è **dedotto dai marker** e dall'aritmetica di `_sceneVisit` *(«visita 3 / siamo alla 5», identico in tutti e quattro)*, **non da un'impronta per-log**.
 8. ⚠️ **La memoria che cresce**: `_remoteTargets` e `_remoteTargetsVisit` **non vengono mai svuotate** *(`:2370`)*, si aggiungono una voce per id visto in sessione, e **la dimensione reale dopo una sessione lunga non è misurata**.
 9. ⚠️ **E una nota di metodo, che vale per tutto quanto sopra**: **`[Insegue]` deduplica per boss e per visita**, quindi **un secondo trapianto rifiutato nella stessa visita non scrive niente** ⇒ *contare le righe non conta i rifiuti*. Il numero giusto è **uno per boss per visita**, e va letto così.
+
+---
+
+## [2026-10-18 05:40] ⭐⭐ **LA CONFERMA DEL RELAY È ARRIVATA** — **88 su 88**, appaiamento perfetto, e **la prova che il danno viene dalle copie relayate**; restano **l'importo del danno** *(senza marker)*, **il doppione a ~14 unità** e **i proiettili** *(assenti: assenza, non risposta)*
+
+**Referto** *(la fonte)*: `scratch\CONFERMA-RELAY.md` — **367 righe**, dai due log `output_log G1.txt` *(2355 righe / 229255 byte)* e `output_log G2.txt` *(2015 righe / 200622 byte)*. **HEAD di questa tornata: `f06fc61`** *(`git rev-parse HEAD`)*, branch `fix-f1a`, albero pulito.
+
+⚠️ **E QUESTA SEZIONE NON CORREGGE QUELLA QUI SOPRA** *(la regola del file: **non si riscrive e non si compatta**)*: la frase *«`CONFERMA-RELAY.md` non esiste»* del §6 punto 1 **era vera quando è stata scritta** — il referto **è arrivato dopo**. È l'arte di un TODO cronologico: **le sezioni vecchie si leggono come storia, non come stato**.
+
+### 1. ⭐ I NUMERI: **88 · 88 · 0 · 0 · 0**
+
+| | G1 (host) | G2 (client) | totale |
+|---|---|---|---|
+| **mandati** | 72 | 16 | **88** |
+| **istanziati** | 16 | 72 | **88** |
+| **scartati per dedup** | 0 | 0 | **0** |
+| **non risolti** | 0 | 0 | **0** |
+| **frenati** | 0 | 0 | **0** |
+| catalogo | 8 | 8 | — |
+
+⭐ **L'appaiamento è perfetto**: `Compare-Object` fra i **72** `mando` di G1 e i **72** `istanzio … da=G1` di G2 dà **0 differenze**, e i **16** di G2 contro i **16** di G1 danno **0 differenze** *(chiave `prefab@x,y` esatta, non arrotondata)*. ⇒ **nessun effetto perso, nessuno duplicato, nessuno inventato.**
+
+### 2. ⭐⭐⭐ LA PROVA DEL DANNO DEGLI EFFETTI
+
+**Il gioco emette `event:/SFX/Penitent/Damage/PenitentMagicDamage` quando un Penitente SUBISCE danno magico** *(le altre due famiglie sono `SimpleEnemyDamage` e `HeavyEnemyDamage`; `…Hit` è invece il colpo **portato dal giocatore**)*.
+
+- ⭐ **G2 non ha generato NESSUN effetto proprio prima della riga 1546** *(1546 è il **primo** `mando` di G2: fino lì nessuna chiamata al suo pool)*
+- ⭐ e **tutte e 5** le sue `MagicDamage` *(righe 997 · 1093 · 1161 · 1275 · 1370)* stanno **0-4 righe dopo un `istanzio`**
+- ⇒ ⭐ **in quei cinque istanti le uniche aree del boss nel mondo di G2 erano le copie relayate** ⇒ **il danno viene dal relay**: il canale porta l'effetto **e** l'effetto ferisce ✅
+- ✅ **e su G1, specularmente**: le sue **3 su 3** `MagicDamage` stanno **1-4 righe dopo un `mando`** *(le copie locali)*
+- ⚠️ **il limite, dichiarato e non nascosto**: l'evento audio prova che **un** Penitente su quella macchina ha preso danno magico — **non dice quale** (vedi §3)
+
+### 3. ⚠️ LA LACUNA CHE RESTA: **l'importo del danno NON è documentato**
+
+- **176 PV persi in due** *(88 + 88: entrambi i giocatori morti a `vita=0/88`)*, di cui **solo 10** hanno una riga: `G2:1135 [DannoPeer] APPLICATO … vitaPrima=54 vitaDopo=44 perso=10` — e quei 10 vengono dal **canale NEMICO**, non dal relay
+- **Per la strada dell'effetto non esiste alcun marker di vita**: `[DannoPeer]` si ferma a `non inoltrato`, e `[Danno]` riguarda la vita del **boss** *(non del Penitente)*
+- ⇒ ⭐ **serve un marker**: *la riga `vitaPrima=`/`vitaDopo=` anche per un attaccante **effetto*** *(la stessa riga che `[DannoPeer] APPLICATO` già stampa per il canale nemico)*
+- ⚠️ **e serve anche perché**: il proxy **`Penitent(Clone)`** sta a **1,1 unità** dal locale *(`G2:1006` → `posMia=(-812,3 · 10,0)`, `posAltro=(-813,4 · 10,0)`)* ⇒ **la geometria non discrimina** quale dei due ha perso vita
+
+### 4. ⚠️ E IL DOPPIONE VISIVO *(trovato)*
+
+- In **2 finestre** entrambe le macchine generano la **stessa raffica**, ma a **posizioni specchiate e ~14 unità distanti** *(y = 13,1 e y = 15,3; centri x ≈ -801 su G1 e x ≈ -815 su G2)* ⇒ **chiavi diverse** ⇒ **8 → 16 effetti** per finestra: il relay **somma** la copia invece di sostituirla
+- 🎯 **e la domanda che ne nasce, da mettere come voce**: **perché le due macchine posizionano lo stesso attacco a ~14 unità di distanza?** ⭐ *(è a **monte** del dedup: nessuna finestra di tempo lo salverebbe)*
+
+### 5. ✅ E IL DEDUP **NON È ROTTO: È NON ESERCITATO**
+
+`scartatiPerDedup=0` **mentre** `istanziati == mandati` è la combinazione che il referto del relay indica come sospetta. **Il sospetto qui non regge**, e il conto lo dice: la coppia di arrivi della stessa chiave **più stretta** dista **≈4 s** *(misurata col metronomo interno di `[Probe]`, che batte ogni 2,01 s — calibrazione verificata su `[DeathScreen] misura t=`)* contro una **finestra di 0,5 s** ⇒ **8 volte la finestra**. ⇒ **`0` è il risultato corretto**, ma **la strada di rigetto non è mai stata percorsa**: questa run **non dimostra che il dedup scarti**.
+
+### 6. ⛔ I PROIETTILI: **ASSENZA, NON RISPOSTA**
+
+`Bullet` · `Projectile` · `Crawler` · `Cloistered` · `Boomerang` · `MeltedLady` · `BellGhost` · `ProjectilePool` ⇒ **0 su entrambe le macchine**. I due prefab relayati sono **solo** `CorpsesShockwave` *(66)* e `MaceImpact` *(22)*, aree del boss, e il catalogo della scena **(8 nomi)** non contiene proiettili: **`ElderBrother` non spara**. ⇒ **sui proiettili non si conclude niente**: serve una run con un boss che spara.
+
+### 7. ✅ E IL RELAY **NON HA ROTTO NIENTE**
+
+| | G1 | G2 |
+|---|---|---|
+| `exceptions=` | **0** su **39/39** campioni | **0** su **42/42** campioni |
+| `fps` medio | **60,1** | **59,0** |
+| `lateMs_max` **dentro la finestra del relay** | **15,7 ms** | **8,4 ms** |
+
+⭐ **I due picchi globali di latenza stanno PRIMA del primo evento del relay** *(`G1:631` e `G2:692`, contro `G1:980` e `G2:994`)*. ⇒ il canale **accoda, non blocca**; e **nessun errore dei log è del relay** *(l'`IMPRONTA DIVERSA` e il `NullReferenceException` di `CorpseFollow` sono due difetti preesistenti e dichiarati)*.
+
+### 8. 📌 LE DUE VOCI CHE NE NASCONO *(proposte qui, non aggiunte alla lista corta del §5 qui sopra: quella sezione non si tocca)*
+
+1. ⚠️ **IL MARKER DELLA VITA PER GLI ATTACCANTI NON-NEMICI** — la riga `vitaPrima=`/`vitaDopo=` quando il danno arriva da un **effetto**: è **l'unico modo** per avere l'**importo**, e senza di esso la catena resta provata **fino al danno**, non **fino ai PV**.
+2. 🎯 **LA GEOMETRIA DELLO STESSO ATTACCO SU DUE MACCHINE** — perché la stessa raffica nasce a **~14 unità** di distanza *(mentre le due pedine stanno a **1,1 unità**)*: è **a monte** del dedup, e finché non si risponde **il doppione resta invisibile al relay**.
+
+⚠️ **Una nota di metodo**: i log **non hanno un orologio** *(zero righe `HH:MM:SS`)*, quindi gli istanti del §2 sono **adiacenze di riga** *(fortissime: 1-4 righe)*, **non misure in secondi**; e il tempo del §5 è **interpolato** fra due campioni a 2,01 s.
