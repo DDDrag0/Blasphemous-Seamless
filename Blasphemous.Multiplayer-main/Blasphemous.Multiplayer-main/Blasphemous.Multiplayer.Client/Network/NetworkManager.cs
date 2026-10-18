@@ -487,6 +487,17 @@ namespace Blasphemous.Multiplayer.Client.Network
                 return;
             }
 
+            // ⭐ I DUE MARKER DELLA VOCE 56: la coppia richiesta/risposta che porta i conteggi e la
+            // lista di id dell'altro. Stessa ragione delle due sopra per stare qui e non dopo: il suo
+            // payload ha una forma sua e i suoi byte non sono un nome di giocatore, quindi il ramo PvP
+            // li interpreterebbe come spazzatura. Non decide niente: stampa due righe e basta
+            // (`SyncIdListMarker`).
+            if (attackType == AttackType.SyncIdList)
+            {
+                SyncIdListMarker.ApplyFromWire(attackerName, data, startIdx);
+                return;
+            }
+
             byte damageAmount = data[startIdx + 1];
             string receiverName = Encoding.UTF8.GetString(data, startIdx + 2, data.Length - startIdx - 2);
 

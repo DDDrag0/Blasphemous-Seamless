@@ -80,6 +80,14 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // TEMPORARY (CutsceneProbe): PROBE #2 - subscription to the PUBLIC Cinematics events. No patch,
         // no behaviour: see CutsceneProbe.cs. If Core.Cinematics is not up yet it retries from LateUpdate.
         CutsceneProbe.Subscribe();
+
+        // ⭐ MARKER DELL'IMPORTO DEL DANNO (`[DannoVita]`). Si iscrive ai due delegate STATICI che la
+        // `PenitentDamageArea` espone gia' (`OnHitGlobal` prima dei cancelli, `OnDamagedGlobal` dopo
+        // l'applicazione): **zero patch Harmony**, i bersagli restano 269. La lacuna che chiude e'
+        // `scratch\CONFERMA-RELAY.md` §2.1 — il danno degli effetti ARRIVA, ma **di quanto** non lo
+        // diceva nessun marker, e **quale dei due Penitenti** ha perso vita nemmeno. Vedi
+        // `PenitentLifeMarker.cs`. Solo log: nessuno stato, nessuna vita, nessuna decisione.
+        PenitentLifeMarker.Arm();
     }
 
     // TEMPORARY (CutsceneProbe): the probe disarms itself on shutdown, so the events are never left
@@ -87,6 +95,10 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     protected override void OnDispose()
     {
         CutsceneProbe.Unsubscribe();
+
+        // ⭐ Marker dell'importo del danno: si toglie l'iscrizione, cosi' nessun delegate resta appeso a
+        // una mod che sta per sparire (stessa ragione della probe qui sopra).
+        PenitentLifeMarker.Disarm();
 
         // TEMPORARY (DeathCorpseFollow): the death window can be open when the mod shuts down, and the
         // copy is a GameObject of its own - nothing else would ever take it away.

@@ -98,6 +98,31 @@ public enum AttackType
     /// </summary>
     CoopEffectRelay = 201,
 
+    // ================================================================================================
+    // ⭐ I DUE MARKER DELLA VOCE 56 (2026-10-19): i conteggi del PEER e il PRIMO id presente su un lato
+    // solo. NON e' un attacco e non decide niente: e' il QUARTO verso del canale Attack, e ne usa la
+    // stessa infrastruttura per la stessa ragione del ② e del ③ — il server inoltra questo canale ai
+    // peer della STESSA SCENA escludendo il mittente, col nome del mittente premesso
+    // (`Server.cs:676-699`) ⇒ **nessuna riga di protocollo** (resta 11), **nessuna riga di server**.
+    // Un client vecchio non trova 202 in `attacks.json` ed esce da solo (`AttackManager.cs:31`); un
+    // server vecchio inoltra i byte senza interpretarli.
+    //
+    // PERCHE' SERVE UN PACCHETTO: sul filo viaggia SOLO l'`int` dell'impronta (`SendEnemyUpdate`), e
+    // l'impronta dice **che** le due liste divergono, non **come**. I due numeri del peer e la sua
+    // lista non sono mai arrivati su questa macchina, e senza di loro `IMPRONTA DIVERSA` non puo'
+    // stampare ne' i conteggi dell'altro (voce 56, marker 3a) ne' quale id diverge (3b).
+    //
+    // LA FORMA: richiesta/risposta, una coppia al massimo ogni 15 s (lo stesso periodo del referto
+    // della divergenza), e solo mentre la divergenza c'e'. Il payload e' in `SyncIdListMarker`.
+    // Il valore 202 sta accanto a 200 e 201 nello stesso blocco, e resta fuori dai blocchi 0..140 e da
+    // `NoDamage = 255`, perche' il byte viaggia come `(byte)attackType`.
+    // ================================================================================================
+    /// <summary>
+    /// I conteggi e la lista di id del peer: richiesta e risposta per i due marker della voce 56.
+    /// Vedi <see cref="SyncIdListMarker"/> per la forma del payload e per cosa stampa.
+    /// </summary>
+    SyncIdList = 202,
+
     NoDamage = 255
 }
 

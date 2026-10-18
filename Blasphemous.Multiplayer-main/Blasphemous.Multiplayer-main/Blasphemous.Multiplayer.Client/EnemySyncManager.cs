@@ -1578,6 +1578,42 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
+        /// ⭐ LA FOTOGRAFIA CHE SERVE AI DUE MARKER DELLA VOCE 56 (`SyncIdListMarker`): i tre numeri che
+        /// `IMPRONTA DIVERSA` stampa per il solo lato locale, piu' la LISTA degli id.
+        ///
+        /// PERCHE' UNA COPIA E NON IL RIFERIMENTO: la lista viaggia sul filo (richiesta/risposta sul
+        /// canale Attack) mentre la mod continua a lavorare — `_ids` viene ordinata, potata e
+        /// riempita da `OnEnemiesSpawned`, `ForgetEnemy`, `RegisterEnemy`. Chi legge deve leggere una
+        /// fotografia, non una tabella che cambia sotto le dita: la copia toglie di mezzo ogni corsa
+        /// senza mettere un lock su una struttura che il gioco tocca ogni frame.
+        ///
+        /// ⚠️ NON SCRIVE NIENTE e non risolve niente: legge `_ids`, `_spawnPoints` e `_listFingerprint`
+        /// come sono in questo istante, esattamente come fa `Dump()`.
+        /// </summary>
+        internal static void MarkerSnapshot(out int spawnPoints, out int ids, out int fingerprint, out List<string> idList)
+        {
+            spawnPoints = 0;
+            ids = 0;
+            fingerprint = 0;
+            idList = new List<string>();
+
+            try
+            {
+                spawnPoints = _spawnPoints.Count;
+                ids = _ids.Count;
+                fingerprint = _listFingerprint;
+
+                for (int i = 0; i < _ids.Count; i++)
+                    idList.Add(_ids[i]);
+            }
+            catch (Exception e)
+            {
+                ModLog.Error($"[Impronta] fotografia della lista fallita ({e.GetType().Name}): {e.Message} - " +
+                             "il marker tace, il gioco no");
+            }
+        }
+
+        /// <summary>
         /// True while damage relayed by the host is being applied, so the damage patch lets it through
         /// instead of forwarding it again (which would loop).
         /// </summary>
@@ -2588,8 +2624,14 @@ namespace Blasphemous.Multiplayer.Client
         // ============================================================================================
 
         /// <summary>
-        /// [BossView] riga 1 — `scena · attivo · statusDead · pendingMorti · bossVivi`, PRIMA della
+        /// [BossView] riga 1 — `scena · mod · attivo · statusDead · pendingMorti · bossVivi`, PRIMA della
         /// registrazione. Vedi il commento nel punto di chiamata per come si legge.
+        ///
+        /// ⭐ `scena=` e' la scena IN CUI IL BOSS STA ENTRANDO (`SceneForBossView`, letta dal gioco) e
+        /// `mod=` e' quello che la mod crede in questo istante (`_scene`). Prima di questo marker le due
+        /// cose erano UNA SOLA, ed era quella della mod: la riga stampava la scena PRECEDENTE. Ora si
+        /// vedono entrambe, cosi' la differenza e' visibile invece di essere silenziosa — e il campo
+        /// `mod=` non e' un doppione: e' il reperto che dice se la mod era in ritardo.
         /// </summary>
         private static void LogBossViewBefore()
         {
@@ -2600,13 +2642,13 @@ namespace Blasphemous.Multiplayer.Client
                 int bossVivi;
                 CountSceneEnemies(out attivo, out statusDead, out bossVivi);
 
-                ModLog.Info($"[BossView] scena={SceneForMarker()} · attivo={attivo} · statusDead={statusDead} · " +
-                            $"pendingMorti={_pendingDeaths.Count} · bossVivi={bossVivi}");
+                ModLog.Info($"[BossView] scena={SceneForBossView()} · mod={SceneForMarker()} · attivo={attivo} · " +
+                            $"statusDead={statusDead} · pendingMorti={_pendingDeaths.Count} · bossVivi={bossVivi}");
             }
             catch (Exception e)
             {
-                ModLog.Info($"[BossView] scena={SceneForMarker()} · attivo=? · statusDead=? · pendingMorti=? · " +
-                            $"bossVivi=? (lettura fallita: {e.GetType().Name}: {e.Message})");
+                ModLog.Info($"[BossView] scena={SceneForBossView()} · mod={SceneForMarker()} · attivo=? · " +
+                            $"statusDead=? · pendingMorti=? · bossVivi=? (lettura fallita: {e.GetType().Name}: {e.Message})");
             }
         }
 
@@ -2703,6 +2745,48 @@ namespace Blasphemous.Multiplayer.Client
                 // Anche il nome della scena ha un ripiego: il marker deve stampare comunque.
                 return "?";
             }
+        }
+
+        /// <summary>
+        /// ⭐ LA SCENA CHE IL MARKER `[BossView]` DEVE STAMPARE — quella in cui il boss STA ENTRANDO, non
+        /// quella che la mod ha ancora in memoria.
+        ///
+        /// IL DIFETTO CHE CHIUDE (marker ③ del pacchetto): `SceneForMarker()` preferisce `_scene`, e
+        /// `_scene` viene scritta da `EnemySyncManager.LevelLoaded(scene)`, che il gioco raggiunge
+        /// **DOPO** lo spawn: l'ordine vero e'
+        ///   1. `EnemySpawner.SpawnEnemiesOnLoad()` -> `OnEnemiesSpawned()` -> QUI (le due righe `[BossView]`)
+        ///   2. poi `Multiplayer.OnLevelLoaded` -> `EnemySyncManager.LevelLoaded(newLevel)` -> `_scene = …`
+        /// (`docs` di `LevelLoaded`, e la stessa ragione per cui `EnemySpawnPatch` esiste). ⇒ nella prima
+        /// passata `scena=` stampava la scena **PRECEDENTE**, e in una sequenza di stanze la riga
+        /// attribuiva il boss alla stanza sbagliata.
+        ///
+        /// ⚠️ LA SCENA GIUSTA ESISTE GIA' IN QUEL MOMENTO, e non e' una deduzione: il gioco la scrive
+        /// prima di spawnare — `LevelManager.LoadAndActivateLevel` fa `currentLevel = level`
+        /// (`Assembly-CSharp.cs:16894`) e `InitializeLevel` fa `SceneManager.SetActiveScene(
+        /// currentLevel.GetLogicScene().Scene)` e SUBITO DOPO `SpawnEnemiesOnLoad()` (`:17008-17017`).
+        /// Quindi `Core.LevelManager.currentLevel.LevelName` e' gia' la scena NUOVA.
+        ///
+        /// Perche' non si e' solo cambiato `SceneForMarker()`: quel metodo lo usano anche `[BossFight]` e
+        /// `[Proprieta']`, che girano DOPO `LevelLoaded` — li' `_scene` e' giusta, e toccarla avrebbe
+        /// cambiato righe che nessuno ha chiesto di toccare.
+        /// </summary>
+        private static string SceneForBossView()
+        {
+            try
+            {
+                if (Core.LevelManager != null && Core.LevelManager.currentLevel != null)
+                {
+                    string live = Core.LevelManager.currentLevel.LevelName;
+                    if (!string.IsNullOrEmpty(live))
+                        return live;
+                }
+            }
+            catch (Exception)
+            {
+                // si ripiega sotto: il marker deve stampare comunque
+            }
+
+            return SceneForMarker();
         }
 
         /// <summary>[BossJoin] — quanti boss VIVI ci sono in scena (marker 2, un frame dopo il load).</summary>
@@ -5837,6 +5921,17 @@ namespace Blasphemous.Multiplayer.Client
                              $"sul nemico sbagliato. Confronta 'multiplayer sync dump' sui due PC " +
                              $"(spawn point locali: {_spawnPoints.Count}, id locali: {_ids.Count}, " +
                              $"segnalazioni: {_fingerprintMismatches}).");
+
+                // ⭐ I DUE MARKER DELLA VOCE 56 (`docs\TODO.md` §4, B e C) — la riga qui sopra dice CHE
+                // le liste divergono e i conteggi del solo lato LOCALE, perche' sul filo viaggia solo
+                // l'`int` dell'impronta. Questa richiesta chiede all'altro i SUOI due conteggi e la SUA
+                // lista, che sono i due dati che non sono mai arrivati qui: la risposta stampa
+                // `[Impronta] confronto #n · spawn: peer=… locale=… · id: peer=… locale=… ·
+                // primoIdSoloPeer=… · primoIdSoloLocale=…` (SyncIdListMarker). Sta DENTRO questo ramo,
+                // che e' gia' limitato a una riga ogni 15 s: la richiesta non puo' essere piu' frequente
+                // del referto che la giustifica. Zero comportamento: nessuno legge la risposta, e la
+                // riga `IMPRONTA DIVERSA` non e' stata toccata.
+                SyncIdListMarker.RequestPeerIdList();
             }
 
             Enemy enemy = ResolveByHandle(handle);
