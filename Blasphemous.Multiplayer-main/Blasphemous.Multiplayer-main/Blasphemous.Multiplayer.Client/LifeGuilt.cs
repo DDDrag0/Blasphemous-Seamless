@@ -57,6 +57,21 @@ namespace Blasphemous.Multiplayer.Client
     /// Il nostro minimo e' 0.4, scritto nella stessa funzione che calcola il fattore, cosi' nessun ramo
     /// futuro puo' scavalcarlo.
     ///
+    /// ⭐⭐ DUE GUARDIE, UNA FUNZIONE SOLA (`SuppressionReason()`), e la richiesta e' dell'utente:
+    ///   · **SINGLE PLAYER** — "la Colpa deve attivarsi solo quando ci si connette a un server; in
+    ///     single player il debuff deve essere disattivato e puo' curarsi". Il predicato e' il SOCKET
+    ///     (`CoopGate.IsMultiplayerActive()`, `NetworkManager.IsConnected`): host o peer, appena la
+    ///     connessione e' viva la Colpa torna. In single player: `Factor()` = 1, **nessuna** scrittura
+    ///     lesiva, **nessuna** notifica, e **il contatore non cresce** (una morte in SP non e' una morte
+    ///     in co-op).
+    ///   · **PE02 / DEMAKE** — le due modalita' in cui la vita e' fatta di STOCK ricavati da
+    ///     `Life.CurrentMax` (`PlayerHealthPE02`/`PlayerHealthDemake`: `CeilToInt(Life.CurrentMax / 30)`),
+    ///     quindi un `MaxFactor` ridotto cambierebbe il NUMERO di sfere: una penalita' molto piu' severa
+    ///     di quella voluta. Il gioco spegne la sua colpa in `DEMAKE` (`GuiltManager.cs:93`) e qui si fa
+    ///     lo stesso; PE02 si riconosce dalla penitenza ATTIVA (`GetCurrentPenitence().Id == "PE02"`).
+    ///     ⚠️ `BOSS_RUSH` **non** e' in lista ed e' voluto: la colpa nativa si spegne anche li', ma in
+    ///     Boss Rush la vita e' la barra normale, non stock ⇒ li' la penalita' deve funzionare.
+    ///
     /// TUTTO E' DENTRO try/catch: una colpa non deve mai rompere una partita. Nessun `Kill`, nessun
     /// `Damage`, nessun `SetHealth`, nessun `Time.timeScale`, nessuna rete, nessun protocollo.
     /// </summary>
@@ -96,6 +111,73 @@ namespace Blasphemous.Multiplayer.Client
         private static bool _loaded;
         private static string _path;
 
+        // ---- il FRONTE del co-op, letto una volta per frame da `Tick()`: `_gateKnown`/`_gateMultiplayer`
+        //      sono l'ultimo stato visto, e il fronte e' il cambio. Non e' una cache del predicato (che
+        //      costa due confronti): e' lo stato che serve per accorgersi che la connessione e' caduta.
+        private static bool _gateKnown;
+        private static bool _gateMultiplayer;
+
+        // ============================================================================================
+        // ⭐ LE DUE GUARDIE — una funzione sola, un motivo solo.
+        // ============================================================================================
+
+        /// <summary>
+        /// Il motivo per cui la Colpa **non si applica adesso**, oppure `null` se si applica. Una funzione
+        /// sola perche' `Factor()`, `ApplyOnSpawn()`, `RegisterDeath()`, `Notify()` e `Tick()` non possano
+        /// rispondere cose diverse.
+        ///
+        /// ① **SINGLE PLAYER** — l'utente: "deve attivarsi solo quando ci si connette a un server... in
+        ///    single player il debuff deve essere disattivato e puo' curarsi". Il predicato e' il SOCKET,
+        ///    e vale **host o peer** (in entrambi i casi il client e' connesso al server). Dettagli e
+        ///    caso "connesso senza altri giocatori" in `CoopGate.cs`.
+        ///
+        /// ② **PE02 / DEMAKE** — le due modalita' a STOCK, dove `Life.CurrentMax` decide il NUMERO di
+        ///    sfere:
+        ///      · **Demake**: esattamente la condizione con cui il gioco spegne la sua colpa nativa
+        ///        (`GuiltManager.cs:93`: `!BOSS_RUSH && !DEMAKE`) — qui la stessa meta' che ci riguarda.
+        ///      · **PE02**: la penitenza ATTIVA (`Core.PenitenceManager.GetCurrentPenitence()`, `Id`
+        ///        "PE02"), che e' la stessa cosa che guarda la UI (`GameplayWidget.cs:623`,
+        ///        `current is PenitencePE02`).
+        ///    ⚠️ **PERCHE' NON `UseStocksOfHealth`** (che pure esiste e sarebbe comodo): quella bandiera
+        ///    **confonde le due modalita'** — la accende `PenitencePE02.Activate()` (PE02) **e** l'avvio
+        ///    del Demake (`DemakeManager`, `LoadDemakeFadeWhiteCourrutine`) — e viene riscritta a `false`
+        ///    solo dal `ResetPersistence()` (`PenitenceManager`), che passa dal caricamento del gioco; in
+        ///    piu' e' la bandiera che il gioco usa per **quantizzare il danno**, non per scegliere la UI.
+        ///    Le due condizioni qui sopra invece sono **quelle vere**: `IsCurrentMode(DEMAKE)` e' la stessa
+        ///    riga della colpa nativa, `GetCurrentPenitence()` e' la stessa cosa che guarda la UI
+        ///    (`GameplayWidget.cs:623`). Vedi `REFERTO-COLPA-PE02.md`.
+        ///
+        /// **IN DUBBIO SI APPLICA**: ogni lettura fallita torna `null`, perche' una guardia che spegne la
+        /// Colpa in co-op normale sarebbe peggio del difetto che cura.
+        /// </summary>
+        private static string SuppressionReason()
+        {
+            try
+            {
+                if (!CoopGate.IsMultiplayerActive())
+                    return "single player (nessun server)";
+
+                if (Core.GameModeManager != null &&
+                    Core.GameModeManager.IsCurrentMode(GameModeManager.GAME_MODES.DEMAKE))
+                {
+                    return "modalita' Demake";
+                }
+
+                if (Core.PenitenceManager != null)
+                {
+                    var penitence = Core.PenitenceManager.GetCurrentPenitence();
+                    if (penitence != null && string.Equals(penitence.Id, "PE02", StringComparison.Ordinal))
+                        return "modalita' PE02";
+                }
+            }
+            catch (Exception)
+            {
+                // Vedi sopra: in caso di dubbio, si applica.
+            }
+
+            return null;
+        }
+
         // ============================================================================================
         // IL FATTORE — una sola funzione, i tre scalini dentro, il pavimento dentro.
         // ============================================================================================
@@ -103,9 +185,15 @@ namespace Blasphemous.Multiplayer.Client
         /// <summary>
         /// Il fattore della vita massima, dai tre scalini. **Legge il contatore**, e legge il contatore
         /// significa leggere il file la prima volta (vedi `EnsureLoaded`).
+        ///
+        /// ⭐ Le due guardie stanno QUI, in cima, e non solo nei chiamanti: `Factor()` e' l'unico posto in
+        /// cui nasce un numero diverso da 1, quindi nessun ramo futuro puo' scavalcarle.
         /// </summary>
         internal static float Factor()
         {
+            if (SuppressionReason() != null)
+                return FACTOR_NO_GUILT;
+
             int deaths = Deaths;
 
             if (deaths <= 0)
@@ -149,6 +237,20 @@ namespace Blasphemous.Multiplayer.Client
         {
             try
             {
+                // ⭐ LE GUARDIE PRIMA DI TUTTO: dove la Colpa non si applica, una morte **non e' una morte
+                //   per la Colpa**. Ne' il fattore ne' il contatore: cosi' la penalita' non si accumula in
+                //   single player (richiesta dell'utente) ne' in PE02/Demake (dove sarebbe un debuff
+                //   diverso, sulle sfere), e non "esplode" tornando in co-op normale.
+                string reason = SuppressionReason();
+                if (reason != null)
+                {
+                    ModLog.Info(MARK + " non applicata: " + reason +
+                                " · morte NON contata, la vita non si tocca, nessuna notifica · " +
+                                "il contatore riprende quando la Colpa torna attiva " +
+                                "(una penalita' non si accumula dove non si applica)");
+                    return;
+                }
+
                 EnsureLoaded();
 
                 if (_deaths < MAX_DEATHS)
@@ -209,6 +311,7 @@ namespace Blasphemous.Multiplayer.Client
             {
                 EnsureLoaded();
 
+                string reason = SuppressionReason();
                 float factor = Factor();
                 var stats = PlayerStats();
 
@@ -216,11 +319,25 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     ModLog.Warn(MARK + " applicata a ogni spawn · stats=non disponibili (Penitent assente): " +
                                 "NESSUNA scrittura, contatore=" + _deaths.ToString(CultureInfo.InvariantCulture) +
-                                " fattore=" + Text(factor));
+                                " fattore=" + Text(factor) +
+                                (reason == null ? string.Empty : " · MA non applicata: " + reason));
                     return;
                 }
 
+                // ⭐ In guardia il valore scritto e' **1.0**: nessuna riduzione, e se un residuo di una
+                //   sessione precedente fosse rimasto sull'istanza, questa riga lo AZZERA (e' la richiesta
+                //   "in single player il debuff e' disattivato e puo' curarsi": vita piena, si cura).
                 stats.Life.MaxFactor = factor;
+
+                if (reason != null)
+                {
+                    ModLog.Info(MARK + " non applicata: " + reason + " · scritto Life.MaxFactor=" +
+                                Text(factor) + " (nessuna riduzione, nessuna notifica) · vita: max=" +
+                                F1(stats.Life.CurrentMax) + " final=" + F0(stats.Life.Final) +
+                                " current=" + F0(stats.Life.Current) +
+                                " · contatore=" + _deaths.ToString(CultureInfo.InvariantCulture));
+                    return;
+                }
 
                 ModLog.Info(MARK + " applicata a ogni spawn · contatore=" + _deaths.ToString(CultureInfo.InvariantCulture) +
                             " fattore=" + Text(factor) +
@@ -279,6 +396,63 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
+        // ============================================================================================
+        // ③-bis IL FRONTE DEL CO-OP — si accende quando ci si connette, si spegne quando cade.
+        // ============================================================================================
+
+        /// <summary>
+        /// Un giro per frame (da `Multiplayer.OnLateUpdate`), e fa **una cosa sola**: legge il cancello del
+        /// co-op (`CoopGate.IsMultiplayerActive()`, il SOCKET verso il server: host o peer) e, **quando
+        /// cambia**, riapplica o spegne. Non e' ridondanza con `ApplyOnSpawn`:
+        ///
+        ///   · il giocatore puo' **disconnettersi senza respawnare** — e li' la richiesta e' esplicita:
+        ///     in single player "il debuff deve essere disattivato e **puo' curarsi**" ⇒ la vita massima
+        ///     torna piena SUBITO, non alla prossima morte o al prossimo falo';
+        ///   · e puo' **connettersi a meta' partita** — e li' la Colpa vera (contatore compreso) deve
+        ///     tornare senza aspettare uno spawn.
+        ///
+        /// Costo per frame: una lettura booleana (due confronti, `NetworkManager.cs:22`) e un confronto.
+        /// Nessuna scrittura se il fronte non c'e' — che e' il caso normale, quasi tutti i frame.
+        /// </summary>
+        internal static void Tick()
+        {
+            try
+            {
+                bool multiplayer = CoopGate.IsMultiplayerActive();
+
+                if (_gateKnown && multiplayer == _gateMultiplayer)
+                    return;
+
+                bool first = !_gateKnown;
+                _gateKnown = true;
+                _gateMultiplayer = multiplayer;
+
+                string reason = SuppressionReason();
+
+                if (reason != null)
+                {
+                    // ⭐ SPEGNERE E' UNA SCRITTURA SOLA, e scrive **1.0**: la vita torna alla larghezza del
+                    //   gioco, si cura con i mezzi del gioco, e nessuna notifica dice il falso.
+                    var stats = PlayerStats();
+                    if (stats != null)
+                        stats.Life.MaxFactor = 1f;
+
+                    ModLog.Info(MARK + " non applicata: " + reason +
+                                " · debuff SPENTO, Life.MaxFactor=1.0 · il giocatore puo' curarsi" +
+                                (stats == null ? " · (Penitent assente: nessuna scrittura)" : string.Empty) +
+                                (first ? " · primo giro" : " · fronte: connessione persa"));
+                    return;
+                }
+
+                ApplyNow(first ? "primo giro con server" : "fronte: connessione al server");
+            }
+            catch (Exception e)
+            {
+                ModLog.Error(MARK + " fronte co-op NO (" + e.GetType().Name + ": " + e.Message + ") " +
+                             "· la Colpa resta nello stato in cui era, niente di rotto");
+            }
+        }
+
         /// <summary>
         /// Una partita nuova riparte senza colpa. Non e' un dettaglio: il file e' UNO (non uno per slot),
         /// quindi senza questa riga una nuova partita ereditera' le morti della precedente. Chiamata da
@@ -321,6 +495,17 @@ namespace Blasphemous.Multiplayer.Client
         {
             try
             {
+                // ⭐ ULTIMA GUARDIA (le altre stanno a monte): in single player / PE02 / Demake la vita NON
+                //   e' stata ridotta, e un testo "YOUR MAX LIFE IS REDUCED..." direbbe il falso. Difesa in
+                //   profondita', non il punto unico: costa un booleano e non puo' sbagliare da sola.
+                string reason = SuppressionReason();
+                if (reason != null)
+                {
+                    ModLog.Info(MARK + " non applicata: " + reason + " · notifica NON mostrata " +
+                                "(la vita non e' stata ridotta: il testo direbbe il falso)");
+                    return;
+                }
+
                 if (Main.Multiplayer == null || Main.Multiplayer.NotificationManager == null)
                 {
                     ModLog.Info(MARK + " notifica NON mostrata (NotificationManager assente): la penalita' " +

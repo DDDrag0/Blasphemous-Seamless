@@ -1,6 +1,7 @@
 using Blasphemous.ModdingAPI;
 using Gameplay.UI.Others.Buttons;
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -27,18 +28,30 @@ namespace Blasphemous.Multiplayer.Client
     /// `HideAll`. Se `ContinueGroup` stesse dentro `NormalGroup` sarebbe moltiplicato per alpha 0 e il
     /// prompt in Demake non potrebbe mai apparire. ⇒ **rendere trasparente `NormalGroup` non tocca il prompt**.
     ///
-    /// PERCHE' NON C'E' NIENTE DA RIPRISTINARE (dichiarato, non omesso).
-    /// La modifica e' **permanente sull'istanza di scena**, e va bene cosi':
-    ///   - `NormalGroup` e' usato **solo** dal percorso di morte normale (`grep` su tutti i 2079 file IL:
-    ///     `NormalGroup` compare solo in `DeadScreenWidget.cs`, e solo via `alpha`);
-    ///   - mentre si gioca la schermata e' invisibile **comunque**, perche' `HideAll()` mette il
-    ///     `CanvasGroup` a 0 (`Awake` :57 e dopo ogni respawn :94) ⇒ azzerare l'alpha dei figli **non ha
-    ///     alcun effetto visibile fuori dalla morte**;
-    ///   - BossRush e Demake usano i LORO gruppi, che non tocchiamo.
-    /// ⇒ lo stato finale e' "lo sfondo della schermata di morte e' trasparente, sempre", che e' esattamente
-    /// la richiesta; e **non esiste uno stato da ripristinare**, quindi non esiste il momento sbagliato in
-    /// cui ripristinarlo. Il colore RGB resta intatto: si azzera **solo** `a`, cosi' un eventuale secondo
-    /// intervento ("solo in bossfight") puo' rimettere l'alpha originale senza indovinarla.
+    /// ⭐⭐ SOLO IN CO-OP, E SI PUO' TOGLIERE (richiesta dell'utente: "la schermata di morte torna ad
+    /// essere normale in single player, deve essere trasparente solo quando ci si connette a un server").
+    /// Il cancello e' lo **stesso predicato della Colpa** — `CoopGate.IsMultiplayerActive()`, cioe' il
+    /// socket verso il server, host o peer — e sta in cima a `Tick()`, prima di qualunque lettura:
+    /// in single player questo file **non scrive niente**.
+    ///
+    /// E siccome "non scrivere" non basta quando una sessione co-op ha GIA' azzerato gli alpha (la
+    /// trasparenza e' permanente sull'istanza di scena: sotto c'e' la spiegazione del perche'), ora c'e'
+    /// un **ripristino**: la prima volta che si azzera un `Graphic` si registra il suo alpha VERO, e
+    /// quando il cancello si chiude (connessione caduta, o partita single player) quei valori tornano.
+    /// ⇒ "in single player la schermata e' quella del gioco" e' vero **anche dopo** una sessione co-op
+    /// nello stesso processo. L'RGB non si tocca mai: si salva e si rimette **solo** `a`.
+    ///
+    /// PERCHE' NON C'ERA UN RIPRISTINO, E PERCHE' ADESSO C'E'. Mentre si gioca la schermata e' invisibile
+    /// **comunque**, perche' `HideAll()` mette il `CanvasGroup` a 0 (`Awake` :57 e dopo ogni respawn :94)
+    /// ⇒ azzerare l'alpha dei figli **non ha alcun effetto visibile fuori dalla morte**, e non c'era nulla
+    /// da rimettere al suo posto. Con la guardia, pero', il "fuori dalla morte" e' diventato uno STATO
+    /// OSSERVABILE (single player) e va riportato al valore del gioco. Il ripristino e' esatto, non
+    /// "rimetto 1": si registra l'alpha che c'era.
+    ///
+    /// IL RESTO DEL DISEGNO NON CAMBIA. `NormalGroup` e' usato **solo** dal percorso di morte normale
+    /// (`grep`: compare solo in `DeadScreenWidget.cs`, solo via `alpha`); BossRush e Demake usano i LORO
+    /// gruppi; il prompt vive su `ContinueGroup` e non si tocca. L'auto-riparazione resta sul fronte di
+    /// salita di `PlayerDeathSync.IsLocalPlayerDead()` + una riapplicazione al secondo.
     ///
     /// L'AUTO-RIPARAZIONE (scelta e dichiarata). L'applicazione avviene sul **fronte di salita** di
     /// `PlayerDeathSync.IsLocalPlayerDead()`, e poi si **riapplica ogni `REAPPLY_INTERVAL`** finche' si e'
@@ -84,6 +97,14 @@ namespace Blasphemous.Multiplayer.Client
         // secondo per 24 s.
         private static bool _missingReported;
 
+        // ⭐ GLI ALPHA VERI, per poter TORNARE INDIETRO. Da quando la trasparenza vale solo in co-op, la
+        // schermata deve tornare quella del gioco quando il cancello si chiude: si registra `a` PRIMA di
+        // azzerarlo (l'RGB non basta, l'alpha non si indovina) e lo si rimette. Due liste parallele invece
+        // di un `Dictionary` perche' gli elementi sono pochi e l'ordine non conta: meno codice, meno cose
+        // che possono lanciare. Si svuotano al ripristino.
+        private static readonly List<Graphic> _zeroedGraphics = new List<Graphic>();
+        private static readonly List<float> _zeroedAlphas = new List<float>();
+
         /// <summary>
         /// Un giro per frame. Chiamata da `Multiplayer.OnLateUpdate`, subito dopo `DeathScreenProbe.Tick()`.
         /// Il `try/catch` non e' decorativo: un'eccezione qui uscirebbe da un punto di ingresso del ciclo
@@ -93,6 +114,21 @@ namespace Blasphemous.Multiplayer.Client
         {
             try
             {
+                // ⭐ IL CANCELLO DEL CO-OP, prima di qualunque lettura: "trasparente solo quando ci si
+                //   connette a un server" (host o peer, `CoopGate`). In single player: nessuna scrittura e,
+                //   se una sessione co-op aveva gia' azzerato gli alpha, RIPRISTINO ai valori veri.
+                if (!CoopGate.IsMultiplayerActive())
+                {
+                    if (_dead)
+                    {
+                        _dead = false;
+                        _missingReported = false;
+                    }
+
+                    Restore("single player: nessun server");
+                    return;
+                }
+
                 bool dead = PlayerDeathSync.IsLocalPlayerDead();
 
                 if (!dead)
@@ -120,6 +156,57 @@ namespace Blasphemous.Multiplayer.Client
             catch (Exception e)
             {
                 DeathScreenProbe.Fail("DeathScreenTransparency.Tick", e);
+            }
+        }
+
+        /// <summary>
+        /// Rimette gli alpha **veri** dei `Graphic` che questa mod ha azzerato, e svuota il registro.
+        /// Idempotente: la seconda chiamata non ha niente da rimettere e non scrive una riga di log.
+        ///
+        /// ⚠️ Perche' non basta "non applicare": l'azzeramento e' **permanente sull'istanza di scena**
+        /// (`Tick()` lo scrive e non lo rimette), quindi chi ha giocato in co-op e poi e' rimasto senza
+        /// server si troverebbe la schermata sbiadita anche in single player. E quel caso l'utente lo ha
+        /// chiesto esplicitamente: "in single player la schermata torna normale". Si controlla
+        /// `graphic == null` (semantica Unity: un oggetto distrutto e' null) perche' il registro puo'
+        /// sopravvivere a un cambio scena.
+        /// </summary>
+        private static void Restore(string why)
+        {
+            try
+            {
+                if (_zeroedGraphics.Count == 0)
+                    return;
+
+                int restored = 0;
+
+                for (int i = 0; i < _zeroedGraphics.Count; i++)
+                {
+                    Graphic graphic = _zeroedGraphics[i];
+                    if (graphic == null)
+                        continue;
+
+                    Color color = graphic.color;
+                    graphic.color = new Color(color.r, color.g, color.b, _zeroedAlphas[i]);
+                    restored++;
+                }
+
+                _zeroedGraphics.Clear();
+                _zeroedAlphas.Clear();
+
+                if (restored > 0)
+                {
+                    ModLog.Info(MARK + " RIPRISTINATA (" + why + ") alphaRimessi=" +
+                                restored.ToString() + " · la schermata di morte e' di nuovo quella del gioco");
+                }
+            }
+            catch (Exception e)
+            {
+                // Se il ripristino fallisce si svuota comunque il registro: riprovare ogni frame su un
+                // oggetto rotto sarebbe solo spam. La schermata resta com'e' (invisibile fuori dalla morte).
+                _zeroedGraphics.Clear();
+                _zeroedAlphas.Clear();
+                ModLog.Error(MARK + " ripristino NO (" + e.GetType().Name + ": " + e.Message + ") " +
+                             "· la schermata resta com'e', niente di rotto");
             }
         }
 
@@ -175,8 +262,15 @@ namespace Blasphemous.Multiplayer.Client
                 if (color.a <= 0f)
                     continue;
 
-                // SOLO l'alpha. L'RGB resta: se un giorno la trasparenza va limitata alla bossfight, la
-                // strada e' rimettere l'alpha originale, e quel valore va ritrovato intatto.
+                // SOLO l'alpha. L'RGB resta: e il valore ORIGINALE di `a` si registra PRIMA di azzerarlo,
+                // perche' e' quello che `Restore()` rimette quando il cancello del co-op si chiude. Se lo
+                // stesso Graphic fosse gia' nel registro non si riscrive: il primo valore e' quello vero.
+                if (!_zeroedGraphics.Contains(graphic))
+                {
+                    _zeroedGraphics.Add(graphic);
+                    _zeroedAlphas.Add(color.a);
+                }
+
                 graphic.color = new Color(color.r, color.g, color.b, 0f);
                 zeroed++;
             }

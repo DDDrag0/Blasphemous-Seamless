@@ -243,6 +243,15 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // lives on ContinueGroup and is not touched. Same loop, still no new Harmony target (263).
         DeathScreenTransparency.Tick();
 
+        // ⭐⭐ LA COLPA SULLA VITA SI ACCENDE COL SERVER E SI SPEGNE SENZA (19/10, richiesta dell'utente:
+        // "deve attivarsi solo quando ci si connette a un server; in single player il debuff deve essere
+        // disattivato e puo' curarsi"). Nel ciclo per frame fa UNA cosa sola: legge il cancello del co-op
+        // (`CoopGate.IsMultiplayerActive()` = il socket, host o peer) e **quando cambia** riapplica o
+        // spegne, cosi' la vita torna piena senza aspettare una morte o un falo'. Se il fronte non c'e'
+        // costa un booleano e un confronto. Stesso ciclo delle sonde qui sopra: **zero patch Harmony
+        // nuove, i 272 bersagli restano 272**. Vedi `LifeGuilt.cs` (`Tick`, `SuppressionReason`).
+        LifeGuilt.Tick();
+
         // ⭐⭐ BossDeathWarning (19/10): L'AVVISO A SCHERMO AL GIOCATORE MORTO QUANDO IL BOSS MUORE, e la
         // sua finestra di morte. E' la rimessa in funzione di un avviso che ERA NOSTRO - stava nel
         // `DeathRespawnWatchdog` del commit 59f34d7, e il rollback 13107c9 ha cancellato quel file.
