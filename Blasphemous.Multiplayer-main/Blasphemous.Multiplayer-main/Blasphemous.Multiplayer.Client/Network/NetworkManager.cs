@@ -5,7 +5,6 @@ using Blasphemous.Multiplayer.Client.PvP.Models;
 using Blasphemous.Multiplayer.Common.Enums;
 using Framework.Managers;
 using Gameplay.GameControllers.Entities;
-using SimpleTCP;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -16,10 +15,25 @@ namespace Blasphemous.Multiplayer.Client.Network
     public class NetworkManager
     {
         private ConnectionStatus _connectionStatus = ConnectionStatus.Disconnected;
-        private SimpleTcpClient _client;
+
+        /// <summary>
+        /// ⭐ IL FILO, DIETRO IL SEAM: da qui in giu' questo file non conosce piu' `SimpleTCP` e non
+        /// nomina nessun socket. Prima era `private SimpleTcpClient _client;` e questo era l'unico
+        /// punto dell'assembly in cui il trasporto compariva per nome; oggi il nome del tipo vero
+        /// (`TcpTransport`, che avvolge `SimpleTcpClient`) sta in **un** posto solo
+        /// (`TcpTransport.Connect`) e questo campo e' il seam.
+        /// </summary>
+        private ICoopTransport _transport;
         private string _serverIp = string.Empty;
 
-        public bool IsConnected => _connectionStatus == ConnectionStatus.Connected && _client != null;
+        /// <summary>
+        /// ⚠️ L'ESPRESSIONE E' QUELLA DI OGGI, con `_transport` al posto di `_client`:
+        /// `_connectionStatus == Connected &amp;&amp; trasporto != null`. Non si usa
+        /// `_transport.IsConnected` di proposito: aggiungerebbe un controllo sul socket (il `Connected`
+        /// del `TcpClient`) che oggi non c'e', e la caduta della connessione verrebbe osservata prima —
+        /// un cambio di comportamento, non un refactor. Vedi `CoopGate.cs:11-19`.
+        /// </summary>
+        public bool IsConnected => _connectionStatus == ConnectionStatus.Connected && _transport != null;
         public string ServerIP => _serverIp;
 
         private readonly List<byte> sendingQueue = new ();
@@ -35,13 +49,28 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             try
             {
-                _client = new SimpleTcpClient();
-                _client.Connect(server, port);
-                _client.DataReceived += ReceiveMessage;
-                _client.TcpClient.NoDelay = true;
+                // ⭐ IL SEAM — la prova che il filo non cambia sta nel confronto riga per riga:
+                //
+                //   PRIMA                                          DOPO
+                //   _client = new SimpleTcpClient();               _transport = new TcpTransport();
+                //   _client.Connect(server, port);                 _transport.Connect(server, port);
+                //   _client.DataReceived += ReceiveMessage;        _transport.DataReceived += ReceiveMessage;
+                //   _client.TcpClient.NoDelay = true;              (dentro TcpTransport.Connect)
+                //
+                // Stessi argomenti, stesso ordine utile: la `Connect` prima della sottoscrizione (come
+                // oggi: la sottoscrizione avviene DOPO che il socket e' aperto) e `NoDelay` prima di
+                // qualunque scrittura. La creazione del socket e `NoDelay` sono finite dentro il
+                // trasporto, insieme; l'unica riga che si sposta e' `NoDelay`, che oggi era impostata
+                // dopo la sottoscrizione ma prima di ogni `Write` (le scritture partono da `SendQueue`,
+                // sul main thread, molto dopo) ⇒ nessun byte sul filo puo' accorgersene.
+                _transport = new TcpTransport();
+                _transport.Connect(server, port);
+                _transport.DataReceived += ReceiveMessage;
             }
             catch (System.Net.Sockets.SocketException)
             {
+                // Lo stesso `catch` di oggi, sulla stessa eccezione: il trasporto NON la cattura
+                // (`TcpTransport.Connect`), altrimenti questo ramo non verrebbe mai raggiunto.
                 ModLog.Info("Failed to establish connection");
                 OnConnect?.Invoke(false, RefusalType.Connection);
                 return false;
@@ -53,7 +82,8 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void Disconnect()
         {
-            _client.Disconnect();
+            // Prima: `_client.Disconnect();` — stessa chiamata, un livello sotto (TcpTransport.Disconnect).
+            _transport.Disconnect();
             OnDisconnect();
         }
 
@@ -72,7 +102,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         {
             _connectionStatus = ConnectionStatus.Disconnected;
             _serverIp = string.Empty;
-            _client = null;
+            _transport = null;
             sendingQueue.Clear();
             receivingQueue.Clear();
 
@@ -100,7 +130,14 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             try
             {
-                _client.Write(sendingQueue.ToArray());
+                // ⭐ LA SOLA SCRITTURA DEL CLIENT, e l'argomento e' LETTERALMENTE lo stesso di prima:
+                //   prima: `_client.Write(sendingQueue.ToArray());`
+                //   dopo:  `_transport.Send(sendingQueue.ToArray());`
+                // `sendingQueue.ToArray()` e' la stessa espressione, valutata nello stesso punto, e
+                // `Send` non tocca il buffer (`TcpTransport.Send` fa `_client.Write(framed)`): il
+                // numero di byte, il loro contenuto e il loro ordine sono quelli di prima. `IOException`
+                // risale qui di proposito, perche' il `catch` sotto e' la via di `OnDisconnect()`.
+                _transport.Send(sendingQueue.ToArray());
             }
             catch (System.IO.IOException)
             {
@@ -113,11 +150,19 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         // Data should be formatted as length length type data
-        private void ReceiveMessage(object sender, DataReceivedEventArgs message)
+        //
+        // ⚠️ ADATTATORE DI FORMA, NON DI CONTENUTO. Prima la firma era quella di `SimpleTCP`
+        // (`object sender, DataReceivedEventArgs message` + `message.data`); ora e' `byte[]`, che e' la
+        // forma del seam (`ICoopTransport.DataReceived`). **I byte sono gli stessi**: `message.data` era
+        // gia' il `byte[]` che `SimpleTCP` consegna, e `TcpTransport.HandleDataReceived` lo rimbalza
+        // senza copiarlo, spezzarlo o interpretarlo. Anche il THREAD e' lo stesso: `HandleDataReceived`
+        // e' il callback di `SimpleTCP`, quindi questa riga gira sul suo thread di lettura, e da li'
+        // prende `datalock` come ha sempre fatto.
+        private void ReceiveMessage(byte[] message)
         {
             lock (datalock)
             {
-                receivingQueue.AddRange(message.data);
+                receivingQueue.AddRange(message);
             }
         }
 
