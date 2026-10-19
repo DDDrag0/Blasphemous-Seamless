@@ -58,6 +58,51 @@ public class Server
         get { return _port; }
     }
 
+#if COOP_HOST
+    /// <summary>
+    /// ⭐⭐ SU QUALI INDIRIZZI STA ASCOLTANDO **DAVVERO** — e la parola "davvero" e' il punto.
+    ///
+    /// `_port != 0` e `IsRunning` dicono che **noi crediamo** di essere accesi: sono lo stato di
+    /// questo oggetto, non quello del sistema operativo. Questa funzione invece chiede all'ascoltatore
+    /// (`SimpleTcpServer.GetListeningIPs()`, che enumera i `ServerListener` vivi) **quali socket
+    /// esistono adesso**, e restituisce la lista. E' la differenza fra "avviato" e "raggiungibile su
+    /// quell'indirizzo": con il bind per-NIC del client, `IsRunning` era `true` mentre il loopback non
+    /// era fra i listener - cioe' il marker diceva il vero sullo stato e il falso sull'ascolto.
+    ///
+    /// Serve al marker `[Host] ascolto su=...`: e' la riga che, dal log del gioco, dice se il loopback
+    /// e' coperto dal bind. `0.0.0.0` = si'; un elenco di IP = solo quelli (e `127.0.0.1` non c'e').
+    ///
+    /// Solo nel client (`COOP_HOST`): lo standalone non ha bisogno di questa lettura e la sua
+    /// superficie pubblica resta identica.
+    /// </summary>
+    public string ListeningAddresses()
+    {
+        try
+        {
+            SimpleTcpServer listening = server;
+            if (listening == null)
+                return "(fermo)";
+
+            System.Collections.Generic.List<System.Net.IPAddress> addresses = listening.GetListeningIPs();
+            if (addresses == null || addresses.Count == 0)
+                return "(nessun ascoltatore)";
+
+            string[] text = new string[addresses.Count];
+            for (int i = 0; i < addresses.Count; i++)
+                text[i] = addresses[i].ToString();
+
+            // Concatenazione e non `string.Join(",", addresses)`: net35 vuole l'array di stringhe, e
+            // qui l'array si costruisce a mano senza LINQ (stessa resa).
+            return string.Join(",", text);
+        }
+        catch (Exception e)
+        {
+            // Un guasto di lettura non deve diventare un guasto dell'host: si dice che non si sa.
+            return "(illeggibile: " + e.GetType().Name + ")";
+        }
+    }
+#endif
+
     public Dictionary<string, PlayerInfo> getPlayers()
     {
         return connectedPlayers;

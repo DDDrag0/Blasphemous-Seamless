@@ -58,6 +58,15 @@ namespace Blasphemous.Multiplayer.Client.Host
         internal const string MarkerConnected = "[Host] connesso via=";
         internal const string MarkerWaitFail = "[Host] errore: loopback";
 
+        /// <summary>
+        /// La riga del dial con **host e porta veri** e, in `OnConnect`, con l'**esito**:
+        /// `[Host] dial locale host=… porta=… via=…` poi `[Host] dial locale esito=ok|rifiutato …`.
+        /// Esiste perche' la riga storica `Attempting to connect to {indirizzo}` **non stampa la
+        /// porta**: da sola non permetteva di escludere che il dial andasse su una porta diversa da
+        /// quella in ascolto (uno dei due sospetti sul `Connection refused`), e adesso lo permette.
+        /// </summary>
+        internal const string MarkerDial = "[Host] dial locale ";
+
         /// <summary>`127.0.0.1`: l'indirizzo che non passa da nessuna risoluzione di nome.</summary>
         internal const string LOOPBACK_IPV4 = "127.0.0.1";
 
@@ -207,12 +216,14 @@ namespace Blasphemous.Multiplayer.Client.Host
                 // andarselo a cercare, ed e' l'unico dato che serve al peer per entrare.
                 ModLog.Info("[Host] indirizzo locale=" + LocalAddress());
 
-                // ⭐ IL MARKER DEL BIND — e' la riga che dice, dal log, se il loopback e' coperto.
-                // Il client lega `IPAddress.Any` (vedi `Server.Start`, ramo `COOP_HOST`): un solo
-                // listener che risponde sia su `127.0.0.1` sia sulla LAN. Prima di questo fix il
-                // listener era per-NIC (`SimpleTcpServer.Start(int port)`) e il loopback c'era solo se
-                // il runtime lo elencava: e' li' che il dial si prendeva `Connection refused`.
-                ModLog.Info(MarkerBind + "0.0.0.0:" + port + " (wildcard IPv4: loopback e LAN)");
+                // ⭐ IL MARKER DEL BIND — e' la riga che dice, dal LOG DEL GIOCO, se il loopback e'
+                // coperto. Non si scrive "0.0.0.0" perche' lo dice il codice: si CHIEDE all'ascoltatore
+                // (`Server.ListeningAddresses()` -> `SimpleTcpServer.GetListeningIPs()`) quali socket
+                // esistono davvero. Prima di questo fix la risposta sarebbe stata l'elenco delle NIC
+                // (es. `192.168.1.27,...`, senza `127.0.0.1`); col fix e' `0.0.0.0`, che significa
+                // "loopback + LAN". La porta e' quella vera, la stessa che il dial usa.
+                ModLog.Info(MarkerBind + started.ListeningAddresses() + " porta=" + port +
+                            " (letto dall'ascoltatore)");
                 return true;
             }
             catch (Exception e)

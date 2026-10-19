@@ -279,7 +279,14 @@ public class ConnectionDisplay : MonoBehaviour
 
         Main.Multiplayer.NetworkManager.OnConnect += OnConnect;
 
-        // La stessa riga di sempre (`Attempting to connect to {server}`), con l'indirizzo misurato.
+        // ⭐ LA RIGA DEL DIAL, CON LA PORTA: `Attempting to connect to {indirizzo}` (la riga di sempre)
+        // NON stampa la porta, quindi da sola non permetteva di escludere che il dial andasse su una
+        // porta diversa da quella dove il server ascolta - ed era uno dei due sospetti sul `refused`.
+        // Qui host e porta sono quelli VERI, scritti prima di provare, e l'esito arriva in `OnConnect`
+        // (`[Host] dial locale esito=...`).
+        ModLog.Info(HostSession.MarkerDial + "host=" + target + " porta=" + port + " via=" + _hostVia);
+
+        // La stessa riga di sempre, parola per parola (`Attempting to connect to {server}`).
         ModLog.Info($"Attempting to connect to {target}");
 
         yield return null;
@@ -403,16 +410,24 @@ public class ConnectionDisplay : MonoBehaviour
         _attemptingConnection = false;
 
         // ⭐ SOLO PER LA SESSIONE-HOST (`_hostVia` la valorizza `HostDial`, il "Connect" manuale no):
-        // la riga che chiude la domanda dell'auto-connessione, cioe' QUALE indirizzo ha funzionato.
-        // Se il dial dell'host fallisce lo si dice qui, con la stessa parola chiave del log.
+        // la riga che chiude la domanda dell'auto-connessione, cioe' QUALE indirizzo ha funzionato,
+        // su QUALE porta, e con QUALE esito. Se il dial dell'host fallisce lo si dice qui, con la
+        // stessa parola chiave del log.
         if (_hostVia != null)
         {
             if (success)
                 ModLog.Info(HostSession.MarkerConnected + _hostVia + " host=" + _connection.ServerIp +
                             " porta=" + HostSession.Port);
+
+            string dial = HostSession.MarkerDial + "esito=" + (success ? "ok" : "rifiutato") +
+                          " via=" + _hostVia + " host=" + _connection.ServerIp +
+                          " porta=" + HostSession.Port +
+                          (success ? string.Empty : " rifiuto=" + refusal);
+
+            if (success)
+                ModLog.Info(dial);
             else
-                ModLog.Error(HostSession.MarkerWaitFail + ": dial fallito via=" + _hostVia + " host=" +
-                             _connection.ServerIp + " (rifiuto=" + refusal + ")");
+                ModLog.Error(dial);
 
             _hostVia = null;
         }
