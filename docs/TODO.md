@@ -7467,3 +7467,46 @@ ESITO: ALMENO UN marker richiesto e' ASSENTE
   - `docs\TODO.md` — **solo citazioni storiche** *(le sezioni del `12.`, le entry del `2026-10-17` e del `09:00`)* ⇒ ⛔ **NON toccate**: restano come storia, e **questa §⑥ è la riga che dice come stanno le cose adesso**;
   - **nessun altro**: `deploy-local.ps1` **non lo chiamava** — chiama `verify-patch-targets.ps1` *(`:79-86`)*, che ⛔ **resta e non è stato toccato**: è **il gate dei bersagli Harmony** *(blocca il deploy se un tipo o un metodo mancano, perché un errore lì uccide `PatchAll` a runtime)*.
 - ⭐ **Da ora la verifica è `tools\marker-check.ps1`**, e per l'**hash** dei binari si usa lo strumento di sistema: `Get-FileHash <file> -Algorithm SHA256` *(è quello che stampa anche `marker-check.ps1`, con `size` e `mtime`, in testa a ogni run)*. ⇒ **`tools\` resta con i tre script giusti**: `deploy-local.ps1` *(l'unico modo di mettere qualcosa in gioco)*, `verify-patch-targets.ps1` *(il gate dei bersagli)*, `marker-check.ps1` *(il contenuto)* — più `install-mod-loader.ps1`.
+
+## [2026-10-19 00:30] 📌 **`R0` È MISURATA — E IL TESTING CHE MANCA ORA HA UNA LISTA** — la mappa si apre davvero sulla macchina che riceve la pausa *(in test, dall'utente)* ⇒ il residuo «`R0` **non misurata**» della sezione del **`09:00`** è **superato** *(e quella sezione resta com'è)*; più **la lista degli osservabili** del testing che si farà **in produzione**, e **una voce che resta da fare su un altro file** *(`BUG-NOTI` voce 7, firma vecchia del marker)*
+
+> **Questa entry è piccola di proposito, e fa due cose più una che NON fa.** Dichiara **misurato** ciò che il `09:00` dichiarava **dedotto**; scrive **la lista del testing post-produzione** *(per non doverla ricordare a memoria)*; e **registra senza eseguirla** la sola modifica che serve in `docs\BUG-NOTI.md`.
+
+### ① ✅ **`R0` È MISURATA — e lo stato si supera QUI, non là**
+
+- ⭐ **La richiesta dell'utente, alla lettera**: *in test, **la mappa si apre davvero** sulla macchina che riceve la pausa.* ⇒ **non è più una deduzione**: è **un comportamento visto**.
+- ⇒ ⭐ **quindi**: il residuo «**`R0` non misurata**» — quello dichiarato nella sezione del **`09:00`** *(`:7386`, §④ «le cose da non dimenticare», e §6 #1 del referto della pausa) — **è superato**.
+- ⚠️ **E NON si corregge quella sezione**: il `09:00` **resta com'è, parola per parola** *(è **storia**: la forma è la stessa già usata al `00:15` §⑥ per le citazioni storiche di questo file)*. ⇒ **è questa la riga che dice come stanno le cose adesso.**
+- ⭐ **Detto chiaro, nella forma in cui va letta**: «**R0 = APERTURA DELLA MAPPA SUL PASSIVO: MISURATA, FUNZIONA**».
+- ⚠️ **E resta vero che è rimovibile** *(una sola chiamata: smettere di chiamare `TryOpenMapOntoPassive`)* — **ma ora non c'è motivo di toglierla**: la ragione del «si toglie in una riga» era **il rischio che non funzionasse**, e quel rischio **è caduto**. La rimovibilità resta **un'informazione**, non un'opzione in tavola.
+
+### ② 🟡 **IL TESTING POST-PROD — la lista** *(gli osservabili: cose **implementate e non ancora viste** in gioco)*
+
+> ⚠️ **La decisione dell'utente**: **si va in produzione**, e **il testing che manca si fa lì**. ⇒ **la lista sta qui, perché a memoria si perde.**
+
+- 🟡 **I 3 NEMICI** — `BellGhostVariant` · `RangedBoomerang` · `MeltedLady` ⇒ ⚠️ **APERTO, da testare in gioco**.
+  - ⭐ **La nota che rende il test corto**: **il canale dei proiettili funziona** — **provato**, con **un altro nemico** *(un proiettile di `G2` ha colpito `G1` e l'ha ucciso)*. ⇒ **non si sta mettendo in dubbio il canale**: si sta guardando **una cosa sola**, la risoluzione del nome.
+  - ⭐ **Cosa si guarda, esattamente**: questi **3** hanno i prefab **nei propri campi** *(`public GameObject projectilePrefab`, e li passano a `ReuseObject`)* e la **strada ②** *(la sorgente dei nemici)* li cerca **lì** ⇒ **va visto** se il ricevente li trova. Il marker risponde da solo: `[FxRelay] RISOLTO "<nome>" da=nemici in=…ms` *(procedura e cosa leggere: `REFERTO-STRADA-RISOLUZIONE.md` §5.2; se invece esce `NON RISOLTO … provate: boss,nemici,penitente`, **quel** prefab non sta in nessuno dei tre posti — ed è un'informazione, non un silenzio)*.
+- 🟡 **TUTTI I BOSS** ⇒ due cose diverse, entrambe **per boss**: la **mira** *(23 ancora sul padrone)* e la **morte recitata** *(12 su 17)*. *(Sono la **voce 8** di `BUG-NOTI`: **limiti dichiarati**, non difetti in lavorazione — e il test in massa è **proprio quello che manca**.)*
+- 🟡 **IL DOPPIONE A ~14 UNITÀ** — le due macchine posizionano **lo stesso attacco in punti diversi** ⇒ ⚠️ **non è un problema per l'utente** *("non ho notato incoerenze")*, **ma resta un osservabile**: va guardato, non dato per chiuso per cortesia.
+- ✅ **`R0`** ⇒ **fatto**: misurata *(§①)*. ⇒ **esce dalla lista**, e ci resta solo come riga chiusa.
+- ⭐ **E la riga che tiene insieme tutto**: questi sono gli **osservabili** — cose **implementate e non ancora viste** in gioco. ⚠️ **Non sono difetti aperti**: sono **misure mancanti**, e il posto dove si prendono è **la produzione**.
+
+### ③ ⚠️ **E UNA COSA DA FARE — ma in un ALTRO commit**: allineare `docs\BUG-NOTI.md` **voce 7**
+
+- ⚠️ **Il fatto**: la **voce 7** di `docs\BUG-NOTI.md` *(`:418`)* cita ancora **la vecchia firma** del marker:
+  `[FxRelay] non risolto prefab="<idem>" da=<peer>: non e' nel catalogo del boss locale (N nomi)`.
+- ⇒ ⭐ **quella firma NON esiste più**: `36a8878` l'ha **sostituita**, e adesso le righe sono due:
+  `[FxRelay] RISOLTO "<nome>" da=<boss|nemici|penitente|cache> in=<ms>ms …` e
+  `[FxRelay] NON RISOLTO "<nome>" provate: boss,nemici,penitente …`
+  *(`NON RISOLTO` non è più filtrata dal tetto di una riga al secondo: **una riga per nome per scena**, e nessuna si perde.)* ⇒ **e il vecchio testo non è solo vecchio: sarebbe falso** — il catalogo non è più «solo quello del boss».
+- 📌 **Quindi va aggiornata**: **una riga**, e **la mappa vecchio→nuovo è già scritta** — `REFERTO-STRADA-RISOLUZIONE.md` **§4.2** *(la sostituzione dichiarata)* e **§4.1** *(i campi nuovi: `da=`, `in=`, `mittente=`, `provate:`)*.
+- ⛔ **NON in questo commit**: `docs\BUG-NOTI.md` **non è stato toccato** *(divieto esplicito di questa tornata — è un altro file, e va chiesto)*. ⇒ **questa voce è il segnaposto, non il lavoro.**
+- ⚠️ **Perché conta**: la voce 7 è **la pagina che si legge quando un log non torna**. Se la firma è quella vecchia, chi cerca quella riga **non trova niente** e conclude che il canale è morto — cioè **il contrario** di quello che il log sta dicendo.
+
+### ④ 📌 **LO STATO DI QUESTA SEZIONE**
+
+- ✅ **Aggiunta, non riscrittura**: **solo righe in fondo**, **0 righe cancellate**, **nessuna sezione accorciata**. ⇒ ⚠️ **in particolare il «non misurata» del `09:00` (`:7386`) e il suo §④ restano INTATTI**: si superano **qui**, non là.
+- ⛔ **`docs\BUG-NOTI.md` non toccato** · ⛔ **nessuna riga di codice toccata** · ⛔ **nessun build e nessun deploy**: **la mappa che si apre è la prova dell'utente**, presa in gioco.
+- 📌 **Le fonti di questa entry**, e nessuna delle due è nel repo *(`scratch\` sta **un livello sopra** la radice)*: `scratch\REFERTO-PAUSA-CONDIVISA.md` **§6 #1** *(dove `R0` era «non misurata» — 🟡, con la nota che è **l'unico pezzo che si toglie**)* e `scratch\REFERTO-STRADA-RISOLUZIONE.md` **§4.1-§4.2** *(la firma nuova e la mappa vecchio→nuovo che serve alla voce 7)*.
+- ⚠️ **La data** segue **la serie del file** *(`09:00` → `00:15` → questa)*: è **l'etichetta della entry successiva**, non l'orologio della macchina.
