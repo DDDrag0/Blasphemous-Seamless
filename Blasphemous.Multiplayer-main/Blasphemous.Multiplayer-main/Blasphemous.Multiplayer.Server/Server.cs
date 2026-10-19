@@ -81,7 +81,35 @@ public class Server
             server.ClientConnected += clientConnected;
             server.ClientDisconnected += clientDisconnected;
             server.DataReceived += Receive;
+
+            // ⭐⭐ IL BIND: WILDCARD NEL CLIENT, INVARIATO NELLO STANDALONE — E NON E' UNA PREFERENZA.
+            //
+            // `SimpleTcpServer.Start(int port)` NON lega `IPAddress.Any`: enumera le NIC con
+            // `OperationalStatus == Up` (`SimpleTcpServer.GetIPAddresses()`) e apre **un listener per
+            // OGNI indirizzo unicast** di ognuna (`ServerListener` ctor -> `TcpListenerEx.Start()`).
+            // Quindi il loopback c'e' **solo se il runtime lo elenca fra le NIC**. E' esattamente il
+            // difetto misurato nella "host session": `[Host] server avviato` + rifiuto istantaneo di
+            // `127.0.0.1` (0 righe `[Server]` per quel dial) mentre l'IP LAN funziona — cioe' il
+            // listener era sui NIC e NON sul loopback. Il dettaglio, con le prove, sta in
+            // `scratch\REFERTO-AUTOCONNECT.md`.
+            //
+            // ⇒ Nel client si lega ESPLICITAMENTE la wildcard IPv4: un solo listener, che copre
+            //   `127.0.0.1` **e** la LAN, senza dipendere da cosa il runtime elenca. Ed e' l'unica
+            //   riga che cambia, perche' lo standalone (`SERVER-COOP\`, `net8.0`) continua a chiamare
+            //   `Start(port)` con la sua strada per-NIC: **il bind del server esterno non si tocca**.
+            //
+            // ⚠️ La porta occupata resta un `SocketException` da `Start(IPAddress, int)` (il
+            //   `ServerListener` lancia dentro il costruttore): stesso `catch`, stesso `false`, stessa
+            //   riga `[Host] porta occupata` di prima. Non si perde nessun caso d'errore.
+            //
+            // ⚠️ Con la wildcard il firewall di Windows mostra la richiesta di autorizzazione al primo
+            //   avvio (gia' documentato in `HostSession`): se la si nega, la LAN non passa ma il
+            //   loopback continua a funzionare, quindi l'host entra in partita lo stesso.
+#if COOP_HOST
+            server.Start(System.Net.IPAddress.Any, port);
+#else
             server.Start(port);
+#endif
             server.DelayDisabled = true;
         }
         catch (System.Net.Sockets.SocketException)

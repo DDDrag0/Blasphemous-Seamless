@@ -1,4 +1,4 @@
-﻿using Blasphemous.ModdingAPI;
+using Blasphemous.ModdingAPI;
 using Blasphemous.ModdingAPI.Helpers;
 using Blasphemous.Multiplayer.Client.Host;
 using Blasphemous.Multiplayer.Client.InputValidation;
@@ -194,7 +194,97 @@ public class ConnectionDisplay : MonoBehaviour
         Main.Multiplayer.NotificationManager.DisplayNotification(
             "Host session avviata sulla porta " + Protocol.DEFAULT_PORT);
 
-        StartCoroutine(TryConnect(HOST_IP, Protocol.DEFAULT_PORT));
+        // ⭐⭐ E ADESSO SI ASPETTA CHE IL LOOPBACK RISPONDA, POI SI ENTRA — VEDI `HostDial`.
+        //
+        // Prima qui c'era `StartCoroutine(TryConnect(HOST_IP, DEFAULT_PORT))`: il dial partiva al
+        // frame dopo, senza verificare che il listener rispondesse. Il log misurato dice che quella
+        // connessione finiva in `Connection refused` con **zero** righe `[Server]`: il tentativo non
+        // arrivava a nessun listener. Le due cause possibili (bind per-NIC senza loopback, oppure
+        // listener non ancora pronto) sono distinte e documentate in
+        // `scratch\REFERTO-AUTOCONNECT.md`; qui si coprono ENTRAMBE, e la riga che lo dice e' il
+        // marker `[Host] loopback pronto via=...`.
+        StartCoroutine(HostDial(room, player, password, team, Protocol.DEFAULT_PORT));
+    }
+
+    /// <summary>
+    /// ⭐ LA CONNESSIONE-HOST: PRIMA LA PROVA CHE LA PORTA RISPONDA, POI IL DIAL.
+    ///
+    /// PERCHE' ASPETTARE E NON CONNETTERSI SUBITO: `Server.Start` ritorna `true` quando il listener
+    /// e' legato, ma fra quel ritorno e il dial c'e' comunque un frame di mezzo - e soprattutto, prima
+    /// del fix, il "legato" non voleva dire "legato anche sul loopback" (`SimpleTcpServer.Start(int)`
+    /// lega per NIC, una per indirizzo). Un solo modo per non indovinare: **chiedere** a
+    /// `127.0.0.1:porta` se risponde, e ripetere la domanda finche' non risponde o finche' non scade il
+    /// tempo.
+    ///
+    /// ⚠️ NON E' UNA `Sleep` FISSA: e' un POLL, un tentativo per frame (`yield return null`), con una
+    /// SCADENZA vera (`HOST_READY_TIMEOUT_MS`). Se la scadenza arriva, si scrive un marker d'errore
+    /// esplicito (`[Host] errore: loopback ...`) e **si prova lo stesso** a connettersi, perche' un
+    /// poll che sbaglia non deve essere la ragione per cui l'utente resta fuori dalla sua partita.
+    ///
+    /// ⚠️ E IL NOME, COME RIPIEGO: prima `127.0.0.1` (nessuna risoluzione di nome, nessun file hosts
+    /// di mezzo), poi `localhost` - che il resolver puo' mandare su `::1`, cioe' IPv6. Se risponde il
+    /// nome, il marker lo dice (`via=nome`), e quella domanda non si riapre piu'.
+    ///
+    /// ⚠️ `Time.realtimeSinceStartup` e non `Time.time`: la schermata di connessione puo' stare su un
+    /// gioco in pausa (`timeScale = 0`), dove `Time.time` non avanza e la scadenza non arriverebbe mai.
+    /// </summary>
+    private IEnumerator HostDial(string room, string player, string password, byte team, int port)
+    {
+        _attemptingConnection = true;
+
+        string target = null;
+        float started = Time.realtimeSinceStartup;
+
+        while (target == null)
+        {
+            target = HostSession.ProbeLoopback(port, READINESS_ATTEMPT_MS);
+
+            if (target != null)
+                break;
+
+            if ((Time.realtimeSinceStartup - started) * 1000f >= HOST_READY_TIMEOUT_MS)
+                break;
+
+            yield return null;
+        }
+
+        int waitedMs = (int)((Time.realtimeSinceStartup - started) * 1000f);
+
+        if (target == null)
+        {
+            // ⭐ LA SCADENZA HA UN NOME. Non si finge che sia andata bene: il marker dice quanto si e'
+            // aspettato e su cosa, e la notifica lo dice al giocatore. Poi si prova lo stesso.
+            _hostVia = HostSession.VIA_BESTEFFORT;
+            target = HOST_IP;
+
+            ModLog.Error(HostSession.MarkerWaitFail + ": nessuna risposta su " + HostSession.LOOPBACK_IPV4 +
+                         ":" + port + " ne' su " + HostSession.LOOPBACK_NAME + ":" + port + " entro " +
+                         HOST_READY_TIMEOUT_MS + " ms (attesa " + waitedMs + " ms): provo lo stesso " +
+                         HostSession.LOOPBACK_IPV4);
+            Main.Multiplayer.NotificationManager.DisplayNotification(
+                "Host session: il loopback non risponde su " + HostSession.LOOPBACK_IPV4 + ":" + port +
+                " (vedi log)");
+        }
+        else
+        {
+            _hostVia = target == HostSession.LOOPBACK_IPV4 ? HostSession.VIA_IPV4 : HostSession.VIA_NOME;
+
+            ModLog.Info(HostSession.MarkerReady + _hostVia + " host=" + target + " porta=" + port +
+                        " attesa=" + waitedMs + " ms");
+        }
+
+        // L'indirizzo effettivo e' quello che ha RISPOSTO, non quello scritto nel campo: cosi' la riga
+        // "You are connected to ..." dice la verita' anche quando si e' entrati col nome.
+        _connection = new ConnectionInfo(target, room, player, password, team);
+
+        Main.Multiplayer.NetworkManager.OnConnect += OnConnect;
+
+        // La stessa riga di sempre (`Attempting to connect to {server}`), con l'indirizzo misurato.
+        ModLog.Info($"Attempting to connect to {target}");
+
+        yield return null;
+
+        Main.Multiplayer.NetworkManager.Connect(target, port, room, player, password, team);
     }
 
     private void DisplayMiddle()
@@ -312,6 +402,21 @@ public class ConnectionDisplay : MonoBehaviour
     {
         _attemptingConnection = false;
 
+        // ⭐ SOLO PER LA SESSIONE-HOST (`_hostVia` la valorizza `HostDial`, il "Connect" manuale no):
+        // la riga che chiude la domanda dell'auto-connessione, cioe' QUALE indirizzo ha funzionato.
+        // Se il dial dell'host fallisce lo si dice qui, con la stessa parola chiave del log.
+        if (_hostVia != null)
+        {
+            if (success)
+                ModLog.Info(HostSession.MarkerConnected + _hostVia + " host=" + _connection.ServerIp +
+                            " porta=" + HostSession.Port);
+            else
+                ModLog.Error(HostSession.MarkerWaitFail + ": dial fallito via=" + _hostVia + " host=" +
+                             _connection.ServerIp + " (rifiuto=" + refusal + ")");
+
+            _hostVia = null;
+        }
+
         Main.Multiplayer.LastConnectionInfo = _connection;
         Main.Multiplayer.NetworkManager.OnConnect -= OnConnect;
     }
@@ -379,8 +484,35 @@ public class ConnectionDisplay : MonoBehaviour
     /// ascolta su `IPAddress.Any`, ma il client che ospita deve parlare con SE STESSO. `localhost`
     /// andrebbe ugualmente bene; `127.0.0.1` in piu' non passa da nessuna risoluzione di nome (file
     /// hosts compreso), che e' l'unica cosa che potrebbe farlo sbagliare.
+    ///
+    /// ⭐ E RESTA IL PRIMO DELLA LISTA: `HostDial` lo prova per primo e passa a `localhost` solo se
+    /// lui non risponde (ripiego per un eventuale listener IPv6/`::1`). Il marker dice quale dei due
+    /// ha funzionato, quindi la scelta non e' piu' una supposizione.
     /// </summary>
     private const string HOST_IP = "127.0.0.1";
+
+    /// <summary>
+    /// ⏱️ QUANTO SI ASPETTA CHE IL LOOPBACK RISPONDA PRIMA DI ARRENDERSI: 3 secondi, e non e' un
+    /// numero a caso. Il bind del listener e' sincrono dentro `Server.Start` (millisecondi), quindi
+    /// nel caso normale la prima sonda risponde subito e questo tempo non si vede nemmeno; 3 s
+    /// coprono un `bind` rallentato da antivirus/firewall, e restano sotto la soglia in cui il
+    /// giocatore crede che il bottone non abbia funzionato.
+    /// </summary>
+    private const int HOST_READY_TIMEOUT_MS = 3000;
+
+    /// <summary>
+    /// Il tempo massimo di UNA sonda (per indirizzo). Il rifiuto su loopback e' istantaneo, quindi nel
+    /// caso del difetto questo valore non si vede; serve solo a non piantare il frame quando nessuno
+    /// risponde affatto (firewall che scarta invece di rifiutare).
+    /// </summary>
+    private const int READINESS_ATTEMPT_MS = 150;
+
+    /// <summary>
+    /// `ipv4` / `nome` / `best-effort`: **quale** strada ha portato all'host, per il marker
+    /// `[Host] connesso via=`. `null` = l'ultimo dial non era una "Host session" (era "Connect"), e in
+    /// quel caso `OnConnect` non aggiunge NESSUNA riga: il percorso manuale resta identico a prima.
+    /// </summary>
+    private string _hostVia;
 
     private const int WIDTH = 330;
     private const int HEIGHT = 400;

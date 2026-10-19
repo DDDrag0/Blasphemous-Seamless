@@ -46,6 +46,33 @@ namespace Blasphemous.Multiplayer.Client.Host
         /// <summary>Il numero massimo di giocatori: lo stesso default dello standalone (`ServerArguments`).</summary>
         internal const int MAX_PLAYERS = 10;
 
+        // ⭐ I MARKER DEL LOOPBACK — tutti NUOVI, tutti col prefisso `[Host]` di sempre: le righe
+        // esistenti (`server avviato`, `indirizzo locale`, `porta occupata`, `server fermo`) restano
+        // identiche, parola per parola. Servono a rispondere dal LOG, non dal codice, alle due domande
+        // che il difetto dell'auto-connessione lasciava aperte:
+        //   · su cosa e' legato il server (`ascolto su=`), cioe' se il loopback e' coperto dal bind;
+        //   · quale indirizzo ha risposto davvero (`loopback pronto via=` / `connesso via=`): `ipv4`
+        //     = `127.0.0.1`, `nome` = `localhost` (cioe' il resolver puo' aver scelto `::1`).
+        internal const string MarkerBind = "[Host] ascolto su=";
+        internal const string MarkerReady = "[Host] loopback pronto via=";
+        internal const string MarkerConnected = "[Host] connesso via=";
+        internal const string MarkerWaitFail = "[Host] errore: loopback";
+
+        /// <summary>`127.0.0.1`: l'indirizzo che non passa da nessuna risoluzione di nome.</summary>
+        internal const string LOOPBACK_IPV4 = "127.0.0.1";
+
+        /// <summary>`localhost`: il nome, che il resolver puo' mandare su `::1` (IPv6).</summary>
+        internal const string LOOPBACK_NAME = "localhost";
+
+        internal const string VIA_IPV4 = "ipv4";
+        internal const string VIA_NOME = "nome";
+
+        /// <summary>
+        /// Il valore di `via=` quando la sonda e' SCADUTA e ci si connette lo stesso (best-effort): non
+        /// e' una bugia, e' la sola cosa vera che si puo' scrivere - nessuno ha risposto in tempo.
+        /// </summary>
+        internal const string VIA_BESTEFFORT = "best-effort";
+
         private static CoopServer _server;
 
         /// <summary>Le istanze vive in QUESTO processo. Il marker la stampa: 1 se c'e' l'host, 0 se no.</summary>
@@ -179,6 +206,13 @@ namespace Blasphemous.Multiplayer.Client.Host
                 // ⭐ L'INDIRIZZO DA DIRE ALL'ALTRA MACCHINA. Non e' cosmesi: senza, chi ospita deve
                 // andarselo a cercare, ed e' l'unico dato che serve al peer per entrare.
                 ModLog.Info("[Host] indirizzo locale=" + LocalAddress());
+
+                // ⭐ IL MARKER DEL BIND — e' la riga che dice, dal log, se il loopback e' coperto.
+                // Il client lega `IPAddress.Any` (vedi `Server.Start`, ramo `COOP_HOST`): un solo
+                // listener che risponde sia su `127.0.0.1` sia sulla LAN. Prima di questo fix il
+                // listener era per-NIC (`SimpleTcpServer.Start(int port)`) e il loopback c'era solo se
+                // il runtime lo elencava: e' li' che il dial si prendeva `Connection refused`.
+                ModLog.Info(MarkerBind + "0.0.0.0:" + port + " (wildcard IPv4: loopback e LAN)");
                 return true;
             }
             catch (Exception e)
@@ -223,6 +257,96 @@ namespace Blasphemous.Multiplayer.Client.Host
             }
 
             ModLog.Info("[Host] server fermo");
+        }
+
+        /// <summary>
+        /// ⭐ "IL LOOPBACK RISPONDE ADESSO?" — UN tentativo, e con che indirizzo.
+        ///
+        /// Ritorna <see cref="LOOPBACK_IPV4"/> se `127.0.0.1:porta` accetta una connessione, altrimenti
+        /// <see cref="LOOPBACK_NAME"/> se e' `localhost` ad accettarla (cioe' il nome risolve su `::1`,
+        /// IPv6: con un bind IPv4-only come quello del client, un dial al NOME sarebbe l'unico modo),
+        /// altrimenti `null`.
+        ///
+        /// ⚠️ NON e' una `Sleep` e non e' un'attesa fissa: e' una misura. Chi la chiama la ripete (una
+        /// volta per frame, vedi `ConnectionDisplay.HostDial`) finche' non risponde o finche' non scade
+        /// il tempo - e la connessione vera parte **dopo**, quando questa ha risposto.
+        ///
+        /// ⚠️ ORDINE DELIBERATO: prima `127.0.0.1` e poi `localhost`. `127.0.0.1` e' l'unico indirizzo
+        /// che non passa dal resolver, quindi non puo' essere dirottato dal file hosts; il nome serve
+        /// solo come RIPIEGO per il caso IPv6. Cosi' il caso normale non paga nemmeno la risoluzione.
+        ///
+        /// ⚠️ La sonda e' una connessione TCP vera, aperta e chiusa subito: **il server la vede** (due
+        /// righe `[Server] Client connected` / `Client disconnected`) e non e' un giocatore (non manda
+        /// nessun `Intro`, quindi non entra in `connectedPlayers`). E' il prezzo per misurare davvero
+        /// "la porta risponde" invece di indovinarlo: un bind di prova direbbe "occupata" anche se il
+        /// listener non accetta, e bloccherebbe l'utente su un falso negativo.
+        ///
+        /// Non lancia mai: ogni guasto vale "non ha risposto".
+        /// </summary>
+        internal static string ProbeLoopback(int port, int attemptTimeoutMs)
+        {
+            try
+            {
+                if (Answers(LOOPBACK_IPV4, port, attemptTimeoutMs))
+                    return LOOPBACK_IPV4;
+
+                if (Answers(LOOPBACK_NAME, port, attemptTimeoutMs))
+                    return LOOPBACK_NAME;
+
+                return null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// "Qualcuno ACCETTA una connessione su host:porta, entro <paramref name="timeoutMs"/>?"
+        ///
+        /// `false` su rifiuto immediato (`Connection refused`: nessuno ascolta) e su timeout (nessuna
+        /// risposta: prudenza). A differenza di <see cref="SomeoneListens"/> - che sul dubbio dice
+        /// `true` perche' li' il costo dell'errore e' "avvio un secondo server" - qui il dubbio vale
+        /// `false`, perche' il costo e' solo "riprovo al frame dopo", e perche' chi chiama prova
+        /// comunque a connettersi alla fine.
+        /// </summary>
+        private static bool Answers(string host, int port, int timeoutMs)
+        {
+            TcpClient probe = null;
+
+            try
+            {
+                probe = new TcpClient();
+                IAsyncResult pending = probe.BeginConnect(host, port, null, null);
+
+                if (!pending.AsyncWaitHandle.WaitOne(timeoutMs))
+                    return false;
+
+                probe.EndConnect(pending);
+                return true;
+            }
+            catch (SocketException)
+            {
+                return false;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+            finally
+            {
+                if (probe != null)
+                {
+                    try
+                    {
+                        probe.Close();
+                    }
+                    catch (Exception)
+                    {
+                        // Niente: la sonda ha gia' fatto il suo lavoro.
+                    }
+                }
+            }
         }
 
         /// <summary>
