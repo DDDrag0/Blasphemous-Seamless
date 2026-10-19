@@ -690,6 +690,10 @@ esiste **con nome-DLC** — `SANTOS_AMANECIDA_*_DEFEATED`, `BROTHERS_PERPETUA_DE
 lo legge**, `:963-964`)*. ⇒ **per un joiner, dei quattro non c'è né flag né `bdead|`**: **lì** non ha **nessuna delle
 due vie**, ed **è lì** che il difetto è vero. **Che siano coperti o no è la misura della voce 9.**
 
+**📌 E vedi la voce 11: il team che si svuota è UN'ALTRA VIA per cui un joiner non vede il boss morto** — ⚠️ **da
+testare, non verificata**, e **non passa dai quattro**: passa da **tutti** i boss, perché lì non manca il flag, manca
+**l'archivio del team**.
+
 **⚠️ DUE CORREZIONI AL «CHI FA COSA», perché la via del flag le rende facili da sbagliare.**
 1. **Il server è un ARCHIVIO CIECO, non un controllore.** Riceve (`receivePlayerProgress` `Server.cs:583-596` →
    `AddTeamProgress` `TeamInfo.cs:22-43`, che tiene il **massimo**), **archivia** e **ripete** (`:396-412`). **Non
@@ -745,6 +749,132 @@ non è più «da fixare per tutti i boss»**: è **la coda della 9** — *i 12 s
 residuo è quello della 9**, che **resta da testare**. ⛔ **Nessun fix prima del test 1** *(kill in co-op → joiner)* e
 **prima della misura sui 4**. 📌 **La 9 e la 10 non si confondono**: la 9 chiede **una misura** sul rilevamento; la 10
 ha **una portata** — e **nessuna delle due** si chiude con un flag nuovo.
+
+---
+
+## 11. ⚠️ IL **TEAM CHE SI SVUOTA** — l'ultimo che esce porta via l'archivio del team, e il flag **non torna da solo** *(⚠️ **MECCANISMO VERIFICATO NEL CODICE** · ⛔ **CONSEGUENZA DA TESTARE** — non un difetto accertato)*
+
+> **Va detto per primo, come nelle voci 9 e 10: qui non c'è un difetto accertato.** Il **meccanismo** si legge e si
+> chiude — e le righe qui sotto sono tutte misurate a HEAD `19773ed`: il server **non ha nessuna persistenza**, e
+> quando esce **l'ultimo** giocatore di un team `removeUnusedGameData` **cancella l'archivio di quel team**. ⛔ **La
+> conseguenza invece non si legge**: che chi entra dopo veda il boss **vivo** dipende da un fatto **fuori dal
+> server** — *se il save di chi entra ha già quel flag* — e **il codice, da solo, non lo dice**. ⇒ **è una cosa DA
+> TESTARE**, non una cosa da fixare: il test costa **una run**, il fix è una **decisione di design** che nessuno ha
+> preso.
+
+**✅ COSA È VERIFICATO — il meccanismo, riga per riga.**
+- **`removeUnusedGameData` cancella l'ARCHIVIO DEL TEAM, non «dati di sessione»**: `TeamInfo` **è** il progresso — 14
+  dizionari (`TeamInfo.cs:7`), gli stessi che riempie `AddTeamProgress` (`:22-43`) e che legge il dump (`:46-54`). E
+  `teamGameDatas.Remove(i)` (`Core.cs:88`, con la riga `Removing game data for team N` a `:87`) toglie **quello**:
+  i flag `_BOSSDEAD` compresi.
+- **e lo toglie quando il team è DAVVERO vuoto**: la funzione (`Core.cs:68-91`) scorre i team 1-10 e cancella solo se
+  **nessun giocatore connesso** ha quel `team` (`:76-84`). Non è «l'ultimo che si disconnette» in astratto: è
+  «**nessuno più dentro**». ✅ **Su questo la domanda secca ha una risposta netta: è vero, si cancella.**
+- **le due chiamate**: `clientDisconnected` toglie il giocatore (`Server.cs:142`) e **subito dopo** ripulisce
+  (`:143`); e `receivePlayerTeam` ripulisce **anche al cambio di team** (`:418` scrive il team, `:421` pulisce).
+- **⛔ e non c'è NESSUNA persistenza lato server** — è la prova che serviva: `teamGameDatas` è un `private static
+  readonly Dictionary<byte, TeamInfo>` **in RAM** (`Core.cs:11`), e in tutto il progetto server **non esiste una riga
+  che legga da disco**: nessun `ReadAllText`, nessun `StreamReader`, nessun deserializzatore. Gli unici `File.*` sono
+  in `ServerLog.cs` (`:54`, `:83`, `:97`) e scrivono **solo il log**, che nessuno rilegge. ⇒ **riavviare il server
+  azzera tutto** e **l'ultimo che esce azzera il team**: sono lo stesso fatto, e non c'è un salvataggio che li salvi.
+
+**❓ E LA FRASE DELL'UTENTE È VERA — ma è l'altra metà della catena, e va scritta per intero.**
+*«Lo stato a chi si connette viene salvato»* è **vera**, e non smentisce il punto sopra: **lo stato lo conservano i
+CLIENT, non il server.** Ogni client, **alla connessione** (`Multiplayer.cs:177`) e **al cambio scena/team** (`:452`),
+**spinge al server tutti i flag che ha già accesi nel proprio save** — `SendAllProgress` → `GetCurrentPersistentState("intro")`
+→ il `Prefix` che li manda a **valore 0** (`FlagHelper.cs:22-25` e `:48-69`) — e il server li **riarchivia**
+(`Server.cs:591`, la riga `Received new flag from …` a `:617-621`).
+- ⭐ **è esattamente ciò che dicono i log della voce 10**: il `D17Z01_BOSSDEAD` non è arrivato da una kill, è stato
+  **spinto dal save di G2** alla connessione (`ServerOutput.log:8` e `:27`);
+- ⭐ **e il flag ricevuto entra davvero nel gioco di chi lo riceve**: `ApplyProgress` chiama `Core.Events.SetFlag(id,
+  value == 0, false)` (`FlagHelper.cs:13`), e il terzo parametro di `SetFlag` è **`forcePreserve`** *(new game+)*,
+  **non** «non salvare» ⇒ il flag finisce nei `flags` del client, che il gioco **persiste nel save**
+  (`GetCurrentPersistentState` serializza **tutto** il dizionario in `FlagPersistenceData.flags`);
+- ⇒ 🔴 **e questo RESTRINGE il buco, di molto**: chi era connesso **quando la kill è avvenuta** ha ricevuto il flag
+  per relay (`Server.cs:662`) e **ce l'ha nel proprio save**. Per lui il team vuoto **non cambia niente**: il flag lo
+  ha in casa. ⚠️ **Il buco resta solo per chi NON ce l'ha nel proprio save.**
+
+**⭐ LA SEQUENZA CHE LO PROVOCA — con il vincolo che la rende rara.**
+① **P1 uccide il boss** ⇒ il gioco accende il flag, la patch lo manda (`FlagHelper.cs:28-43`), il server lo archivia
+   (`Server.cs:591`).
+② **P1 esce** — e se era **l'ultimo** giocatore del team, `removeUnusedGameData` **cancella il team**
+   (`Server.cs:142-143` ⇒ `Removing game data for team N`).
+③ **P2 entra** ⇒ `getTeamData` **ricrea un `TeamInfo` vuoto** (`Core.cs:57-66`, `Creating new game data for team N`)
+   e `sendPlayerTeam` (`Server.cs:396-412`) non ha **nessuna chiave** da mandare.
+④ ⭐ **e allora il boss resta vivo** — ma **solo se** P2 **non aveva già il flag nel proprio save**, cioè solo se
+   **non era connesso** quando P1 l'ha ucciso. Se c'era, i passi ③ e ④ non fanno danno: il flag è suo.
+- ⚠️ **perché «nessuno gliel'ha detto»**: col team vuoto non c'è nemmeno il pacchetto del dump *(e anche quando c'è,
+  il dump parla con `"*"` e il client **non notifica** per `"*"`, `NetworkManager.cs:424-425`)*; e il client, senza
+  flag, **non nasconde niente**: `HideDefeatedBosses` (`EnemySyncManager.cs:732`, chiamata **all'ingresso in scena** a
+  `:2732`) con `statusDead = false` e `flag = null` **esce senza toccare il boss** (`:793`).
+- ⚠️ **e non è il `bdead|`**: quello è coperto **dal flag**, che passa dal server (voce 10). Qui il problema non è un
+  prefisso mancante: è **l'archivio che non c'è più**.
+- ⚠️ **e non riguarda i 4 della voce 9**: la cancellazione porta via **tutti** i progressi del team — i 12 flag
+  `_BOSSDEAD` (`FlagStates.cs:37-48`), gli oggetti, le celle di mappa, i punti di teletrasporto — mentre per i
+  **quattro** di voce 9 il flag **non esiste in partenza**. Quella resta **un'altra domanda**, e non cambia qui.
+
+**⚠️ E UN SECONDO FATTO, NELLA STESSA VOCE — l'inversione e il massimo.**
+- i flag viaggiano **invertiti**: acceso = **0**, spento = **1** (`FlagHelper.cs:39`; e `ApplyProgress` li rilegge al
+  contrario, `:13`);
+- e il server **tiene il massimo** (`TeamInfo.cs:33-39`): se il valore nuovo è **maggiore** lo sovrascrive e lo
+  rilancia (`:37-38`), altrimenti lo **scarta** come *inferiore* (`Server.cs:592-594`, la riga `Received duplicated or
+  inferior progress`); e **una chiave, una volta entrata, non si cancella mai**;
+- ⇒ ⭐ **per questi valori la regola del massimo sceglie `1`, cioè lo SPENTO** — e il `0` che arrivasse dopo è
+  «inferiore» e **non torna**: *uno spento è **definitivo**, per la vita del server*. **Ciò che il server non sa fare
+  è TORNARE INDIETRO**, non «sapere spento».
+- ⚠️ **CORREZIONE ALLA DIAGNOSI, dichiarata invece che taciuta**: la sua riga 29 dice *«un flag spento (valore 1) non
+  viene mai archiviato: il server non sa "spento"»* e *«un flag acceso resta acceso»*. **A HEAD non regge**: `1 > 0`,
+  quindi lo spento **entra** e **vince**. Il **resto** della frase regge tutto *(il massimo, il non-ritorno)* ed è
+  quello che resta scritto qui sopra.
+- 📌 **e va dichiarato per quello che è**: la **direzione dello spareggio** — *chi vince fra acceso e spento* — **non
+  l'ha decisa nessuno**. È **una scelta implicita**, non un bug. ⛔ **Nessuno ha mai visto in un log un flag spento
+  partire** per uno dei 12 `_BOSSDEAD`: se il gioco non li spegne mai, il massimo in pratica non fa danno; se li
+  spegne, **cancella la kill per tutti** — ed è **l'altro** danno, non questo.
+
+**📋 IL TEST — in casa, senza DLC.** ⚠️ **con un vincolo che decide l'esito**: il test vale **solo se chi rientra non
+ha quel boss già ucciso nel proprio save**. Un test in cui P2 era connesso alla kill **non prova niente**: il flag è
+già suo.
+
+| # | passo | cosa si guarda |
+|---|---|---|
+| **1** | **P1 da solo** in co-op uccide **un** boss *(il Warden va bene: `D17Z01_BOSSDEAD`)*, con **P2 non connesso** | su P1 `Flag D17Z01_BOSSDEAD has been set to TRUE`; lato server `Received new flag from P1` |
+| **2** | **P1 esce** *(era l'ultimo)* | lato server `Client disconnected at …` **e poi** `Removing game data for team 1` ← ⭐ **la firma da vedere** |
+| **3** | **P2 entra** col suo save in cui quel boss è **vivo** | lato server `Creating new game data for team 1` + `Sending all server data to …` **senza** nessun `D17Z01_BOSSDEAD` |
+| **4** | P2 va nella stanza del boss | ⭐ **il boss è morto o vivo?** |
+
+| esito | cosa vuol dire | cosa fare |
+|---|---|---|
+| **il boss è MORTO** | il flag è arrivato da un'altra via *(il save di P2, o una kill che non abbiamo visto)* ⇒ **il buco, così, non c'è** | la voce si chiude **con la misura**, senza toccare il codice |
+| **il boss è VIVO** | ⚠️ **il buco è confermato**: la via del flag **non** copre il team vuoto | il fix diventa **una decisione di design** *(sotto)*, **non** una riga da aggiungere |
+
+**🔎 Se ricapita, le firme nel log** — la sequenza si riconosce **dal lato server**, in quattro righe:
+```
+Client disconnected at <ip>              <- esce l'ultimo del team
+Removing game data for team 1            <- ⭐ L'ARCHIVIO E' ANDATO
+Creating new game data for team 1        <- al rientro il team nasce VUOTO
+Sending all server data to <ip>          <- ...e non ha nessun flag da mandare
+```
+e **sul client che entra**, una delle due:
+```
+[BossCorpse] en|…|…|… NON nascosto (ingresso in scena): il boss sembra VIVO (statusDead=False flag=nessuno vita=…)  <- ⭐ il buco
+   oppure nessuna riga [BossCorpse] per quel boss, se il boss non "sembra vivo" (:793 esce in silenzio)
+```
+
+**📌 E IL FIX, IPOTIZZABILE MA NON DECISO.** Due forme, e **nessuna delle due è decisa**:
+- **il team non si svuota subito** — una **grazia** *(il team sopravvive N minuti, o fino al riavvio del server)*: un
+  server «che ricorda» è comodo, ma **di chi sono quei dati se il team è vuoto?**
+- **oppure i flag sopravvivono al team vuoto** — un archivio dei **soli flag**, separato dai progressi.
+⚠️ **E il prezzo di entrambe, che va detto prima di sceglierle**: il server diventa **stateful fra sessioni** — e
+serve una **regola di appartenenza** dei dati *(per team? per coppia di giocatori? per save?)* che oggi **non esiste**.
+
+**Stato.** **MECCANISMO VERIFICATO NEL CODICE · CONSEGUENZA DA TESTARE.** ✅ `removeUnusedGameData` cancella davvero
+l'archivio del team quando non c'è più nessuno, e il server **non ha nessuna persistenza** *(verificato)*; ✅ **ma lo
+stato lo conservano i save dei client**, che lo rispingono a ogni connessione *(verificato)* — quindi il caso **comune**
+è coperto, e resta scoperto **solo il joiner che quel flag non l'ha mai avuto**. ⛔ **Non è un difetto accertato e non è
+in lavorazione**: **una run** lo decide. 📌 **I due lati non vanno confusi**: *«il server conserva lo stato»* è
+**falso** *(non ha nemmeno un file)*; *«lo stato si ricostruisce da chi si connette»* è **vero** — e per la maggior
+parte dei casi basta. **Nessun fix prima del test**, e **il codice non è stato toccato**: qui c'è **cosa dichiarare**,
+là *(nel `docs\TODO.md`)* ci sarebbe **cosa fare** — ma **quel file non è stato toccato**.
 
 ---
 
