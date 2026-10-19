@@ -604,11 +604,6 @@ namespace Blasphemous.Multiplayer.Client
         public static void Prefix()
         {
             LifeGuilt.ResetAtBonfire();
-
-            // ⭐ LA BANDA — il falo' e' l'UNICO azzeramento: il fattore torna 1.0 e la banda si nasconde
-            // **subito**, senza aspettare il tick, cosi' non resta nessun residuo visivo. Vedi
-            // `LifeGuiltBand.cs`.
-            LifeGuiltBand.Refresh("falo'");
         }
     }
 }
