@@ -265,6 +265,11 @@ namespace Blasphemous.Multiplayer.Client.Network
             bool originalSkin = PlayerStatus.IsOriginalSkin(skinName);
             List<byte> bytes = new ();
 
+            // ⭐ MARKER `[Net] skin:` — la misura comincia QUI, prima del ramo, perche' il costo di una
+            // skin non originale e' quasi tutto `EncodeToPNG`. NON tocca ne' il ramo ne' il payload:
+            // e' un cronometro e basta (vedi `SkinSendMarker.cs`).
+            System.Diagnostics.Stopwatch skinTimer = SkinSendMarker.Begin();
+
             if (originalSkin)
             {
                 bytes.Add(0);
@@ -277,6 +282,11 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
 
             QueueMesssage(bytes.ToArray(), NetworkType.Skin);
+
+            // ⭐ La riga della misura, DOPO l'invio e sui byte che sono gia' stati accodati: legge
+            // `bytes.Count` e lo stato della connessione, non decide niente. (`bytes` non viene
+            // consumato da `QueueMesssage`, che ne copia il contenuto in una lista nuova.)
+            SkinSendMarker.Report(skinTimer, skinName, originalSkin, bytes.Count, IsConnected);
         }
 
         private void ReceiveSkin(byte[] data)
