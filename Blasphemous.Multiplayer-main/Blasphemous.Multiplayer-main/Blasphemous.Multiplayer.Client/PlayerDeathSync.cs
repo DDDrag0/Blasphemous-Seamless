@@ -281,6 +281,66 @@ namespace Blasphemous.Multiplayer.Client
                 return $"stats=errore ({e.GetType().Name})";
             }
         }
+
+        /// <summary>
+        /// The measurement the guilt-on-life study is missing, and it MEASURES ONLY.
+        ///
+        /// WHY IT EXISTS. The native guilt lives on the Fervour, not on the life: the curve that moves it
+        /// is an AnimationCurve inside the asset `Resources/GuiltConfig`, which is not on disk, so its
+        /// numbers exist nowhere in the code - the only known datum is one measured session (1 death:
+        /// Fervour max 60 -> 50). And `Life.MaxFactor` exists but the game has never exercised it, so
+        /// clamp, refills and bar are deduced from the code, not observed. This line is where they get
+        /// observed: it prints the maximum WITH the factor, the factor itself, Final and Current (which
+        /// are what PlayerHealth divides and what it uses as the bar WIDTH - Final ignores MaxFactor), the
+        /// same pair for the Fervour, and the number of guilt drops the game is holding.
+        ///
+        /// READ-ONLY, ON PURPOSE. Nothing here writes MaxFactor, counts guilt, or touches the bonfire: the
+        /// values are read and formatted. `Current` and `CurrentMax` do run VariableAttribute.CalculateValue,
+        /// which clamps the current value down to the maximum - but that is precisely what every other
+        /// reader in the game does, it is idempotent, and it does not raise OnChanged (only the setter
+        /// does), so nothing downstream can tell the difference.
+        ///
+        /// EVERY FIELD IS PUBLIC, checked before writing: MaxFactor and CurrentMax on VariableAttribute
+        /// (:28, :60), Current (:41), Final on Attribute (:23), GetDropsCount on GuiltManager (:197), and
+        /// Core.GuiltManager itself (Core.cs:76). No reflection and no substitutions: no field had to be
+        /// dropped.
+        ///
+        /// The string starts with the marker so a log grep finds it, and `dove=` is appended by the two
+        /// call sites, because "at a spawn" and "at a death" are different moments and must not be
+        /// confused: at the death instant the game has not yet added the new drop (GuiltManager.AddDrop
+        /// runs later, in OnDead), so `colpe` there is the count BEFORE this death. That is the point -
+        /// the two lines show the step.
+        /// </summary>
+        public static string ColpaLine()
+        {
+            string colpe = "?";
+
+            try
+            {
+                if (Core.GuiltManager != null)
+                    colpe = Core.GuiltManager.GetDropsCount().ToString();
+            }
+            catch (System.Exception)
+            {
+                colpe = "errore";
+            }
+
+            try
+            {
+                if (Core.Logic == null || Core.Logic.Penitent == null || Core.Logic.Penitent.Stats == null)
+                    return $"[Colpa] stats=non disponibili · colpe={colpe}";
+
+                var stats = Core.Logic.Penitent.Stats;
+                return $"[Colpa] vita: max={stats.Life.CurrentMax:F1} fattore={stats.Life.MaxFactor:F2} " +
+                       $"final={stats.Life.Final:F0} current={stats.Life.Current:F0} · " +
+                       $"fervour: max={stats.Fervour.CurrentMax:F1} fattore={stats.Fervour.MaxFactor:F2} · " +
+                       $"colpe={colpe}";
+            }
+            catch (System.Exception e)
+            {
+                return $"[Colpa] stats=errore ({e.GetType().Name}) · colpe={colpe}";
+            }
+        }
     }
 
     /// <summary>
@@ -327,6 +387,12 @@ namespace Blasphemous.Multiplayer.Client
             if (!__instance.Status.Dead || __instance.DeathEventLaunched)
                 return; // alive, or this death has already been announced by the game itself
 
+            // MEASUREMENT ONLY - the death instant, once per death. It runs BEFORE the game's own
+            // GuiltManager.OnPenitentDead (which is reached through OnDead, later in the same OnUpdate),
+            // so the guilt count printed here is the one from the deaths BEFORE this one: the spawn line
+            // that follows is what shows the step.
+            ModLog.Info($"{PlayerDeathSync.ColpaLine()} · dove=morte");
+
             PlayerDeathSync.AnnounceDeath();
         }
     }
@@ -359,6 +425,12 @@ namespace Blasphemous.Multiplayer.Client
         public static void Postfix()
         {
             PlayerDeathSync.AnnounceAlive();
+
+            // MEASUREMENT ONLY - every spawn, including the respawn after a death and every level load.
+            // This is the moment the native guilt is applied (GuiltManager.OnPenitentReady sets
+            // Fervour.MaxFactor during OnPlayerSpawn, inside CreatePlayer), so it is where the curve the
+            // code does not contain becomes readable: one line per spawn, one step per death.
+            ModLog.Info($"{PlayerDeathSync.ColpaLine()} · dove=spawn");
         }
     }
 
