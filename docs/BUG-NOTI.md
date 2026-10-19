@@ -314,14 +314,16 @@ fa**, e il difetto **resta noto e accettato**. *(La voce nel `TODO.md` resta dov
 
 ---
 
-## 7. ⚠️ I **TRE BUCHI** DEL RELAY DEGLI EFFETTI — effetti e proiettili che **non arrivano all'altra macchina** *(⚠️ **uno dei tre è chiuso nel codice**: la risoluzione dei prefab dei nemici — vedi "Stato"; **due restano aperti** — LIMITE DICHIARATO, prezzo accettato, NON un difetto in lavorazione)*
+## 7. ⚠️ I **TRE BUCHI** DEL RELAY DEGLI EFFETTI — effetti e proiettili che **non arrivavano all'altra macchina** *(✅ **tutti e tre chiusi nel codice**: la risoluzione dei prefab dei nemici *(`36a8878`)* e i **due** `InstantiateArea` *(`a188060`, 270 → 272 bersagli)* — vedi "Stato"; ⚠️ **in gioco non ancora esercitati** — OSSERVABILE, non un limite)
 
 > **Va detto per primo, come per la voce 5 e la 6.** Le voci 1-4 sono difetti **chiusi** o **residui rari**, da
 > riconoscere se ricapitano; la 5 e la 6 sono **prezzi accettati**. **Questa è della stessa famiglia, in una forma
-> più semplice**: non c'è nessuna decisione da prendere, perché **la forma del lavoro è già nota** *(due hook
-> mirati — la strada di risoluzione è fatta, §"Il fix" qui sotto)*. È nei bug noti **per decisione dell'utente**, con
-> queste parole: *«penso che non lo testeremo per adesso: da testare assieme a tutti i boss»*. ⇒ **è un LIMITE
-> DICHIARATO**, non un lavoro rimandato, e **se ricapita non è una regressione**: è il comportamento noto qui sotto.
+> più semplice**: non c'era nessuna decisione da prendere, perché **la forma del lavoro era già nota** *(due hook
+> mirati — la strada di risoluzione è fatta, §"Il fix" qui sotto)*. Fu tenuta nei bug noti **per decisione
+> dell'utente**, con queste parole: *«penso che non lo testeremo per adesso: da testare assieme a tutti i boss»*.
+> ⭐ **E oggi il conto è cambiato, in un verso solo**: anche i **due `InstantiateArea` sono fatti** *(`a188060`,
+> 270 → 272 bersagli)* ⇒ **non resta codice da scrivere**. Resta **la misura in gioco**, che è **un osservabile**,
+> non un limite — e **se ricapita non è una regressione**: è il comportamento noto qui sotto.
 
 **Cosa si vede.** Il relay degli effetti *(`958a07f`)* copre **solo** ciò che passa dal `PoolManager`. Tre
 categorie **non ci passano** (o non ci arrivano), e il risultato sul giocatore è **doppio**:
@@ -333,10 +335,10 @@ categorie **non ci passano** (o non ci arrivano), e il risultato sul giocatore �
 
 ### ⚠️ Le tre categorie, una per una
 
-| # | buco | dove | perché resta fuori |
+| # | buco | dove | perché restava fuori |
 |---|---|---|---|
-| **1** | `BossJumpAttack.InstantiateArea` — i **due `Object.Instantiate`** degli oggetti del salto | `BossJumpAttack.cs:269-277` | non passa dal `PoolManager` ⇒ **nessun hook lo vede**. Per `ElderBrother` **non è esercitabile** *(`instantiateOnStart`/`instantiateOnEnd` = `<null>`)*; **per le Amanecidas sì** |
-| **2** | `BossTeleportAttack.InstantiateArea` — gli oggetti del teletrasporto | `BossTeleportAttack.cs:73-81` | idem, un `Instantiate` grezzo. **Nessun boss misurato lo usa** |
+| **1** | `BossJumpAttack.InstantiateArea` — i **due `Object.Instantiate`** degli oggetti del salto | `BossJumpAttack.cs:269-277` | non passa dal `PoolManager` ⇒ **nessun hook lo vedeva** ⇒ ✅ **chiuso nel codice in `a188060`** *(un `Postfix` che chiama il relay)*. Per `ElderBrother` **non è esercitabile** *(`instantiateOnStart`/`instantiateOnEnd` = `<null>`)*; **per le Amanecidas sì** |
+| **2** | `BossTeleportAttack.InstantiateArea` — gli oggetti del teletrasporto | `BossTeleportAttack.cs:73-81` | idem, un `Instantiate` grezzo ⇒ ✅ **chiuso nel codice in `a188060`**. **Nessun boss misurato lo usa** |
 | **3** | i **proiettili dei nemici comuni** — la famiglia dichiarata come «`ProjectilePool` privato»: **`BellGhostVariant` · `RangedBoomerang` · `MeltedLady`** | `ProjectilePool.cs:12-33` · i tre attacchi (sotto) | **il buco era vero, la causa scritta nei referti no** — e **sul ricevente è chiuso nel codice** *(`36a8878`: la sorgente ② li cerca nei **loro** campi)*: resta **il test in gioco** *(vedi "Stato")* |
 
 - ⚠️ **E restano fuori, per dichiarazione esplicita** *(come già scritto nel referto)*: i **~18 `Object.Instantiate`
@@ -399,12 +401,14 @@ vedrebbe** — è un'affermazione sul **canale**, e la risoluzione non la copre.
     danno può quindi arrivare anche se il proiettile non si vede**: è **una delle cose da misurare** nella run dei
     boss, non da dare per scontata in nessuna delle due direzioni.
 
-### ⭐ Il fix: **una parte è fatta, e restano due hook**
+### ⭐ Il fix: **tre pezzi, e tutti e tre fatti**
 
-1. **`BossJumpAttack.InstantiateArea`** e **`BossTeleportAttack.InstantiateArea`**: **un `Postfix` per metodo**,
-   che manda `prefab + posizione` sul **canale che esiste già** *(tipo `CoopEffectRelay`, 201)*. È **lavoro
-   meccanico**: non è ricerca, la forma è quella del relay. ⛔ **I due `InstantiateArea` restano da fare** *(2 hook
-   in più)*: **nessun hook li vede**, ed è il buco che **nessun log può smentire** — *il segnale è il silenzio*.
+1. ✅ **`BossJumpAttack.InstantiateArea`** e **`BossTeleportAttack.InstantiateArea`** — **FATTO** *(`a188060`)*:
+   **un `Postfix` per metodo**, che manda `prefab + posizione` sul **canale che esiste già**. Nessuna logica
+   duplicata: i due `Postfix` chiamano la funzione che il relay ha già, `EffectRelay.OnPoolSpawn(prefab,
+   position, rotation)` *(filtro, freno, dedup, payload, invio)*, e **il ricevente non è stato toccato**.
+   ⭐ **I bersagli Harmony passano da 270 a 272** *(si leggono dallo strumento, non da questa pagina)*.
+   ⚠️ **In gioco non ancora esercitati**: è un **osservabile**, **non un limite** — vedi "Stato" e la firma qui sotto.
 2. **I proiettili dei nemici comuni**: **una strada di risoluzione in più sul ricevente** *(il catalogo non è più
    «solo il boss»)*. ⚠️ **Non un hook sul pool privato**, per la ragione qui sopra. ✅ **FATTO** *(`36a8878`)*: le
    **quattro sorgenti ①②③④** *(§"Perché il ricevente non lo sapeva ricostruire")*. ⇒ **il meccanismo è provato**
@@ -412,7 +416,8 @@ vedrebbe** — è un'affermazione sul **canale**, e la risoluzione non la copre.
    resta su `BellGhostVariant` · `RangedBoomerang` · `MeltedLady` è **un test in gioco**, non del codice *(vedi
    "Stato")*.
 
-⇒ **Due punti aperti, tutti confinati**, e **nessuno di essi tocca la vita, la morte o il flag**: sono istanziazioni.
+⇒ **Nessun punto aperto nel codice**, e **nessuno dei tre ha mai toccato la vita, la morte o il flag**: sono
+istanziazioni. **L'unica cosa che resta è la misura in gioco** *(i 3 nemici e i 2 `InstantiateArea`)*.
 
 ### 📌 E cosa fare nel frattempo: **niente da nascondere**
 
@@ -438,21 +443,32 @@ e nessuna si perde — prima un nome nuovo poteva essere **ingoiato dal throttle
 una misura.
 
 **⚠️ E per i due boomerang, la riga che dice che il danno non c'è**: nessun `[DannoPeer] colpo del NEMICO
-inoltrato`, e al suo posto *(throttled)* `[DannoPeer] … non inoltrato: l'attaccante non e' un NEMICO`. **Per gli
-`InstantiateArea` invece il segnale è il silenzio**: nessuna riga `mando` per quei prefab, perché **l'hook non
-esiste** — *è il buco che nessun log può vedere*.
+inoltrato`, e al suo posto *(throttled)* `[DannoPeer] … non inoltrato: l'attaccante non e' un NEMICO`.
+**E per gli `InstantiateArea` il segnale adesso è una riga, non più un silenzio** *(`a188060`)*:
 
-**Stato.** **UNA PARTE CHIUSA, DUE BUCHI APERTI — limite dichiarato, prezzo accettato.** ⭐ **La risoluzione
+```
+[FxRelay] hook InstantiateArea: prefab="<il nome>" da=<BossJump|BossTeleport>
+   <- l'hook e' scattato: da qui in poi vale la regola del relay, e si legge cosa succede dopo
+[FxRelay] mando n=… prefab="<idem>" …            <- il pacchetto parte (prefab con Weapon/Projectile)
+   oppure nessun "mando" per quel prefab: il prefab e' COSMETICO, e non si manda niente — l'hook e' morto ma innocuo
+```
+
+⇒ **la coppia da leggere è `hook` + `RISOLTO` sul peer**: con `istanzio` l'area è arrivata, senza `istanzio` il
+prefab è cosmetico e non è partito niente. *(Il segnale non è più il silenzio: è la riga dell'hook che manca.)*
+
+**Stato.** **TRE SU TRE CHIUSI NEL CODICE — restano gli osservabili.** ⭐ **La risoluzione
 multi-sorgente** *(strade ①②③④, `36a8878`)* **chiude il buco dei prefab dei 3 nemici e del `Penitent`**: il
 **canale** li vedeva già *(`mando`)*, era **il catalogo del ricevente** a non trovarli — e adesso li cerca anche nei
-**loro** campi. ⇒ ⚠️ **"i 3 nemici" *(BellGhost · RangedBoomerang · MeltedLady)* non sono quindi più un buco di
+**loro** campi. ⭐ **E i due `InstantiateArea` sono fatti** *(`a188060`)*: **un `Postfix` per metodo**,
+**270 → 272 bersagli Harmony**, bersaglio verificato dallo strumento, **nessuna logica duplicata** e **ricevente
+non toccato**.
+⇒ ⚠️ **"i 3 nemici" *(BellGhost · RangedBoomerang · MeltedLady)* non sono più un buco di
 codice**: sono **osservabili da testare in gioco** *(il canale è provato in gioco con un altro nemico, la sorgente ②
 è misurata offline sui tipi veri: manca **la scena viva**; da leggere `RISOLTO "…" da=nemici in=…ms`, e nel riepilogo
-`nomi=[… nemici:K …]` con K > 0)*.
-⛔ **Restano aperti, e sono ancora solo codice, i 2 `InstantiateArea`** *(BossJump · BossTeleport ⇒ **+2 hook**)*:
-**nessun hook li vede**, e per quelli **il segnale è il silenzio**. ⛔ **Non è un difetto in lavorazione**, per
-decisione dell'utente. 📌 **La voce di lavoro resta in `docs\TODO.md` §2.4**, che **non è stata toccata**: qui c'è
-**cosa dichiarare**, là c'è **cosa fare**.
+`nomi=[… nemici:K …]` con K > 0)*. **E lo stesso vale per i 2 `InstantiateArea`**: **in gioco non ancora
+esercitati** — un **osservabile** *(la riga dell'hook, qui sopra)*, **non un limite**.
+⛔ **Non è un difetto in lavorazione**, per decisione dell'utente. 📌 **La voce di lavoro resta in `docs\TODO.md`
+§2.4**, che **non è stata toccata**: qui c'è **cosa dichiarare**, là c'è **cosa fare**.
 
 ---
 
