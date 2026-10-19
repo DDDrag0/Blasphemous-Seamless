@@ -7578,3 +7578,111 @@ ESITO: ALMENO UN marker richiesto e' ASSENTE
 - ✅ **Build, deploy e marker sono stati fatti DAVVERO in questa tornata** *(a differenza del `00:30`, dove la prova era l'utente)*: build **Debug della SOLUTION** ⇒ `Compilazione completata.`, **Errori 0**, **Avvisi 438** *(la baseline)* · deploy ⇒ **270 bersagli, tutti validi** · `tools\marker-check.ps1` sulla **DLL deployata** *(sha256 `8a3d618f…`, **465408 byte** — la **stessa dimensione** della build di `3b43094`)* ⇒ **9 marker della Colpa PRESENTI su 9** *(`[ColpaVita] morte=`, `applicata a ogni spawn`, `reset al falo'`, `salvato`, `caricato`, `notifica`, più `[Colpa]`, `[Morte]`, `[Falo'']`)* e **7 marker della banda ASSENTI su 7** *(exit 1, l'esito atteso)*.
 - 📌 **Le fonti di questa entry**, e **nessuna è nel repo** *(`scratch\` sta un livello sopra la radice, §⑤)*: `scratch\REFERTO-COLPA-VITA.md` *(la Colpa: i tre ganci, il file, la verifica sul frammento, i residui `:421-431`)*, `scratch\REFERTO-BANDA-VITA.md` *(la banda: l'aggancio, la geometria, il colore)*, `scratch\DIAGNOSI-COLPA-CURVA.md` *(la curva nativa `:35`, `:170`)* e `scratch\REFERTO-REVERT-BANDA.md` *(cosa è stato rimosso e come si è verificato che la Colpa è intatta)*.
 - ⚠️ **La data** segue **la serie del file** *(`00:15` → `00:30` → questa)*: è **l'etichetta della entry successiva**. ⚠️ **Ma qui c'è un salto**: i due commit di questa tornata sono datati **`15:48`** *(la Colpa)*, **`16:59`** *(la banda)* e **`17:17`** *(il revert)* — quindi **l'ordine del file e l'orologio della macchina, per una volta, coincidono**.
+
+---
+
+## [2026-10-19 18:00] ⭐⭐ **LA DECISIONE È PRESA: IL SERVER NON HA MEMORIA, E DEVE RESTARE COSÌ** — è un **relay**, non un magazzino: il team che si svuota è **la regola**, non un difetto, e **la voce 11 del `BUG-NOTI` è stata RITIRATA** *(`05a3209`)*
+
+> **Questa entry registra una DECISIONE, e insieme registra un file che torna indietro.** L'utente ha deciso che il caso
+> *«l'ultimo che esce porta via l'archivio del team»* **non è un bug e non è nemmeno una cosa da testare**: è **il
+> comportamento voluto**, con una ragione che va scritta perché è la parte che conta. ⇒ **una regola architetturale va
+> qui, non nel `BUG-NOTI`** — quel file dichiara il suo criterio in apertura *(ci vanno i difetti che non si riproducono
+> e i prezzi accettati)*, e una regola messa lì **sembrerebbe un difetto aperto o un lavoro rimandato**, che non è. E
+> **la voce 11**, aggiunta come *«meccanismo verificato · conseguenza da testare»*, è stata **ritirata**: ⇒
+> **`docs\BUG-NOTI.md` è identico byte per byte a `19773ed`**, cioè allo stato *prima* che quella voce esistesse.
+
+### ① ⭐ **LA REGOLA** — *il server è un relay: archivia in RAM e ripete, non conserva*
+
+- ⭐ **Archivia in RAM**: `teamGameDatas` è un `private static readonly Dictionary<byte, TeamInfo>` **in memoria**
+  *(`Core.cs:11`)*, e `TeamInfo` **è** il progresso — 14 dizionari *(`TeamInfo.cs:7`)*, flag compresi — che riempie
+  `AddTeamProgress` *(`:22-43`, chiamata a `Server.cs:591`)*.
+- ⭐ **E ripete a chi si connette**: due pacchetti dalla **stessa** memoria — il dump al joiner
+  *(`sendPlayerTeam`, `Server.cs:396-412`, col nome `"*"`)* e il relay ai presenti *(`:662` → `sendPlayerProgress`, col
+  nome del mittente)*.
+- ⛔ **E non conserva NIENTE quando il team si svuota**: `removeUnusedGameData` *(`Core.cs:68-91`, `teamGameDatas.Remove(i)`
+  a `:88`, con la riga `Removing game data for team N` a `:87`)* cancella l'archivio **quando nessun giocatore connesso ha
+  quel team**; è chiamata a `Server.cs:143` *(subito dopo `connectedPlayers.Remove` a `:142`)* e a `:421` *(dopo
+  `sendPlayerTeam`)*.
+- ⛔ **E non esiste NESSUNA persistenza, in nessun punto**: in tutto il progetto server **zero** `ReadAllText`,
+  `StreamReader`, deserializzatori; gli unici `File.*` sono in `ServerLog.cs` *(`:54`, `:83`, `:97`)* e scrivono **solo il
+  log**, che nessuno rilegge. ⇒ **riavviare il server azzera tutto** e **l'ultimo che esce azzera il team**: sono lo
+  **stesso fatto**, ed è **il disegno**.
+- 📌 **Quindi `removeUnusedGameData` è CORRETTA, e va lasciata così**: non è una riga da correggere, è **la riga che
+  realizza la regola**.
+
+### ② ⭐ **LA RAGIONE** — *una memoria del server mescolerebbe i salvataggi di sessioni e giocatori diversi*
+
+- **Il team è un contenitore mutevole**: gli stessi slot, in giorni diversi, sono **giocatori diversi con salvataggi
+  diversi**. Il numero del team **non dice di chi** sono i dati.
+- ⇒ **una memoria del server mescolerebbe** i salvataggi di **sessioni differenti** e di **giocatori differenti** ⇒
+  ⚠️ **incoerenze che nessuno può ricostruire**: un boss che risulta morto a chi non l'ha ucciso, o un progresso che salta
+  in una sessione che non l'ha mai fatto.
+- ⭐ **E il punto che rende la scelta asimmetrica**: *un flag perso si ricostruisce dal save* *(§③)*, **un flag sbagliato
+  no**. ⇒ il rischio peggiore non è «non avere il flag»: è **attribuire a un salvataggio il contenuto di un altro**.
+
+### ③ ✅ **LA CONSEGUENZA, dichiarata — ed è CORRETTA**: *la verità è il salvataggio del giocatore*
+
+- **Il fatto** *(descrizione, non difetto)*: un joiner che entra dopo che **tutti** sono usciti **non trova il flag** —
+  `getTeamData` ricrea un `TeamInfo` vuoto *(`Core.cs:57-66`, riga `Creating new game data for team N`)* e
+  `sendPlayerTeam` non ha **nessuna chiave** da mandare.
+- ⇒ ⭐ **vede il boss come glielo dice il SUO save**: se il suo save dice morto il boss non c'è *(`HideDefeatedBosses` legge
+  `FirstBossDeadFlagOn`, `EnemySyncManager.cs:966`)*; se dice vivo, è vivo. ⇒ ⭐ **ed è giusto così: la SUA verità è il
+  SUO salvataggio.** Il server non è un'autorità sul mondo — è **un corriere**, e non deve correggere il save di nessuno.
+- ⭐ **E il posto della verità sono i SAVE DEI CLIENT**: ogni client **rispinge i propri flag** — all'ingresso in scena
+  *(`Multiplayer.cs:177`)* e alla connessione *(`:452`)*, via `SendAllProgress` *(`FlagHelper.cs:22-25`)* →
+  `GetCurrentPersistentState("intro")` → il `Prefix` che li manda a **valore 0** *(`:48-69`)* — e il server **li
+  riarchivia** *(`Server.cs:591`)*. ⭐ È esattamente ciò che dicono i log della voce 10: `D17Z01_BOSSDEAD` non è arrivato
+  da una kill, è stato **spinto dal save di G2** alla connessione *(`ServerOutput.log:8` e `:27`)*.
+- ⇒ 📌 **quindi lo stato SI RICOSTRUISCE DAL GIOCATORE, non dal server**: il server riparte vuoto e **nel giro di una
+  connessione torna pieno** — di quello che i giocatori **sono**, non di quello che **sono stati**.
+
+### ④ ⭐ **IL CONFINE** — *dentro la sessione funziona, quindi la memoria non serve*
+
+- ✅ **La sincronizzazione DENTRO UNA SESSIONE funziona, ed è provata**: il flag viaggia **a sessione aperta** — misurato:
+  G2 accende `D17Z01_BOSSDEAD` **a metà partita** *(riga 3713)* e G1 lo riceve **mentre combatte** *(riga 4000, **3191
+  righe dopo** la connessione)* *(`scratch\DIAGNOSI-FLAG-SESSIONE-APERTA.md` §(a))*.
+- ✅ **E il flag ricevuto entra nel save di chi lo riceve**: `ApplyProgress` chiama `Core.Events.SetFlag(id, value == 0,
+  false)` *(`FlagHelper.cs:13`)*, e il terzo parametro è **`forcePreserve`** *(new game+)*, **non** «non salvare» ⇒ il flag
+  finisce nei `flags` del client, che il gioco **persiste nel save**. ⇒ **chi era connesso alla kill ce l'ha in casa.**
+- ⇒ ⭐ **l'unico caso senza flag è «team vuoto»**, cioè **nessuno che possa ricordare** — ed è **voluto**. ⇒ **la memoria
+  del server non serve**, nemmeno per *«un joiner che entra dopo una kill della stessa sessione»*: chi era dentro ce l'ha
+  nel proprio save, e chi entra dopo **rispinge i propri** *(§③)*.
+
+### ⑤ 📌 **IL «FIX»: NESSUNO** — *non c'è niente da fare, perché è una scelta*
+
+- ⛔ **Nessun fix e nessun test**: non c'è niente di sospeso. `removeUnusedGameData` è **corretta** *(§①)* e **resta com'è**;
+  una run non deciderebbe niente, perché **la decisione è già presa** e non è una misura.
+- ⚠️ **E va detto il resto**: **se un giorno** si volesse una memoria, sarebbe **un CAMBIO DI DESIGN, non un fix** — e
+  avrebbe due forme, **nessuna gratis**: una **grazia** *(il team sopravvive N minuti)* o un archivio dei **soli flag**.
+  Entrambe rendono il server **stateful fra sessioni** e chiedono **una regola di appartenenza** dei dati — *per team? per
+  coppia di giocatori? per save?* — **che oggi non esiste**. ⇒ 📌 **finché quella regola non c'è, la risposta giusta è
+  quella di adesso: nessuna memoria.**
+
+### ⑥ ⚠️ **LA VOCE 11 È STATA RITIRATA** — *e il `BUG-NOTI` è tornato a `19773ed`*
+
+- 🔴 **Cos'era**: `53ddbef` aveva aggiunto **130 righe** — la **voce 11** *(«il team che si svuota») dichiarata **non un
+  difetto*** *ma anche* ***«conseguenza da testare»*** — e **una riga di rimando dentro la voce 10**. ⇒ ⚠️ **il problema era la
+  formulazione**: *«meccanismo verificato · conseguenza da testare»* **si legge come un difetto aperto**, e «da testare»
+  chiede una run che non serve.
+- ✅ **Cosa è stato fatto**: **`git revert 53ddbef`** ⇒ commit **`05a3209`**, *1 file, **130 rimozioni, 0 inserzioni***.
+- ✅ **La verifica richiesta, e il suo esito**: `git diff 19773ed HEAD -- docs\BUG-NOTI.md` ⇒ **vuoto** ⇒ il file è
+  **identico byte per byte** a com'era prima della voce 11. ⇒ **voci 1-9 intatte**, **voce 10 identica a `19773ed`**
+  *(senza il rimando)*, **voce 11 assente**.
+- 📌 **E perché non tenerla, riscritta bene**: perché una **regola** lì **non ci va** *(`BUG-NOTI` accoglie i difetti che non
+  si riproducono e i prezzi accettati)* — e riscritta come *«è voluto»* sarebbe stata comunque **una regola nel posto
+  sbagliato**, con l'aria di un prezzo pagato. **La sua casa è questa entry.**
+
+### ⑦ 📌 **LO STATO DI QUESTA TORNATA**
+
+- **Due cose, due commit** *(entrambi solo `docs\`)*: **`05a3209`** — il **revert** del `BUG-NOTI` *(130 rimozioni)*; e **il
+  commit di questa entry** — **questo file, in fondo**. Sono due e non uno perché il revert **si può voler annullare da
+  solo** *(un `git revert 05a3209` la rimette)*, mentre il TODO è **la registrazione di com'è andata**.
+- ✅ **Solo aggiunte in coda al TODO**: **0 righe cancellate**, nessuna sezione precedente toccata.
+- ⛔ **Codice non toccato** *(nessun file sotto `Blasphemous.Multiplayer-main\` in `git status`)* e ⛔ **nessun test da fare**
+  *(§⑤)*.
+- 📌 **Le fonti, e nessuna è nel repo**: `scratch\DIAGNOSI-FLAG-SESSIONE-APERTA.md` *(le quattro risposte: (a) il flag a
+  sessione aperta arriva — misurato; (b) viene archiviato nella stessa `TeamInfo`; (c) il dump legge l'istanza viva; (d)
+  la kill in co-op accende il flag)* e `scratch\BUGNOTI-VOCE11.md` *(il referto della voce ritirata: **le righe misurate
+  restano valide**, è la **cornice** che cambia — da «da testare» a «deciso»)*.
+- ⚠️ **La data** segue la serie del file *(`17:20` → questa)*, e questa volta **l'orologio della macchina le va dietro**: il
+  revert `05a3209` è datato **`17:58`**.
