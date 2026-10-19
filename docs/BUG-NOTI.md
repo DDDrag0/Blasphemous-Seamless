@@ -645,67 +645,106 @@ la misura che manca: va preso **prima** di toccare il predicato.
 
 ---
 
-## 10. 🔴 IL **LATE JOINER** NON SA CHE UN BOSS È MORTO — `bdead|<id>` non gli viene mai ritrasmesso *(✅ **VERIFICATO NEL CODICE** — non serve un log: la catena è chiusa)*
+## 10. ⚠️ IL **LATE JOINER** E IL BOSS MORTO — il prefisso `bdead|<id>` non si ripete, **ma il flag sì**: la conseguenza è **smentita**, il residuo vero sono **i 4 della voce 9** *(✅ **VERIFICATO NEL CODICE** — il fatto **resta**, l'effetto **no**)*
 
-> **La differenza con la voce 9 è tutta qui, e va letta per prima.** La **9 è da testare**: manca la misura, e
-> senza misura non si tocca niente. **Questa è verificata nel codice**: la catena si legge tutta, e **il buco sta
-> in un punto solo** — un annuncio che non ripete un prefisso. ⇒ **non è una cosa da testare: è una cosa da
-> fixare**, con la forma del fix già nota e **dentro un canale che esiste**. *(Il test qui sotto serve a **vedere
-> il sintomo**, non a scoprire la causa.)*
+> **Questa voce è stata RISCRITTA, e va letta come la coda della 9.** Diceva *«il late joiner non sa che un boss è
+> morto»* e *«per lui il boss può essere ancora vivo»*. **La seconda frase è falsa**, e non per un'opinione: i log
+> mostrano il joiner che **riceve il flag** `D17Z01_BOSSDEAD` **dal server** e **nasconde il boss**. ⇒ **il fatto di
+> codice non si nega, si DECLASSA**: il prefisso `bdead|` manca davvero nell'annuncio, **ma il caso che doveva
+> coprire è coperto da un'altra via — il flag, che passa dal server** — e **resta scoperto solo per i 4** della voce 9.
+> ⚠️ La **9** non cambia natura: è **da testare**. **Questa**, che era dichiarata «verificata e da fixare per tutti i
+> boss», è ora **un fatto di codice verificato con una portata misurata**: *dodici coperti, quattro no*.
 
-**🔴 Il difetto.** `bdead|<id>` — **il prefisso che dice "questa è la morte di un BOSS: applicala con `Kill()`"**
-— **non viene mai ritrasmesso** a chi si connette **dopo** la kill.
+**✅ LA CONSEGUENZA SMENTITA — dodici boss su sedici, con prova incrociata.** *(fonte: `scratch\DIAGNOSI-SERVER-BOSS-MORTE.md`, che cita le righe dei log reali)*
+- **il flag viene rimandato dal SERVER a chi si connette dopo**: `sendPlayerTeam` (`Server.cs:385-413`) alla
+  connessione cicla su **tutti e 14** i tipi di progresso — il ciclo è a `:396-412` — e manda **un pacchetto per ogni
+  chiave archiviata**;
+- ⭐ **la prova che viene dal server e non dal peer**: G1 riceve **26 progressi** in **ordine di tipo crescente** —
+  `QI31` (5) → celle mappa (8) → **`D17Z01_BOSSDEAD`** (9) → oggetti personali (10) → `TELEPORT_D02` (11) →
+  `Tears` (12) — cioè **esattamente l'ordine del `for` del server**;
+- ✅ **e il client lo applica**: `G1:666` il flag è ricevuto → `G1:674` `Flag D17Z01_BOSSDEAD has been set to TRUE`;
+- ✅ **e il boss non c'è**: `G1:864` `[BossCorpse] … nascosto (ingresso in scena) … flag=D17Z01_BOSSDEAD … veto SCAVALCATO: il flag e' acceso, il boss sembrava vivo (vita=400)` — cioè `HideDefeatedBosses` (`:732`, chiamata a `:2732`) col flag letto da `FirstBossDeadFlagOn` (`:966`);
+- ⭐ **i 12 con un flag in `FlagStates`**: `Data\FlagStates.cs:37-48` — dal Warden a Isidora. **Per loro il joiner lo
+  sa, e il cadavere è già spento.** ⇒ *«per lui il boss può essere ancora vivo»* **va cancellata**: non è «poco
+  probabile», è **smentita**;
+- ⚠️ **e il merito onesto**: i log **client** non hanno orologio e quello del **server** non dice **quale IP** ha
+  ricevuto quale flag ⇒ l'abbinamento è **dedotto** da `sendPlayerTeam` **più** la ricezione a `G1:666`, non da una
+  riga del server. **Ma la deduzione ha una firma che non si imita**: l'**ordine del `for`**.
 
-**Perché, in una riga di codice.** `AnnounceDeathStateToPeers` (`EnemySyncManager.cs:4871`) è il metodo che
-**ripete le morti a chi arriva dopo**, e manda **solo id nudi** (`:4913-4914`): la memoria `_announcedDeaths`
-contiene **l'id nudo** (`:5864`), e il prefisso `bdead|` compare **solo** dove nasce e dove si spedisce **dal
-vivo** — la costante `:335`, lo scorporo `:349`, l'invio `:5848` — **nessuno dei tre è nel percorso del joiner.**
-⇒ ⚠️ **il prefisso non parte.**
+**⚠️ IL FATTO DI CODICE CHE RESTA — declassato, non negato.** `bdead|<id>` — il prefisso che dice *«questa è la morte
+di un BOSS: applicala con `Kill()`»* — **non viene mai ritrasmesso** a chi si connette **dopo** la kill:
+- `AnnounceDeathStateToPeers` (`:4871`) ripete le morti al joiner mandando **solo id nudi** (`:4913-4914`);
+- la memoria `_announcedDeaths` contiene **l'id nudo** (`:5864`);
+- il prefisso compare **solo** dove nasce e dove parte **dal vivo** — la costante `:335`, lo scorporo `:349`, l'invio
+  `:5848` — **nessuno dei tre è nel percorso del joiner**;
+- ⇒ al joiner arriva la strada **generica**: `_pendingDeaths.Add` + `MarkSpawnPointConsumed` (`:6889`) →
+  `DestroyDeadEnemy` (`:7089`) → `KillEnemyLocally` (`:6348`), che su un boss finisce nella **`Damage(Hit)` nativa**;
+  **non** `ApplyBossDeath` (`:440`) → `Kill()` (`:531`) → **morte recitata** della whitelist;
+- ⭐ **ma è un fatto senza effetto sui 12**: il boss **non ha bisogno di essere ucciso** dal joiner, perché **non
+  compare affatto** — il flag lo spegne all'ingresso in scena. **Due vie disgiunte, e ne basta una.**
 
-**⇒ Cosa arriva, allora, a un giocatore che entra dopo.** Solo la strada **generica** della morte: `:6889`
-`_pendingDeaths.Add(id)` + `MarkSpawnPointConsumed` → `DestroyDeadEnemy` `:7089` → `KillEnemyLocally`, che su un
-boss finisce nella **`Damage(Hit)` nativa**. ⚠️ **La strada dell'annuncio** — `ApplyBossDeath` `:440` →
-`boss.Kill()` `:531` → la **morte recitata** della whitelist — **per il joiner non esiste**: la riceve **solo**
-chi era connesso quando il prefisso è partito.
+**🔴 IL RESIDUO VERO SONO I 4 DELLA VOCE 9, e per loro il buco è reale.** `Amanecidas` · `Perpetua` · `PontiffHusk` ·
+`Viridiana` **non hanno un flag di morte ricavabile**: `FirstBossDeadFlagOn` cerca `<scena>_BOSSDEAD` e per loro
+**non lo trova** *(per `HUSK` e `VIRIDIANA` **zero** righe in `FlagStates`; per `AMANECIDA` e `PERPETUA` il flag
+esiste **con nome-DLC** — `SANTOS_AMANECIDA_*_DEFEATED`, `BROTHERS_PERPETUA_DEFEATED` — e `FirstBossDeadFlagOn` **non
+lo legge**, `:963-964`)*. ⇒ **per un joiner, dei quattro non c'è né flag né `bdead|`**: **lì** non ha **nessuna delle
+due vie**, ed **è lì** che il difetto è vero. **Che siano coperti o no è la misura della voce 9.**
 
-**⚠️ E la conseguenza, detta per intero.** Per il late joiner **il boss non è dichiarato morto**: riceve una
-morte **generica**, e la strada che il fix A costruisce apposta *("ero a terra, il boss è morto lontano da me")*
-**non gli arriva mai**. ⇒ ⭐ **per lui il boss può essere ancora vivo** — e **di sicuro** non ha la morte che il
-progetto ha già scritto per quella finestra.
+**⚠️ DUE CORREZIONI AL «CHI FA COSA», perché la via del flag le rende facili da sbagliare.**
+1. **Il server è un ARCHIVIO CIECO, non un controllore.** Riceve (`receivePlayerProgress` `Server.cs:583-596` →
+   `AddTeamProgress` `TeamInfo.cs:22-43`, che tiene il **massimo**), **archivia** e **ripete** (`:396-412`). **Non
+   guarda il merito di niente**: non sa che `D17Z01_BOSSDEAD` è un boss, non sa che un boss è morto, non decide.
+   **Il controllo è nel CLIENT**: `FirstBossDeadFlagOn` (`EnemySyncManager.cs:966`) — l'**unico** lettore di
+   `_BOSSDEAD` — chiamato da `HideDefeatedBosses` (`:732`). ⇒ *«è il server che fa il controllo»* sbaglia **di un
+   salto**: il server è **il corriere con la memoria**.
+2. **La direzione: il codice NON implementa «solo host→peer».** Flag e `bdead|` sono **simmetrici**: nessun gate di
+   ruolo, né nel patch di `SetFlag` *(`FlagHelper.cs:28-43`)* né nell'invio della morte *(`EnemySyncManager.cs:5846-5848`)* —
+   li manda **chi vede** la cosa. **Host e peer contano solo per danno e ownership**, nel server (`Server.cs:821-853`:
+   ownership **solo host** `:821-829`; danno host→tutti, peer→**solo host** `:830-853`). ⇒ che nei log si veda **solo
+   host→peer** dipende da un fatto del **save**, non dal codice: **solo G2 aveva la kill**.
 
-**⚠️ E non riguarda i quattro.** Riguarda **tutti i boss**: è il **canale**, non la famiglia di DLC della voce 9.
+**⚠️ E UN FATTO NUOVO, da leggere prima di ogni test: la sessione dei log NON conteneva una kill in co-op.**
+`[EnemyKill]` = **0** e `[BossDeath TX]` = **0** in **entrambi** i client; `bdead` = **0** in **tutti e tre** i log
+*(G1, G2, server)*. G2 **non** ha sconfitto il Warden in co-op: **ce l'aveva già nel save**, e il flag è stato
+**spinto dal suo save** alla connessione — `ServerOutput.log:8` `Creating new game data for team 1`, `:27`
+`Received new flag from G2: D17Z01_BOSSDEAD` *(patch di `SetFlag`: `FlagHelper.cs:28-43`; l'invio dei flag accesi
+all'ingresso: `FlagHelper.cs:22` + `:49-69`)*. ⇒ **la catena «kill in co-op → joiner» NON è stata misurata**: è provata
+la catena **«archivio del server → joiner»**, non **«kill → archivio → joiner»**. **Non è un dettaglio**: è la ragione
+per cui il test qui sotto viene **prima** di qualunque fix.
 
-**🎯 E deriva dal fix A.** La morte **recitata** (`bdead|` → `Kill()` → `Death()` in whitelist) è **irraggiungibile
-per un late joiner**: il fix A è arrivato, ma **solo per chi c'era**. ⇒ questa voce è **la sua coda**.
+**📋 LA LISTA DEL TESTING — due prove, e la prima è quella che manca.**
 
-**⭐ Il fix, già noto e senza canali nuovi.** **Mandare anche `bdead|<id>` nell'annuncio** — cioè aggiungere il
-prefisso agli id che `AnnounceDeathStateToPeers` ripete. **È nel canale che esiste già** *(il ricevente sa già
-cosa fare con quel prefisso: `:6881`)*, **non** un flag nuovo e **non** un pacchetto nuovo.
+| # | prova | cosa si guarda | cosa decide |
+|---|---|---|---|
+| **1** ⭐ | **kill in co-op, poi un joiner** *(un boss con flag, es. il Warden)* | `[EnemyKill]` e `[BossDeath TX]` sulla macchina che lo uccide; sul joiner il flag `D…_BOSSDEAD` ricevuto, `[BossCorpse] … veto SCAVALCATO`, e `bdead` | che il flag copra **una kill di questa sessione**, e **quale ramo** copre un joiner **vivo** *(guardia `:456`, qui sotto)* |
+| **2** | **i 4 della voce 9** *(servono i DLC)* | `[EnemyKill] … MORTO … vita=0`, come in voce 9 | se il canale della vita li vede: **è la misura che chiude la 9**; se non li vede, il fix è **lì** |
 
-**⚠️ E il pezzo che il fix deve tenere presente, altrimenti resta mezza riga.** `ApplyBossDeath` interviene
-**solo se il giocatore locale è a terra** *(`:456`, `if (!localDead) { … motivo=giocatore-locale-vivo; return; }`)*:
-⇒ rimandare `bdead|<id>` a un joiner **vivo** lo farebbe **uscire subito dal ramo**, senza applicare niente.
-**Quale delle due strade copra il joiner vivo** — il ramo generico, o un ramo `bdead|` che non si fermi alla
-guardia — **è la cosa che il test qui sotto dice**. ⚠️ **Il prefisso mancante è verificato; l'esito per il joiner
-vivo è la parte da misurare.**
+**⭐ IL FIX, ancora valido ma per i soli 4 — e con l'avviso.** **Mandare anche `bdead|<id>` nell'annuncio** — cioè
+aggiungere il prefisso agli id che `AnnounceDeathStateToPeers` ripete. **È nel canale che esiste già** *(il ricevente
+sa già cosa fare con quel prefisso: `:6881`)*, **non** un flag nuovo e **non** un pacchetto nuovo. ⚠️ **E il pezzo che
+il fix deve tenere presente, altrimenti resta mezza riga**: `ApplyBossDeath` interviene **solo se il giocatore locale è
+a terra** *(`:456`, `if (!localDead) { … motivo=giocatore-locale-vivo; return; }`)* ⇒ rimandare `bdead|<id>` a un
+joiner **vivo** lo farebbe **uscire subito dal ramo**, senza applicare niente. ⚠️ **E per i 12 il fix non aggiunge
+niente che serva**: lì il boss **non c'è**. ⇒ **il fix si valuta dopo il test 1, e si scrive per i quattro.**
 
-**📋 IL TEST — in casa, senza DLC.** Uccidere **un** boss qualunque, poi **riconnettersi con l'altro client**, e
-guardare se il boss è **ancora morto** o **è tornato vivo**. *(Dice **quanto** è grave e **quale ramo** lo copre; il
-difetto **non** dipende da lui: il prefisso manca comunque.)*
+**📌 I RIFERIMENTI, misurati a HEAD `7c5895d`.** `sendPlayerTeam` **`:385-413`** *(ciclo dei 14 tipi: `:396-412`)* ·
+`receiveEnemyDeathGlobal` **`:807-819`** *(rilancia e **non archivia**: la morte **non** ha memoria sul server)* ·
+danno/ownership **`:821-853`** · `receivePlayerProgress` **`:583-596`** · `AddTeamProgress` **`TeamInfo.cs:22-43`** · i
+12 flag **`FlagStates.cs:37-48`** · `FlagHelper` **`:22`, `:28-43`, `:49-69`** · `FirstBossDeadFlagOn` **`:966`** ·
+`HideDefeatedBosses` **`:732`** *(chiamata `:2732`)* · `AnnounceDeathStateToPeers` **`:4871`** · id nudi **`:4913-4914`** ·
+memoria **`:5864`** · prefisso **`:335` / `:349` / `:5848`** · `ApplyBossDeath` **`:440`** *(guardie `:448`, `:456`,
+`:465`, `:472`; `Kill()` `:531`)* · strada generica **`:6881-6889`**, `:7089`, `:6348`.
 
-**📌 I riferimenti, misurati a HEAD `599b796`.** `AnnounceDeathStateToPeers` **`:4871`** · gli id nudi
-**`:4913-4914`** · la memoria **`:5864`** · il prefisso **`:335` / `:349` / `:5848`** · `ApplyBossDeath` **`:440`**
-*(guardie `:448`, `:456`, `:465`, `:472`; `Kill()` `:531`)* · la strada generica **`:6881-6901`**, `:7089`,
-`:7101`.
+**📌 NOTA SULLE RIGHE — i riferimenti dei referti sono in ritardo.** La **whitelist** è citata `:378-386` e a HEAD è
+**`:398-406`** *(misurato: **20 righe di scarto**)*; `FirstBossDeadFlagOn` è citato `:836-856` **ma è a `:966`**. ⇒
+**valgono i numeri misurati a HEAD.**
 
-**📌 NOTA SULLE RIGHE — i riferimenti dei referti sono in ritardo.** Molti referti e il `TODO` citano la **whitelist**
-a `:378-386`: **a HEAD è a `:398-406`** *(misurato: **20 righe di scarto**)*. E **`FirstBossDeadFlagOn`** è citato
-`:836-856` **ma è a `:966`**. ⇒ **valgono i numeri misurati a HEAD.**
-
-**Stato.** **VERIFICATO NEL CODICE — DA FIXARE.** ⛔ **Non è un prezzo accettato** e **non è un limite
-dichiarato**: è **un prefisso mancante in un annuncio che esiste già**. ✅ **Fix: anche `bdead|<id>`
-nell'annuncio** ai nuovi arrivati. 📌 **La 9 e la 10 non si confondono**: la 9 chiede **una misura** sul
-rilevamento, la 10 **un prefisso** nell'annuncio — e **nessuna delle due** si chiude con un flag nuovo.
+**Stato.** **FATTO DI CODICE VERIFICATO — CONSEGUENZA SMENTITA.** ✅ Il prefisso manca *(verificato)*; ⛔ **ma «per lui
+il boss può essere ancora vivo» è falso per 12 boss su 16** *(log reali: flag dal server, boss nascosto)*. ⇒ **la voce
+non è più «da fixare per tutti i boss»**: è **la coda della 9** — *i 12 sono coperti dal flag, i 4 no* — e **il
+residuo è quello della 9**, che **resta da testare**. ⛔ **Nessun fix prima del test 1** *(kill in co-op → joiner)* e
+**prima della misura sui 4**. 📌 **La 9 e la 10 non si confondono**: la 9 chiede **una misura** sul rilevamento; la 10
+ha **una portata** — e **nessuna delle due** si chiude con un flag nuovo.
 
 ---
 
