@@ -314,12 +314,12 @@ fa**, e il difetto **resta noto e accettato**. *(La voce nel `TODO.md` resta dov
 
 ---
 
-## 7. ⚠️ I **TRE BUCHI** DEL RELAY DEGLI EFFETTI — effetti e proiettili che **non arrivano all'altra macchina** *(LIMITE DICHIARATO, prezzo accettato — NON un difetto in lavorazione)*
+## 7. ⚠️ I **TRE BUCHI** DEL RELAY DEGLI EFFETTI — effetti e proiettili che **non arrivano all'altra macchina** *(⚠️ **uno dei tre è chiuso nel codice**: la risoluzione dei prefab dei nemici — vedi "Stato"; **due restano aperti** — LIMITE DICHIARATO, prezzo accettato, NON un difetto in lavorazione)*
 
 > **Va detto per primo, come per la voce 5 e la 6.** Le voci 1-4 sono difetti **chiusi** o **residui rari**, da
 > riconoscere se ricapitano; la 5 e la 6 sono **prezzi accettati**. **Questa è della stessa famiglia, in una forma
 > più semplice**: non c'è nessuna decisione da prendere, perché **la forma del lavoro è già nota** *(due hook
-> mirati e una strada di risoluzione, §"Il fix" qui sotto)*. È nei bug noti **per decisione dell'utente**, con
+> mirati — la strada di risoluzione è fatta, §"Il fix" qui sotto)*. È nei bug noti **per decisione dell'utente**, con
 > queste parole: *«penso che non lo testeremo per adesso: da testare assieme a tutti i boss»*. ⇒ **è un LIMITE
 > DICHIARATO**, non un lavoro rimandato, e **se ricapita non è una regressione**: è il comportamento noto qui sotto.
 
@@ -337,7 +337,7 @@ categorie **non ci passano** (o non ci arrivano), e il risultato sul giocatore �
 |---|---|---|---|
 | **1** | `BossJumpAttack.InstantiateArea` — i **due `Object.Instantiate`** degli oggetti del salto | `BossJumpAttack.cs:269-277` | non passa dal `PoolManager` ⇒ **nessun hook lo vede**. Per `ElderBrother` **non è esercitabile** *(`instantiateOnStart`/`instantiateOnEnd` = `<null>`)*; **per le Amanecidas sì** |
 | **2** | `BossTeleportAttack.InstantiateArea` — gli oggetti del teletrasporto | `BossTeleportAttack.cs:73-81` | idem, un `Instantiate` grezzo. **Nessun boss misurato lo usa** |
-| **3** | i **proiettili dei nemici comuni** — la famiglia dichiarata come «`ProjectilePool` privato»: **`BellGhostVariant` · `RangedBoomerang` · `MeltedLady`** | `ProjectilePool.cs:12-33` · i tre attacchi (sotto) | **il buco è vero, la causa scritta nei referti no** — la correzione qui sotto è la ragione per cui quei proiettili non arrivano |
+| **3** | i **proiettili dei nemici comuni** — la famiglia dichiarata come «`ProjectilePool` privato»: **`BellGhostVariant` · `RangedBoomerang` · `MeltedLady`** | `ProjectilePool.cs:12-33` · i tre attacchi (sotto) | **il buco era vero, la causa scritta nei referti no** — e **sul ricevente è chiuso nel codice** *(`36a8878`: la sorgente ② li cerca nei **loro** campi)*: resta **il test in gioco** *(vedi "Stato")* |
 
 - ⚠️ **E restano fuori, per dichiarazione esplicita** *(come già scritto nel referto)*: i **~18 `Object.Instantiate`
   grezzi** nei boss *(Piety 3, Snake 2, Crisanta 2…)*, i **cosmetici** fuori dal filtro *(`CorpseAnimationFx`,
@@ -363,19 +363,24 @@ plausibile non è la catena vera»)*:
   `PoolManager.Instance.ReuseObject(projectilePrefab, pool.transform.position, …)` — **è un `Transform`, non un
   pool**.
 - ⇒ ⭐ **il canale del relay VEDE quelli spawn** *(`IsInteresting`: `Projectile`/`Weapon` nei figli del prefab,
-  `EffectRelay.cs:289-296`)*. **E allora perché non arrivano?**
+  `EffectRelay.cs:1429-1457`)*. **E allora perché non arrivavano?**
 
-**Perché il ricevente non sa ricostruirli.** Il catalogo del relay è costruito **solo dai prefab del boss
-locale** *(`FindBosses`, namespace `Gameplay.GameControllers.Bosses`; `EffectRelay.cs:630-734`)*, e la risoluzione
-è **una sola domanda**: *«il nome è un effetto del **mio** boss?»* *(`:472-488`)*. Un proiettile di un **nemico
-comune** non sta in nessun campo di nessun boss ⇒ ***`[FxRelay] non risolto`*** ⇒ **la copia non nasce, e sull'altra
-macchina il proiettile non esiste.**
+**Perché il ricevente non lo sapeva ricostruire — e cosa è cambiato.** Il catalogo del relay era costruito **solo
+dai prefab del boss locale** *(`FindBosses`, namespace `Gameplay.GameControllers.Bosses`;
+`EffectRelay.cs:1076-1119`)*, e la risoluzione era **una sola domanda**: *«il nome è un effetto del **mio** boss?»*.
+Un proiettile di un **nemico comune** non sta in nessun campo di nessun boss ⇒ ***`[FxRelay] NON RISOLTO "<nome>"
+provate: boss,nemici,penitente`*** ⇒ **la copia non nasceva, e sull'altra macchina il proiettile non esisteva.**
+**✅ E questo è il pezzo che è stato chiuso** *(`36a8878`)*: la risoluzione ha ora **quattro sorgenti in ordine, e si
+ferma alla prima che riesce** *(`Resolve`/`ResolveCore`, `EffectRelay.cs:788-901`)* — **① i campi del boss** *(il
+catalogo, come prima)* → **② i campi dei nemici in scena**, anche spenti *(`SearchEnemies`, `:910-971`)* → **③ i campi
+del `Penitent` locale** *(`:979-1013`)* → **④ la cache per nome**. ⚠️ **Il canale non c'entrava**: i `mando` c'erano
+già *(riga sopra)*; era **il catalogo del ricevente** a non trovare un nome che il mittente aveva mandato.
 
-**⚠️ E la conseguenza, che cambia il fix**: la cura **non è un hook sul `ProjectilePool`** *(sarebbe un hook su
-codice che il gioco non esegue)*: è **allargare il catalogo del ricevente ai nemici comuni**, oppure dargli una
-seconda strada di risoluzione. **Il buco resta dichiarato lo stesso**, e per una ragione che vale a prescindere:
-**`ProjectilePool` è fuori dal `PoolManager`**, quindi **se un giorno qualcosa ci passasse davvero, nessun hook lo
-vedrebbe**.
+**⚠️ E la conseguenza, che ha scelto il fix**: la cura **non è un hook sul `ProjectilePool`** *(sarebbe un hook su
+codice che il gioco non esegue)*: è **allargare il catalogo del ricevente ai nemici comuni**, cioè dargli una
+seconda strada di risoluzione — **ed è quello che è stato fatto** *("Il fix", punto ②)*. ⚠️ **Resta vero, però, che
+`ProjectilePool` è fuori dal `PoolManager`**: **se un giorno qualcosa ci passasse davvero, nessun hook lo
+vedrebbe** — è un'affermazione sul **canale**, e la risoluzione non la copre.
 
 ### ⚠️ Perché è un buco di **gameplay**, non solo di immagine
 
@@ -394,40 +399,60 @@ vedrebbe**.
     danno può quindi arrivare anche se il proiettile non si vede**: è **una delle cose da misurare** nella run dei
     boss, non da dare per scontata in nessuna delle due direzioni.
 
-### ⭐ Il fix, che è noto: **due hook e una risoluzione**
+### ⭐ Il fix: **una parte è fatta, e restano due hook**
 
 1. **`BossJumpAttack.InstantiateArea`** e **`BossTeleportAttack.InstantiateArea`**: **un `Postfix` per metodo**,
    che manda `prefab + posizione` sul **canale che esiste già** *(tipo `CoopEffectRelay`, 201)*. È **lavoro
-   meccanico**: non è ricerca, la forma è quella del relay.
+   meccanico**: non è ricerca, la forma è quella del relay. ⛔ **I due `InstantiateArea` restano da fare** *(2 hook
+   in più)*: **nessun hook li vede**, ed è il buco che **nessun log può smentire** — *il segnale è il silenzio*.
 2. **I proiettili dei nemici comuni**: **una strada di risoluzione in più sul ricevente** *(il catalogo non è più
-   «solo il boss»)*. ⚠️ **Non un hook sul pool privato**, per la ragione qui sopra.
+   «solo il boss»)*. ⚠️ **Non un hook sul pool privato**, per la ragione qui sopra. ✅ **FATTO** *(`36a8878`)*: le
+   **quattro sorgenti ①②③④** *(§"Perché il ricevente non lo sapeva ricostruire")*. ⇒ **il meccanismo è provato**
+   *(il **canale**: in gioco, con un altro nemico; la **sorgente ②**: misurata offline sui tipi veri)*; quello che
+   resta su `BellGhostVariant` · `RangedBoomerang` · `MeltedLady` è **un test in gioco**, non del codice *(vedi
+   "Stato")*.
 
-⇒ **Tre punti, tutti confinati**, e **nessuno dei tre tocca la vita, la morte o il flag**: sono istanziazioni.
+⇒ **Due punti aperti, tutti confinati**, e **nessuno di essi tocca la vita, la morte o il flag**: sono istanziazioni.
 
 ### 📌 E cosa fare nel frattempo: **niente da nascondere**
 
 **Si sa, e si dichiara.** Se un giocatore riporta *«il proiettile non si vede»* o *«quel colpo non mi ha fatto
-niente»*, **non è una regressione e non va re-indagato**: è uno di questi tre buchi, ed è già tutto scritto qui.
-**Nessun log da raccogliere per riconoscerlo** — le firme qui sotto bastano.
+niente»*, **non è una regressione e non va re-indagato**: è uno dei buchi di questa voce *(`RISOLTO`/`NON RISOLTO`
+dicono **quale**)*, ed è già tutto scritto qui. **Nessun log da raccogliere per riconoscerlo** — le firme qui sotto
+bastano.
 
 ### 🔎 Se ricapita, queste sono le firme nel log
 
 ```
 [FxRelay] mando n=… prefab="<il nome del proiettile>" …     <- c'e' sul mandante: il canale lo vede
-   e sull'altra macchina NIENTE "istanzio" per quel nome, ma:
-[FxRelay] non risolto prefab="<idem>" da=<peer>: non e' nel catalogo del boss locale (N nomi)
+   e sull'altra macchina, per quel nome, una delle due:
+[FxRelay] RISOLTO "<idem>" da=<boss|nemici|penitente|cache> in=<ms>ms mittente=<peer> (…)  <- ⭐ la sorgente che ha vinto
+[FxRelay] istanzio prefab="<idem>" pos=(…) rotZ=… da=<peer>   <- la copia nasce dal SUO pool
+   oppure, se nessuna delle sorgenti conosce il nome:
+[FxRelay] NON RISOLTO "<idem>" provate: boss,nemici,penitente mittente=<peer> (in=<ms>ms, catalogo boss=N nomi, …)
 [FxRelay] riepilogo scena=… mandati=N istanziati=0 scartatiPerDedup=0 nonRisolti=M catalogo=K
 ```
+
+**⚠️ E la riga `NON RISOLTO` non è più filtrata dal tetto di una riga al secondo**: **una riga per nome per scena**,
+e nessuna si perde — prima un nome nuovo poteva essere **ingoiato dal throttle**, e una firma che perde righe non è
+una misura.
 
 **⚠️ E per i due boomerang, la riga che dice che il danno non c'è**: nessun `[DannoPeer] colpo del NEMICO
 inoltrato`, e al suo posto *(throttled)* `[DannoPeer] … non inoltrato: l'attaccante non e' un NEMICO`. **Per gli
 `InstantiateArea` invece il segnale è il silenzio**: nessuna riga `mando` per quei prefab, perché **l'hook non
 esiste** — *è il buco che nessun log può vedere*.
 
-**Stato.** **LIMITE DICHIARATO — prezzo accettato.** ⛔ **Non è un difetto in lavorazione**: la sua forma è nota
-*(due hook + una risoluzione)* ed è **in attesa del test assieme ai boss**, per decisione dell'utente. 📌 **La voce
-di lavoro resta in `docs\TODO.md` §2.4**, che **non è stata toccata**: qui c'è **cosa dichiarare**, là c'è **cosa
-fare**.
+**Stato.** **UNA PARTE CHIUSA, DUE BUCHI APERTI — limite dichiarato, prezzo accettato.** ⭐ **La risoluzione
+multi-sorgente** *(strade ①②③④, `36a8878`)* **chiude il buco dei prefab dei 3 nemici e del `Penitent`**: il
+**canale** li vedeva già *(`mando`)*, era **il catalogo del ricevente** a non trovarli — e adesso li cerca anche nei
+**loro** campi. ⇒ ⚠️ **"i 3 nemici" *(BellGhost · RangedBoomerang · MeltedLady)* non sono quindi più un buco di
+codice**: sono **osservabili da testare in gioco** *(il canale è provato in gioco con un altro nemico, la sorgente ②
+è misurata offline sui tipi veri: manca **la scena viva**; da leggere `RISOLTO "…" da=nemici in=…ms`, e nel riepilogo
+`nomi=[… nemici:K …]` con K > 0)*.
+⛔ **Restano aperti, e sono ancora solo codice, i 2 `InstantiateArea`** *(BossJump · BossTeleport ⇒ **+2 hook**)*:
+**nessun hook li vede**, e per quelli **il segnale è il silenzio**. ⛔ **Non è un difetto in lavorazione**, per
+decisione dell'utente. 📌 **La voce di lavoro resta in `docs\TODO.md` §2.4**, che **non è stata toccata**: qui c'è
+**cosa dichiarare**, là c'è **cosa fare**.
 
 ---
 
