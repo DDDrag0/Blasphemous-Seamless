@@ -7686,3 +7686,20 @@ ESITO: ALMENO UN marker richiesto e' ASSENTE
   restano valide**, è la **cornice** che cambia — da «da testare» a «deciso»)*.
 - ⚠️ **La data** segue la serie del file *(`17:20` → questa)*, e questa volta **l'orologio della macchina le va dietro**: il
   revert `05a3209` è datato **`17:58`**.
+
+## [2026-10-19 19:00] ⭐ **I DUE `InstantiateArea` SONO CHIUSI — 2 `Postfix`, 270 → 272**, e ⚠️ **DUE CORREZIONI AI REFERTI** *(il «2» è **1**; e «nessun catalogo li può vedere» è **falso**)*
+
+- ✅ **Il fix** *(branch `fix-f1a`, da `07a1fd4`)*: **due `Postfix`** — `BossJumpAttack.InstantiateArea` e `BossTeleportAttack.InstantiateArea` — in **`Blasphemous.Multiplayer.Client\EffectRelayInstantiateArea.cs`** *(file nuovo: **nel relay non è stata toccata una riga**)*. Il corpo è **una riga**: `EffectRelay.OnPoolSpawn(prefab, __instance.transform.position, Quaternion.identity)` ⇒ **filtro, freno, dedup, payload e invio restano dove sono** *(nessuna copia)*. Tutto in `try/catch`: un hook non deve mai rompere un attacco.
+- ✅ **La posizione, che non è nella firma** *(`private void InstantiateArea(GameObject)`)*: `__instance.transform.position`, che **coincide in 13 siti su 14**; ⚠️ **il 14º è `JarThrower`** *(`Assembly-CSharp.cs:107392` passa `JarThrower.transform`, non il padre)* ⇒ per quel chiamante la posizione trasmessa è **quella del lanciatore**: **limite dichiarato**, non corretto qui.
+- ✅ **Il costo, misurato**: **270 → 272** bersagli *(=`verify-patch-targets.ps1` sulla DLL deployata: **272**, tipo assente 0, metodo assente 0, «tutti validi»)*. Deploy fatto; il marker `[FxRelay] hook InstantiateArea: prefab=… da=<BossJump|BossTeleport>` è **nella DLL deployata** *(byte-check, non hash; scritto **per concatenazione**, §④ del `17:20`)*.
+- 🔴 **Il rischio, dichiarato**: il filtro del **mittente** è `Weapon|Projectile` ⇒ **se il prefab trascinato in quei campi è cosmetico, il pacchetto non parte**: l'hook scatta, scrive la sua riga, e non manda niente *(innocuo, ma muto)*. Il test lo distingue: `RISOLTO` **con** `istanzio` sul peer = funziona; `RISOLTO` **senza** `istanzio` = cosmetico. **Fonti** *(non versionate)*: `scratch\REFERTO-2-HOOK.md`, `scratch\ARCHIVIO-2-INSTANTIATEAREA.md`.
+
+### ⚠️ Le due correzioni — *i referti dicevano altro*
+
+| # | dov'era scritto | diceva | è |
+|---|---|---|---|
+| **1** | `:6825` («i **2 `Object.Instantiate`** degli oggetti del salto») · `:7556` · e la stessa frase in **5 referti** di `scratch\` | **2** `Object.Instantiate` in `BossJumpAttack` | ⭐ **1**: `instantiateOnStart` è un **campo MORTO** — nessun `ldfld` nel dump IL ⇒ **1 `Instantiate`, 1 chiamante vivo** *(`OnLanded` → `instantiateOnEnd`)*. Il teletrasporto invece ha davvero **2 campi vivi** *(`instantiateOnTeleportIn`/`Out`)*: il conto giusto per i due metodi è **1 + 2 = 3 siti d'istanziazione**, non 2. |
+| **2** | `:7078` *(+ `:6910`)* | «i due `InstantiateArea`… **non passano dal pool**, quindi **nessun catalogo li può vedere**» | ⛔ **falso, la seconda metà**: il catalogo del **ricevente** li vede **per costruzione** — i prefab sono **campi `public GameObject` sul componente del boss** *(verificati sulla DLL del gioco: `instantiateOnEnd`, `instantiateOnTeleportIn`, `instantiateOnTeleportOut`)* e `EffectRelay.Harvest` scandisce **tutti** i campi `GameObject`, pubblici e privati. È il **filtro del MITTENTE** *(`Weapon|Projectile`)* che li scarta **se cosmetici**. ⇒ **non era un buco di catalogo: era un buco di mittente** — ed è quello che questi 2 hook chiudono. |
+
+- 📌 **Solo aggiunte in coda**: nessuna riga delle sezioni precedenti toccata, `docs\BUG-NOTI.md` **non toccato** *(le sue voci 7 restano come sono: la chiusura dei buchi si registra qui)*.
+- ⚠️ **Il «quasi» che resta, dichiarato**: il ricevente istanzia **dal pool** *(`ReuseObject(…, true, 4)`)*; un prefab **senza `PoolObject`** viene comunque riusato *(verificato)*, ma senza `OnObjectReuse` un effetto che si autodistrugge lascia il pool «bucato» ⇒ **da guardare nel test**, non un difetto noto.
