@@ -393,6 +393,12 @@ namespace Blasphemous.Multiplayer.Client
             // that follows is what shows the step.
             ModLog.Info($"{PlayerDeathSync.ColpaLine()} · dove=morte");
 
+            // ⭐ ① LA COLPA SULLA VITA — il suo unico contatore, e questa guardia del gioco e' anche la
+            // sua: `Status.Dead && !DeathEventLaunched` e' vero UNA volta per morte. Il +1 sta qui e non
+            // in `AnnounceDeath`, che ritorna subito quando non c'e' rete: la colpa non e' una cosa di
+            // rete, e in single player deve contare lo stesso. Vedi `LifeGuilt.cs`.
+            LifeGuilt.RegisterDeath();
+
             PlayerDeathSync.AnnounceDeath();
         }
     }
@@ -425,6 +431,13 @@ namespace Blasphemous.Multiplayer.Client
         public static void Postfix()
         {
             PlayerDeathSync.AnnounceAlive();
+
+            // ⭐ ② LA COLPA SULLA VITA — la riapplicazione, e NON e' un'ottimizzazione: `MaxFactor` vive
+            // sull'ISTANZA dell'attributo, che rinasce a ogni `Instantiate` (`SpawnManager.cs:489`) con
+            // `_maxFactor = 1f`. Senza questa riga la penalita' sparirebbe al primo respawn. Va PRIMA
+            // della riga `[Colpa]` qui sotto di proposito: cosi' quella riga, che gia' stampa
+            // `vita: fattore = ...` e `vita: max = ...`, diventa la verifica della scrittura.
+            LifeGuilt.ApplyOnSpawn();
 
             // MEASUREMENT ONLY - every spawn, including the respawn after a death and every level load.
             // This is the moment the native guilt is applied (GuiltManager.OnPenitentReady sets

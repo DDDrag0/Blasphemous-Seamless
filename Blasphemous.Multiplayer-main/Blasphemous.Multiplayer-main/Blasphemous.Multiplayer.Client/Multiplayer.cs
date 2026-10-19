@@ -90,6 +90,19 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         PenitentLifeMarker.Arm();
     }
 
+    // ⭐ LA COLPA SULLA VITA — una partita NUOVA riparte senza colpa. Il file del contatore e' UNO solo
+    // (`Modding\data\Multiplayer\life-guilt.txt`), non uno per slot: senza questa riga una nuova partita
+    // erediterebbe le morti della precedente. Il ModdingAPI invoca questo evento quando il menu
+    // principale avvia una partita nuova o converte in NG+ (`ModPatches.cs:20-21`), cioe' esattamente i
+    // casi in cui il gioco azzera anche la propria colpa. Vedi `LifeGuilt.cs`.
+    /// <summary>
+    /// Una partita nuova riparte senza la colpa sulla vita (vedi `LifeGuilt.cs`).
+    /// </summary>
+    protected override void OnNewGame()
+    {
+        LifeGuilt.OnNewGame();
+    }
+
     // TEMPORARY (CutsceneProbe): the probe disarms itself on shutdown, so the events are never left
     // subscribed on a dying object. Log only.
     protected override void OnDispose()
