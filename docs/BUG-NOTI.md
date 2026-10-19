@@ -19,8 +19,9 @@
 **Perché.** Il confine fra *"un difetto che non si riproduce"* e *"un difetto che stiamo ancora
 indagando"* è **sottile, e sbagliarlo è facile**: la prima stesura di questo file ci è caduta dentro,
 elencando tre difetti **ancora in lavorazione** *(il desync del falò col non-host presente, l'AI in
-pausa dopo il parry, la divergenza dopo il falò)* che vivono nel `TODO.md` con la loro voce e la loro
-priorità — e lì devono restare, **perché non sono abbandonati, sono aperti.**
+pausa dopo il parry, la divergenza dopo il falò)* che vivevano nel `TODO.md` *(cancellato in
+`bdea334`: **la storia è in `git log docs/TODO.md`**)* con la loro voce e la loro
+priorità — e lì dovevano restare, **perché non erano abbandonati, erano aperti.**
 
 **⇒ Se lo aggiornasse l'agente a ogni sessione, tornerebbe a riempirsi di lavoro in corso**, e la
 sezione perderebbe l'unica cosa che la rende utile: **che tutto ciò che sta qui è roba su cui non
@@ -33,8 +34,9 @@ stiamo più lavorando, ma che va riconosciuta se ricapita.**
 ## ⚠️ Il criterio, e cosa NON va in questo file
 
 **Ci va un difetto che non si riesce a far succedere quando si vuole.**
-**NON ci va un difetto che stiamo ancora indagando**: *quelli vivono nel `TODO.md`, con la loro voce e la
-loro priorità.* Se un difetto è **ancora aperto e in lavorazione**, metterlo qui lo farebbe sembrare
+**NON ci va un difetto che stiamo ancora indagando**: *quelli vivevano nel `TODO.md` — **cancellato in
+`bdea334`**, la storia è in `git log docs/TODO.md` — con la loro voce e la loro priorità.* Se un
+difetto è **ancora aperto e in lavorazione**, metterlo qui lo farebbe sembrare
 abbandonato — e non lo è.
 
 **La forma giusta di una voce qui**: *cos'è, come si riconosce, cosa si sa della causa, e cosa serve per
@@ -163,7 +165,7 @@ in cui il gioco rimette a posto da solo `ResetManager()`, il `FADE` e `DEAD_SCRE
 **⚠️ E la conseguenza, che è la parte che conta.** Quel load **distrugge la bossroom, il boss e la
 cutscene in corso** — sulla macchina del morto. È **lo stesso danno** che il progetto ha già misurato due
 volte dal lato opposto: un respawn che scatta mentre la scena del boss è in corso **la cancella**
-(`docs\TODO.md:6191`: *"ha respawnato uno spettatore e ha distrutto la cutscene"*).
+(`scratch\DIAGNOSI-MORTE-STUCKATA.md`: *"ha respawnato uno spettatore e ha distrutto la cutscene"*).
 
 **Perché NON si blocca l'input** *(verificato: `scratch\DIAGNOSI-MORTE-STUCKATA.md` §4.3 e §5.2)*.
 **La schermata di morte legge `UnityEngine.Input` direttamente.** ⇒ **bloccarle l'input non la ferma**:
@@ -272,7 +274,7 @@ la stessa causa.)*
 quando `FADE` è acceso e `PLAYERDEAD` dura da più di *N* secondi — **è stata scartata per decisione**: quel
 `Respawn()` **può far saltare una cutscene**, cioè **lo stesso danno** che il progetto evita da giorni *(un
 respawn che scatta mentre la scena del boss è in corso **la cancella**: è lo stesso fatto già misurato nella
-voce 5, `docs\TODO.md:6191`)*. ⇒ **Sarebbe curare un danno con lo stesso danno.** **SCARTATO per decisione,
+voce 5, `scratch\DIAGNOSI-MORTE-STUCKATA.md`)*. ⇒ **Sarebbe curare un danno con lo stesso danno.** **SCARTATO per decisione,
 non rimandato.**
 
 **✅ E la via d'uscita che esiste già.** ⭐ **Entrare e uscire**: un **cambio di livello** — *e il load è l'unico
@@ -307,10 +309,11 @@ non lascia bloccati**: **entrare e uscire** resetta il fade. 📌 **Se un giocat
 saltare la cutscene del boss mentre ero morto, ed è rimasto lì"* — **è questo**, ed è già tutto scritto qui:
 **serve il log, non un fix a naso.**
 
-**⚠️ E il legame con `docs\TODO.md`, dichiarato invece che taciuto.** In `docs\TODO.md` *(§2.1, `:6801`, e la
-lista corta a `:6907`)* la finestra dei 1,5 s compare **ancora come "in attesa di una decisione"**, e la sua
-opzione 1 è **proprio** il `Respawn()` automatico. **Questa voce registra la decisione presa**: il timer **non si
-fa**, e il difetto **resta noto e accettato**. *(La voce nel `TODO.md` resta dov'è: **non è stata toccata**.)*
+**⚠️ E il legame con la voce di lavoro, dichiarato invece che taciuto.** La voce che teneva aperta la
+finestra dei 1,5 s — *"in attesa di una decisione"*, con il `Respawn()` automatico come opzione 1 —
+viveva nel `docs\TODO.md`, che **non esiste più** *(cancellato in `bdea334`: la storia è in
+`git log docs/TODO.md`)*. ⇒ **il rimando, da oggi, è questa voce**: il timer **non si fa**, e il difetto
+**resta noto e accettato**. *(La decisione è presa, e sta qui.)*
 
 ---
 
@@ -351,7 +354,7 @@ categorie **non ci passano** (o non ci arrivano), e il risultato sul giocatore �
 
 **Il referto dice** *(`scratch\REFERTO-RELAY-EFFETTI.md` §6, ripetuto in `DIAGNOSI-VOCABOLARIO-EFFETTI.md` §a)*:
 *«`ProjectilePool` **privato**, usato da **3 nemici** ⇒ i loro proiettili non sono sincronizzati»*. **Sul
-decompilato questo non regge, e va corretto qui** *(è la stessa lezione di `docs\TODO.md` §4: «una catena
+decompilato questo non regge, e va corretto qui** *(è la stessa lezione di `scratch\BUGNOTI-3BUCHI-E-23BOSS.md`: «una catena
 plausibile non è la catena vera»)*:
 
 - **`ProjectilePool.Spawn` non è chiamato da nessuna parte** nel gioco: **0 chiamate** su tutta `Assembly-CSharp`
@@ -467,8 +470,9 @@ codice**: sono **osservabili da testare in gioco** *(il canale è provato in gio
 è misurata offline sui tipi veri: manca **la scena viva**; da leggere `RISOLTO "…" da=nemici in=…ms`, e nel riepilogo
 `nomi=[… nemici:K …]` con K > 0)*. **E lo stesso vale per i 2 `InstantiateArea`**: **in gioco non ancora
 esercitati** — un **osservabile** *(la riga dell'hook, qui sopra)*, **non un limite**.
-⛔ **Non è un difetto in lavorazione**, per decisione dell'utente. 📌 **La voce di lavoro resta in `docs\TODO.md`
-§2.4**, che **non è stata toccata**: qui c'è **cosa dichiarare**, là c'è **cosa fare**.
+⛔ **Non è un difetto in lavorazione**, per decisione dell'utente. 📌 **La voce di lavoro non c'è più**:
+stava in `docs\TODO.md` §2.4, **cancellato in `bdea334`** *(la storia: `git log docs/TODO.md`)* — qui
+c'è **cosa dichiarare**, e **i tre pezzi sono chiusi nel codice**: non resta che la misura in gioco.
 
 ---
 
@@ -587,9 +591,10 @@ già provata su `ElderBrother` e con la lista dei 12 già letta. **Se un giocato
 
 **Stato.** **LIMITE DICHIARATO — prezzo accettato.** ⛔ **Non è un difetto in lavorazione**: la mira è **provata su
 un boss** *(`f3084ea`)* e per gli altri è **il conteggio dei 233 siti**, non una run; la morte recitata è **provata
-su un tipo**, e per gli altri è **la tabella**, non una misura *(sta già scritto in `docs\TODO.md` §6, punti 4 e
-5)*. 📌 **Le voci di lavoro restano in `docs\TODO.md` §2.5**, che **non è stata toccata**: qui c'è **cosa
-dichiarare**, là c'è **cosa fare**.
+su un tipo**, e per gli altri è **la tabella**, non una misura *(le due tabelle, qui sopra)*. 📌 **Le voci
+di lavoro non ci sono più**: stavano in `docs\TODO.md` §2.5, **cancellato in `bdea334`** *(la storia:
+`git log docs/TODO.md`)*: qui c'è **cosa dichiarare**, e il lavoro per boss **resta dichiarato, non in
+corso**.
 
 ---
 
@@ -637,7 +642,7 @@ dell'uccisione:
 | esito | cosa vuol dire | cosa fare |
 |---|---|---|
 | **la riga c'è** | ⭐ il canale **li copre già**: il predicato li vede e la morte viaggia | **niente da fare** — la voce si chiude **con la misura**, non con un fix |
-| **la riga NON c'è** | il predicato **non li vede**, e la morte si spegne per un'altra strada | ⚠️ **il fix è lì**: estendere il rilevamento a `Status.Dead` — la sola riga che il `docs\TODO.md:7567-7571` prevede |
+| **la riga NON c'è** | il predicato **non li vede**, e la morte si spegne per un'altra strada | ⚠️ **il fix è lì**: estendere il rilevamento a `Status.Dead` — la sola strada che la voce di lavoro prevedeva *(era `docs\TODO.md` §7, **cancellato in `bdea334`**)* |
 
 **⚠️ E i limiti del test, da dire prima di chiederlo a qualcuno.** (1) ⚠️ **Servono i DLC**: chi non li ha **non
 può** fare questa prova, e non c'è modo di aggirarla. (2) ⛔ Nei log che abbiamo **i quattro hanno 0 righe** —
@@ -646,10 +651,10 @@ stato ucciso in co-op**, quindi oggi la domanda è **senza risposta per assenza 
 
 **⚠️ E una parte è dichiarata non verificata, e va tenuta così.** La lettura per **sotto-sistemi** — il contatore
 di **Jibrael** *(Amanecidas)*, il percorso **arcade** di Husk, lo **script** di Viridiana — riposa su **una sola
-riga** di `docs\TODO.md` (`:7568`), **mai verificata**: **nessun referto** la nomina. ⇒ **non è un fatto, è una
+riga** — questa, qui sopra — **mai verificata**: **nessun referto** la nomina. ⇒ **non è un fatto, è una
 dichiarazione**: serve a dire *dove guardare*, non *cosa succede*.
 
-**📌 NOTA SULLE RIGHE — i riferimenti dei referti sono in ritardo.** Molti referti e il `TODO` citano la **whitelist**
+**📌 NOTA SULLE RIGHE — i riferimenti dei referti sono in ritardo.** Molti referti citano la **whitelist**
 a `EnemySyncManager.cs:378-386`: **a HEAD `599b796` è a `:398-406`** *(misurato: **20 righe di scarto**)*. E
 **`FirstBossDeadFlagOn`** — il **solo** lettore di `_BOSSDEAD`, cioè il fix C — è citato `:836-856` **ma è a
 `:966`**. ⇒ **valgono i numeri misurati a HEAD**, non quelli dei referti.

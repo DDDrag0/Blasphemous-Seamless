@@ -85,3 +85,13 @@ Now there is **one world**:
 
 Some bosses — the DLC and the later additions — have no classic death flag, and the per-boss behaviour
 has not been tuned for all of them. See `BUG-NOTI.md`.
+
+## 7. What has not been seen in game yet
+
+Seven features are implemented and verified in code, but nobody has observed them in a real match:
+the per-boss aim and recited death · the projectiles of three enemies · the four bosses without a
+classic death flag (including Viridiana, who may never die) · the two `InstantiateArea` hooks ·
+the life guilt in PE02 / Demake · the 10-14 unit position divergence · the co-op gate edge
+(connect and disconnect).
+
+They are harmless to play with. Details, log strings and test steps are in the development notes.

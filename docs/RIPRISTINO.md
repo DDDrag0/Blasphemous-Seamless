@@ -26,8 +26,8 @@ cd ..\..
 & '.\tools\marker-check.ps1' -Dll 'Modding\plugins\BlasClient.dll' -Marker '<i marker della versione>'
 ```
 
-> ⚠️ **Dal 2026-10-19 `tools\verify-deploy.ps1` NON ESISTE PIÙ** *(cancellato, vedi `docs\TODO.md`
-> `[2026-10-19 00:15]`)*: stampava *"Puoi testare"* **anche su una DLL sbagliata** *(marker fermi
+> ⚠️ **Dal 2026-10-19 `tools\verify-deploy.ps1` NON ESISTE PIÙ** *(cancellato; la storia è in
+> `git log docs/TODO.md`)*: stampava *"Puoi testare"* **anche su una DLL sbagliata** *(marker fermi
 > all'8-12/10, hash vincolante solo con `-ExpectedHash`, marker saltati in silenzio senza
 > `scratch\cecil`)* ⇒ **è stato usato per giorni proprio perché mentiva**. Il suo sostituto è
 > **`tools\marker-check.ps1`**, che legge i byte della DLL e **sa dire NO**.
@@ -93,11 +93,11 @@ cancellato il 2026-10-19 perché rispondeva 0 anche su una DLL vecchia.)*
   *(l'hash del gioco e il contatore di Unity)*.
 - **Il log è leggibile**: la cadenza di scrittura dei nemici è **separata** da quella del rescan
   *(10 s invece di 0,5 s)*, perché alzare il rescan avrebbe **peggiorato la correttezza**. E le **35
-  voci chiuse del TODO** sono compresse, col testo integrale in fondo.
+  voci chiuse** sono compresse, col testo integrale in fondo.
 - **🛠 Due strumenti nuovi**: `tools\verify-patch-targets.ps1` controlla **tutti i 235 bersagli**
   delle patch Harmony, ed è **eseguito dal deploy** — *perché un nome sbagliato in `[HarmonyPatch]`
   compila e poi **aborta `PatchAll`**, uccidendo la mod a runtime. È già successo.*
-  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — il numero «235» era vecchio di giorni.** Al momento di
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della lista di lavoro) — il numero «235» era vecchio di giorni.** Al momento di
   > questa nota il verifier riporta **263 bersagli** *(`scratch\REFERTO-SPAM-LOG.md:12`: «263 bersagli controllati,
   > tipo assente 0, METODO assente 0 … baseline 263 confermata», e `scratch\REFERTO-PEER-INVISIBILE.md` lo
   > riconferma sulla DLL deployata)*. **Il campo si è mosso due volte in pochi giorni**: `5021f23` dichiara
@@ -114,21 +114,23 @@ cancellato il 2026-10-19 perché rispondeva 0 anche su una DLL vecchia.)*
   conteggi degli spawn point coincidono)*.
 - **La voce 51 è aperta**: al passaggio di proprietà si comunica **chi** simula, **non dove si trova**
   il nemico — *e il nuovo proprietario impone la sua copia.*
-  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — la voce 51 è CHIUSA e verificata dall'utente.** La cura
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della lista di lavoro) — la voce 51 è CHIUSA e verificata dall'utente.** La cura
   > è arrivata in cinque tentativi, e **la causa vera era un gate di attività**: l'invio della posizione era
   > condizionato ad `activeInHierarchy`, quindi un nemico **fuori dalla visuale del proprietario non veniva mai
   > trasmesso** e l'altra macchina ripiegava sullo SPAWN *(`df45f72f`, più `3f5ce69`, `a41e7b6`, `4433d70`)*.
-  > L'utente: *"abbiamo risolto entrambe la 35 e lo spawn"*. **Vedi `docs\TODO.md`, `### Voce 51`.**
+  > L'utente: *"abbiamo risolto entrambe la 35 e lo spawn"*. **Vedi i quattro commit qui sopra: sono la voce 51, chiusa.**
 - **La voce 11 è aperta e va RISCRITTA prima di agganciare qualcosa**: il testo indicava
   `EnablePhysics` fra i tipi coinvolti, e **nessuno di quei 16 la chiama** — gli 8 call-site reali sono
   altri. *Un fix costruito sul nome sbagliato è il tipo di errore già costato una sessione.*
-  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — la voce 11 è CHIUSA, ed è chiusa PROPRIO perché il testo
-  > era sbagliato a metà** *(`a60e1df` / `c55d80e`: «il testo era sbagliato»; il TODO ha al riguardo la sezione
-  > «E LA VOCE 11 ERA SCRITTA MALE A METÀ — corretto, verificato in IL», riga 4120)*. **⇒ Non c'è niente da
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della lista di lavoro) — la voce 11 è CHIUSA, ed è chiusa PROPRIO perché il testo
+  > era sbagliato a metà** *(`a60e1df` / `c55d80e`: «il testo era sbagliato»; la diagnosi corretta è quella,
+  > e la sezione «E LA VOCE 11 ERA SCRITTA MALE A METÀ — corretto, verificato in IL» è rimasta nel
+  > `git log docs/TODO.md`)*. **⇒ Non c'è niente da
   > riscrivere prima di agganciare qualcosa: la riscrittura è stata fatta, e la diagnosi corretta è quella.**
 - **Le voci 7, 9, 10, 15, 18, 35, 36, 40, 43, 45, 52, 53** sono aperte: ottimizzazioni, procedure e
-  difetti minori. Le vedi tutte nella lista iniziale del TODO.
-  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della TODO) — di quelle dodici, ne restano aperte DUE.** Erano
+  difetti minori. Le vedi tutte nella lista iniziale, che era nel `docs\TODO.md` *(cancellato in
+  `bdea334`: `git log docs/TODO.md`)*.
+  > ⚠️ **CORREZIONE DEL 2026-10-12 (audit della lista di lavoro) — di quelle dodici, ne restano aperte DUE.** Erano
   > **già chiuse** 7 e 10 *(prestazioni: non si manifestano, `c55d80e`)*, 15 *(deploy: procedura coperta)*,
   > 35 *(l'aggro sul non-proprietario: il PROXY, `a307a4c`, confermato dall'utente)*, 36 *(i salvataggi senza
   > Steam: documentata)*, 40 *(non osservabile)*, 43 *(codice morto: scheletro rimosso)*, 45 *(il rescan che

@@ -8,9 +8,11 @@
 > somebody who just wants to know what he has in his hands — is `docs\STATUS.md`. This file is the former
 > `docs\STATUS.md`, renamed and kept entire: nothing was thrown away, only the audience changed.
 >
-> **What it is not.** Not a chronicle: no "on such a day we did X". The day-by-day record (decisions,
-> measurements, dead ends, the reasoning behind every number) is `docs\TODO.md`; the declared defects and
-> accepted prices are `docs\BUG-NOTI.md`; the rollback points are `docs\RIPRISTINO.md`.
+> **What it is not.** Not a chronicle: no "on such a day we did X". **The chronicle itself no longer exists**:
+> the day-by-day record (decisions, measurements, dead ends, the reasoning behind every number) was
+> `docs\TODO.md`, **deleted in `bdea334`** — what it said is in `git log docs/TODO.md`. **The "why" is here**:
+> §5 is the decisions, `docs\BUG-NOTI.md` the declared limits and accepted prices, `docs\STATUS.md` §4 the
+> problems that were solved. The rollback points are `docs\RIPRISTINO.md`.
 >
 > **State.** Branch `fix-f1a`. Every `file:line` below was re-measured at `ebf1484`; after that commit only
 > documentation changed (`a084166` and this page), so the code is still that one — do not trust numbers
@@ -41,7 +43,7 @@ answers `false`, which is the inert state (`CoopGate.cs:22-31`). If you add a fe
   (`Core.cs:68-91`, `teamGameDatas.Remove(i)` at `:88`, called from `Server.cs:143` and `:421`). There is
   no persistence anywhere in the server project: restarting it zeroes everything. **This is by design** — a
   server-side memory would mix saves from different sessions and different players, and a *wrong* flag
-  cannot be rebuilt while a *lost* one can (`docs\TODO.md:7613-7621`).
+  cannot be rebuilt while a *lost* one can (`§5`, "The server has no memory").
 - **The authority is the client's save.** Each client re-pushes its own progress: on entering a scene
   (`Multiplayer.cs:177`) and on connection (`:461`), via `SendAllProgress`
   (`ProgressSync\Helpers\FlagHelper.cs:22-25`) → `GetCurrentPersistentState("intro")` → the prefix that
@@ -99,16 +101,16 @@ the deployed DLL it says so; anything implemented but **not observed in game** i
   `ElderBrother`.
 - **Effects** — the relay, the four resolution sources, and the two `InstantiateArea` postfixes, implemented
   and inside the deployed DLL (`a188060`). In game: 88 effects sent, 88 instantiated, perfect pairing; and
-  the magic-damage proof that the relayed copies are what hurt (`docs\TODO.md:6940-6960`). *The two
+  the magic-damage proof that the relayed copies are what hurt (`scratch\CONFERMA-RELAY.md` §2). *The two
   `InstantiateArea` hooks are **not yet exercised in game**: that is an **observable**, listed in §8, not a
   limitation — the marker `[FxRelay] hook InstantiateArea: prefab=… da=BossJump|BossTeleport` says they fire,
   and `RISOLTO` on the peer **with** `istanzio` says the area travelled.*
 - **Peer damage** — the enemy channel applies damage on the receiving machine with the game's own
-  `Penitent.Damage(Hit)`; measured in a log (`[DannoPeer] APPLICATO`, `docs\TODO.md:6965`).
+  `Penitent.Damage(Hit)`; measured in a log (`[DannoPeer] APPLICATO`, `scratch\REFERTO-DANNO-AL-PEER.md` §5).
 - **Shared pause** — measured, including the map opening on the passive machine
-  (`docs\TODO.md:7475-7481`).
+  (`scratch\REFERTO-PAUSA-CONDIVISA.md`, the "R0" measurement).
 - **Life guilt** — the three steps, the persisted counter and the separation from the game's guilt
-  fragment verified in game by the user (`docs\TODO.md:7520-7523`); the bonfire reset is local by design
+  fragment verified in game by the user (`scratch\REFERTO-COLPA-VITA.md`); the bonfire reset is local by design
   (whoever sits gets it, `LifeGuilt.cs:48-51`).
 - **Warnings** — "wait for your teammates" on dying inside a bossfight, and "do not press" windowed on
   the **cutscene**, not on the boss's death (`BossDeathWarning.cs:34-38`; `BossFightDeathWarning.cs:145-179`).
@@ -136,7 +138,7 @@ regression**: if a player reports one, it is already written down.
 - **12 of 17 boss types never recite their death on the dead player's machine** (BUG-NOTI §8B): their
   `Death()` touches the `Penitent`, the input, the camera or the room geometry, so the whitelist excludes
   them on purpose (the reasons are in `EnemySyncManager.cs:377-397`, the list at `:398-406`).
-- **Raw `Object.Instantiate` sites inside bosses remain outside the relay** (~18 of them, `docs\TODO.md:6829`):
+- **Raw `Object.Instantiate` sites inside bosses remain outside the relay** (~18 of them, `BUG-NOTI.md` voce 7):
   they never pass through `PoolManager`, so the hook cannot see them; the signal is silence, not an error.
   **The two `InstantiateArea` of `BossJumpAttack` / `BossTeleportAttack` are no longer among them**: they
   are hooked since `a188060` (270 → 272 targets, §2) and only their **run in game** is missing (§8).
@@ -148,7 +150,7 @@ regression**: if a player reports one, it is already written down.
   (`Players\OtherPlayerScript.cs:773-777`) while enemies are smoothed (`EnemySyncManager.cs:4547`); the
   relay is additionally rate-limited to 20 sends/s (`EffectRelay.cs:154`), and a braked effect is simply
   not seen.
-- **The same attack lands ~14 units apart on the two machines** (`docs\TODO.md:6970-6973`, `:7491`): not
+- **The same attack lands ~14 units apart on the two machines** (`scratch\CONFERMA-RELAY.md` §5.1): not
   reported as a problem by the user, but unexplained, and it is **upstream** of the dedup — no time window
   would merge them.
 - **PE02 / Demake and the single-player death screen are implemented but unobserved**
@@ -165,30 +167,30 @@ skip window, the late joiner — are BUG-NOTI §1-§6 and §10. §5 below explai
 This is the part that gets re-litigated if it is not written down. Every line is a decision already taken:
 re-opening one needs a new measurement, not a new opinion.
 
-- **F2 was reverted** (`docs\TODO.md:6852-6859`). Binding the boss to a single owner made it single-target —
+- **F2 was reverted** (`scratch\REFERTO-REVERT-F2.md`). Binding the boss to a single owner made it single-target —
   worse for the other player than the flicker it removed. The ping-pong is back **by choice**, and it is the
   price the user judged acceptable.
-- **The 1.5 s skip window is not fixed, and will not be fixed with a timer** (`docs\TODO.md:7010-7016`,
-  BUG-NOTI §6). Pressing to skip the boss cutscene less than ~1.5 s before its end can kill the respawn: one
-  `currentTween` in `FadeWidget`, and the second fade kills the first callback. The only proposed cure — an
+- **The 1.5 s skip window is not fixed, and will not be fixed with a timer** (BUG-NOTI §6). Pressing to
+  skip the boss cutscene less than ~1.5 s before its end can kill the respawn: one `currentTween` in
+  `FadeWidget`, and the second fade kills the first callback. The only proposed cure — an
   automatic `Respawn()` on a timer — **would skip cut-scenes**, the same damage the project spent weeks
   removing. There is already an exit, and it is the game's own: enter and leave a level.
-- **The boss ceremony is not skipped, because it cannot be done from C#** (`docs\TODO.md:6627-6630`).
+- **The boss ceremony is not skipped, because it cannot be done from C#** (`scratch\STUDIO-VIA-BOSS-E-TRIGGER.md` §2).
   `BossBlock` has **0 occurrences** in `Assembly-CSharp` — it is a string set by a Playmaker FSM inside the
   scene asset — and `onStartBossFight.Invoke()` is the **last line** of `StartBossFight`, after seven steps,
   with zero C# subscribers. Touching it risks the only failure worse than a desynced boss: a blocked room.
-- **The server has no memory** (`docs\TODO.md:7594-7630`). Team slots are mutable: the same slot, on
+- **The server has no memory**. Team slots are mutable: the same slot, on
   different days, holds different players with different saves, so a server-side archive would attribute to
   one save the content of another. A lost flag is rebuilt at the next connection; a wrong flag is not.
   Removing a team's data when it empties is **the rule**, not a defect.
 - **`_AC43` is not a bug.** The game writes `D17Z01S11_BOSSDEAD_AC43` — the achievement counter — not
-  `<room>_BOSSDEAD` (`docs\TODO.md:6501`, `:6841`); 11 of 12 rooms do have a `<room>_BOSSDEAD` flag, which
-  is why the zone flag is the branch that actually fires here (`:7246`).
-- **The guilt band on the health bar was attempted and reverted** (`docs\TODO.md:7528-7534`). With the
+  `<room>_BOSSDEAD` (`scratch\STUDIO-FLAG-AC43.md`); 11 of 12 rooms do have a `<room>_BOSSDEAD` flag, which
+  is why the zone flag is the branch that actually fires here (`scratch\STUDIO-FLAG-AC43.md` §1.4).
+- **The guilt band on the health bar was attempted and reverted** (`scratch\REFERTO-REVERT-BANDA.md`). With the
   penalty at 0.8 the bar keeps its width and fills to 80%: it does not shorten, because its width comes
   from `Final`, which ignores `MaxFactor` (`PlayerDeathSync.cs:293-295`), and the overlay was invisible in
   game. A text notification states the real percentage instead — the briars were a whim, not a requirement.
-- **`tools\verify-deploy.ps1` was deleted** (`docs\TODO.md:7455-7469`). It printed "you can test" on a
+- **`tools\verify-deploy.ps1` was deleted** (`RIPRISTINO.md`, "Come si torna indietro"). It printed "you can test" on a
   stale DLL and everyone used it precisely because it was reassuring. The gate is now
   `tools\marker-check.ps1`, which reads the **bytes** of the deployed DLL and can say NO.
 
@@ -201,7 +203,7 @@ re-opening one needs a new measurement, not a new opinion.
   count, because that gate checks the *names* of the patch targets, not the content
   (`tools\verify-patch-targets.ps1:74-77`).
 - 🔴 **Markers must be concatenated.** `$"{MARK} …"` compiles to `string.Format`, so the DLL contains
-  `"{0} …"` and the byte check reports the marker as missing (`docs\TODO.md:7541-7545`; the rule in code:
+  `"{0} …"` and the byte check reports the marker as missing (`scratch\REFERTO-2-HOOK.md`; the rule in code:
   `EffectRelayInstantiateArea.cs:111-117`). If a marker "looks present" in the source and the check says
   ASSENTE, look at how the string is built before suspecting the deploy.
 - ✅ **Verify with `tools\marker-check.ps1`**, which reads the **content** of the deployed DLL (UTF-16LE
@@ -252,7 +254,7 @@ missing.
 - **PE02 and Demake** — the life guilt must **not** apply: `[ColpaVita] non applicata: modalita' PE02` /
   `modalita' Demake`, and the health orbs must stay the usual count (`scratch\REFERTO-COLPA-PE02.md` §7).
 - **The ~14-unit double** — the same attack at mirrored positions on the two machines; look at both logs
-  (`docs\TODO.md:6970-6973`).
+  (`scratch\CONFERMA-RELAY.md` §5.1).
 - **The two `InstantiateArea` postfixes** — **done since `a188060`**, never exercised in game *(an
   observable, not a limit)*: `[FxRelay] hook InstantiateArea: prefab=… da=BossJump|BossTeleport`:
   if `RISOLTO` on the peer comes **with** `istanzio` the area is relayed, if it comes **without** it the
