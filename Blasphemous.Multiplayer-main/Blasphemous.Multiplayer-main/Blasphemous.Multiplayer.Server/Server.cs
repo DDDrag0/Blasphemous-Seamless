@@ -8,6 +8,23 @@ using System.Text;
 
 namespace Blasphemous.Multiplayer.Server;
 
+/// <summary>
+/// L'ENGINE DEL SERVER, e questa classe vive in DUE posti: nell'eseguibile standalone (`net8.0`, la
+/// cartella `SERVER-COOP\`) e DENTRO il client (`net35`), per la "host session" (il bottone
+/// "Host session" della schermata di connessione). Il sorgente e' UNO: il client lo compila con
+/// `COOP_HOST` definito (vedi `Blasphemous.Multiplayer.Client.csproj`), e le poche righe che
+/// differiscono stanno dentro `#if COOP_HOST` - dichiarate una per una nel referto
+/// (`scratch\REFERTO-SERVER-NEL-CLIENT.md`).
+///
+/// ⚠️ PORTING net8.0 -> net35: la logica e' la stessa, riga per riga. Le tre cose che net35 non ha
+/// sono il RANGE di `Receive` (sostituito da una copia esplicita, stessi byte), `Console.*` (nel
+/// `Logger`, che senza console LANCIEREBBE `IOException`) e `AppContext.BaseDirectory`
+/// (`ServerLog`, che nel client non esiste proprio: le righe vanno nel log della mod).
+///
+/// ⭐ E due cose che prima NON esistevano e che l'accorpamento richiede: uno `Stop()` (prima l'unico
+/// spegnimento era `Environment.Exit(0)` nella console, che nel gioco non si puo' usare) e un
+/// `IsRunning` per non avviare due volte lo stesso server.
+/// </summary>
 public class Server
 {
     private readonly int _maxPlayers;
@@ -16,12 +33,29 @@ public class Server
     private SimpleTcpServer server;
     private Dictionary<string, PlayerInfo> connectedPlayers;
     private string _hostIp;
+    private int _port;
 
     public Server(int maxPlayers, string password)
     {
         // Change how this works later
         _maxPlayers = maxPlayers;
         _password = password;
+    }
+
+    /// <summary>
+    /// `true` se questo oggetto sta ascoltando ADESSO. Nel client e' cio' che distingue "host
+    /// avviato" da "host fermo": senza, il bottone potrebbe avviare un secondo `SimpleTcpServer`
+    /// sulla stessa porta (cioe' il caso "porta occupata" provocato da noi stessi).
+    /// </summary>
+    public bool IsRunning
+    {
+        get { return server != null; }
+    }
+
+    /// <summary>La porta su cui questo server sta ascoltando (0 se non e' mai partito).</summary>
+    public int Port
+    {
+        get { return _port; }
     }
 
     public Dictionary<string, PlayerInfo> getPlayers()
@@ -52,16 +86,94 @@ public class Server
         }
         catch (System.Net.Sockets.SocketException)
         {
+            // ⚠️ Qui il campo viene azzerato, e prima no: un `Start` fallito lasciava un
+            // `SimpleTcpServer` mai avviato nel campo, quindi `DelayDisabled` toccava un oggetto non
+            // inizializzato e `IsRunning` avrebbe detto "sto ascoltando" su una porta che non e' mai
+            // stata aperta. Nessun cambio di comportamento per lo standalone (che su `false` esce),
+            // e nel client e' la differenza fra "riprovo" e "credo di essere acceso".
+            server = null;
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            // ⭐ MISURATO, NON SUPPOSTO: con la porta occupata `SimpleTcpServer.Start` NON lancia
+            // `SocketException`, lancia `InvalidOperationException("Port was already occupied for all
+            // network interfaces")`. Il `catch` qui sopra quindi non e' MAI scattato su questo caso:
+            // fino a oggi uno standalone avviato su una porta gia' occupata moriva con un'eccezione
+            // non gestita (`Unhandled exception ... at Server.Start`) invece di stampare
+            // "Server failed to start on port", che era esattamente cio' che `Main` si aspettava.
+            //
+            // ⇒ Questa riga e' l'unica differenza di COMPORTAMENTO per lo standalone, e va nella
+            //   direzione voluta: da "crash" a "messaggio chiaro e uscita pulita". Sul percorso
+            //   buono non cambia niente.
+            // ⇒ Nel client e' cio' che rende `[Host] porta occupata` vero anche quando la porta viene
+            //   presa fra la prova di liberta' e il `bind` vero (vedi `HostSession.IsPortFree`).
+            server = null;
             return false;
         }
 
+        _port = port;
         connectedPlayers = new Dictionary<string, PlayerInfo>();
         _hostIp = null;
+
+        // ⭐ UNA SESSIONE CHE PARTE E' UNA SESSIONE DA ZERO. Nello standalone lo garantiva il
+        // processo (che muore e riparte); qui il processo e' il GIOCO e vive per ore: senza questa
+        // riga, spegnere e riavviare l'host si porterebbe dietro il progresso delle squadre della
+        // sessione precedente e lo rigiocherebbe addosso ai nuovi arrivati. Riusa la funzione che
+        // gia' esiste per la pulizia a fine partita (`Core.removeUnusedGameData`): qui non c'e'
+        // nessun giocatore, quindi non resta nessuna squadra.
+        Core.removeUnusedGameData(connectedPlayers);
         return true;
+    }
+
+    /// <summary>
+    /// ⭐ LO SPEGNIMENTO CHE PRIMA NON ESISTEVA. Nello standalone l'unico modo di fermare il server
+    /// era `Environment.Exit(0)` dalla console (`Core.Main`), che dentro il gioco non si puo' usare:
+    /// chiude il processo del gioco. Questo chiude l'ascolto, butta giu' i client e riporta l'oggetto
+    /// allo stato di "mai avviato", cosi' si puo' riaccendere (o lasciare la porta a un server
+    /// esterno).
+    ///
+    /// Non lancia MAI: e' chiamato dal pulsante "Stop host" e alla chiusura della mod, cioe' in punti
+    /// dove un'eccezione arriverebbe al gioco. Ogni guasto vale "il server e' fermo lo stesso",
+    /// perche' e' quello che conta per la porta.
+    /// </summary>
+    public void Stop()
+    {
+        // L'ordine e' deliberato: prima si stacca il campo, poi si ferma l'ascoltatore. Da questo
+        // istante `Send` non manda piu' niente (vedi la guardia li' sotto) mentre `Stop()` sta
+        // chiudendo i socket, quindi nessuna scrittura parte su una connessione in smontaggio.
+        SimpleTcpServer running = server;
+        server = null;
+        _port = 0;
+
+        if (running != null)
+        {
+            try
+            {
+                running.Stop();
+            }
+            catch (Exception e)
+            {
+                Logger.Error("Couldn't stop the server: " + e.GetType().Name + ": " + e.Message);
+            }
+        }
+
+        // La memoria della sessione se ne va con la sessione: `connectedPlayers` resta un dizionario
+        // VUOTO e non null, perche' i callback di disconnessione possono ancora arrivare mentre i
+        // socket si chiudono e devono trovarlo utilizzabile.
+        connectedPlayers = new Dictionary<string, PlayerInfo>();
+        _hostIp = null;
     }
 
     private void Send(string ip, byte[] data, NetworkType dataType)
     {
+        // ⚠️ `server == null` significa "fermo" (mai avviato, o `Stop()` appena chiamato). Prima
+        // questa guardia non serviva: il campo era sempre valorizzato dal processo. Nel gioco il
+        // server puo' essere spento mentre i manager del client stanno ancora girando, e un
+        // `NullReferenceException` qui arriverebbe al thread di update della mod.
+        if (server == null)
+            return;
+
         if (data != null && data.Length > 0)
         {
             List<byte> list = new List<byte>(BitConverter.GetBytes((ushort)data.Length));
@@ -87,7 +199,27 @@ public class Server
         {
             ushort length = BitConverter.ToUInt16(e.data, startIdx);
             NetworkType type = (NetworkType)e.data[startIdx + 2];
-            byte[] messageData = e.data[(startIdx + 3)..(startIdx + 3 + length)];
+
+            // ⚠️ PORTING net35 — QUESTA E' LA SOLA RIGA DEL SERVER che non compilava sul client.
+            // Prima era il range: `e.data[(startIdx + 3)..(startIdx + 3 + length)]`, che richiede
+            // System.Range/System.Index (.NET Core 3+) e che `net35` non ha. I byte sono GLI STESSI,
+            // copiati a mano: `length` byte a partire da `startIdx + 3`. Nessuna interpretazione,
+            // nessun riordino, nessun byte in piu' o in meno.
+            //
+            // ⭐ E con la copia esplicita arriva gratis una guardia che col range non c'era: se il
+            // frame dichiara piu' byte di quanti ne sono arrivati, prima si lanciava
+            // `ArgumentOutOfRangeException` DENTRO il thread di lettura di SimpleTCP (nel gioco:
+            // thread che muore, connessione che resta appesa). Qui il frame troncato viene scartato
+            // con la riga d'errore che questo metodo usava gia' per i dati malformati, e il ciclo si
+            // chiude. Nessun cambio di protocollo: un frame integro prende la stessa strada di prima.
+            if (startIdx + 3 + length > e.data.Length)
+            {
+                Logger.Error("Received data was formatted incorrectly");
+                return;
+            }
+
+            byte[] messageData = new byte[length];
+            Array.Copy(e.data, startIdx + 3, messageData, 0, length);
 
             //Logger.Info($"Received {type} packet: {length} bytes");
             processDataReceived(type, messageData);
@@ -268,7 +400,13 @@ public class Server
     private void ReceiveDirection(string playerIp, byte[] data)
     {
         PlayerInfo current = getCurrentPlayer(playerIp);
-        current.facingDirection = BitConverter.ToBoolean(data);
+
+        // ⚠️ PORTING net35 — LA SECONDA RIGA CHE NON COMPILAVA, e non era nell'elenco dello studio.
+        // Prima era `BitConverter.ToBoolean(data)`, cioe' l'overload a UN argomento: quello esiste
+        // solo da .NET Core in poi. `net35` ha solo `ToBoolean(byte[], int)`, che vuole l'indice.
+        // Il significato e' identico - su un solo byte "diverso da zero" vuol dire `true` - quindi si
+        // legge il byte e lo si confronta: stesso valore, stessa direzione, stesso pacchetto.
+        current.facingDirection = data[0] != 0;
 
         SendDirection(playerIp);
     }

@@ -21,7 +21,38 @@
     <!-- Interruttore del deploy nella cartella di gioco. FALSE per default: la build non tocca il gioco.
          Per una copia voluta:  dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true -->
     <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
+
+    <!-- ⭐ LA "HOST SESSION" — IL SERVER DENTRO IL CLIENT.
+         `COOP_HOST` e' il simbolo che dice ai file del server (compilati QUI, vedi l'ItemGroup piu'
+         sotto) che stanno girando DENTRO IL GIOCO invece che in una finestra console:
+           · niente `Console.*` (lancia `IOException` senza console, cioe' sempre, nel gioco);
+           · niente `Main`, `Console.Title`, `Console.ReadKey`, `Environment.Exit`;
+           · niente argomenti CLI (`Basalt.CommandParser` + `ServerArguments`);
+           · niente `ServerLog`/`ServerOutput.log`: il log va in `ModLog`.
+         Lo standalone (`Blasphemous.Multiplayer.Server.csproj`, net8.0) non lo definisce e resta
+         esattamente com'era: stessa console, stessi argomenti, stesso `ServerOutput.log`. -->
+    <DefineConstants>$(DefineConstants);COOP_HOST</DefineConstants>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ⭐⭐ IL SERVER DENTRO IL CLIENT: GLI STESSI SORGENTI, NON UNA COPIA.
+         Questi cinque file sono `Compile` di QUESTO progetto e vivono nel progetto del server: la
+         logica del server resta UNA sola, in un posto solo, e ogni sua modifica arriva a entrambe le
+         build. Le poche righe che non possono essere comuni stanno dentro `#if COOP_HOST` e sono
+         elencate una per una in `scratch\REFERTO-SERVER-NEL-CLIENT.md`.
+         · `Server.cs`   l'engine (porta 27051, smistamento, host, squadre)
+         · `Logger.cs`   una porta sola per le sue righe -> console (standalone) / `ModLog` (client)
+         · `Core.cs`     i dati di squadra; il `Main` della console e' `#if !COOP_HOST`
+         · `Models\*.cs` lo stato in RAM (giocatori, progresso di squadra)
+         ⚠️ NON compilati qui, di proposito:
+         · `ServerArguments.cs` -> sono gli argomenti della riga di comando (Basalt), non esistono nel gioco;
+         · `ServerLog.cs`       -> il file `ServerOutput.log` accanto all'exe; nel gioco il log e' quello della mod. -->
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Server.cs" Link="Host\Server.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Logger.cs" Link="Host\Logger.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Core.cs" Link="Host\Core.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Models\PlayerInfo.cs" Link="Host\Models\PlayerInfo.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Models\TeamInfo.cs" Link="Host\Models\TeamInfo.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Blasphemous.CheatConsole" Version="1.1.0" />

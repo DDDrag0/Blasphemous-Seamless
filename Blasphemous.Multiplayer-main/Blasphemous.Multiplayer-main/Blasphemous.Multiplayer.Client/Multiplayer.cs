@@ -3,6 +3,7 @@ using Blasphemous.ModdingAPI;
 using Blasphemous.ModdingAPI.Helpers;
 using Blasphemous.ModdingAPI.Persistence;
 using Blasphemous.Multiplayer.Client.Data;
+using Blasphemous.Multiplayer.Client.Host;
 using Blasphemous.Multiplayer.Client.Map;
 using Blasphemous.Multiplayer.Client.Network;
 using Blasphemous.Multiplayer.Client.Notifications;
@@ -108,6 +109,13 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     protected override void OnDispose()
     {
         CutsceneProbe.Unsubscribe();
+
+        // ⭐ LA SESSIONE-HOST SI CHIUDE CON LA MOD. Il server ascolta su una porta del PROCESSO del
+        // gioco: se la mod sparisce (o il gioco si chiude) senza `Stop()`, il socket resta aperto
+        // finche' il processo non muore, e in quel tempo la porta 27051 risulta occupata a chiunque
+        // la voglia - compreso un `SERVER-COOP` esterno lanciato subito dopo. `HostSession.Stop()`
+        // non fa niente (e non stampa niente) se non stavamo ospitando.
+        HostSession.Stop();
 
         // ⭐ Marker dell'importo del danno: si toglie l'iscrizione, cosi' nessun delegate resta appeso a
         // una mod che sta per sparire (stessa ragione della probe qui sopra).

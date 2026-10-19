@@ -1,14 +1,23 @@
-﻿using Basalt.CommandParser;
-using Blasphemous.Multiplayer.Server.Models;
+﻿using Blasphemous.Multiplayer.Server.Models;
 using System;
 using System.Collections.Generic;
+#if !COOP_HOST
+using Basalt.CommandParser;
+#endif
 
 namespace Blasphemous.Multiplayer.Server;
 
 internal static class Core
 {
+#if !COOP_HOST
+    // Sta solo nel processo della console: e' il server che `Main` crea. Nel client il server lo
+    // crea `HostSession` e vive la' (`CoopServer _server`), quindi qui non servirebbe a niente.
     private static Server server;
+#endif
+
     private static readonly Dictionary<byte, TeamInfo> teamGameDatas = [];
+
+#if !COOP_HOST
 
     static string ApplicationTitle
     {
@@ -53,6 +62,24 @@ internal static class Core
             }
         }
     }
+
+#endif
+
+    // ⚠️ NEL CLIENT QUESTA CLASSE NON HA UN `Main`, E NON E' UNA SVISTA.
+    //
+    // Qui sopra `#if !COOP_HOST` chiude fuori il `Main` dello standalone: e' l'unico posto di tutto il
+    // server che dipende dalla CONSOLE (`Console.Title`, `Console.ReadKey`) e dagli ARGOMENTI della
+    // riga di comando (`Basalt.CommandParser` + `ServerArguments`), cioe' due cose che nel processo
+    // del gioco non esistono. Le altre due cose che `Main` faceva - `Environment.Exit(0)` per uscire
+    // e il ciclo di lettura dei tasti - le sostituisce il bottone "Host session", che chiama
+    // `Server.Start(port)` e `Server.Stop()`.
+    //
+    // Quello che RESTA di questa classe in entrambe le build e' il pezzo che serve al server vero: i
+    // dati di squadra (`teamGameDatas`), che `Server.cs` legge e scrive in ~10 punti. Toglierli di
+    // qui avrebbe voluto dire toccare `Server.cs` in quei punti, cioe' riscriverne la logica.
+    //
+    // ⇒ LA PORTA DELLO STANDALONE E' INVARIATA: stesso exe, stessa console, stessi argomenti
+    //   `-p/--port`, `-mp/--max-players`, `-ps/--password`, stesso `ServerOutput.log`.
 
     public static TeamInfo getTeamData(byte team)
     {
