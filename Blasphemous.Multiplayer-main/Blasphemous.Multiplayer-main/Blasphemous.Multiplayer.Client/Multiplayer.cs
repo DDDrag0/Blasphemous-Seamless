@@ -273,6 +273,21 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // Stesso `NotificationManager` della mod, stesso ciclo: **zero patch Harmony nuove (269)**.
         BossFightDeathWarning.Tick();
 
+        // ⭐⭐ LifeGuiltBand (19/10): LA BANDA SULLA BARRA DELLA VITA — la rappresentazione visiva della
+        // colpa sulla vita. E' l'unica ragione per cui esiste questo `Tick`, e sta QUI e non dentro un
+        // `Update` della HUD per un fatto misurato: `PlayerHealth` e `PlayerFervour` vengono **disabilitati
+        // dal gioco** (`GameplayWidget.cs:103-104`; `PlayerFervour.cs:212`, `:224`, `:229`), quindi un
+        // refresh che vivesse nel loro ciclo si spegnerebbe con loro — ed e' esattamente quando serve (la
+        // morte, il respawn). Questo ciclo invece e' il `LateUpdate` della mod: gira sempre, anche a
+        // `timeScale = 0`, e **non aggiunge un bersaglio Harmony** (270, invariati).
+        //
+        // Costo: un confronto sul throttle per frame; ogni 0.25 s due letture pubbliche (`Life.Final`,
+        // `Life.MaxFactor`) e due confronti. Quando il fattore non cambia non scrive niente, ne' sullo
+        // schermo ne' nel log. I tre eventi che contano (spawn, morte, falo') hanno gia' un refresh
+        // FORZATO accanto alla loro patch: questo tick e' la rete di sicurezza, non la via principale.
+        // Vedi `LifeGuiltBand.cs`.
+        LifeGuiltBand.Tick();
+
         // TEMPORARY (DeathCorpseFollow): LA CAMERA DEL MORTO SEGUE IL COMPAGNO VIVO. Via (c): un
         // cadavere-copia resta sul posto e il Penitent locale (invisibile) si sposta sull'avatar del
         // compagno VIVO, che la mod ha gia' in scena - quindi la camera, legata al Penitent, lo segue da

@@ -399,6 +399,11 @@ namespace Blasphemous.Multiplayer.Client
             // rete, e in single player deve contare lo stesso. Vedi `LifeGuilt.cs`.
             LifeGuilt.RegisterDeath();
 
+            // ⭐ LA BANDA — il fattore e' appena cambiato: la banda si riallarga **adesso**, senza
+            // aspettare il tick. Fuori da `PlayerHealth.Update` di proposito: quel widget e' disabilitato
+            // dal gioco proprio mentre il giocatore e' morto. Vedi `LifeGuiltBand.cs`.
+            LifeGuiltBand.Refresh("morte");
+
             PlayerDeathSync.AnnounceDeath();
         }
     }
@@ -438,6 +443,12 @@ namespace Blasphemous.Multiplayer.Client
             // della riga `[Colpa]` qui sotto di proposito: cosi' quella riga, che gia' stampa
             // `vita: fattore = ...` e `vita: max = ...`, diventa la verifica della scrittura.
             LifeGuilt.ApplyOnSpawn();
+
+            // ⭐ LA BANDA — il `Penitent` si RICREA a ogni spawn, e con lui `Life.Final` e
+            // `Life.MaxFactor`: la banda va riallineata alla barra nuova. La UI invece non si ricrea
+            // (`GenericElements` e' caricata una volta sola), quindi la banda si crea una volta e qui si
+            // **aggiorna** solo. Vedi `LifeGuiltBand.cs`.
+            LifeGuiltBand.Refresh("spawn");
 
             // MEASUREMENT ONLY - every spawn, including the respawn after a death and every level load.
             // This is the moment the native guilt is applied (GuiltManager.OnPenitentReady sets
