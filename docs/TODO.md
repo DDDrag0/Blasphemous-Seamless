@@ -7510,3 +7510,71 @@ ESITO: ALMENO UN marker richiesto e' ASSENTE
 - ⛔ **`docs\BUG-NOTI.md` non toccato** · ⛔ **nessuna riga di codice toccata** · ⛔ **nessun build e nessun deploy**: **la mappa che si apre è la prova dell'utente**, presa in gioco.
 - 📌 **Le fonti di questa entry**, e nessuna delle due è nel repo *(`scratch\` sta **un livello sopra** la radice)*: `scratch\REFERTO-PAUSA-CONDIVISA.md` **§6 #1** *(dove `R0` era «non misurata» — 🟡, con la nota che è **l'unico pezzo che si toglie**)* e `scratch\REFERTO-STRADA-RISOLUZIONE.md` **§4.1-§4.2** *(la firma nuova e la mappa vecchio→nuovo che serve alla voce 7)*.
 - ⚠️ **La data** segue **la serie del file** *(`09:00` → `00:15` → questa)*: è **l'etichetta della entry successiva**, non l'orologio della macchina.
+
+## [2026-10-19 17:20] ⭐⭐ **LA COLPA SULLA VITA È CHIUSA E PROVATA IN GIOCO** — tre scalini fissi, il salvataggio che regge la chiusura del gioco, e **la separazione dal frammento vista dall'utente**; più 🔴 **la banda sulla barra: tentata e RIMOSSA** *(«nada, non funziona»)*, **il checkpoint** che la toglie senza portare via la Colpa, **la regola dei marker** *(il `string.Format`)*, **la lista rifatta** con lo stato vero e ⭐ **la ragione vera dei 4 flag** *(che cambia il fix)*
+
+> **Questa entry chiude due cose e ne sposta una.** Chiude **la Colpa** *(la voce 3 della lista corta del `09:00`: non era mai cominciata, e adesso è **provata in gioco dall'utente**)*; **registra la banda come tentativo fallito e rimosso** *(se non si scrive, si riprova senza sapere perché)*; e **cambia la ragione dei 4 flag** — che era scritta come «un altro nome di flag» ed **era sbagliata**: il fix non è aggiungere un flag, è **propagare `Status.Dead`**.
+
+### ① ⭐⭐ **LA COLPA SULLA VITA — CHIUSA E PROVATA IN GIOCO** *(l'utente l'ha testata)*
+
+- ✅ **Tre scalini fissi, niente curva**: **1 morte → −20%** *(`Life.MaxFactor = 0.8`)* · **2 → −40%** *(`0.6`)* · **3+ → −60%** *(`0.4`, col **tetto fermato nel codice**: il pavimento sta dentro `LifeGuilt.Factor()`)*.
+- ⭐ **La curva NATIVA misurata, per riferimento** *(e non è la nostra)*: **`−17,0 % · −9,7 % · −3,3 % · −5,0 %`** del massimo pieno *(`scratch\DIAGNOSI-COLPA-CURVA.md:35`, cumulato `−17,0 · −26,7 · −30,0 · −35,0`)* ⇒ ⭐ **non è estrapolabile**: il **4° scalino è più grande del 3°** *(3,0 punti contro 2,0)*, quindi nessuna formula la ricava. ⇒ ⚠️ **la nostra è VOLUTAMENTE diversa**: tre scalini tondi e un tetto, perché è **una regola di gioco** e non **un'imitazione del decompilato**.
+- ✅ **Il salvataggio**: **testo puro** in `Modding\data\Multiplayer\life-guilt.txt` *(tre righe di commento e `deaths=N`)* ⇒ **persiste alla chiusura del gioco — provato dall'utente**, non dedotto. Chiudere il gioco **non è una via d'uscita** dalla colpa; l'unica è **il falò**.
+- ⭐⭐ **La separazione dal frammento, PROVATA IN GIOCO**: *l'utente ha preso la goccia e **le due colpe sono rimaste separate*** ⇒ ⭐ **il rischio che lo studio temeva NON c'è**: `Life` ha **0 occorrenze** in `GuiltManager.cs` e in `Altar.cs` *(misurato nel referto: `scratch\REFERTO-COLPA-VITA.md:190`)*, e `ResetGuilt` tocca **solo** `Fervour.MaxFactor`. La separazione **non è una guardia**: è **nel tipo** *(due attributi distinti, due `MaxFactor`)*.
+- ✅ **La notifica**, **una volta per scalino** *(inglese e ASCII come le altre)*, e **il falò**: il reset è **locale** — **chi si siede lo ha, chi no no** *(`PrieDieu.ShallowActivationLogic`, prefix: la replica non lo chiama mai)*.
+- 📌 **E i due residui dichiarati, che restano dichiarati**: **PE02 / Demake** mostrerebbero **meno stock** *(le due varianti ricavano gli stock da `Life.CurrentMax`)* · **la colpa nativa si disattiva in `BOSS_RUSH`/`DEMAKE`** *(`GuiltManager.cs:93`)* **e la nostra no** *(se si volesse imitarla, è **una riga** in `ApplyOnSpawn`)*.
+- 📌 **Il costo, com'è stato costruito**: **due righe in due patch che c'erano già** *(morte, spawn)* **+ una patch nuova** *(il falò)* ⇒ **269 → 270 bersagli**, e **zero scritture sulla colpa nativa**.
+
+### ② 🔴 **LA BANDA SULLA BARRA — TENTATA E RIMOSSA** *(va registrata, o si riproverà senza sapere perché)*
+
+- **Cosa era**: un'`Image` **figlia del padre della barra** *(ultima sorella, quindi sopra `health` e `loss`)*, larga **`(1 − fattore) × larghezza`**, colore **`rgba(0.42, 0.05, 0.07, 0.62)`** — sangue scuro semitrasparente. L'idea: con la colpa a `0,8` la barra resta **larga uguale** e si riempie all'80%, quindi **il buco si vede e la penalità no**; la banda doveva disegnare quel buco.
+- ⚠️ **L'aggancio, senza reflection**: `PlayerHealth.transform` è l'**unico** handle pubblico *(i due `Image` sono privati)* ⇒ il criterio dato dalla sonda: **`Image.type == Filled`** + **larghezza ≈ `Life.Final`** *(su `rect.width` e, in seconda battuta, su `sizeDelta.x`)*.
+- 🔴 **L'esito**: **«nada, non funziona»** *(l'utente, in gioco)* ⇒ ⭐ **rimossa** *(commit di revert `1db74ab`, che toglie **solo la banda** e **lascia la Colpa**)*. È uno di quei casi in cui **il codice gira, il marker c'è, e la cosa non si vede**: nessun `try/catch`, nessuna eccezione — semplicemente **il criterio della sonda non vale su quel prefab**, ed era l'esito dichiarato nella clausola di stop *(«meglio nessuna banda che una banda nel posto sbagliato»)*.
+- 📌 **La lezione, e va scritta perché è la parte utile**: *la rappresentazione **testuale** funziona ed è **sufficiente*** *(la notifica dice la percentuale vera)*; **i rovi e la banda sono uno sfizio, non un requisito**. ⚠️ **Non riprovarci senza una ragione nuova**: la prossima volta il criterio d'aggancio va **misurato prima** *(una sonda che stampa le `Image` sotto `PlayerHealth`, come si è fatto per il relay)*, non dopo.
+- ✅ **E il codice**: `LifeGuiltBand.cs` **rimosso** *(−656 righe)*, gli altri tre file **tornati a `3b43094`** *(−5 `LifeGuilt.cs`, −15 `Multiplayer.cs`, −11 `PlayerDeathSync.cs`)* ⇒ **0 inserzioni, 687 rimozioni**: l'**inverso esatto** di `536f94a`, che era **687/0**.
+
+### ③ ✅ **IL CHECKPOINT `pre-rovina-vita`** — su **`3b43094`**
+
+- **3 file, 635 inserzioni, ZERO rimozioni**, e **solo codice nostro** *(nessuna libreria, nessun referto)*. È **la Colpa senza la banda**, cioè **lo stato che l'utente ha testato**: se mai servisse tornare, **quello** è il punto.
+- ⭐ **E il revert lo conferma**: i tre file dopo `1db74ab` sono **identici byte per byte** a `3b43094` *(`git diff --numstat 3b43094 -- <i tre>` non stampa niente)* ⇒ **non è «una Colpa simile»: è la stessa**.
+
+### ④ ⭐ **LA REGOLA DEI MARKER** — *la lezione del `string.Format`*
+
+- ⚠️ **`$"{MARK} …"`** ⇒ ⭐ **il compilatore usa `string.Format`** ⇒ **nella DLL finisce `"{0} …"`**, non il testo ⇒ ⭐ **il marker è nel SORGENTE e ASSENTE al byte-check**. Non è un errore di `marker-check`: è **il compilatore che ha ragione**.
+- ✅ **La regola**: *i marker si scrivono **per concatenazione*** — **`MARK + " …"`**, che è **una costante a sua volta** e finisce nella DLL **come UN letterale** *(è il motivo per cui `LifeGuilt` e `PauseNotice` sono scritti così)*.
+- ⚠️ **E il corollario, che fa risparmiare un pomeriggio**: *se un marker **«sembra presente»** nel sorgente ma `marker-check` dice **ASSENTE**, **è questa la causa***. Prima di cercare un deploy sbagliato o una DLL vecchia, **si guarda com'è scritta la stringa**.
+
+### ⑤ ⚠️ **`scratch` NON È GITIGNORED** — *è **fuori dal repo**, e basta*
+
+- **Il fatto**: `scratch\` non sta nella radice del repo, sta **un livello sopra** *(`D:\Codificando\scratch`)* ⇒ **non ha bisogno di essere ignorato**, e **infatti non lo è** *(non c'è nessuna riga per lui in `.gitignore`)*.
+- ⭐ **E va bene così, è la forma voluta**: **l'utente vuole nel repo solo il codice della mod** — **niente librerie, niente referti**. ⇒ 📌 **conseguenza pratica**: i referti **non sono versionati**, quindi **il TODO è l'unico posto in cui una conclusione sopravvive a un `git clone`** — ed è **la ragione per cui questa entry è lunga**.
+
+### ⑥ 📋 **LA LISTA, RIFATTA** — *con lo stato vero*
+
+| # | cosa | stato | perché è qui |
+|---|---|---|---|
+| **1** | 🟡 **I 2 `InstantiateArea`** *(`BossJump` · `BossTeleport`)* | **270 → 272** *(+2 hook)* | ⭐ **è la parte residua della «strada di risoluzione»**: il resto *(multi-sorgente boss → nemici → penitente → cache)* è **fatto** in `36a8878` |
+| **2** | 🟡 **I 4 FLAG** *(`Amanecidas` · `Perpetua` · `Pontiff Husk` · `Viridiana`)* | aperto | ⚠️ **la ragione è cambiata**: non è «un altro nome di flag» ⇒ **vedi ⑦**, che è **la parte che cambia il fix** |
+| **3** | 👀 **Gli osservabili in produzione** | da guardare | *i **3 nemici** · **i boss** (la mira e la morte recitata) · **il doppione a ~14 unità*** — cose **implementate e non ancora viste** |
+| **4** | ✅ **La Colpa sulla vita** | **CHIUSA** | provata in gioco dall'utente ⇒ **esce dalla lista** *(`§①`)* |
+| **5** | ✅ **La banda sulla barra** | **RIMOSSA** | tentata e non visibile ⇒ **esce dalla lista** *(`§②`)* |
+| **6** | ⛔ **Il lavoro per boss** | **esce dalle cose da fare** | ⭐ **è un OSSERVABILE, non un lavoro**: la forma è provata su `ElderBrother` e il resto è **misura in produzione** ⇒ va nella riga **3** |
+
+- ⚠️ **E il conteggio dei bersagli, che è la bussola**: **270 adesso** *(269 + la patch del falò)*; i **2 `InstantiateArea`** porteranno a **272**. ⭐ **La banda non ha mai aggiunto un bersaglio** *(`536f94a` era 270 → 270)*, quindi **il revert non muove il numero** — ed è **la prova** che non si è portato via nessun gancio Harmony.
+
+### ⑦ ⭐⭐ **I 4 FLAG — LA RAGIONE VERA** *(va scritta: cambia il fix)*
+
+- ⛔ **Non è un bug di C#**, e non è nemmeno «il flag ha un altro nome» *(che era la lettura della lista del `09:00`: `SANTOS_AMANECIDA_*_DEFEATED`, `VIRIDIANA_DEAD_BOSS01…05`)*. La verità è più semplice e più scomoda: ⭐ **quei 4 NON HANNO un flag di morte «classico»**.
+- ⭐ **Perché**: sono **DLC o eventi aggiuntivi**, **iniettati quando l'architettura dei boss era già sigillata**. ⇒ ⚠️ **per non toccare i salvataggi** *(un flag nuovo in un salvataggio vecchio è un campo che non esiste)*, gli sviluppatori usano lo **stato locale** *(`Status.Dead`)* e **sotto-sistemi separati**: **il contatore di Jibrael** per le Amanecidas, **il percorso arcade** per Husk, **lo script di Viridiana**, **l'incontro irripetibile di Perpetua**.
+- ⭐⭐ **E la conseguenza per il co-op, che è il punto**: **`Status.Dead` è ATOMICO** — non è un flag che si può «leggere dal salvataggio» né ricavare dalla scena. ⇒ **se NON viene propagato**, l'entità sull'altro client **può restare in un loop di idle/transizione** che **nessun flag riuscirebbe a sbloccare**, perché **non c'è nessun flag da leggere**.
+- ⇒ 📌 **Il fix non è «aggiungere un flag»: è PROPAGARE `Status.Dead`** per quei 4. ⭐ **E il progetto ha già il canale**: **la morte si sincronizza** *(provata in gioco)* — quindi non serve un canale nuovo, serve **lo stesso canale applicato a quattro entità che oggi non lo usano**.
+- ⚠️ **La riga che evita il lavoro sbagliato**: chi apre questa voce e legge «4 flag» **proverà ad aggiungere 4 flag**, e **non funzionerà** *(non c'è dove leggerli)*. La forma giusta è **la propagazione**, e si misura con **lo stesso marker della morte** — non con un `[BossCorpse]` nuovo.
+
+### ⑧ 📌 **LO STATO DI QUESTA SEZIONE**
+
+- ✅ **Aggiunta, non riscrittura**: **solo righe in fondo**, **0 righe cancellate**, **nessuna sezione precedente toccata** — comprese **la lista corta del `09:00`** *(`:7349-7359`, dove la Colpa è la voce **3** «mai cominciata» e i 4 flag sono la voce **5**)* e **la lista degli osservabili del `00:30`** *(`:7471-7493`)*, che **restano intatte e leggibili come storia**. ⇒ ⭐ **si superano QUI, non là**.
+- ⛔ **`docs\BUG-NOTI.md` NON è stato toccato** — e la voce 7 *(firma vecchia del marker)* **resta il segnaposto del `00:30` §③**, non è stata fatta in questa tornata.
+- 📌 **I due commit di questa tornata, dichiarati**: **`1db74ab`** — il **revert** *(4 file, **687 rimozioni**, 0 inserzioni)*; e **il commit del TODO** — **questo file, in fondo**. Sono **due** e non uno perché il revert è **una cosa che si può voler annullare da sola** *(un `git revert 1db74ab` la rimette)*, mentre il TODO è **la registrazione di com'è andata**.
+- ✅ **Build, deploy e marker sono stati fatti DAVVERO in questa tornata** *(a differenza del `00:30`, dove la prova era l'utente)*: build **Debug della SOLUTION** ⇒ `Compilazione completata.`, **Errori 0**, **Avvisi 438** *(la baseline)* · deploy ⇒ **270 bersagli, tutti validi** · `tools\marker-check.ps1` sulla **DLL deployata** *(sha256 `8a3d618f…`, **465408 byte** — la **stessa dimensione** della build di `3b43094`)* ⇒ **9 marker della Colpa PRESENTI su 9** *(`[ColpaVita] morte=`, `applicata a ogni spawn`, `reset al falo'`, `salvato`, `caricato`, `notifica`, più `[Colpa]`, `[Morte]`, `[Falo'']`)* e **7 marker della banda ASSENTI su 7** *(exit 1, l'esito atteso)*.
+- 📌 **Le fonti di questa entry**, e **nessuna è nel repo** *(`scratch\` sta un livello sopra la radice, §⑤)*: `scratch\REFERTO-COLPA-VITA.md` *(la Colpa: i tre ganci, il file, la verifica sul frammento, i residui `:421-431`)*, `scratch\REFERTO-BANDA-VITA.md` *(la banda: l'aggancio, la geometria, il colore)*, `scratch\DIAGNOSI-COLPA-CURVA.md` *(la curva nativa `:35`, `:170`)* e `scratch\REFERTO-REVERT-BANDA.md` *(cosa è stato rimosso e come si è verificato che la Colpa è intatta)*.
+- ⚠️ **La data** segue **la serie del file** *(`00:15` → `00:30` → questa)*: è **l'etichetta della entry successiva**. ⚠️ **Ma qui c'è un salto**: i due commit di questa tornata sono datati **`15:48`** *(la Colpa)*, **`16:59`** *(la banda)* e **`17:17`** *(il revert)* — quindi **l'ordine del file e l'orologio della macchina, per una volta, coincidono**.
