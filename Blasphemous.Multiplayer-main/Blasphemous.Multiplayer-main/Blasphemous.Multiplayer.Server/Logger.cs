@@ -95,7 +95,7 @@ public static class Logger
     /// </summary>
     private static void Print(object message, HostLevel level)
     {
-        string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message;
+        string line = "[Server] [" + DateTime.Now.ToString("HH:mm:ss") + "] " + message;
 
         switch (level)
         {
