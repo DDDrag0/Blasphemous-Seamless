@@ -577,6 +577,138 @@ dichiarare**, là c'è **cosa fare**.
 
 ---
 
+## 9. ⚠️ I **QUATTRO BOSS** senza flag di morte "classico" — **Amanecidas · Perpetua · PontiffHusk · Viridiana** *(⚠️ **DA TESTARE** — non è un difetto accertato: **mancano i dati**)*
+
+> **La distinzione con la voce 10, che le sta accanto, è il punto di tutta questa coppia.** La **10 è verificata
+> nel codice**: si legge, e la catena si chiude. **Questa no.** Qui **non c'è un difetto accertato**: c'è **una
+> domanda a cui manca la misura**. ⇒ ⭐ **è una cosa DA TESTARE, non una cosa da fixare** — e il test **non è un
+> esperimento da inventare, è un'osservazione da fare**: una run, e una riga di log da cercare. Finché quella riga
+> non esiste, mettersi a "sistemare" qui sarebbe **il fix a naso** che il progetto ha già dichiarato di non volere.
+
+**I quattro.** `Amanecidas` · `Perpetua` · `PontiffHusk` · `Viridiana`.
+
+**⭐ Perché sono diversi, e non è un dettaglio di tassonomia.** Sono **DLC o eventi aggiuntivi**, iniettati in un
+gioco la cui **architettura dei boss era già sigillata**. Per **non toccare i salvataggi** esistenti *(un flag
+nuovo in un salvataggio vecchio è un campo che non esiste)*, il loro stato è **locale** e il completamento va su
+**sotto-sistemi separati** *(il contatore di **Jibrael** per le Amanecidas, il percorso **arcade** per Husk, lo
+**script** di Viridiana, l'incontro **irripetibile** di Perpetua)*. ⇒ **non hanno un flag di morte "classico"** da
+leggere, e non è una svista degli altri tre: è **la loro forma**.
+
+**✅ Quello che SAPPIAMO** *(verificato)*:
+- il flag **`<scena>_BOSSDEAD` non esiste** per loro: nessuno dei quattro è ricavabile dal nome della scena;
+- ⭐ la mod **propaga l'UCCISIONE** — *un'entità la cui vita è arrivata a zero* — **non** `Status.Dead`; e sul
+  ricevente **ricostruisce** `Status.Dead` dal predicato **`Entity.Dead || CurrentLife <= 0`** *(`:5816` lato
+  invio; `Kill()` / `KillInstanteneously()` / `Damage(Hit)` lato ricezione)*;
+- ⇒ ⭐ **quindi il canale potrebbe già coprirli**, senza un flag nuovo e senza una riga di codice nuova;
+- ⚠️ e `Status.Dead` **non è** il predicato di rilevamento: in **ogni** punto in cui la mod lo legge è una
+  **guardia di idempotenza** — *"la sequenza di morte è già partita"* — (`:465`, `:6302`, `:6362`, `:6714`,
+  `:7100`, `:7136`) e **mai** la domanda *"è morto?"*.
+
+**⚠️ Quello che NON sappiamo, ed è la domanda intera.** Se la loro morte passi davvero da **`CurrentLife <= 0`
+sulla macchina che li uccide**. Non è una domanda oziosa: la lettura per sotto-sistemi dice che si spengono
+**fuori dal canale della vita** — cioè **esattamente** il caso in cui il predicato `:5816` può non vedere niente.
+⇒ ⭐ **una domanda sola:** *la morte di questi quattro porta la vita a zero **sulla macchina che li uccide**, o la
+spegne da un'altra parte?*
+
+**📋 IL TEST — una riga, e va scritta come osservazione.** **Uccidere uno dei quattro** e cercare nel log la riga
+dell'uccisione:
+
+```
+[EnemyKill] …|<Nome>|… MORTO Dead=… vita=0 … attivo=… pos=(…)
+   <- la ricerca vera e' "[EnemyKill]" + "MORTO" + "vita=0" (esce con un decimale: 0,0 oppure 0.0)
+```
+
+| esito | cosa vuol dire | cosa fare |
+|---|---|---|
+| **la riga c'è** | ⭐ il canale **li copre già**: il predicato li vede e la morte viaggia | **niente da fare** — la voce si chiude **con la misura**, non con un fix |
+| **la riga NON c'è** | il predicato **non li vede**, e la morte si spegne per un'altra strada | ⚠️ **il fix è lì**: estendere il rilevamento a `Status.Dead` — la sola riga che il `docs\TODO.md:7567-7571` prevede |
+
+**⚠️ E i limiti del test, da dire prima di chiederlo a qualcuno.** (1) ⚠️ **Servono i DLC**: chi non li ha **non
+può** fare questa prova, e non c'è modo di aggirarla. (2) ⛔ Nei log che abbiamo **i quattro hanno 0 righe** —
+`Amanecida|Perpetua|Viridiana|PontiffHusk|Husk|Jibrael|arcade` non compaiono **mai**: **nessuno dei quattro è mai
+stato ucciso in co-op**, quindi oggi la domanda è **senza risposta per assenza di dati**, non per difficoltà.
+
+**⚠️ E una parte è dichiarata non verificata, e va tenuta così.** La lettura per **sotto-sistemi** — il contatore
+di **Jibrael** *(Amanecidas)*, il percorso **arcade** di Husk, lo **script** di Viridiana — riposa su **una sola
+riga** di `docs\TODO.md` (`:7568`), **mai verificata**: **nessun referto** la nomina. ⇒ **non è un fatto, è una
+dichiarazione**: serve a dire *dove guardare*, non *cosa succede*.
+
+**📌 NOTA SULLE RIGHE — i riferimenti dei referti sono in ritardo.** Molti referti e il `TODO` citano la **whitelist**
+a `EnemySyncManager.cs:378-386`: **a HEAD `599b796` è a `:398-406`** *(misurato: **20 righe di scarto**)*. E
+**`FirstBossDeadFlagOn`** — il **solo** lettore di `_BOSSDEAD`, cioè il fix C — è citato `:836-856` **ma è a
+`:966`**. ⇒ **valgono i numeri misurati a HEAD**, non quelli dei referti.
+
+**Stato.** **DA TESTARE — non un difetto accertato.** ⛔ **Non si tocca niente finché non si vede il log di una
+kill**, e **non è in lavorazione**. ✅ Il test costa **una run con i DLC e una ricerca nel log**. 📌 **Se un
+giocatore riporta** *"l'ho ucciso io e dall'altro è ancora in piedi"* **su uno di questi quattro**, quel log **è**
+la misura che manca: va preso **prima** di toccare il predicato.
+
+---
+
+## 10. 🔴 IL **LATE JOINER** NON SA CHE UN BOSS È MORTO — `bdead|<id>` non gli viene mai ritrasmesso *(✅ **VERIFICATO NEL CODICE** — non serve un log: la catena è chiusa)*
+
+> **La differenza con la voce 9 è tutta qui, e va letta per prima.** La **9 è da testare**: manca la misura, e
+> senza misura non si tocca niente. **Questa è verificata nel codice**: la catena si legge tutta, e **il buco sta
+> in un punto solo** — un annuncio che non ripete un prefisso. ⇒ **non è una cosa da testare: è una cosa da
+> fixare**, con la forma del fix già nota e **dentro un canale che esiste**. *(Il test qui sotto serve a **vedere
+> il sintomo**, non a scoprire la causa.)*
+
+**🔴 Il difetto.** `bdead|<id>` — **il prefisso che dice "questa è la morte di un BOSS: applicala con `Kill()`"**
+— **non viene mai ritrasmesso** a chi si connette **dopo** la kill.
+
+**Perché, in una riga di codice.** `AnnounceDeathStateToPeers` (`EnemySyncManager.cs:4871`) è il metodo che
+**ripete le morti a chi arriva dopo**, e manda **solo id nudi** (`:4913-4914`): la memoria `_announcedDeaths`
+contiene **l'id nudo** (`:5864`), e il prefisso `bdead|` compare **solo** dove nasce e dove si spedisce **dal
+vivo** — la costante `:335`, lo scorporo `:349`, l'invio `:5848` — **nessuno dei tre è nel percorso del joiner.**
+⇒ ⚠️ **il prefisso non parte.**
+
+**⇒ Cosa arriva, allora, a un giocatore che entra dopo.** Solo la strada **generica** della morte: `:6889`
+`_pendingDeaths.Add(id)` + `MarkSpawnPointConsumed` → `DestroyDeadEnemy` `:7089` → `KillEnemyLocally`, che su un
+boss finisce nella **`Damage(Hit)` nativa**. ⚠️ **La strada dell'annuncio** — `ApplyBossDeath` `:440` →
+`boss.Kill()` `:531` → la **morte recitata** della whitelist — **per il joiner non esiste**: la riceve **solo**
+chi era connesso quando il prefisso è partito.
+
+**⚠️ E la conseguenza, detta per intero.** Per il late joiner **il boss non è dichiarato morto**: riceve una
+morte **generica**, e la strada che il fix A costruisce apposta *("ero a terra, il boss è morto lontano da me")*
+**non gli arriva mai**. ⇒ ⭐ **per lui il boss può essere ancora vivo** — e **di sicuro** non ha la morte che il
+progetto ha già scritto per quella finestra.
+
+**⚠️ E non riguarda i quattro.** Riguarda **tutti i boss**: è il **canale**, non la famiglia di DLC della voce 9.
+
+**🎯 E deriva dal fix A.** La morte **recitata** (`bdead|` → `Kill()` → `Death()` in whitelist) è **irraggiungibile
+per un late joiner**: il fix A è arrivato, ma **solo per chi c'era**. ⇒ questa voce è **la sua coda**.
+
+**⭐ Il fix, già noto e senza canali nuovi.** **Mandare anche `bdead|<id>` nell'annuncio** — cioè aggiungere il
+prefisso agli id che `AnnounceDeathStateToPeers` ripete. **È nel canale che esiste già** *(il ricevente sa già
+cosa fare con quel prefisso: `:6881`)*, **non** un flag nuovo e **non** un pacchetto nuovo.
+
+**⚠️ E il pezzo che il fix deve tenere presente, altrimenti resta mezza riga.** `ApplyBossDeath` interviene
+**solo se il giocatore locale è a terra** *(`:456`, `if (!localDead) { … motivo=giocatore-locale-vivo; return; }`)*:
+⇒ rimandare `bdead|<id>` a un joiner **vivo** lo farebbe **uscire subito dal ramo**, senza applicare niente.
+**Quale delle due strade copra il joiner vivo** — il ramo generico, o un ramo `bdead|` che non si fermi alla
+guardia — **è la cosa che il test qui sotto dice**. ⚠️ **Il prefisso mancante è verificato; l'esito per il joiner
+vivo è la parte da misurare.**
+
+**📋 IL TEST — in casa, senza DLC.** Uccidere **un** boss qualunque, poi **riconnettersi con l'altro client**, e
+guardare se il boss è **ancora morto** o **è tornato vivo**. *(Dice **quanto** è grave e **quale ramo** lo copre; il
+difetto **non** dipende da lui: il prefisso manca comunque.)*
+
+**📌 I riferimenti, misurati a HEAD `599b796`.** `AnnounceDeathStateToPeers` **`:4871`** · gli id nudi
+**`:4913-4914`** · la memoria **`:5864`** · il prefisso **`:335` / `:349` / `:5848`** · `ApplyBossDeath` **`:440`**
+*(guardie `:448`, `:456`, `:465`, `:472`; `Kill()` `:531`)* · la strada generica **`:6881-6901`**, `:7089`,
+`:7101`.
+
+**📌 NOTA SULLE RIGHE — i riferimenti dei referti sono in ritardo.** Molti referti e il `TODO` citano la **whitelist**
+a `:378-386`: **a HEAD è a `:398-406`** *(misurato: **20 righe di scarto**)*. E **`FirstBossDeadFlagOn`** è citato
+`:836-856` **ma è a `:966`**. ⇒ **valgono i numeri misurati a HEAD.**
+
+**Stato.** **VERIFICATO NEL CODICE — DA FIXARE.** ⛔ **Non è un prezzo accettato** e **non è un limite
+dichiarato**: è **un prefisso mancante in un annuncio che esiste già**. ✅ **Fix: anche `bdead|<id>`
+nell'annuncio** ai nuovi arrivati. 📌 **La 9 e la 10 non si confondono**: la 9 chiede **una misura** sul
+rilevamento, la 10 **un prefisso** nell'annuncio — e **nessuna delle due** si chiude con un flag nuovo.
+
+---
+
 ## Come si riporta un difetto *(per chi gioca e per i tester)*
 
 **Quello che serve**, in ordine di utilità:
