@@ -271,24 +271,13 @@ public class ConnectionDisplay : MonoBehaviour
         //
         //     ⚠️ La sonda NON ha bisogno di essere connessi al gioco: l'unico requisito e' una lobby
         //     Steam (ospitata o accettata). Se non c'e', resta accesa e comincia da sola quando arriva.
+        //
+        //     ⚠️ E IL CORPO DEL CLIC E' UNO SOLO (`HandleProbeClick`): lo chiama anche `DisplayEnd`,
+        //     cioe' la schermata di chi e' hostato/connesso. Una sonda e' uno STRUMENTO DI MISURA:
+        //     deve restare a portata anche mentre si e' dentro una sessione, ed e' proprio quello il
+        //     momento in cui c'e' qualcosa da misurare. Due copie del corpo divergerebbero.
         if (probeClicked)
-        {
-            if (SteamP2PProbe.Active)
-            {
-                SteamP2PProbe.Stop();
-                Main.Multiplayer.NotificationManager.DisplayNotification("P2P: sonda fermata (vedi log)");
-            }
-            else if (SteamP2PProbe.Start())
-            {
-                Main.Multiplayer.NotificationManager.DisplayNotification(
-                    "P2P: sonda accesa, guarda il log ([P2P] peer=...)");
-            }
-            else
-            {
-                Main.Multiplayer.NotificationManager.DisplayNotification(
-                    "P2P: non disponibile (vedi log)");
-            }
-        }
+            HandleProbeClick();
 
         // ③ LO STATO, una riga sola e corta (la larghezza del pannello e' 330 px).
         //
@@ -309,6 +298,67 @@ public class ConnectionDisplay : MonoBehaviour
         string probe = SteamP2PProbe.Status();
         if (!string.IsNullOrEmpty(probe))
             ShowLabel(probe, P2P_STATUS_LINE);
+    }
+
+    /// <summary>
+    /// ⭐⭐ IL CLIC DELLA SONDA, IN UN POSTO SOLO — lo chiamano **due** schermate: `DisplayStart`
+    /// (sconnesso: riga dei bottoni Steam) e `DisplayEnd` (hostato/connesso: riga di "Disconnect").
+    ///
+    /// PERCHE' DUE SCHERMATE E UNA SOLA FUNZIONE: la sonda e' una **misura**, non un comando di
+    /// connessione. Se vivesse solo nella schermata di chi non e' connesso, per misurarla bisognerebbe
+    /// **togliere l'host** - cioe' distruggere la cosa che si sta misurando. Quindi il bottone c'e' in
+    /// entrambi gli stati, e il corpo del clic e' questo, identico per tutti e due.
+    ///
+    /// Cosa fa, in ordine (ed e' quello che faceva prima, parola per parola):
+    ///   · sonda ACCESA  => `Stop` e notifica "sonda fermata";
+    ///   · sonda SPENTA  => `Start`; `true` = accesa (anche senza lobby: aspetta e comincia da sola),
+    ///     `false` = Steam non c'e' (o la registrazione della callback e' fallita) e la UI lo dice.
+    ///
+    /// ⚠️ NON tocca la connessione, il trasporto, il protocollo, la lobby ne' `NetworkManager`: manda
+    /// un byte ai peer della lobby e scrive `[P2P] ...` nel log. Premuto da hostato o da sconnesso,
+    /// l'effetto e' lo stesso.
+    /// </summary>
+    private void HandleProbeClick()
+    {
+        if (SteamP2PProbe.Active)
+        {
+            SteamP2PProbe.Stop();
+            Main.Multiplayer.NotificationManager.DisplayNotification("P2P: sonda fermata (vedi log)");
+        }
+        else if (SteamP2PProbe.Start())
+        {
+            Main.Multiplayer.NotificationManager.DisplayNotification(
+                "P2P: sonda accesa, guarda il log ([P2P] peer=...)");
+        }
+        else
+        {
+            Main.Multiplayer.NotificationManager.DisplayNotification(
+                "P2P: non disponibile (vedi log)");
+        }
+    }
+
+    /// <summary>
+    /// ⭐ IL BOTTONE DELLA SONDA NELLA SCHERMATA DI CHI E' GIA' DENTRO (host o ospite): la stessa
+    /// casella a destra gia' usata da "Host session" sulla riga dei bottoni IP (slot 1), quindi **una
+    /// riga sola, nessuna riga in piu'** e nessuna casella rubata a "Disconnect", che resta a sinistra.
+    ///
+    /// ⚠️ DISABILITATO, NON NASCOSTO, SE STEAM NON C'E' (`SteamLobby.Available`): e' la regola gia'
+    /// scritta per il bottone di Steam - nascondere fa credere che la funzione non esista, disabilitare
+    /// dice la verita' (c'e', e adesso non si puo' usare). Il `GUI.enabled` si ripristina **sempre**,
+    /// cosi' il resto della schermata non eredita lo stato disabilitato.
+    ///
+    /// ⚠️ E LA PAROLA CAMBIA COME PRIMA: "Probe P2P" da spenta, "Stop probe" da accesa. Non e' cosmesi:
+    /// e' il modo di sapere se la misura sta andando senza guardare il log.
+    /// </summary>
+    private bool ReadProbeButtonOn(int line)
+    {
+        bool wasEnabled = GUI.enabled;
+        GUI.enabled = wasEnabled && SteamLobby.Available;
+
+        bool clicked = ReadButton(SteamP2PProbe.Active ? "Stop probe" : "Probe P2P", line, 1);
+
+        GUI.enabled = wasEnabled;
+        return clicked;
     }
 
     /// <summary>
@@ -510,8 +560,34 @@ public class ConnectionDisplay : MonoBehaviour
         if (HostSession.IsRunning)
             ShowLabel("Host attivo: porta " + HostSession.Port + " - giocatori " + HostSession.Players, 1);
 
-        if (ReadButton("Disconnect", 2))
+        // ⭐⭐ LA SONDA P2P C'E' ANCHE QUI, accanto a "Disconnect" e sulla STESSA riga.
+        //
+        // PERCHE' QUI (ed era il guasto): da hostati/connessi questa schermata e' l'UNICA che si vede
+        // (`MultiplayerWindow` sceglie `DisplayEnd` quando `IsConnected`), e prima conteneva solo
+        // "Disconnect". La sonda invece viveva solo in `DisplayStart`, quindi per misurarla bisognava
+        // **togliere l'host** - e togliere l'host cambia la lobby, cioe' proprio la cosa da misurare.
+        // Un misuratore che si puo' usare solo dopo aver smontato l'esperimento non misura niente.
+        //
+        // ⚠️ LAYOUT: NESSUNA RIGA NUOVA. "Disconnect" e' nella casella 0 (slot 0, x=10, 90 px), la
+        // sonda nella casella 1 (x=110, 130 px): la stessa coppia che "Connect" + "Host session" usa
+        // nella schermata libera, e ci sta dentro la finestra larga 330 px (110+130 = 240). Le righe
+        // 0 e 1 (connessione e stato dell'host) non si spostano di un pixel.
+        bool disconnectClicked = ReadButton("Disconnect", 2);
+        bool probeClicked = ReadProbeButtonOn(2);
+
+        if (probeClicked)
+            HandleProbeClick();
+
+        if (disconnectClicked)
             TryDisconnect();
+
+        // ⭐ LA RIGA DELLA MISURA, e c'e' SOLO mentre la sonda e' accesa - stessa regola di
+        // `DisplayStart`: chi non la preme non vede una riga in piu' e la schermata resta com'era.
+        // Sta sotto i bottoni (riga 3, y=125) e dice quello che serve a chi sta testando: quanti peer,
+        // quante sessioni attive, quante dirette e quante in relay (il dettaglio per peer e' nel log).
+        string probe = SteamP2PProbe.Status();
+        if (!string.IsNullOrEmpty(probe))
+            ShowLabel(probe, 3);
     }
 
     private void ValidateAndConnect()
