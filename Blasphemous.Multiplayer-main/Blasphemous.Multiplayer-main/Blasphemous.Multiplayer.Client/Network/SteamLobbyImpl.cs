@@ -874,7 +874,14 @@ internal static class SteamLobbyImpl
 
             ModLog.Info(MarkerJoinReady + ip + " porta=" + port +
                         " host=" + (hostName ?? string.Empty) + " da=" + where);
-            Notify("Steam: invito accettato, connessione a " + ip + ":" + port);
+
+            // ⚠️ LA NOTIFICA NON DICE L'IP, e non e' cosmesi: l'invito entra in **P2P**
+            // (`ConnectionDisplay.ApplySteamJoin` scrive il token `p2p` nel campo "Server IP"), quindi
+            // un indirizzo qui annuncerebbe una connessione che non e' quella che parte — ed e' la
+            // riga che nella prova hotspot diceva `connessione a 192.168.147.1:27051` mentre il P2P
+            // era gia' disponibile. L'IP resta **nel log** due righe sopra (`MarkerJoinReady`), dove
+            // serve: e' la diagnostica di quale host ha invitato.
+            Notify("Steam: invito accettato, connessione P2P");
             return true;
         }
         catch (Exception e)

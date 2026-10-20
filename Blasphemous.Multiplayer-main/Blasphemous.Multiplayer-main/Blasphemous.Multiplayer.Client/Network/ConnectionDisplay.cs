@@ -362,14 +362,31 @@ public class ConnectionDisplay : MonoBehaviour
     }
 
     /// <summary>
-    /// ⭐ L'INVITO DIVENTA UNA CONNESSIONE. L'IP e la porta arrivano dalla lobby (letti in
-    /// `LobbyEnter_t` dalla cache, o dopo `LobbyDataUpdate_t`: vedi `SteamLobbyImpl`), tutto il resto
-    /// dai campi della schermata: nome, password, squadra.
+    /// ⭐ L'INVITO DIVENTA UNA CONNESSIONE **P2P**. L'IP e la porta arrivano dalla lobby (letti in
+    /// `LobbyEnter_t` dalla cache, o dopo `LobbyDataUpdate_t`: vedi `SteamLobbyImpl`) e servono **solo**
+    /// come diagnostica nel log: la connessione non passa da li'. Tutto il resto viene dai campi della
+    /// schermata: nome, password, squadra.
     ///
-    /// PERCHE' SI RIUSA `ValidateAndConnect` (e non si duplica il dial): il campo "Server IP" accetta
-    /// gia' la forma `ip:porta` (`StandardValidator.IsServerValid`), quindi scrivere
-    /// `"192.168.1.5:27051"` nel campo e premere Connect e' ESATTAMENTE quello che deve succedere -
-    /// e questa funzione fa le stesse due cose, con gli stessi controlli e le stesse notifiche.
+    /// 🔴 PERCHE' IL P2P E NON IL TCP - misurato, non ipotizzato. Prima questa funzione scriveva
+    /// `serverIp:porta` nel campo "Server IP", cioe' l'IP **LAN** che l'host pubblica nella lobby.
+    /// Ma `NetworkManager.CreateTransport` sceglie il filo **solo** dal campo
+    /// (`SteamP2PTransport.IsRequested`, vero se e solo se vale `p2p`): quindi un invito faceva partire
+    /// un `TcpTransport` verso un indirizzo privato, e fuori dalla LAN quel dial finisce in
+    /// `Connection refused` / `Failed to establish connection`
+    /// (`scratch\DIAGNOSI-P2P-HOTSPOT.md`), con **zero** righe `[Net] trasporto=p2p` nei log. Il P2P
+    /// invece era gia' disponibile e diretto (`[P2P] ... relay=0 via=diretto`): moriva solo perche'
+    /// nessuno glielo aveva chiesto.
+    ///
+    /// ⭐ IL MECCANISMO E' UNO SOLO, e non c'e' nessun flag nuovo: si scrive nel campo il token che il
+    /// trasporto chiede gia' (`SteamP2PTransport.RequestToken`), **prima** della connessione. Da li' in
+    /// poi la strada e' quella che esiste: `ValidateAndConnect` legge il campo, `CreateTransport` vede
+    /// il token e costruisce `SteamP2PTransport`, che entra nella lobby dell'invito e parla con il
+    /// **proprietario** (`SteamP2PTransportImpl.Begin`: `host`/`port` non vengono nemmeno letti). Il
+    /// TCP resta intatto: chi scrive un indirizzo nel campo continua a fare TCP, byte per byte.
+    ///
+    /// ⚠️ E IL CAMPO RESTA `p2p` ANCHE DOPO: `OnConnect` mette questa `ConnectionInfo` in
+    /// `LastConnectionInfo`, quindi alla riapertura il campo propone `p2p` e **mai piu'** l'IP locale
+    /// dell'host. Vuoto sarebbe peggio: cancellerebbe l'unica cosa che l'invito ha insegnato.
     ///
     /// ⚠️ SE L'INPUT NON E' VALIDO (tipicamente: nome del giocatore vuoto al primo avvio) **non si
     /// connette niente**, ma i campi restano compilati: l'utente scrive il nome, preme Connect, e
@@ -378,13 +395,17 @@ public class ConnectionDisplay : MonoBehaviour
     private void ApplySteamJoin(string serverIp, int port, string room, string player, string password, byte team)
     {
         // ⚠️ `_firstShowing = false` SUBITO: altrimenti il prossimo giro di `DisplayStart`
-        // rimetterebbe `LastConnectionInfo` al posto dell'indirizzo dell'invito.
+        // rimetterebbe `LastConnectionInfo` al posto del token dell'invito.
         _firstShowing = false;
 
-        // La forma "ip:porta" e' quella che il campo e il validatore conoscono gia'.
-        _connection = new ConnectionInfo(serverIp + ":" + port, room, player, password, team);
+        // ⭐ IL CAMPO PRIMA DELLA CONNESSIONE: e' il token che il trasporto legge (`IsRequested`). Da
+        // qui in avanti questa connessione e' P2P e non nomina nessun indirizzo.
+        _connection = new ConnectionInfo(SteamP2PTransport.RequestToken, room, player, password, team);
 
-        ModLog.Info(SteamLobby.MarkerJoinConnect + serverIp + ":" + port);
+        // L'IP della lobby resta nel log come DIAGNOSTICA (dice **quale** host ha invitato), non come
+        // destinazione: non e' l'indirizzo su cui si viaggia.
+        ModLog.Info(SteamLobby.MarkerJoinConnect + SteamP2PTransport.RequestToken +
+                    " (host dalla lobby: " + serverIp + ":" + port + ")");
 
         if (!ValidateInputs())
         {
