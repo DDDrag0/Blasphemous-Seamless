@@ -217,11 +217,20 @@ namespace Blasphemous.Multiplayer.Client.Host
 
                 // ⭐⭐ C1b-1 — IL FILO DEL SERVER SI SCEGLIE QUI, E OGGI E' TCP: esattamente lo stesso
                 // socket di prima (bind wildcard IPv4, `DelayDisabled`, `GetListeningIPs`), contenuto in
-                // `TcpServerTransport`. Il composito e' il registro dei fili del server: **oggi ne ha
-                // uno**, domani avra' accanto il P2P dei peer remoti. `Server` non lo sa e non cambia.
-                // ⛔ In questo commit NIENTE P2P: qui non esiste `SendP2PPacket` e non deve esistere.
+                // `TcpServerTransport`. Il composito e' il registro dei fili del server.
+                //
+                // ⭐⭐ C1b-2 — E ORA IL SECONDO FILO: **il P2P dei peer remoti**, ACCANTO al TCP. L'host
+                // resta un client TCP sul loopback (il suo dial a `127.0.0.1` e' il percorso che i 42
+                // frame misurano), e i peer che arrivano da Steam entrano dal secondo trasporto, che li
+                // inietta nel server con gli stessi tre eventi (`P2PServerTransport`).
+                // ⚠️ `Prepare()` e' il cancello: su una copia NON-Steam (o con Steam spento) il composito
+                // resta con **il solo TCP**, cioe' esattamente com'era in C1b-1 — un'aggiunta non
+                // disponibile non deve impedire alla base di partire.
                 CompositeServerTransport transport = new CompositeServerTransport();
                 transport.Add(new TcpServerTransport());
+
+                if (P2PServerTransport.Prepare())
+                    transport.Add(new P2PServerTransport());
 
                 CoopServer started = new CoopServer(MAX_PLAYERS, password ?? string.Empty, transport);
                 if (!started.Start(port))

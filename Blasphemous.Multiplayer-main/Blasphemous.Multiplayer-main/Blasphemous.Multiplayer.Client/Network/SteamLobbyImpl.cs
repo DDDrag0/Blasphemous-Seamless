@@ -123,6 +123,21 @@ internal static class SteamLobbyImpl
     internal const string KEY_PORT = "hostPort";
     internal const string KEY_NAME = "hostName";
 
+    // ⭐⭐ C1b-2 — LA QUARTA CHIAVE: **CHI OSPITA**, per SteamID.
+    //
+    // 🔴 PERCHE' NON BASTA `GetLobbyOwner`. La lobby **non muore con l'host**: quando il proprietario
+    // esce, la proprieta' **passa al membro successivo** (e' la stessa proprieta' su cui poggia
+    // `LobbyChatUpdate_t`, vedi `OnLobbyChatUpdate`). Quindi dopo quell'istante `GetLobbyOwner`
+    // restituisce **un altro giocatore** — e un trasporto P2P che chiedesse a Steam "chi e' l'host?"
+    // manderebbe l'hello **al posto sbagliato**. Il sintomo sarebbe muto: la sessione non parte, o parte
+    // verso chi non ha un server.
+    //
+    // ⇒ l'host **si dichiara qui**, una volta, alla creazione della lobby: e' un fatto che resta vero
+    //   anche quando la proprieta' della lobby cambia, perche' e' un DATO, non un ruolo di Steam. Chi
+    //   legge (il trasporto P2P del peer) usa questo, e se manca dice **"la sessione non e' piu'
+    //   disponibile"** invece di indovinare un destinatario.
+    internal const string KEY_STEAM = "hostSteamId";
+
     /// <summary>La lobby e' `friendsOnly` (inviti diretti, non compare nel matchmaking globale).</summary>
     private const ELobbyType LOBBY_TYPE = ELobbyType.k_ELobbyTypeFriendsOnly;
 
@@ -576,13 +591,21 @@ internal static class SteamLobbyImpl
             string ip = HostSession.LanAddress;
             int port = Protocol.DEFAULT_PORT;
 
+            // ⭐⭐ E IL QUARTO: CHI OSPITA. Vedi `KEY_STEAM`: la proprieta' della lobby cambia se l'host
+            // esce, ma questo dato no — ed e' quello che il trasporto P2P del peer legge per sapere a
+            // chi mandare l'hello.
+            ulong hostSteamId = SteamUser.GetSteamID().m_SteamID;
+
             bool okIp = SteamMatchmaking.SetLobbyData(_hostLobby, KEY_IP, ip);
             bool okPort = SteamMatchmaking.SetLobbyData(_hostLobby, KEY_PORT, port.ToString());
             bool okName = SteamMatchmaking.SetLobbyData(_hostLobby, KEY_NAME, _hostName ?? string.Empty);
+            bool okSteam = SteamMatchmaking.SetLobbyData(_hostLobby, KEY_STEAM, hostSteamId.ToString());
 
             ModLog.Info(MarkerHostData + KEY_IP + "=" + ip + " " + KEY_PORT + "=" + port +
                         " " + KEY_NAME + "=" + (_hostName ?? string.Empty) +
-                        " esiti=" + (okIp ? "1" : "0") + (okPort ? "1" : "0") + (okName ? "1" : "0"));
+                        " " + KEY_STEAM + "=" + hostSteamId +
+                        " esiti=" + (okIp ? "1" : "0") + (okPort ? "1" : "0") + (okName ? "1" : "0") +
+                        (okSteam ? "1" : "0"));
 
             if (string.IsNullOrEmpty(ip) || ip == "sconosciuto")
                 ModLog.Warn(MarkerHostData + "attenzione: l'IP LAN non e' stato risolto (" +

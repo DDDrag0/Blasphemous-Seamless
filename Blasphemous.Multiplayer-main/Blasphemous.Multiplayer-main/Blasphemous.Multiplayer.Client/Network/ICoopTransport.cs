@@ -82,10 +82,23 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// Scrive sul filo un buffer **gia' impacchettato** (`[ushort len][byte type][payload]`), senza
         /// interpretarlo, spezzarlo o ri-impacchettarlo: i byte che arrivano sono i byte che partono.
         ///
+        /// ⭐⭐ E CI DICE **LA CLASSE** (`TransportClass`), che e' la cosa che il contratto di C1b-1 non
+        /// diceva e senza la quale un trasporto a messaggi non sa su **quale canale** mandare:
+        /// `Unreliable` = puo' essere perso, la copia dopo lo sovrascrive; `Reliable` = se si perde lo
+        /// stato resta sbagliato per sempre. Non si deduce dal tipo (`NetworkType.Attack` e'
+        /// un demultiplexer, `Effect` ha due classi, `Animation` ha un byte reliable su un messaggio
+        /// unreliable): la decide **il punto in cui il payload nasce**, secondo `docs\STEAM_INVITES.md`
+        /// §10, e il chiamante la passa qui.
+        ///
+        /// ⚠️ IL TCP LA IGNORA, di proposito: c'e' un solo flusso ordinato e affidabile, e li' la classe
+        /// non ha nessun effetto. `TcpTransport.Send` scrive gli stessi byte e basta — il filo TCP non
+        /// cambia di un byte (`scratch\REFERTO-C1B2-P2P.md`).
+        ///
         /// Puo' lanciare `System.IO.IOException` se il socket e' caduto: e' load-bearing, il chiamante
-        /// la usa per disconnettersi (`NetworkManager.SendQueue`, `:142`). Non catturarla qui.
+        /// la usa per disconnettersi (`NetworkManager.SendQueue`, `:142`). Non catturarla qui. Per il
+        /// P2P lo stesso `IOException` e' il link dichiarato perso (timeout): la via e' quella che c'e'.
         /// </summary>
-        void Send(byte[] framed);
+        void Send(byte[] framed, TransportClass cls);
 
         /// <summary>Il filo si e' aperto (dopo un `Connect` riuscito).</summary>
         event Action Connected;

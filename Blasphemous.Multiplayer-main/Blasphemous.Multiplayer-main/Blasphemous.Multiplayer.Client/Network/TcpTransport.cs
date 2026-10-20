@@ -166,8 +166,14 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// <summary>
         /// Scrive i byte che riceve, senza toccarli (prima era `NetworkManager.cs:103`). Vedi il commento
         /// di classe: `IOException` risale di proposito.
+        ///
+        /// ⭐ E LA CLASSE SI IGNORA — una riga di commento e nient'altro: il TCP e' **un solo flusso
+        /// ordinato e affidabile**, quindi `Unreliable`/`Reliable` non hanno nessun effetto da questa
+        /// parte del filo. Non si traduce in un flag di `SimpleTCP`, non si accoda, non si spezza: i
+        /// byte che arrivano sono quelli che partono, come prima. La classe esiste per il P2P (che ha
+        /// canali e classi di consegna) e per rendere la scelta **dichiarata** dove il payload nasce.
         /// </summary>
-        public void Send(byte[] framed)
+        public void Send(byte[] framed, TransportClass cls)
         {
             _client.Write(framed);
         }

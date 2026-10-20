@@ -250,6 +250,24 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // `try/catch`: se Steam non c'e', `Tick` esce subito.
         SteamLobby.Tick();
 
+        // ⭐⭐ C1b-2 — IL TRASPORTO P2P, L'UNICO CICLO PER FRAME CHE GLI SERVE.
+        //
+        // DUE righe e **zero bersagli Harmony nuovi** (il ciclo c'e' gia' ed e' questo):
+        //   · `SteamP2PTransport.Tick()` — il filo del PEER: manda l'hello quando la lobby e' nota,
+        //     svuota i tre canali, scarta i pacchetti vecchi, manda il battito e dichiara il timeout;
+        //   · `P2PServerTransport.Tick()` — l'adapter dell'HOST: inietta i frame dei peer nel server e
+        //     svuota la coda delle risposte (la chiamata nativa la fa QUI, sul main thread: il server puo'
+        //     chiamare `Send` anche dal thread del TCP).
+        //
+        // ⚠️ STANNO DOPO `SteamLobby.Tick()` DI PROPOSITO: quello e' il pump delle callback, e
+        // l'accettazione di una sessione P2P (`P2PSessionRequest_t`) arriva da una callback: in questo
+        // frame deve essere gia' stata consegnata prima di leggere i canali.
+        // ⚠️ ENTRAMBE HANNO IL LORO CANCELLO E IL LORO `try/catch`: senza Steam, o senza una sessione
+        // P2P, costano un `if`. Un guasto di Steam non ferma il resto del ciclo (pacchetti, giocatori,
+        // nemici), e questo file non ne sa niente: sono due facciate, come `SteamLobby` e `SteamP2PProbe`.
+        SteamP2PTransport.Tick();
+        P2PServerTransport.Tick();
+
         // ⭐ MARKER [BossJoin]: consuma l'armato di OnLevelLoaded, UNA riga sola, nel primo frame utile.
         // Sta PRIMA di tutto il resto perche' non deve misurare lo stato che questo stesso ciclo modifica,
         // e perche' quando non c'e' niente armato costa un solo confronto booleano. Stesso ciclo per frame

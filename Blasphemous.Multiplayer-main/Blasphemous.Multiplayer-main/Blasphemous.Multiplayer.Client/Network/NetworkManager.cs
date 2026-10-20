@@ -27,6 +27,13 @@ namespace Blasphemous.Multiplayer.Client.Network
         private string _serverIp = string.Empty;
 
         /// <summary>
+        /// `true` mentre siamo **dentro** `Disconnect()`: il trasporto P2P emette `Disconnected` anche
+        /// li', e senza questa bandierina `OnTransportEnded` chiamerebbe `OnDisconnect` due volte (due
+        /// notifiche, due rimozioni). Il TCP non ne ha bisogno: non e' sottoscritto.
+        /// </summary>
+        private bool _ending;
+
+        /// <summary>
         /// ⚠️ L'ESPRESSIONE E' QUELLA DI OGGI, con `_transport` al posto di `_client`:
         /// `_connectionStatus == Connected &amp;&amp; trasporto != null`. Non si usa
         /// `_transport.IsConnected` di proposito: aggiungerebbe un controllo sul socket (il `Connected`
@@ -40,6 +47,18 @@ namespace Blasphemous.Multiplayer.Client.Network
         private readonly List<byte> receivingQueue = new ();
         private static readonly object datalock = new object();
 
+        /// <summary>
+        /// ⭐ LA CLASSE DI OGNI MESSAGGIO IN CODA, una voce per messaggio (non per byte): la decide
+        /// `QueueMesssage`, secondo la tabella di `docs\STEAM_INVITES.md` §10. Serve a `SendQueue` per
+        /// raggruppare i messaggi **consecutivi della stessa classe** in un solo invio: cosi' il filo
+        /// P2P riceve un pacchetto unreliable per la posizione e uno reliable per la morte, e il TCP
+        /// riceve gli stessi byte nello stesso ordine (la classe la ignora).
+        /// </summary>
+        private readonly List<TransportClass> sendingClasses = new ();
+
+        /// <summary>Quanti byte occupa ogni messaggio in coda (testa `[ushort len][byte type]` compresa).</summary>
+        private readonly List<int> sendingSizes = new ();
+
         // Connection
 
         public bool Connect(string server, int port, string room, string player, string password, byte team)
@@ -52,7 +71,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 // ⭐ IL SEAM — la prova che il filo non cambia sta nel confronto riga per riga:
                 //
                 //   PRIMA                                          DOPO
-                //   _client = new SimpleTcpClient();               _transport = new TcpTransport();
+                //   _client = new SimpleTcpClient();               _transport = CreateTransport(server);
                 //   _client.Connect(server, port);                 _transport.Connect(server, port);
                 //   _client.DataReceived += ReceiveMessage;        _transport.DataReceived += ReceiveMessage;
                 //   _client.TcpClient.NoDelay = true;              (dentro TcpTransport.Connect)
@@ -63,9 +82,25 @@ namespace Blasphemous.Multiplayer.Client.Network
                 // trasporto, insieme; l'unica riga che si sposta e' `NoDelay`, che oggi era impostata
                 // dopo la sottoscrizione ma prima di ogni `Write` (le scritture partono da `SendQueue`,
                 // sul main thread, molto dopo) ⇒ nessun byte sul filo puo' accorgersene.
-                _transport = new TcpTransport();
+                //
+                // ⭐⭐ C1b-2 — QUALE FILO. `CreateTransport` risponde `TcpTransport` per **ogni**
+                // indirizzo, tranne quando il campo "Server IP" chiede esplicitamente il P2P (`p2p`):
+                // vedi `SteamP2PTransport.IsRequested`. Il percorso TCP — cioe' tutto quello che c'era
+                // prima, loopback dell'host compreso — resta la strada di default, identica.
+                _transport = CreateTransport(server);
                 _transport.Connect(server, port);
                 _transport.DataReceived += ReceiveMessage;
+
+                // ⭐⭐ C1b-2 — E SOLO PER IL P2P, IL SUO EVENTO DI FINE. Un socket TCP lo si scopre
+                // caduto perche' la scrittura dopo fallisce (`IOException` -> `OnDisconnect`), ed e'
+                // esattamente quello che fa gia'. Il link P2P invece puo' morire **in silenzio** (un
+                // timeout: nessun pacchetto per 5 s), e senza ascoltare il suo `Disconnected` il client
+                // resterebbe in "Attempting" per sempre. La sottoscrizione e' **condizionata al token
+                // `p2p`**: sul percorso TCP non si sottoscrive niente, quindi il comportamento di oggi
+                // (dove `Disconnected` lo emette solo `TcpTransport.Disconnect`) resta identico —
+                // sottoscriverlo li' sarebbe un `OnDisconnect` doppio.
+                if (SteamP2PTransport.IsRequested(server))
+                    _transport.Disconnected += OnTransportEnded;
             }
             catch (System.Net.Sockets.SocketException)
             {
@@ -83,7 +118,38 @@ namespace Blasphemous.Multiplayer.Client.Network
         public void Disconnect()
         {
             // Prima: `_client.Disconnect();` — stessa chiamata, un livello sotto (TcpTransport.Disconnect).
-            _transport.Disconnect();
+            //
+            // ⚠️ `_ending` esiste per UNA ragione: il trasporto P2P emette `Disconnected` anche dentro
+            // questa chiamata, e `OnTransportEnded` non deve chiamare `OnDisconnect` una seconda volta.
+            _ending = true;
+            try
+            {
+                _transport.Disconnect();
+            }
+            finally
+            {
+                _ending = false;
+            }
+
+            OnDisconnect();
+        }
+
+        /// <summary>
+        /// Il trasporto ha dichiarato la fine del link **da solo** (timeout P2P, o "la sessione non e'
+        /// piu' disponibile"). Si passa dalla stessa porta di sempre: `OnDisconnect`.
+        ///
+        /// ⚠️ Sottoscritto **solo** per il trasporto P2P (vedi `Connect`); sul TCP questo gestore non e'
+        /// mai in ascolto, quindi il percorso di oggi non cambia.
+        /// </summary>
+        private void OnTransportEnded()
+        {
+            if (_ending)
+                return;
+
+            if (_connectionStatus == ConnectionStatus.Disconnected)
+                return;
+
+            ModLog.Info("[Net] p2p: il trasporto ha dichiarato finito il link: disconnessione");
             OnDisconnect();
         }
 
@@ -104,6 +170,8 @@ namespace Blasphemous.Multiplayer.Client.Network
             _serverIp = string.Empty;
             _transport = null;
             sendingQueue.Clear();
+            sendingClasses.Clear();
+            sendingSizes.Clear();
             receivingQueue.Clear();
 
             ModLog.Info("Disconnected from server");
@@ -112,7 +180,21 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         // Server
 
-        private void QueueMesssage(byte[] data, NetworkType type)
+        /// <summary>
+        /// ⭐ QUALE FILO — e il default e' quello di sempre. `TcpTransport` per ogni indirizzo; il P2P
+        /// solo se il campo "Server IP" lo chiede **esplicitamente** (`p2p`), perche' sceglierlo da soli
+        /// ("sono in una lobby Steam") romperebbe il loopback dell'host, che e' in lobby anche lui e deve
+        /// restare un client TCP (`scratch\REFERTO-C1B1-SEAM-SERVER.md` §4).
+        /// </summary>
+        private static ICoopTransport CreateTransport(string server)
+        {
+            if (SteamP2PTransport.IsRequested(server))
+                return new SteamP2PTransport();
+
+            return new TcpTransport();
+        }
+
+        private void QueueMesssage(byte[] data, NetworkType type, TransportClass cls)
         {
             if (data == null || data.Length == 0 || _connectionStatus == ConnectionStatus.Disconnected) return;
 
@@ -122,6 +204,11 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.AddRange(data);
 
             sendingQueue.AddRange(bytes);
+
+            // ⭐ Una voce per MESSAGGIO, non per byte: e' cio' che permette a `SendQueue` di mandare in
+            // un pacchetto solo i messaggi consecutivi della stessa classe, senza mai spezzare un frame.
+            sendingClasses.Add(cls);
+            sendingSizes.Add(bytes.Count);
         }
 
         public void SendQueue()
@@ -130,14 +217,21 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             try
             {
-                // ⭐ LA SOLA SCRITTURA DEL CLIENT, e l'argomento e' LETTERALMENTE lo stesso di prima:
+                // ⭐ LA SOLA SCRITTURA DEL CLIENT, e l'argomento e' LETTERALMENTE lo stesso di prima
+                // quando la coda ha una classe sola (il caso normale):
                 //   prima: `_client.Write(sendingQueue.ToArray());`
-                //   dopo:  `_transport.Send(sendingQueue.ToArray());`
+                //   dopo:  `_transport.Send(sendingQueue.ToArray(), cls);`
                 // `sendingQueue.ToArray()` e' la stessa espressione, valutata nello stesso punto, e
                 // `Send` non tocca il buffer (`TcpTransport.Send` fa `_client.Write(framed)`): il
                 // numero di byte, il loro contenuto e il loro ordine sono quelli di prima. `IOException`
                 // risale qui di proposito, perche' il `catch` sotto e' la via di `OnDisconnect()`.
-                _transport.Send(sendingQueue.ToArray());
+                //
+                // ⚠️ QUANDO LE CLASSI SONO MISTE (es. una posizione e una morte nello stesso frame) la
+                // coda si spezza in **run consecutivi**: sul TCP sono piu' `Write` una dopo l'altra con
+                // gli STESSI byte nello STESSO ordine — un flusso non ha confini di messaggio, quindi il
+                // ricevente legge esattamente quello che leggeva prima — mentre sul P2P ogni run prende
+                // il suo canale, che e' il motivo per cui la classe esiste.
+                SendRuns();
             }
             catch (System.IO.IOException)
             {
@@ -146,6 +240,43 @@ namespace Blasphemous.Multiplayer.Client.Network
             finally
             {
                 sendingQueue.Clear();
+                sendingClasses.Clear();
+                sendingSizes.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Manda la coda in **run di classe**: tutti i messaggi consecutivi con la stessa classe in un
+        /// solo invio. Non riordina niente e non unisce classi diverse: l'ordine dei byte resta quello
+        /// di accodamento, sempre.
+        /// </summary>
+        private void SendRuns()
+        {
+            // Il caso normale (una classe sola in tutto il flush): UNA chiamata, esattamente come prima.
+            if (sendingClasses.Count <= 1)
+            {
+                TransportClass single = sendingClasses.Count == 0 ? TransportClass.Unreliable : sendingClasses[0];
+                _transport.Send(sendingQueue.ToArray(), single);
+                return;
+            }
+
+            int start = 0;
+            int index = 0;
+
+            while (index < sendingClasses.Count)
+            {
+                TransportClass cls = sendingClasses[index];
+                int end = start + sendingSizes[index];
+                index++;
+
+                while (index < sendingClasses.Count && sendingClasses[index] == cls)
+                {
+                    end += sendingSizes[index];
+                    index++;
+                }
+
+                _transport.Send(sendingQueue.GetRange(start, end - start).ToArray(), cls);
+                start = end;
             }
         }
 
@@ -226,7 +357,8 @@ namespace Blasphemous.Multiplayer.Client.Network
             List<byte> bytes = new();
             bytes.AddRange(BitConverter.GetBytes(position.x));
             bytes.AddRange(BitConverter.GetBytes(position.y));
-            QueueMesssage(bytes.ToArray(), NetworkType.Position);
+            // 🔵 §10.2: il peer tiene il punto precedente per <=0.2 s e il campione dopo lo sostituisce.
+            QueueMesssage(bytes.ToArray(), NetworkType.Position, TransportClass.Unreliable);
         }
 
         private void ReceivePosition(byte[] data)
@@ -242,7 +374,17 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendAnimation(byte animation)
         {
-            QueueMesssage(new byte[] { animation }, NetworkType.Animation);
+            // ⭐ LA TERZA AMBIGUITA' DI §10: **un byte reliable su un messaggio unreliable**. Le clip
+            // cambiano a ogni cambio e la successiva sovrascrive la precedente (🔵), ma il byte di MORTE
+            // arriva **una volta sola per morte** e senza di lui il cadavere del peer resta **in piedi**
+            // per tutta la morte — e il record affidabile della morte (`PlayerDeathSync.ApplyRemoteState`)
+            // non ripara la posa (§10.2). Il predicato e' lo STESSO del mandante (`CorpsePeerTick`), non
+            // una tabella riscritta qui: "questo byte e' una delle tre morti?".
+            TransportClass cls = PlayerStatus.IsDeathAnimation(animation)
+                ? TransportClass.Reliable
+                : TransportClass.Unreliable;
+
+            QueueMesssage(new byte[] { animation }, NetworkType.Animation, cls);
         }
 
         private void ReceiveAnimation(byte[] data)
@@ -257,7 +399,9 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendDirection(bool direction)
         {
-            QueueMesssage(BitConverter.GetBytes(direction), NetworkType.Direction);
+            // 🔵 §10.2: il peer guarda dalla parte sbagliata fino al flip successivo — sbagliato per un
+            // po', non per sempre; e il flip successivo lo sovrascrive.
+            QueueMesssage(BitConverter.GetBytes(direction), NetworkType.Direction, TransportClass.Unreliable);
         }
 
         private void ReceiveDirection(byte[] data)
@@ -272,7 +416,9 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendEnterScene(string sceneName)
         {
-            QueueMesssage(Encoding.UTF8.GetBytes(sceneName), NetworkType.EnterScene);
+            // 🟢 §10.2: se si perde, ogni flusso filtrato per scena resta diretto nella scena vecchia
+            // fino alla stanza successiva — e niente lo ri-stabilisce.
+            QueueMesssage(Encoding.UTF8.GetBytes(sceneName), NetworkType.EnterScene, TransportClass.Reliable);
         }
 
         private void ReceiveEnterScene(byte[] data)
@@ -287,7 +433,9 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendLeaveScene()
         {
-            QueueMesssage(new byte[] { 0 }, NetworkType.LeaveScene);
+            // 🟢 §10.2: il peer terrebbe un avatar nella stanza che ho lasciato, e il ramo che lo
+            // toglie non verrebbe mai preso.
+            QueueMesssage(new byte[] { 0 }, NetworkType.LeaveScene, TransportClass.Reliable);
         }
 
         private void ReceiveLeaveScene(byte[] data)
@@ -326,7 +474,10 @@ namespace Blasphemous.Multiplayer.Client.Network
                 bytes.AddRange(Core.ColorPaletteManager.GetColorPaletteById(skinName).texture.EncodeToPNG());
             }
 
-            QueueMesssage(bytes.ToArray(), NetworkType.Skin);
+            // 🟢 §10.2 — E IL CANALE E' IL 2: la skin e' affidabile **e** l'unico payload che puo'
+            // superare un datagramma unreliable (~1200 B, un PNG e' KB). Il canale 2 e' affidabile ma
+            // ISOLATO: un PNG non deve far aspettare una morte, una morte non deve aspettare un PNG.
+            QueueMesssage(bytes.ToArray(), NetworkType.Skin, TransportClass.Reliable);
 
             // ⭐ La riga della misura, DOPO l'invio e sui byte che sono gia' stati accodati: legge
             // `bytes.Count` e lo stato della connessione, non decide niente. (`bytes` non viene
@@ -362,7 +513,9 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendTeam(byte team)
         {
-            QueueMesssage(new byte[] { team }, NetworkType.Team);
+            // 🟢 §10.2: mandata UNA volta, alla connessione. Se si perde, il nome e il colore sulla
+            // mappa restano sbagliati per tutta la sessione.
+            QueueMesssage(new byte[] { team }, NetworkType.Team, TransportClass.Reliable);
         }
 
         private void ReceiveTeam(byte[] data)
@@ -425,7 +578,9 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             bytes.Add(team);
 
-            QueueMesssage(bytes.ToArray(), NetworkType.Intro);
+            // 🟢 §10.2: l'handshake, prima di tutto il resto. Senza, nessuna sessione — e niente lo
+            // ritenta.
+            QueueMesssage(bytes.ToArray(), NetworkType.Intro, TransportClass.Reliable);
         }
 
         private void ReceiveIntro(byte[] data)
@@ -461,7 +616,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.Add(progress.Value);
             bytes.AddRange(Encoding.UTF8.GetBytes(progress.Id));
 
-            QueueMesssage(bytes.ToArray(), NetworkType.Progress);
+            // 🟢 §10.2: il progresso e' un fatto durevole, e `_sentAllProgress` e' one-shot — perso,
+            // non si ri-manda.
+            QueueMesssage(bytes.ToArray(), NetworkType.Progress, TransportClass.Reliable);
         }
 
         private void ReceiveProgress(byte[] data)
@@ -489,7 +646,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.Add(damageAmount);
             bytes.AddRange(Encoding.UTF8.GetBytes(hitPlayerName));
 
-            QueueMesssage(bytes.ToArray(), NetworkType.Attack);
+            // 🟢 §10.3 — il colpo PvP: se si perde, quel danno non avviene MAI sull'altra macchina, e
+            // la vita non e' un valore replicato, quindi niente lo ri-stabilisce.
+            QueueMesssage(bytes.ToArray(), NetworkType.Attack, TransportClass.Reliable);
         }
 
         /// <summary>
@@ -509,7 +668,39 @@ namespace Blasphemous.Multiplayer.Client.Network
             if (payload == null || payload.Length == 0)
                 return;
 
-            QueueMesssage(payload, NetworkType.Attack);
+            // ⭐ LA PRIMA AMBIGUITA' DI §10.3: `NetworkType.Attack` e' un **demultiplexer** — cinque
+            // messaggi su un tipo solo, e **due classi**. La classe la decide il primo byte del payload
+            // (l'`AttackType`), che e' esattamente l'informazione che il ricevente usa per smistare:
+            //   🟢 `EnemyHit` (200) — il colpo di un nemico sull'altro giocatore: la sua vita non e'
+            //      replicata, perso il colpo il danno non c'e' e nessuno lo ripete;
+            //   🟢 `PauseRelay` (203) — un fronte edge-triggered, mandato una volta per pausa/ripresa:
+            //      perso, il peer continua a giocare e il fronte non torna finche' lo stato non cambia
+            //      due volte;
+            //   🔵 `CoopEffectRelay` (201) — una particella: cosmetico, e il prossimo fronte la rimpiazza;
+            //   🔵 `SyncIdList` (202) — la diagnostica degli id: al massimo una ogni 15 s.
+            TransportClass cls = IsReliableAttackPayload(payload)
+                ? TransportClass.Reliable
+                : TransportClass.Unreliable;
+
+            QueueMesssage(payload, NetworkType.Attack, cls);
+        }
+
+        /// <summary>
+        /// La classe di un payload del canale Attack, dal suo primo byte (`AttackType`). Il default e'
+        /// **reliable**: un `AttackType` che non conosciamo e' un colpo PvP, e un colpo perso non si
+        /// recupera. Vedi §10.3 per la tabella completa.
+        /// </summary>
+        private static bool IsReliableAttackPayload(byte[] payload)
+        {
+            switch ((AttackType)payload[0])
+            {
+                case AttackType.CoopEffectRelay:
+                case AttackType.SyncIdList:
+                    return false;
+
+                default:
+                    return true;
+            }
         }
 
         private void ReceiveAttack(byte[] data)
@@ -577,7 +768,18 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         public void SendEffect(EffectType effectType)
         {
-            QueueMesssage(new byte[] { (byte)effectType }, NetworkType.Effect);
+            // ⭐ LA SECONDA AMBIGUITA' DI §10: un `NetworkType`, **due classi**. I 29 siti di chiamata
+            // mandano quasi tutti un effetto cosmetico — se si perde manca un suono o una particella,
+            // e nessuno stato resta sbagliato (🔵). Ma **tre** sono i latch che il ricevente NON sa
+            // scadere da solo: `TrailOff` (la scia fantasma resta accesa), `DashSoundStop` (il suono
+            // del dash resta in loop) e `ParryHitStop` (il CLANG resta acceso) — il `PARRY_HIT_TIMEOUT`
+            // che li scadeva e' stato rimosso, quindi si mandano affidabili (🟢). La tabella e' in
+            // `TransportClassTable.IsLatchedStop`, in un posto solo.
+            TransportClass cls = TransportClassTable.IsLatchedStop(effectType)
+                ? TransportClass.Reliable
+                : TransportClass.Unreliable;
+
+            QueueMesssage(new byte[] { (byte)effectType }, NetworkType.Effect, cls);
         }
 
         /// <summary>
@@ -594,7 +796,14 @@ namespace Blasphemous.Multiplayer.Client.Network
             Buffer.BlockCopy(BitConverter.GetBytes(position.x), 0, payload, 1, 4);
             Buffer.BlockCopy(BitConverter.GetBytes(position.y), 0, payload, 5, 4);
 
-            QueueMesssage(payload, NetworkType.Effect);
+            // 🔵 Come l'overload a un byte: gli effetti CON posizione sono polvere/impatti, nessuno dei
+            // tre latch. La classe si chiede alla stessa tabella, cosi' un domani che ne arrivasse uno
+            // non si sbaglia per distrazione.
+            TransportClass cls = TransportClassTable.IsLatchedStop(effectType)
+                ? TransportClass.Reliable
+                : TransportClass.Unreliable;
+
+            QueueMesssage(payload, NetworkType.Effect, cls);
         }
 
         private void ReceiveEffect(byte[] data)
@@ -630,7 +839,8 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.AddRange(BitConverter.GetBytes(time));
             bytes.AddRange(BitConverter.GetBytes(ping));
 
-            QueueMesssage(bytes.ToArray(), NetworkType.Ping);
+            // 🔵 §10.2: un campione di RTT; il secondo dopo lo rimpiazza.
+            QueueMesssage(bytes.ToArray(), NetworkType.Ping, TransportClass.Unreliable);
         }
 
         private void ReceivePing(byte[] data)
@@ -671,7 +881,10 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.AddRange(BitConverter.GetBytes(fingerprint));
             bytes.Add((byte)(ownedBySender ? 1 : 0));
             bytes.Add(orientation);
-            QueueMesssage(bytes.ToArray(), NetworkType.EnemyUpdate);
+            // 🔵 §10.2: e' IL messaggio del congelamento — 30 B x 20 Hz x N nemici. Sulla classe
+            // reliable riempirebbe il buffer di invio (~1 MB) in meno di un secondo (`SendP2PPacket`
+            // torna `false` in silenzio): la prossima copia e' a <=50 ms, e la passata completa entro 1 s.
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyUpdate, TransportClass.Unreliable);
         }
 
         private void ReceiveEnemyUpdate(byte[] data)
@@ -715,7 +928,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             bytes.Add(damageType);
             bytes.Add(damageElement);
             bytes.Add(flags);
-            QueueMesssage(bytes.ToArray(), NetworkType.EnemyDamageRequest);
+            // 🟢 §10.2: senza, l'host non applica MAI il colpo e il fendente non conta — per sempre,
+            // mentre lo schermo di chi ha mandato ha gia' mostrato il colpo.
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyDamageRequest, TransportClass.Reliable);
         }
 
         private void ReceiveEnemyDamageRequest(byte[] data)
@@ -736,7 +951,8 @@ namespace Blasphemous.Multiplayer.Client.Network
         {
             List<byte> bytes = new();
             bytes.AddRange(BitConverter.GetBytes(handle));
-            QueueMesssage(bytes.ToArray(), NetworkType.EnemyDeath);
+            // 🟢 §10.2: il "fantasma" — la copia del peer resta viva finche' qualcosa la ri-stabilisce.
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyDeath, TransportClass.Reliable);
         }
 
         private void ReceiveEnemyDeath(byte[] data)
@@ -752,7 +968,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             List<byte> bytes = new();
             bytes.AddRange(BitConverter.GetBytes(handle));
             bytes.Add((byte)(ownedByReceiver ? 1 : 0));
-            QueueMesssage(bytes.ToArray(), NetworkType.EnemyOwnership);
+            // 🟢 §10.2: il token di proprieta' e' latchato — mandato una volta per cambio, mai ripetuto.
+            // Perso, il peer tiene il proprietario sbagliato: un nemico congelato per tutta la sessione.
+            QueueMesssage(bytes.ToArray(), NetworkType.EnemyOwnership, TransportClass.Reliable);
         }
 
         private void ReceiveEnemyOwnership(byte[] data)
@@ -765,7 +983,9 @@ namespace Blasphemous.Multiplayer.Client.Network
         // usually in another scene, where its handle table for that scene does not exist yet.
         public void SendEnemyDeathGlobal(string enemyId)
         {
-            QueueMesssage(Encoding.UTF8.GetBytes(enemyId), NetworkType.EnemyDeathGlobal);
+            // 🟢 §10.2: e' IL record durevole (l'id come stringa, non un handle): un giocatore che
+            // entra dopo troverebbe il nemico vivo. Nessun altro messaggio lo ri-stabilisce.
+            QueueMesssage(Encoding.UTF8.GetBytes(enemyId), NetworkType.EnemyDeathGlobal, TransportClass.Reliable);
         }
 
         private void ReceiveEnemyDeathGlobal(byte[] data)
