@@ -66,8 +66,19 @@ public class ConnectionDisplay : MonoBehaviour
 
     private void MultiplayerWindow(int windowID)
     {
+        // ⭐ STEAM — L'INVITO NON SI APPLICA MENTRE SI E' GIA' DENTRO UNA SESSIONE.
+        //
+        // Qui siamo nel punto che vede TUTTI gli stati della schermata (connesso / in connessione /
+        // libero), quindi e' qui che si buttano via le azioni Steam che non hanno piu' senso: un
+        // invito arrivato mentre si giocava gia' non deve riconnettersi da solo al prossimo
+        // "Disconnect" (sarebbe una connessione a sorpresa, mezz'ora dopo), e una lobby d'host creata
+        // ma mai avviata non deve restare appesa annunciando una porta chiusa.
+        //
+        // Quando non c'e' niente in attesa questa riga costa un confronto booleano e non stampa
+        // niente: il percorso di chi non usa Steam resta identico.
         if (Main.Multiplayer.NetworkManager.IsConnected)
         {
+            SteamLobby.DropPendingWhileConnected();
             DisplayEnd();
         }
         else if (_attemptingConnection)
@@ -144,7 +155,15 @@ public class ConnectionDisplay : MonoBehaviour
         if (HostSession.IsRunning)
         {
             if (ReadButton("Stop host", 5, 1))
+            {
                 HostSession.Stop();
+
+                // ⭐ E LA LOBBY SE NE VA CON L'HOST. Una lobby che resta aperta e' peggio di un
+                // errore: annuncia una porta dove non ascolta piu' nessuno, e chi la vede
+                // dall'overlay di Steam entra in un vicolo cieco. (`LeaveLobby` non fa niente e non
+                // stampa niente se non stavamo ospitando via Steam.)
+                SteamLobby.LeaveLobby();
+            }
 
             ShowLabel("Host attivo: porta " + HostSession.Port + " - giocatori " + HostSession.Players, 6);
         }
@@ -152,6 +171,139 @@ public class ConnectionDisplay : MonoBehaviour
         {
             HostAndConnect(room, player, password, (byte)team);
         }
+
+        // ⭐⭐ STEAM — L'INVITO, ADDITIVO, SOTTO I BOTTONI CHE C'ERANO GIA'.
+        // I bottoni qui sopra ("Connect", "Host session" / "Stop host") NON cambiano parola, ordine,
+        // posizione ne' comportamento: chi non usa Steam non vede nessuna differenza. Questo blocco
+        // aggiunge solo un comando in piu' e consuma le due cose che arrivano dalle callback di Steam
+        // (lobby pronta / dati dell'invito pronti).
+        DisplaySteam(room, player, password, (byte)team);
+    }
+
+    /// <summary>
+    /// ⭐⭐ IL BLOCCO STEAM DELLA SCHERMATA DI CONNESSIONE. Tre cose, in quest'ordine:
+    ///
+    ///   ① **le azioni che arrivano dalle callback**, consumate qui (una volta sola, vedi
+    ///     `SteamLobby.TryConsumeHostLobbyReady` / `TryConsumeJoin`);
+    ///   ② **il bottone** "Steam: Host" (o "Steam: invita" se una lobby c'e' gia');
+    ///   ③ **lo stato**, in una riga.
+    ///
+    /// ⚠️ SE STEAM NON C'E' (client spento, offline, nessun account) IL BOTTONE E' **DISABILITATO**,
+    /// non nascosto: nasconderlo farebbe credere che la funzione non esista, disabilitarlo dice la
+    /// verita' - c'e', e adesso non si puo' usare. In nessun caso si lancia un'eccezione: tutte le
+    /// chiamate a `SteamLobby` sono in `try/catch` al suo interno e ritornano un booleano.
+    ///
+    /// ⚠️ E IL CAMPO DEL NOME NON SI TOCCA: il nome che l'host pubblica e quello che l'ospite usa sono
+    /// quelli scritti qui dall'utente, letti e sanitizzati esattamente come prima (`room`, `player`,
+    /// `password`, `team` arrivano da `DisplayStart`).
+    /// </summary>
+    private void DisplaySteam(string room, string player, string password, byte team)
+    {
+        bool steam = SteamLobby.Available;
+
+        // ① L'INVITO ACCETTATO DA UN AMICO: i dati della lobby (hostIp/hostPort) sono pronti — letti
+        //    subito in `LobbyEnter_t` dalla cache, oppure dopo `LobbyDataUpdate_t` quando la cache era
+        //    vuota (vedi `SteamLobbyImpl.TryReadJoinData`). Adesso si possono applicare: si compilano
+        //    i campi e si connette, che e' il "un clic invece di digitare un IP".
+        string joinIp;
+        int joinPort;
+        if (SteamLobby.TryConsumeJoin(out joinIp, out joinPort))
+        {
+            ApplySteamJoin(joinIp, joinPort, room, player, password, team);
+
+            // ⚠️ Dopo aver applicato un invito NON si legge il bottone in questo frame: il click
+            // potrebbe essere un residuo di layout, e la connessione e' gia' partita.
+            return;
+        }
+
+        // ①bis LA LOBBY E' PRONTA (`LobbyCreated_t` con esito OK): si avvia la sessione host con lo
+        //    STESSO percorso del bottone "Host session", non con una copia.
+        if (SteamLobby.TryConsumeHostLobbyReady())
+        {
+            HostAndConnect(room, player, password, team);
+
+            if (HostSession.IsRunning)
+            {
+                Main.Multiplayer.NotificationManager.DisplayNotification(
+                    "Steam: lobby aperta, invita un amico dall'overlay");
+            }
+            else
+            {
+                // L'host NON e' partito (porta occupata o input non valido): la lobby annuncerebbe
+                // una porta dove non ascolta nessuno, quindi si chiude subito. L'errore l'ha gia'
+                // detto `HostAndConnect` con la sua notifica di sempre.
+                SteamLobby.LeaveLobby();
+            }
+
+            return;
+        }
+
+        // ② IL BOTTONE.
+        bool wasEnabled = GUI.enabled;
+        GUI.enabled = wasEnabled && steam;
+
+        bool clicked = ReadSteamButton(HostSession.IsRunning && SteamLobby.HasHostLobby
+            ? "Steam: invita"
+            : "Steam: Host");
+
+        GUI.enabled = wasEnabled;
+
+        if (clicked)
+        {
+            // Se una lobby e' gia' nostra, `StartHost` non ne crea una seconda: riapre l'overlay
+            // degli inviti (e lo dice nel log).
+            if (!SteamLobby.StartHost(player))
+            {
+                Main.Multiplayer.NotificationManager.DisplayNotification(
+                    "Steam: non disponibile (vedi log)");
+            }
+        }
+
+        // ③ LO STATO, una riga sola e corta (la larghezza del pannello e' 330 px).
+        //
+        // ⭐ L'ID DELLA LOBBY VA A SCHERMO, e non e' cosmesi: e' il numero che serve per provare a
+        // mano il caso "gioco spento" (opzioni di avvio di Steam: `+connect_lobby <id>`). Senza,
+        // bisognerebbe andarlo a cercare nel log per poter fare il test.
+        if (!steam)
+            ShowLabel("Steam: non disponibile (offline)", STEAM_STATUS_LINE);
+        else if (SteamLobby.HasHostLobby)
+            ShowLabel("Lobby " + SteamLobby.HostLobbyId, STEAM_STATUS_LINE);
+    }
+
+    /// <summary>
+    /// ⭐ L'INVITO DIVENTA UNA CONNESSIONE. L'IP e la porta arrivano dalla lobby (letti in
+    /// `LobbyEnter_t` dalla cache, o dopo `LobbyDataUpdate_t`: vedi `SteamLobbyImpl`), tutto il resto
+    /// dai campi della schermata: nome, password, squadra.
+    ///
+    /// PERCHE' SI RIUSA `ValidateAndConnect` (e non si duplica il dial): il campo "Server IP" accetta
+    /// gia' la forma `ip:porta` (`StandardValidator.IsServerValid`), quindi scrivere
+    /// `"192.168.1.5:27051"` nel campo e premere Connect e' ESATTAMENTE quello che deve succedere -
+    /// e questa funzione fa le stesse due cose, con gli stessi controlli e le stesse notifiche.
+    ///
+    /// ⚠️ SE L'INPUT NON E' VALIDO (tipicamente: nome del giocatore vuoto al primo avvio) **non si
+    /// connette niente**, ma i campi restano compilati: l'utente scrive il nome, preme Connect, e
+    /// l'invito non e' andato perso. E' il motivo per cui il prefill e il tentativo sono due passi.
+    /// </summary>
+    private void ApplySteamJoin(string serverIp, int port, string room, string player, string password, byte team)
+    {
+        // ⚠️ `_firstShowing = false` SUBITO: altrimenti il prossimo giro di `DisplayStart`
+        // rimetterebbe `LastConnectionInfo` al posto dell'indirizzo dell'invito.
+        _firstShowing = false;
+
+        // La forma "ip:porta" e' quella che il campo e il validatore conoscono gia'.
+        _connection = new ConnectionInfo(serverIp + ":" + port, room, player, password, team);
+
+        ModLog.Info(SteamLobby.MarkerJoinConnect + serverIp + ":" + port);
+
+        if (!ValidateInputs())
+        {
+            // I campi restano compilati: l'invito NON e' perso, manca solo un dato.
+            Main.Multiplayer.NotificationManager.DisplayNotification(
+                "Steam: invito ricevuto, correggi i campi e premi Connect");
+            return;
+        }
+
+        ValidateAndConnect();
     }
 
     /// <summary>
@@ -450,6 +602,11 @@ public class ConnectionDisplay : MonoBehaviour
         // quando non c'e' nessun host), quindi il percorso "peer di un server esterno" resta
         // identico a prima.
         HostSession.Stop();
+
+        // ⭐ E LA LOBBY STEAM SE NE VA CON LA SESSIONE (vedi `SteamLobby.LeaveLobby`). Stessa regola
+        // di `HostSession.Stop`: se non c'era nessuna lobby non fa niente e non stampa niente, quindi
+        // chi non usa Steam non vede una riga in piu'.
+        SteamLobby.LeaveLobby();
     }
 
     private void ShowLabel(string label, int line)
@@ -485,6 +642,17 @@ public class ConnectionDisplay : MonoBehaviour
         return GUI.Button(new Rect(x, START_Y + (LINE_HEIGHT + GAP) * line, width, LINE_HEIGHT), label);
     }
 
+    /// <summary>
+    /// Il bottone di Steam: riga sua, larghezza sua (`STEAM_BUTTON_WIDTH`), perche' "Steam: Host" non
+    /// sta in 90 px. Non ha uno `slot` perche' non condivide la riga con nessuno: i due comandi IP
+    /// restano dove sono e questa e' una riga AGGIUNTA sotto, non una casella rubata a loro.
+    /// </summary>
+    private bool ReadSteamButton(string label)
+    {
+        return GUI.Button(new Rect(START_X, START_Y + (LINE_HEIGHT + GAP) * STEAM_LINE,
+                                   STEAM_BUTTON_WIDTH, LINE_HEIGHT), label);
+    }
+
     private const int START_X = 10;
     private const int START_Y = 20;
     private const int GAP = 10;
@@ -493,6 +661,18 @@ public class ConnectionDisplay : MonoBehaviour
     private const int TEXT_WIDTH = 200;
     private const int BUTTON_WIDTH = 90;
     private const int HOST_BUTTON_WIDTH = 130;
+    private const int STEAM_BUTTON_WIDTH = 130;
+
+    /// <summary>
+    /// Le due righe di Steam: `STEAM_LINE` (7) e' il bottone, `STEAM_STATUS_LINE` (8) lo stato.
+    ///
+    /// PERCHE' 7 E 8, E NON 5 O 6: la 5 e' la riga dei bottoni ("Connect" + "Host session") e la 6 e'
+    /// la riga del riepilogo dell'host. Le due righe di Steam stanno **sotto** entrambe, cosi'
+    /// nessuna casella esistente si sposta - e la finestra e' alta 400 px, quindi la 8 (y=300) ci
+    /// sta comoda.
+    /// </summary>
+    private const int STEAM_LINE = 7;
+    private const int STEAM_STATUS_LINE = 8;
 
     /// <summary>
     /// ⚠️ L'INDIRIZZO DELLA SESSIONE-HOST E' SEMPRE QUESTO, e non e' una preferenza: il server

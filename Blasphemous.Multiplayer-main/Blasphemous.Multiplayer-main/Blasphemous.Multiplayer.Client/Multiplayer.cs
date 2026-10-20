@@ -89,6 +89,14 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // diceva nessun marker, e **quale dei due Penitenti** ha perso vita nemmeno. Vedi
         // `PenitentLifeMarker.cs`. Solo log: nessuno stato, nessuna vita, nessuna decisione.
         PenitentLifeMarker.Arm();
+
+        // ⭐⭐ STEAM (FASE B): gli inviti. `Arm` fa DUE cose e nessuna delle due tocca il gioco:
+        //   ① legge la riga di comando (il caso "gioco spento": Steam avvia il gioco con
+        //      `+connect_lobby <id>`, e nessuna callback puo' arrivare a un processo che non esiste);
+        //   ② registra le quattro callback della lobby, se Steam e' gia' pronto.
+        // Se Steam non e' pronto adesso non si perde niente: `SteamLobby.Tick` riprova ogni frame.
+        // ⚠️ `Arm` non lancia mai: e' tutto in `try/catch` la' dentro.
+        SteamLobby.Arm();
     }
 
     // ⭐ LA COLPA SULLA VITA — una partita NUOVA riparte senza colpa. Il file del contatore e' UNO solo
@@ -116,6 +124,12 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
         // la voglia - compreso un `SERVER-COOP` esterno lanciato subito dopo. `HostSession.Stop()`
         // non fa niente (e non stampa niente) se non stavamo ospitando.
         HostSession.Stop();
+
+        // ⭐ E LA LOBBY STEAM SE NE VA CON LA MOD. Una lobby che sopravvive al processo che la
+        // ospitava resta nell'elenco degli amici come "sessione aperta" e non porta a niente: chi la
+        // vede entra in una lobby con un proprietario che non c'e' piu'. `LeaveLobby` non fa niente
+        // (e non stampa niente) se non c'era nessuna lobby.
+        SteamLobby.LeaveLobby();
 
         // ⭐ Marker dell'importo del danno: si toglie l'iscrizione, cosi' nessun delegate resta appeso a
         // una mod che sta per sparire (stessa ragione della probe qui sopra).
@@ -219,6 +233,23 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
 
     protected override void OnLateUpdate()
     {
+        // ⭐⭐ STEAM — IL PUMP DELLE CALLBACK, E STA PRIMA DI TUTTO.
+        //
+        // PERCHE' PRIMA: una callback che arriva in questo frame (invito accettato, lobby creata,
+        // dati pronti) deve essere gia' stata consegnata quando le sonde qui sotto fotografano lo
+        // stato; e soprattutto non deve misurare il lavoro di questo stesso ciclo.
+        //
+        // CHIAMA `SteamAPI.RunCallbacks()` ANCHE SE IL GIOCO LO FA GIA' (il suo `SteamManager.Update`
+        // lo chiama ogni frame). Non e' un doppione inutile: chiamarlo due volte per frame costa una
+        // coda vuota (praticamente zero), e rende le NOSTRE callback **indipendenti dal ciclo di vita
+        // del gioco** — se il suo `SteamManager` non gira, o e' stato distrutto in una scena, qui
+        // continuano ad arrivare. Il contrario (dipendere da lui) sarebbe un "ho premuto e non e'
+        // successo niente" che nessun log spiegherebbe.
+        //
+        // Costa una chiamata nativa per frame, con il suo cancello (`IsSteamRunning`) e il suo
+        // `try/catch`: se Steam non c'e', `Tick` esce subito.
+        SteamLobby.Tick();
+
         // ⭐ MARKER [BossJoin]: consuma l'armato di OnLevelLoaded, UNA riga sola, nel primo frame utile.
         // Sta PRIMA di tutto il resto perche' non deve misurare lo stato che questo stesso ciclo modifica,
         // e perche' quando non c'e' niente armato costa un solo confronto booleano. Stesso ciclo per frame

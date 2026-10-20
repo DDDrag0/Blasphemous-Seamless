@@ -106,6 +106,23 @@ namespace Blasphemous.Multiplayer.Client.Host
             get { return _server != null ? _server.Port : 0; }
         }
 
+        /// <summary>
+        /// ⭐ L'INDIRIZZO LAN DI QUESTA MACCHINA, lo stesso che il marker `[Host] indirizzo locale=`
+        /// stampa quando l'host parte.
+        ///
+        /// Serve alla lobby Steam (`SteamLobby`): e' il valore che l'host pubblica come `hostIp`, cioe'
+        /// quello che il peer scriverebbe a mano nel campo "Server IP". Si legge dalla **stessa**
+        /// funzione del marker di proposito — se un giorno cambia il modo di risolvere l'indirizzo,
+        /// cambia per tutti e due, e non possono raccontare cose diverse.
+        ///
+        /// Solo lettura: non avvia niente e non decide niente. `"sconosciuto"` se la risoluzione
+        /// fallisce (nessuna rete): l'host funziona lo stesso.
+        /// </summary>
+        internal static string LanAddress
+        {
+            get { return LocalAddress(); }
+        }
+
         /// <summary>Quanti giocatori sono connessi all'host (0 se non c'e' host).</summary>
         internal static int Players
         {
