@@ -221,6 +221,72 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
+    /// ⭐ LA LOBBY IN CUI SIAMO ADESSO — quella che ospitiamo se ne abbiamo una, altrimenti quella in cui
+    /// siamo entrati. `CSteamID.Nil` se non siamo in nessuna lobby.
+    ///
+    /// Serve alla sonda P2P (`SteamP2PProbeImpl`), che deve mandare il suo byte ai **peer della lobby**:
+    /// le due liste (`GetNumLobbyMembers`/`GetLobbyMemberByIndex`) sono le stesse che usa la lobby per
+    /// l'invito, e non c'è un secondo elenco da tenere allineato.
+    ///
+    /// ⚠️ NON GUARDA SE UNA SESSIONE TCP È APERTA: è il punto della sonda — deve funzionare anche
+    /// quando il TCP non arriva (secondo PC su un hotspot).
+    /// </summary>
+    internal static CSteamID CurrentLobby
+    {
+        get
+        {
+            if (_hostLobby.m_SteamID != 0UL)
+                return _hostLobby;
+
+            return _joinLobby;
+        }
+    }
+
+    /// <summary>
+    /// ⭐ "QUESTO UTENTE È UN MEMBRO DI UNA NOSTRA LOBBY?" — il cancello d'igiene delle sessioni P2P:
+    /// si accetta una sessione solo da chi è nella lobby (`docs\STEAM_INVITES.md` §9), altrimenti
+    /// chiunque conosca il nostro SteamID potrebbe farci aprire una sessione.
+    ///
+    /// Si guardano **entrambe** le lobby (host e join) e **non** solo `CurrentLobby`: se un giorno un
+    /// processo fosse in due lobby insieme, il peer della seconda non deve sembrare uno sconosciuto.
+    /// Non lancia: un guasto qui vale "non è un membro", che è la risposta prudente.
+    /// </summary>
+    internal static bool IsLobbyMember(CSteamID user)
+    {
+        try
+        {
+            if (user.m_SteamID == 0UL)
+                return false;
+
+            if (IsMemberOf(_hostLobby, user))
+                return true;
+
+            return IsMemberOf(_joinLobby, user);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Il giro dei membri di UNA lobby. Separato perché serve per due lobby (host e join).</summary>
+    private static bool IsMemberOf(CSteamID lobby, CSteamID user)
+    {
+        if (lobby.m_SteamID == 0UL)
+            return false;
+
+        int members = SteamMatchmaking.GetNumLobbyMembers(lobby);
+        for (int i = 0; i < members; i++)
+        {
+            CSteamID member = SteamMatchmaking.GetLobbyMemberByIndex(lobby, i);
+            if (member.m_SteamID == user.m_SteamID)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// ⭐ SI ARMA UNA VOLTA, all'inizializzazione della mod: legge la riga di comando (il caso "gioco
     /// spento") e registra le callback se Steam e' gia' pronto. Idempotente: si puo' chiamare due volte.
     ///

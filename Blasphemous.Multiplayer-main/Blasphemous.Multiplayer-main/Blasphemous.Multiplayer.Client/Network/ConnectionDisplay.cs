@@ -238,13 +238,17 @@ public class ConnectionDisplay : MonoBehaviour
             return;
         }
 
-        // ② IL BOTTONE.
+        // ② I BOTTONI, SULLA STESSA RIGA. A sinistra quello di Steam (lobby/invito), a destra la
+        //    sonda P2P: sono due cose diverse e restano due comandi distinti, cosi' premere la sonda
+        //    non apre una lobby e aprire una lobby non accende la sonda.
         bool wasEnabled = GUI.enabled;
         GUI.enabled = wasEnabled && steam;
 
         bool clicked = ReadSteamButton(HostSession.IsRunning && SteamLobby.HasHostLobby
             ? "Steam: invita"
             : "Steam: Host");
+
+        bool probeClicked = ReadProbeButton(SteamP2PProbe.Active ? "Stop probe" : "Probe P2P");
 
         GUI.enabled = wasEnabled;
 
@@ -259,6 +263,33 @@ public class ConnectionDisplay : MonoBehaviour
             }
         }
 
+        // ②bis ⭐⭐ "PROBE P2P" — LA SONDA. Non connette niente e non manda niente al gioco: manda
+        //     **1 byte** ai peer della lobby ogni secondo e ogni 3 secondi scrive nel log una riga per
+        //     peer (`relay=0` = diretto, `relay=1` = in relay). Serve a misurare se il P2P di Steam
+        //     funziona tra due macchine **anche quando il TCP non arriva** (secondo PC su un hotspot),
+        //     che e' il caso in cui questa misura serve davvero.
+        //
+        //     ⚠️ La sonda NON ha bisogno di essere connessi al gioco: l'unico requisito e' una lobby
+        //     Steam (ospitata o accettata). Se non c'e', resta accesa e comincia da sola quando arriva.
+        if (probeClicked)
+        {
+            if (SteamP2PProbe.Active)
+            {
+                SteamP2PProbe.Stop();
+                Main.Multiplayer.NotificationManager.DisplayNotification("P2P: sonda fermata (vedi log)");
+            }
+            else if (SteamP2PProbe.Start())
+            {
+                Main.Multiplayer.NotificationManager.DisplayNotification(
+                    "P2P: sonda accesa, guarda il log ([P2P] peer=...)");
+            }
+            else
+            {
+                Main.Multiplayer.NotificationManager.DisplayNotification(
+                    "P2P: non disponibile (vedi log)");
+            }
+        }
+
         // ③ LO STATO, una riga sola e corta (la larghezza del pannello e' 330 px).
         //
         // ⭐ L'ID DELLA LOBBY VA A SCHERMO, e non e' cosmesi: e' il numero che serve per provare a
@@ -268,6 +299,16 @@ public class ConnectionDisplay : MonoBehaviour
             ShowLabel("Steam: non disponibile (offline)", STEAM_STATUS_LINE);
         else if (SteamLobby.HasHostLobby)
             ShowLabel("Lobby " + SteamLobby.HostLobbyId, STEAM_STATUS_LINE);
+
+        // ④ ⭐ LA RIGA DELLA SONDA, e c'e' SOLO mentre la sonda e' accesa: chi non la usa non vede
+        //    nessuna riga in piu' e la schermata resta identica a prima.
+        //
+        //    E' la stessa risposta del log in forma breve (quanti peer, quanti in relay), perche' chi
+        //    fa il test puo' non avere il log davanti: `relay=0`/`diretto` = i due client si parlano
+        //    senza server di Steam, `relay=1` = passano dal relay, `attive=0` = non si sono connessi.
+        string probe = SteamP2PProbe.Status();
+        if (!string.IsNullOrEmpty(probe))
+            ShowLabel(probe, P2P_STATUS_LINE);
     }
 
     /// <summary>
@@ -653,6 +694,18 @@ public class ConnectionDisplay : MonoBehaviour
                                    STEAM_BUTTON_WIDTH, LINE_HEIGHT), label);
     }
 
+    /// <summary>
+    /// ⭐ IL BOTTONE DELLA SONDA P2P: **accanto** a quello di Steam, nella casella a destra della stessa
+    /// riga (non una riga in piu', non una casella rubata ai bottoni IP). La larghezza e' la stessa,
+    /// cosi' i due comandi si leggono come una coppia: a sinistra la lobby, a destra la misura.
+    /// </summary>
+    private bool ReadProbeButton(string label)
+    {
+        int x = START_X + STEAM_BUTTON_WIDTH + GAP;
+        return GUI.Button(new Rect(x, START_Y + (LINE_HEIGHT + GAP) * STEAM_LINE,
+                                   STEAM_BUTTON_WIDTH, LINE_HEIGHT), label);
+    }
+
     private const int START_X = 10;
     private const int START_Y = 20;
     private const int GAP = 10;
@@ -670,9 +723,14 @@ public class ConnectionDisplay : MonoBehaviour
     /// la riga del riepilogo dell'host. Le due righe di Steam stanno **sotto** entrambe, cosi'
     /// nessuna casella esistente si sposta - e la finestra e' alta 400 px, quindi la 8 (y=300) ci
     /// sta comoda.
+    ///
+    /// ⭐ E LA 9 E' LA RIGA DELLA SONDA P2P: sta **sotto** lo stato di Steam perche' e' un'altra cosa
+    /// (una misura, non un comando), e ci sta: y=335, due righe di testo arrivano a 395 dentro una
+    /// finestra alta 420.
     /// </summary>
     private const int STEAM_LINE = 7;
     private const int STEAM_STATUS_LINE = 8;
+    private const int P2P_STATUS_LINE = 9;
 
     /// <summary>
     /// ⚠️ L'INDIRIZZO DELLA SESSIONE-HOST E' SEMPRE QUESTO, e non e' una preferenza: il server

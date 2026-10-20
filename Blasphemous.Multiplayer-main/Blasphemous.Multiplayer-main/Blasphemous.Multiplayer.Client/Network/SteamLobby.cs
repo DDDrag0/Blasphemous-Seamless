@@ -32,7 +32,10 @@ namespace Blasphemous.Multiplayer.Client.Network;
 /// e' la separazione che rende la `TypeLoadException` catturabile (la JIT dell'implementazione parte
 /// dalla chiamata, che sta dentro il `try`).
 ///
-/// ⛔ NIENTE P2P QUI: la lobby porta l'IP e la porta dell'host, non i pacchetti. Vedi `SteamLobbyImpl`.
+/// ⛔ NIENTE TRASPORTI QUI: la lobby porta l'IP e la porta dell'host, non i pacchetti. L'unica cosa
+/// che questa facciata in piu' chiama e' la **sonda P2P** (`SteamP2PProbe`), che *misura* se
+/// `SendP2PPacket` funziona e se il traffico va diretto o in relay: non trasporta niente e non tocca
+/// il protocollo, `ICoopTransport`, il server o il gioco (vedi `SteamP2PProbeImpl`).
 /// </summary>
 internal static class SteamLobby
 {
@@ -213,6 +216,14 @@ internal static class SteamLobby
         {
             Report("Arm", e, false);
         }
+
+        // ⭐ E LA SONDA P2P SI ARMA CON LA LOBBY: registra `P2PSessionRequest_t`, cioe' la callback che
+        // **accetta** le sessioni. E' l'unica cosa della sonda che deve esistere anche a bottone non
+        // premuto — il peer puo' cominciare a mandare quando vuole, e una richiesta scartata perche'
+        // "non avevo ancora premuto" sarebbe un `rx=0` senza nessun errore da nessuna parte.
+        // ⚠️ `SteamP2PProbe` e' una facciata come questa: ha il suo cancello e il suo `try/catch`, quindi
+        // non lancia e non tocca niente se Steam (o i tipi Steamworks) non ci sono.
+        SteamP2PProbe.Arm();
     }
 
     /// <summary>
@@ -236,6 +247,13 @@ internal static class SteamLobby
         {
             Report("Tick", e, true);
         }
+
+        // ⭐ E LA SONDA P2P AVANZA NELLO STESSO CICLO PER FRAME (zero bersagli Harmony nuovi, zero
+        // MonoBehaviour nuovi). Sta DOPO il pump di proposito: l'accettazione di una sessione arriva da
+        // una callback, e in questo frame deve essere gia' stata consegnata prima di leggere il canale.
+        // ⚠️ Facciata separata, cancello e `try/catch` suoi: un guasto della sonda non ferma la lobby, e
+        // a sonda spenta questa riga costa un `if` (nessun byte, nessuna chiamata nativa).
+        SteamP2PProbe.Tick();
     }
 
     /// <summary>
