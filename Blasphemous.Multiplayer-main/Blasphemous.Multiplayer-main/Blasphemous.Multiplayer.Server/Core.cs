@@ -1,4 +1,5 @@
-﻿using Blasphemous.Multiplayer.Server.Models;
+using Blasphemous.Multiplayer.Common;
+using Blasphemous.Multiplayer.Server.Models;
 using System;
 using System.Collections.Generic;
 #if !COOP_HOST
@@ -92,7 +93,14 @@ internal static class Core
         return newData;
     }
 
-    public static void removeUnusedGameData(Dictionary<string, PlayerInfo> allPlayers)
+    /// <summary>
+    /// Butta via i dati delle squadre in cui non c'e' piu' nessuno. La chiave del dizionario e' un
+    /// <see cref="PeerId"/> (prima era `string ip`): a questo metodo la chiave NON serve — guarda solo
+    /// i valori (`player.team`) — quindi cambia solo il tipo del parametro, non una riga di logica.
+    /// Questo file e' compilato anche nel CLIENT (`COOP_HOST`): e' uno dei due punti in cui il tipo
+    /// nuovo compare nel client, oltre al server.
+    /// </summary>
+    public static void removeUnusedGameData(Dictionary<PeerId, PlayerInfo> allPlayers)
     {
         for (byte i = 1; i <= 10; i++)
         {

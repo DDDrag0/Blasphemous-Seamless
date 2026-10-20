@@ -1,3 +1,4 @@
+using Blasphemous.Multiplayer.Common;
 using Blasphemous.Multiplayer.Common.Enums;
 using Blasphemous.Multiplayer.Server.Models;
 using SimpleTCP;
@@ -31,8 +32,26 @@ public class Server
     private readonly string _password;
 
     private SimpleTcpServer server;
-    private Dictionary<string, PlayerInfo> connectedPlayers;
-    private string _hostIp;
+
+    /// <summary>
+    /// ⭐⭐ LE CHIAVI SONO `PeerId`, NON `string ip` — ed e' TUTTO il senso di C1a.
+    ///
+    /// Prima era `Dictionary` da stringa a `PlayerInfo`: l'identita' di un giocatore era la stringa che il
+    /// socket ci dava (`e.ip`, cioe' `ip:porta`). Il tipo ora e' neutro (`Common\PeerId.cs`): oggi
+    /// contiene quella stessa stringa, domani un `CSteamID` — e il server non cambia di una riga.
+    /// ⚠️ Nessuna conversione qui: i valori entrano da `PeerId.FromIp` **solo** nel punto di contatto
+    /// col socket (`Receive`, `clientConnected`, `clientDisconnected`) e da li' in poi sono `PeerId`.
+    /// </summary>
+    private Dictionary<PeerId, PlayerInfo> connectedPlayers;
+
+    /// <summary>
+    /// Chi e' l'host ADESSO, oppure `null` se non c'e' nessun host. Prima era `string _hostIp` e valeva
+    /// `null` quando l'host non c'era: `PeerId?` conserva esattamente quella semantica (e `peer == _hostPeer`
+    /// si legge come prima, compreso il caso "nessun host"). Mai `default(PeerId)` come "nessun host":
+    /// un valore vuoto sarebbe indistinguibile da un peer vero.
+    /// </summary>
+    private PeerId? _hostPeer;
+
     private int _port;
 
     public Server(int maxPlayers, string password)
@@ -103,7 +122,12 @@ public class Server
     }
 #endif
 
-    public Dictionary<string, PlayerInfo> getPlayers()
+    /// <summary>
+    /// I giocatori connessi, indicizzati per <see cref="PeerId"/>. La firma cambia (prima era
+    /// `Dictionary` da stringa a `PlayerInfo`) e il chiamante nel client (`HostSession.Players`) ne usa solo
+    /// `.Count`, quindi non cambia una riga: il tipo della chiave e' un dettaglio suo.
+    /// </summary>
+    public Dictionary<PeerId, PlayerInfo> getPlayers()
     {
         return connectedPlayers;
     }
@@ -186,8 +210,8 @@ public class Server
         }
 
         _port = port;
-        connectedPlayers = new Dictionary<string, PlayerInfo>();
-        _hostIp = null;
+        connectedPlayers = new Dictionary<PeerId, PlayerInfo>();
+        _hostPeer = null;
 
         // ⭐ UNA SESSIONE CHE PARTE E' UNA SESSIONE DA ZERO. Nello standalone lo garantiva il
         // processo (che muore e riparte); qui il processo e' il GIOCO e vive per ore: senza questa
@@ -234,11 +258,17 @@ public class Server
         // La memoria della sessione se ne va con la sessione: `connectedPlayers` resta un dizionario
         // VUOTO e non null, perche' i callback di disconnessione possono ancora arrivare mentre i
         // socket si chiudono e devono trovarlo utilizzabile.
-        connectedPlayers = new Dictionary<string, PlayerInfo>();
-        _hostIp = null;
+        connectedPlayers = new Dictionary<PeerId, PlayerInfo>();
+        _hostPeer = null;
     }
 
-    private void Send(string ip, byte[] data, NetworkType dataType)
+    /// <summary>
+    /// ⭐ IL PACCHETTO VERSO UN PEER: `peer` e' la chiave del dizionario, e il filo non sa niente di
+    /// tutto questo. `peer.ToString()` e' ESATTAMENTE la stringa IP di prima (vedi `PeerId.ToString`),
+    /// quindi `server.Send(...)` riceve gli stessi byte di prima e cerca lo stesso socket di prima.
+    /// Il frame qui sotto e' INVARIATO: `[ushort len][byte type][payload]`, nessun byte nuovo.
+    /// </summary>
+    private void Send(PeerId peer, byte[] data, NetworkType dataType)
     {
         // ⚠️ `server == null` significa "fermo" (mai avviato, o `Stop()` appena chiamato). Prima
         // questa guardia non serviva: il campo era sempre valorizzato dal processo. Nel gioco il
@@ -255,11 +285,13 @@ public class Server
 
             try
             {
-                server.Send(ip, list.ToArray());
+                // ⭐ IL PUNTO IN CUI L'IDENTITA' TORNA AD ESSERE IL FILO: `ToString()` -> stringa IP.
+                server.Send(peer.ToString(), list.ToArray());
             }
             catch (Exception)
             {
-                Logger.Error("Couldn't send data to " + ip + "!");
+                // Testo invariato: `peer.ToString()` e' la stessa stringa che finiva qui prima.
+                Logger.Error("Couldn't send data to " + peer.ToString() + "!");
             }
         }
     }
@@ -267,6 +299,14 @@ public class Server
     // Data should be formatted as length length type data
     private void Receive(object sender, DataReceivedEventArgs e)
     {
+        // ⭐⭐ IL PUNTO DI CONTATTO COL SOCKET, 1 di 3 — e uno dei due soli in cui `e.ip` esiste ancora.
+        //
+        // `e.ip` e' `IPEndPoint.ToString()`, cioe' `ip:porta` (misurato: "127.0.0.1:54470"), e NON e'
+        // normalizzato di proposito: `PeerId.FromIp` conserva la stringa identica, quindi la chiave del
+        // dizionario e il testo dei log restano quelli di prima. Da questa riga in poi tutto il server
+        // parla di `peer`, mai di stringhe.
+        PeerId peer = PeerId.FromIp(e.ip);
+
         int startIdx = 0;
         while (startIdx < e.data.Length - 3)
         {
@@ -306,23 +346,23 @@ public class Server
         {
             switch (type)
             {
-                case NetworkType.Position:      ReceivePosition(e.ip, data); break;
-                case NetworkType.Animation:     ReceiveAnimation(e.ip, data); break;
-                case NetworkType.Direction:     ReceiveDirection(e.ip, data); break;
-                case NetworkType.EnterScene:    receivePlayerEnterScene(e.ip, data); break;
-                case NetworkType.LeaveScene:    receivePlayerLeaveScene(e.ip, data); break;
-                case NetworkType.Skin:          receivePlayerSkin(e.ip, data); break;
-                case NetworkType.Team:          receivePlayerTeam(e.ip, data); break;
-                case NetworkType.Intro:         receivePlayerIntro(e.ip, data); break;
-                case NetworkType.Progress:      receivePlayerProgress(e.ip, data); break;
-                case NetworkType.Attack:             receivePlayerAttack(e.ip, data); break;
-                case NetworkType.Effect:             receivePlayerEffect(e.ip, data); break;
-                case NetworkType.Ping:               ReceivePing(e.ip, data); break;
-                case NetworkType.EnemyUpdate:        receiveEnemyUpdate(e.ip, data); break;
-                case NetworkType.EnemyDamageRequest: receiveEnemyDamageRequest(e.ip, data); break;
-                case NetworkType.EnemyDeath:         receiveEnemyDeath(e.ip, data); break;
-        case NetworkType.EnemyDeathGlobal:   receiveEnemyDeathGlobal(e.ip, data); break;
-        case NetworkType.EnemyOwnership:     receiveEnemyOwnership(e.ip, data); break;
+                case NetworkType.Position:      ReceivePosition(peer, data); break;
+                case NetworkType.Animation:     ReceiveAnimation(peer, data); break;
+                case NetworkType.Direction:     ReceiveDirection(peer, data); break;
+                case NetworkType.EnterScene:    receivePlayerEnterScene(peer, data); break;
+                case NetworkType.LeaveScene:    receivePlayerLeaveScene(peer, data); break;
+                case NetworkType.Skin:          receivePlayerSkin(peer, data); break;
+                case NetworkType.Team:          receivePlayerTeam(peer, data); break;
+                case NetworkType.Intro:         receivePlayerIntro(peer, data); break;
+                case NetworkType.Progress:      receivePlayerProgress(peer, data); break;
+                case NetworkType.Attack:             receivePlayerAttack(peer, data); break;
+                case NetworkType.Effect:             receivePlayerEffect(peer, data); break;
+                case NetworkType.Ping:               ReceivePing(peer, data); break;
+                case NetworkType.EnemyUpdate:        receiveEnemyUpdate(peer, data); break;
+                case NetworkType.EnemyDamageRequest: receiveEnemyDamageRequest(peer, data); break;
+                case NetworkType.EnemyDeath:         receiveEnemyDeath(peer, data); break;
+        case NetworkType.EnemyDeathGlobal:   receiveEnemyDeathGlobal(peer, data); break;
+        case NetworkType.EnemyOwnership:     receiveEnemyOwnership(peer, data); break;
                 default:
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
@@ -331,28 +371,48 @@ public class Server
 
     private void clientConnected(object sender, ClientConnectionEventArgs e)
     {
-        Logger.Info("Client connected at " + e.ip);
+        // ⭐ PUNTO DI CONTATTO COL SOCKET, 2 di 3. Il testo e' byte per byte quello di prima:
+        // `peer.ToString()` rende la stringa IP esatta (`ip:porta`) che c'era in `e.ip`.
+        PeerId peer = PeerId.FromIp(e.ip);
+        Logger.Info("Client connected at " + peer.ToString());
     }
 
     private void clientDisconnected(object sender, ClientConnectionEventArgs e)
     {
-        Logger.Info("Client disconnected at " + e.ip);
+        // ⭐ PUNTO DI CONTATTO COL SOCKET, 3 di 3.
+        PeerId peer = PeerId.FromIp(e.ip);
+        Logger.Info("Client disconnected at " + peer.ToString());
 
         // Make sure this client was actually connected, not just rejected from server
-        if (!connectedPlayers.ContainsKey(e.ip))
+        if (!connectedPlayers.ContainsKey(peer))
             return;
 
         // Send that this player has disconnected & remove them
-        sendPlayerConnection(e.ip, false);
-        connectedPlayers.Remove(e.ip);
+        sendPlayerConnection(peer, false);
+        connectedPlayers.Remove(peer);
         Core.removeUnusedGameData(connectedPlayers);
 
-        if (e.ip == _hostIp)
+        // ⭐ `peer == _hostPeer` e' il confronto di prima (`e.ip == _hostIp`), con `_hostPeer` che vale
+        // `null` quando l'host non c'e': l'operatore sollevato su `PeerId?` tratta il null come "diverso"
+        // esattamente come faceva `==` fra stringhe con un lato null.
+        if (peer == _hostPeer)
         {
-            _hostIp = connectedPlayers.Keys.FirstOrDefault();
-            if (_hostIp != null)
+            // ⭐ IL PRIMO RIMASTO E' IL NUOVO HOST — con la STESSA scelta di prima (`FirstOrDefault` su
+            // `Keys`, cioe' il primo in ordine di enumerazione del dizionario). Il `foreach` esplicito
+            // esiste perche' `FirstOrDefault` su `PeerId` renderebbe `default(PeerId)`, che NON e' "nessuno":
+            // un peer vuoto sarebbe indistinguibile da un peer vero.
+            PeerId? next = null;
+            foreach (PeerId remaining in connectedPlayers.Keys)
             {
-                Logger.Info($"Host reassigned to: {connectedPlayers[_hostIp].name} ({_hostIp})");
+                next = remaining;
+                break;
+            }
+            _hostPeer = next;
+
+            if (_hostPeer.HasValue)
+            {
+                // Testo invariato: `{_hostPeer.Value}` chiama `ToString()`, cioe' la stessa stringa IP.
+                Logger.Info($"Host reassigned to: {connectedPlayers[_hostPeer.Value].name} ({_hostPeer.Value})");
 
                 // Sent to EVERY remaining client, not only to the new host.
                 //
@@ -364,22 +424,22 @@ public class Server
                 //
                 // Broadcasting makes the assignment idempotent, which is what it should have been: every
                 // client is told the current truth each time it changes. sendHostAssign already decides per
-                // recipient (isHost = playerIp == _hostIp), and a client that is not the host and never was
+                // recipient (isHost = peer == _hostPeer), and a client that is not the host and never was
                 // receives SetHost(false), which changes nothing at all.
-                foreach (string ip in connectedPlayers.Keys)
-                    sendHostAssign(ip);
+                foreach (PeerId other in connectedPlayers.Keys)
+                    sendHostAssign(other);
             }
             else
                 Logger.Info("Host disconnected, no other players connected.");
         }
     }
 
-    private PlayerInfo getCurrentPlayer(string ip)
+    private PlayerInfo getCurrentPlayer(PeerId peer)
     {
-        if (connectedPlayers.ContainsKey(ip))
-            return connectedPlayers[ip];
+        if (connectedPlayers.ContainsKey(peer))
+            return connectedPlayers[peer];
 
-        Logger.Warn("Data for " + ip + " has not been created yet!");
+        Logger.Warn("Data for " + peer.ToString() + " has not been created yet!");
         return new PlayerInfo(string.Empty, 1);
     }
 
@@ -395,26 +455,26 @@ public class Server
 
     // Position
 
-    private void SendPosition(string playerIp)
+    private void SendPosition(PeerId peer)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            if (peer != other && current.isInSameScene(connectedPlayers[other]))
             {
                 // Send this player's updated position
-                Send(ip, GetPositionPacket(current), NetworkType.Position);
+                Send(other, GetPositionPacket(current), NetworkType.Position);
             }
         }
     }
 
-    private void ReceivePosition(string playerIp, byte[] data)
+    private void ReceivePosition(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.xPos = BitConverter.ToSingle(data, 0);
         current.yPos = BitConverter.ToSingle(data, 4);
 
-        SendPosition(playerIp);
+        SendPosition(peer);
     }
 
     private byte[] GetPositionPacket(PlayerInfo player)
@@ -427,25 +487,25 @@ public class Server
 
     // Animation
 
-    private void SendAnimation(string playerIp)
+    private void SendAnimation(PeerId peer)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            if (peer != other && current.isInSameScene(connectedPlayers[other]))
             {
                 // Send this player's updated animation
-                Send(ip, GetAnimationPacket(current), NetworkType.Animation);
+                Send(other, GetAnimationPacket(current), NetworkType.Animation);
             }
         }
     }
 
-    private void ReceiveAnimation(string playerIp, byte[] data)
+    private void ReceiveAnimation(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.animation = data[0];
 
-        SendAnimation(playerIp);
+        SendAnimation(peer);
     }
 
     private byte[] GetAnimationPacket(PlayerInfo player)
@@ -457,22 +517,22 @@ public class Server
 
     // Direction
 
-    private void SendDirection(string playerIp)
+    private void SendDirection(PeerId peer)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            if (peer != other && current.isInSameScene(connectedPlayers[other]))
             {
                 // Send this player's updated direction
-                Send(ip, GetDirectionPacket(current), NetworkType.Direction);
+                Send(other, GetDirectionPacket(current), NetworkType.Direction);
             }
         }
     }
 
-    private void ReceiveDirection(string playerIp, byte[] data)
+    private void ReceiveDirection(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
 
         // ⚠️ PORTING net35 — LA SECONDA RIGA CHE NON COMPILAVA, e non era nell'elenco dello studio.
         // Prima era `BitConverter.ToBoolean(data)`, cioe' l'overload a UN argomento: quello esiste
@@ -481,7 +541,7 @@ public class Server
         // legge il byte e lo si confronta: stesso valore, stessa direzione, stesso pacchetto.
         current.facingDirection = data[0] != 0;
 
-        SendDirection(playerIp);
+        SendDirection(peer);
     }
 
     private byte[] GetDirectionPacket(PlayerInfo player)
@@ -493,37 +553,37 @@ public class Server
 
     // Enter scene
 
-    private void sendPlayerEnterScene(string playerIp) // Optimize these send functions to combine them together
+    private void sendPlayerEnterScene(PeerId peer) // Optimize these send functions to combine them together
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
+            if (peer != other)
             {
                 // Send that this player has entered a new scene
-                Send(ip, getScenePacket(current), NetworkType.EnterScene);
+                Send(other, getScenePacket(current), NetworkType.EnterScene);
 
-                if (current.isInSameScene(connectedPlayers[ip]))
+                if (current.isInSameScene(connectedPlayers[other]))
                 {
                     // If in same scene, also send position data to each one
-                    Send(ip, GetPositionPacket(current), NetworkType.Position);
-                    Send(ip, GetAnimationPacket(current), NetworkType.Animation);
-                    Send(ip, GetDirectionPacket(current), NetworkType.Direction);
+                    Send(other, GetPositionPacket(current), NetworkType.Position);
+                    Send(other, GetAnimationPacket(current), NetworkType.Animation);
+                    Send(other, GetDirectionPacket(current), NetworkType.Direction);
 
-                    Send(playerIp, GetPositionPacket(connectedPlayers[ip]), NetworkType.Position);
-                    Send(playerIp, GetAnimationPacket(connectedPlayers[ip]), NetworkType.Animation);
-                    Send(playerIp, GetDirectionPacket(connectedPlayers[ip]), NetworkType.Direction);
+                    Send(peer, GetPositionPacket(connectedPlayers[other]), NetworkType.Position);
+                    Send(peer, GetAnimationPacket(connectedPlayers[other]), NetworkType.Animation);
+                    Send(peer, GetDirectionPacket(connectedPlayers[other]), NetworkType.Direction);
                 }
             }
         }
     }
 
-    private void receivePlayerEnterScene(string playerIp, byte[] data)
+    private void receivePlayerEnterScene(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.sceneName = Encoding.UTF8.GetString(data);
 
-        sendPlayerEnterScene(playerIp);
+        sendPlayerEnterScene(peer);
     }
 
     private byte[] getScenePacket(PlayerInfo player)
@@ -535,53 +595,53 @@ public class Server
 
     // Leave scene
 
-    private void sendPlayerLeaveScene(string playerIp)
+    private void sendPlayerLeaveScene(PeerId peer)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.xPos = 0;
         current.yPos = 0;
         current.animation = 0;
         current.facingDirection = false;
 
-        foreach (string ip in connectedPlayers.Keys)
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
+            if (peer != other)
             {
                 // Send that this player has left their old scene
-                Send(ip, Encoding.UTF8.GetBytes(current.name), NetworkType.LeaveScene);
+                Send(other, Encoding.UTF8.GetBytes(current.name), NetworkType.LeaveScene);
             }
         }
     }
 
-    private void receivePlayerLeaveScene(string playerIp, byte[] data)
+    private void receivePlayerLeaveScene(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
 
-        sendPlayerLeaveScene(playerIp);
+        sendPlayerLeaveScene(peer);
         current.sceneName = "";
     }
 
     // Skin
 
-    private void sendPlayerSkin(string playerIp)
+    private void sendPlayerSkin(PeerId peer)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
+            if (peer != other)
             {
                 // Send this player's updated skin
-                Send(ip, getSkinPacket(current), NetworkType.Skin);
+                Send(other, getSkinPacket(current), NetworkType.Skin);
             }
         }
     }
 
-    private void receivePlayerSkin(string playerIp, byte[] data)
+    private void receivePlayerSkin(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.skin = data;
 
-        sendPlayerSkin(playerIp);
+        sendPlayerSkin(peer);
     }
 
     private byte[] getSkinPacket(PlayerInfo player)
@@ -593,19 +653,19 @@ public class Server
 
     // Team
 
-    private void sendPlayerTeam(string playerIp)
+    private void sendPlayerTeam(PeerId peer)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
+            if (peer != other)
             {
-                Send(ip, getTeamPacket(current), NetworkType.Team);
+                Send(other, getTeamPacket(current), NetworkType.Team);
             }
         }
 
         // Send all of the server data to this player for them to merge
-        Logger.Info("Sending all server data to " + playerIp);
+        Logger.Info("Sending all server data to " + peer.ToString());
         for (byte i = 0; i < TeamInfo.NUMBER_OF_PROGRESS_TYPES; i++)
         {
             Dictionary<string, byte> progressSet = Core.getTeamData(current.team).GetTeamProgressSet(i);
@@ -618,17 +678,17 @@ public class Server
                     value -= Core.getTeamData(current.team).GetTeamProgressValue(6, "FLASKHEALTH");
                     Logger.Info("Send all send flask: " + value);
                 }
-                Send(playerIp, getProgressPacket("*", i, value, id), NetworkType.Progress);
+                Send(peer, getProgressPacket("*", i, value, id), NetworkType.Progress);
             }
         }
     }
 
-    private void receivePlayerTeam(string playerIp, byte[] data)
+    private void receivePlayerTeam(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.team = data[0];
 
-        sendPlayerTeam(playerIp);
+        sendPlayerTeam(peer);
         Core.removeUnusedGameData(connectedPlayers);
     }
 
@@ -641,15 +701,15 @@ public class Server
 
     // Connection
 
-    private void sendPlayerConnection(string playerIp, bool connected)
+    private void sendPlayerConnection(PeerId peer, bool connected)
     {
         // Send message to all other connected ips
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
+            if (peer != other)
             {
-                Send(ip, getConnectionPacket(current, connected), NetworkType.Connection);
+                Send(other, getConnectionPacket(current, connected), NetworkType.Connection);
             }
         }
     }
@@ -663,38 +723,38 @@ public class Server
 
     // Intro
 
-    private void sendPlayerIntro(string playerIp, RefusalType response)
+    private void sendPlayerIntro(PeerId peer, RefusalType response)
     {
-        Send(playerIp, getIntroPacket((byte)response), NetworkType.Intro);
+        Send(peer, getIntroPacket((byte)response), NetworkType.Intro);
 
         // Only send rest of data if successful connection
         if (response > 0)
             return;
 
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
+            if (peer != other)
             {
                 // Send all other connected players and their important data
-                Send(playerIp, getConnectionPacket(connectedPlayers[ip], true), NetworkType.Connection);
-                Send(playerIp, getSkinPacket(connectedPlayers[ip]), NetworkType.Skin);
-                Send(playerIp, getTeamPacket(connectedPlayers[ip]), NetworkType.Team);
-                if (connectedPlayers[ip].sceneName != "")
+                Send(peer, getConnectionPacket(connectedPlayers[other], true), NetworkType.Connection);
+                Send(peer, getSkinPacket(connectedPlayers[other]), NetworkType.Skin);
+                Send(peer, getTeamPacket(connectedPlayers[other]), NetworkType.Team);
+                if (connectedPlayers[other].sceneName != "")
                 {
-                    Send(playerIp, getScenePacket(connectedPlayers[ip]), NetworkType.EnterScene);
-                    if (current.isInSameScene(connectedPlayers[ip]))
+                    Send(peer, getScenePacket(connectedPlayers[other]), NetworkType.EnterScene);
+                    if (current.isInSameScene(connectedPlayers[other]))
                     {
-                        Send(playerIp, GetPositionPacket(connectedPlayers[ip]), NetworkType.Position);
-                        Send(playerIp, GetAnimationPacket(connectedPlayers[ip]), NetworkType.Animation);
-                        Send(playerIp, GetDirectionPacket(connectedPlayers[ip]), NetworkType.Direction);
+                        Send(peer, GetPositionPacket(connectedPlayers[other]), NetworkType.Position);
+                        Send(peer, GetAnimationPacket(connectedPlayers[other]), NetworkType.Animation);
+                        Send(peer, GetDirectionPacket(connectedPlayers[other]), NetworkType.Direction);
                     }
                 }
             }
         }
     }
 
-    private void receivePlayerIntro(string playerIp, byte[] data)
+    private void receivePlayerIntro(PeerId peer, byte[] data)
     {
         int idx = 0;
 
@@ -702,15 +762,15 @@ public class Server
         if (connectedPlayers.Count >= _maxPlayers)
         {
             Logger.Warn("Player connection rejected: Player limit reached");
-            sendPlayerIntro(playerIp, RefusalType.PlayerLimit);
+            sendPlayerIntro(peer, RefusalType.PlayerLimit);
             return;
         }
 
         // Ensure there are no duplicate ips
-        if (connectedPlayers.ContainsKey(playerIp))
+        if (connectedPlayers.ContainsKey(peer))
         {
             Logger.Warn("Player connection rejected: Duplicate ip address");
-            sendPlayerIntro(playerIp, RefusalType.DuplicateIp);
+            sendPlayerIntro(peer, RefusalType.DuplicateIp);
             return;
         }
 
@@ -720,7 +780,7 @@ public class Server
         if (protocol != PROTOCOL_VERSION)
         {
             Logger.Warn("Player connection rejected: Protocol version doesn't match");
-            sendPlayerIntro(playerIp, RefusalType.Protocol);
+            sendPlayerIntro(peer, RefusalType.Protocol);
             return;
         }
 
@@ -738,7 +798,7 @@ public class Server
             if (player.name == name)
             {
                 Logger.Warn("Player connection rejected: Duplicate name");
-                sendPlayerIntro(playerIp, RefusalType.DuplicateName);
+                sendPlayerIntro(peer, RefusalType.DuplicateName);
                 return;
             }
         }
@@ -751,7 +811,7 @@ public class Server
         if (!string.IsNullOrEmpty(_password) && (password == null || password != _password))
         {
             Logger.Warn("Player connection rejected: Incorrect password");
-            sendPlayerIntro(playerIp, RefusalType.Password);
+            sendPlayerIntro(peer, RefusalType.Password);
             return;
         }
 
@@ -760,16 +820,16 @@ public class Server
         // Add new connected player
         Logger.Info("Player connection accepted");
         PlayerInfo newPlayer = new PlayerInfo(name, team);
-        connectedPlayers.Add(playerIp, newPlayer);
-        if (string.IsNullOrEmpty(_hostIp))
+        connectedPlayers.Add(peer, newPlayer);
+        if (!_hostPeer.HasValue)
         {
-            _hostIp = playerIp;
-            Logger.Info($"Designated host: {newPlayer.name} ({playerIp})");
+            _hostPeer = peer;
+            Logger.Info($"Designated host: {newPlayer.name} ({peer})");
         }
         // Tell the client whether it is the one that must drive enemy simulation.
-        sendHostAssign(playerIp);
-        sendPlayerConnection(playerIp, true);
-        sendPlayerIntro(playerIp, RefusalType.Accepted);
+        sendHostAssign(peer);
+        sendPlayerConnection(peer, true);
+        sendPlayerIntro(peer, RefusalType.Accepted);
     }
 
     private byte[] getIntroPacket(byte response)
@@ -779,21 +839,21 @@ public class Server
 
     // Progress
 
-    private void sendPlayerProgress(string playerIp, byte type, byte value, string id)
+    private void sendPlayerProgress(PeerId peer, byte type, byte value, string id)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.team == getCurrentPlayer(ip).team)
+            if (peer != other && current.team == getCurrentPlayer(other).team)
             {
-                Send(ip, getProgressPacket(current.name, type, value, id), NetworkType.Progress);
+                Send(other, getProgressPacket(current.name, type, value, id), NetworkType.Progress);
             }
         }
     }
 
-    private void receivePlayerProgress(string playerIp, byte[] data)
+    private void receivePlayerProgress(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         byte progressType = data[0];
         byte progressValue = data[1];
         string progressId = Encoding.UTF8.GetString(data, 2, data.Length - 2);
@@ -866,11 +926,11 @@ public class Server
                 byte flaskUpgrades = Core.getTeamData(current.team).GetTeamProgressValue(6, "FLASK");
                 Logger.Info("Flask level stored: " + flaskUpgrades);
                 Logger.Info("Flask level sent: " + (byte)(flaskUpgrades - progressValue));
-                sendPlayerProgress(playerIp, 6, (byte)(flaskUpgrades - progressValue), "FLASK");
+                sendPlayerProgress(peer, 6, (byte)(flaskUpgrades - progressValue), "FLASK");
             }
         }
 
-        sendPlayerProgress(playerIp, progressType, progressValue, progressId);
+        sendPlayerProgress(peer, progressType, progressValue, progressId);
     }
 
     private byte[] getProgressPacket(string nameOrStar, byte type, byte value, string id)
@@ -884,22 +944,22 @@ public class Server
 
     // Attack
 
-    private void sendPlayerAttack(string playerIp, byte[] attackData)
+    private void sendPlayerAttack(PeerId peer, byte[] attackData)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            if (peer != other && current.isInSameScene(connectedPlayers[other]))
             {
                 // Send this player's attack
-                Send(ip, getAttackPacket(current, attackData), NetworkType.Attack);
+                Send(other, getAttackPacket(current, attackData), NetworkType.Attack);
             }
         }
     }
 
-    private void receivePlayerAttack(string playerIp, byte[] data)
+    private void receivePlayerAttack(PeerId peer, byte[] data)
     {
-        sendPlayerAttack(playerIp, data);
+        sendPlayerAttack(peer, data);
     }
 
     private byte[] getAttackPacket(PlayerInfo player, byte[] attackData)
@@ -911,20 +971,20 @@ public class Server
 
     // Effect
 
-    private void sendPlayerEffect(string playerIp, byte[] effectData)
+    private void sendPlayerEffect(PeerId peer, byte[] effectData)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            if (peer != other && current.isInSameScene(connectedPlayers[other]))
             {
                 // Send this player's effect, name included
-                Send(ip, getEffectPacket(current, effectData), NetworkType.Effect);
+                Send(other, getEffectPacket(current, effectData), NetworkType.Effect);
             }
         }
     }
 
-    private void receivePlayerEffect(string playerIp, byte[] data)
+    private void receivePlayerEffect(PeerId peer, byte[] data)
     {
         // The NAME goes in front, exactly as it does for every other relayed payload, and everything the client
         // sent rides behind it. The receiver's first act is to read that name, so a payload relayed without it
@@ -935,7 +995,7 @@ public class Server
         // client bytes instead, which dropped the NAME: the receiver then read the effect byte as the name's
         // LENGTH and threw an out-of-range exception on every effect, freezing the peer's animation mid-stride
         // and detaching its nameplate. Both halves matter - the payload is forwarded WHOLE and PREFIXED.
-        sendPlayerEffect(playerIp, data);
+        sendPlayerEffect(peer, data);
     }
 
     private byte[] getEffectPacket(PlayerInfo player, byte[] effectData)
@@ -947,14 +1007,14 @@ public class Server
 
     // Ping
 
-    private void SendPing(string playerIp, float time)
+    private void SendPing(PeerId peer, float time)
     {
         var bytes = new List<byte>();
         bytes.AddRange(BitConverter.GetBytes(time));
 
         foreach (var player in getPlayers())
         {
-            if (player.Key == playerIp)
+            if (player.Key == peer)
                 continue;
 
             string name = player.Value.name;
@@ -965,37 +1025,37 @@ public class Server
             bytes.AddRange(BitConverter.GetBytes(ping));
         }
 
-        Send(playerIp, bytes.ToArray(), NetworkType.Ping);
+        Send(peer, bytes.ToArray(), NetworkType.Ping);
     }
 
-    private void ReceivePing(string playerIp, byte[] data)
+    private void ReceivePing(PeerId peer, byte[] data)
     {
         float time = BitConverter.ToSingle(data, 0);
         ushort ping = BitConverter.ToUInt16(data, 4);
 
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
         current.ping = ping;
 
-        SendPing(playerIp, time);
+        SendPing(peer, time);
     }
 
     // Enemies
 
     // Enemy ids are the authored spawn point identity (scene|name|x|y) and travel as a string, so the
     // server only has to relay the payload to the peers sharing the sender's scene.
-    private void relayToScene(string playerIp, byte[] data, NetworkType type)
+    private void relayToScene(PeerId peer, byte[] data, NetworkType type)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
-        foreach (string ip in connectedPlayers.Keys)
+        PlayerInfo current = getCurrentPlayer(peer);
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+            if (peer != other && current.isInSameScene(connectedPlayers[other]))
             {
-                Send(ip, data, type);
+                Send(other, data, type);
             }
         }
     }
 
-    private void receiveEnemyUpdate(string playerIp, byte[] data)
+    private void receiveEnemyUpdate(PeerId peer, byte[] data)
     {
         // NO host-only filter here, and that is deliberate. Enemy state is per-enemy: each machine owns
         // some enemies and broadcasts only those, so a packet may legitimately come from the peer. An
@@ -1006,69 +1066,69 @@ public class Server
         // The server deliberately does not interpret the ownership flag: it relays bytes and lets each
         // client decide for itself. Keeping the server ignorant of game rules means the authority scheme
         // can change without touching it.
-        relayToScene(playerIp, data, NetworkType.EnemyUpdate);
+        relayToScene(peer, data, NetworkType.EnemyUpdate);
     }
 
-    private void receiveEnemyDeath(string playerIp, byte[] data)
+    private void receiveEnemyDeath(PeerId peer, byte[] data)
     {
         // Same reasoning as EnemyUpdate: whoever simulated the enemy is the one that knows it died.
-        relayToScene(playerIp, data, NetworkType.EnemyDeath);
+        relayToScene(peer, data, NetworkType.EnemyDeath);
     }
 
-    private void receiveEnemyDeathGlobal(string playerIp, byte[] data)
+    private void receiveEnemyDeathGlobal(PeerId peer, byte[] data)
     {
         // Sent to EVERY player, deliberately ignoring the scene filter that relayToScene applies.
         //
         // The player who needs this most is precisely the one who was NOT in the scene when the enemy died:
         // on returning, the game spawns that enemy alive, and without this record their copy contradicts
         // the machine that had it right.
-        foreach (string ip in connectedPlayers.Keys)
+        foreach (PeerId other in connectedPlayers.Keys)
         {
-            if (playerIp != ip)
-                Send(ip, data, NetworkType.EnemyDeathGlobal);
+            if (peer != other)
+                Send(other, data, NetworkType.EnemyDeathGlobal);
         }
     }
 
-    private void receiveEnemyOwnership(string playerIp, byte[] data)
+    private void receiveEnemyOwnership(PeerId peer, byte[] data)
     {
         // The host's ownership token, and only the host may issue one: a peer must not be able to grant
         // itself an enemy. Relayed to the scene because ownership only matters to players sharing it.
-        if (playerIp != _hostIp)
+        if (peer != _hostPeer)
             return;
 
-        relayToScene(playerIp, data, NetworkType.EnemyOwnership);
+        relayToScene(peer, data, NetworkType.EnemyOwnership);
     }
-    private void receiveEnemyDamageRequest(string playerIp, byte[] data)
+    private void receiveEnemyDamageRequest(PeerId peer, byte[] data)
     {
-        PlayerInfo current = getCurrentPlayer(playerIp);
+        PlayerInfo current = getCurrentPlayer(peer);
 
         // Se il pacchetto arriva dall'Host, diffondi il danno confermato a tutti gli altri client nella stessa scena
-        if (playerIp == _hostIp)
+        if (peer == _hostPeer)
         {
-            foreach (string ip in connectedPlayers.Keys)
+            foreach (PeerId other in connectedPlayers.Keys)
             {
-                if (playerIp != ip && current.isInSameScene(connectedPlayers[ip]))
+                if (peer != other && current.isInSameScene(connectedPlayers[other]))
                 {
-                    Send(ip, data, NetworkType.EnemyDamageRequest);
+                    Send(other, data, NetworkType.EnemyDamageRequest);
                 }
             }
         }
         else
         {
             // Se arriva da un peer, inoltralo esclusivamente all'Host se connesso per l'approvazione
-            if (!string.IsNullOrEmpty(_hostIp) && connectedPlayers.ContainsKey(_hostIp))
+            if (_hostPeer.HasValue && connectedPlayers.ContainsKey(_hostPeer.Value))
             {
-                Send(_hostIp, data, NetworkType.EnemyDamageRequest);
+                Send(_hostPeer.Value, data, NetworkType.EnemyDamageRequest);
             }
         }
     }
 
     // Authority
 
-    private void sendHostAssign(string playerIp)
+    private void sendHostAssign(PeerId peer)
     {
-        bool isHost = playerIp == _hostIp;
-        Send(playerIp, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
+        bool isHost = peer == _hostPeer;
+        Send(peer, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
     }
 
     private const byte PROTOCOL_VERSION = 11;
