@@ -77,6 +77,14 @@ internal static class SteamP2PProbeImpl
     internal const string MarkerStart = "[P2P] sonda avviata";
     internal const string MarkerStop = "[P2P] sonda fermata";
     internal const string MarkerState = "[P2P] peer=";
+
+    /// <summary>
+    /// ⭐ LA RIGA DISCRIMINANTE della sessione, accanto a quella storica: aggiunge `connecting` e `tx`, che
+    /// sono le due cose che la riga `[P2P] peer=` non diceva — e sono esattamente quelle che distinguono
+    /// "l'handshake non si completa" da "il tunnel e' sano e il blocco e' nel nostro codice". La tabella di
+    /// lettura e' in `scratch\REFERTO-TIMEOUT-E-UI.md`.
+    /// </summary>
+    internal const string MarkerSession = "[Sonda P2P] ";
     internal const string MarkerSend = "[P2P] invio: ";
     internal const string MarkerSendFail = "[P2P] invio fallito: ";
     internal const string MarkerReceive = "[P2P] ricevuto: ";
@@ -545,6 +553,26 @@ internal static class SteamP2PProbeImpl
             ModLog.Info(MarkerState + id + " attiva=" + isActive + " relay=" + isRelay +
                         " via=" + via + " ip=" + ip + " err=" + state.m_eP2PSessionError +
                         " rx=" + rx);
+
+            // ⭐⭐ LA RIGA DISCRIMINANTE — `active` **e** `connecting`, le due colonne che dividono i tre
+            // casi che si confondono fra loro (la tabella completa e' in `scratch\REFERTO-TIMEOUT-E-UI.md`):
+            //
+            //   active=0 connecting=1  ⇒ l'handshake di basso livello **non si completa**: o il doppio
+            //     `Accept` non e' scattato, o (dopo ~10-15 s, con `err=4`) e' firewall/ISP che taglia
+            //     l'UDP. **Non** e' un problema di canali o di lettura.
+            //   active=1 connecting=0  ⇒ ⭐ il tunnel e' **sano** e la rete e' innocente: se i byte non
+            //     arrivano lo stesso, il blocco e' **nel nostro codice** (canali o lettura) — e in quel
+            //     caso la riga `rx canale=... da=...` del trasporto dice su quale canale si legge.
+            //   active=0 connecting=0  ⇒ nessuna sessione: l'`Accept` non e' mai avvenuto.
+            //
+            // ⚠️ `tx` = `m_nBytesQueuedForSend`: se sale e non scende, il pacchetto e' **fermo nel buffer
+            // di invio di Valve** (e' esattamente il sintomo "spedito ma mai arrivato"). E' l'unico numero
+            // che distingue "l'ho mandato e si e' perso" da "l'ho mandato ed e' ancora li'".
+            int connecting = state.m_bConnecting != 0 ? 1 : 0;
+
+            ModLog.Info(MarkerSession + "peer=" + id + " active=" + isActive +
+                        " connecting=" + connecting + " error=" + state.m_eP2PSessionError +
+                        " relay=" + isRelay + " ip=" + ip + " tx=" + state.m_nBytesQueuedForSend);
         }
 
         _lastPeers = peers;

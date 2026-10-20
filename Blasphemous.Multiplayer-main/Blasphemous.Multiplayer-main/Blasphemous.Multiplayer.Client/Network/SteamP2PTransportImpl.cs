@@ -44,21 +44,57 @@ namespace Blasphemous.Multiplayer.Client.Network
     /// scarterebbe i pacchetti di B.
     ///
     /// ─────────────────────────────────────────────────────────────────────────────────────────────
-    /// IL BATTITO E IL TIMEOUT
+    /// ⭐ IL BATTITO E I DUE TIMEOUT (⭐⭐ questo e' il fix del "si disconnette dopo 5 secondi")
     ///
-    /// `P2PSessionConnectFail_t` arriva dopo 10-20 s: troppo per un co-op che deve dire "connessione
-    /// persa" come fa oggi. Quindi un battito applicativo (`KindKeepAlive`, reliable, canale 1) ogni
-    /// 3 s e un timeout di **5 s** senza NESSUN pacchetto valido: quando scade si scrive il marker si
-    /// alza `Disconnected` e da quel momento `Send` lancia `IOException` — che e' la via che
-    /// `NetworkManager.SendQueue` usa gia' per disconnettersi (`OnDisconnect`).
+    /// 🔴 IL DIFETTO, misurato: c'era **una sola** soglia, 5 s, e valeva **anche per la prima
+    /// negoziazione**. Ma la prima sessione P2P legacy di Steam richiede **3-7 s**, con picchi
+    /// **10-15 s** quando il punch-through non passa e serve il **relay**. ⇒ la mod **abortiva** mentre
+    /// Steam stava ancora aprendo il tunnel, e il sintomo era esattamente "si disconnette dopo 5
+    /// secondi". Peggio: l'hello **non si perde** — Steam lo tiene in un buffer di transizione
+    /// (~15-20 s) e lo consegna all'`Accept` — quindi abortire a 5 s **distruggeva** proprio il
+    /// meccanismo che stava per funzionare.
+    ///
+    /// ✅ IL FIX, con **uno stato esplicito** (`Phase`): `Connecting` → `Connected` → `Disconnected`.
+    ///
+    ///   · `Connecting`  — l'hello e' partito (o sta partendo) e **nessun pacchetto e' ancora arrivato**.
+    ///     La soglia e' `HANDSHAKE_TIMEOUT_SECONDS` = **25 s** misurata da `Begin` (il momento in cui la
+    ///     mod arma il tentativo; l'hello parte nel primo frame). Copre il relay peggiore (10-15 s) con
+    ///     un margine che non si mangia l'attesa del giocatore. Se scade senza **mai** aver ricevuto un
+    ///     pacchetto: `[Net] p2p: handshake scaduto (25 s)` + `Disconnected`.
+    ///
+    ///   · `Connected`   — il passaggio avviene sul **primo pacchetto valido ricevuto**, ed e' **loggato**:
+    ///     `[Net] p2p: primo pacchetto (canale N) dopo Xs` e subito dopo
+    ///     `[Net] p2p: connesso (handshake Xs)`. ⭐ E' **il** marker che dice se il tunnel si e' aperto —
+    ///     e il valore di X dice **quanto** ci mette la rete vera. Da questo istante (e **solo** da
+    ///     questo) vale la soglia del battito: `KEEPALIVE_TIMEOUT_SECONDS` = **5 s** senza nessun
+    ///     pacchetto valido ⇒ link perso.
+    ///
+    /// ⚠️ E' UNA DISTINZIONE, NON UN NUMERO PIU' GRANDE: il 5 s non e' stato "allargato" (un link che si
+    /// e' aperto e tace per 5 s e' davvero morto) — e' stato **spostato dove ha senso**, cioe' dopo il
+    /// primo pacchetto. Un timeout unico a 25 s avrebbe reso la caduta di un link reale 5 volte piu'
+    /// lenta da vedere.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────────────────────────────
+    /// LA SCATOLA NERA: `P2PSessionConnectFail_t`
+    ///
+    /// Arriva **dopo** ~10-15 s (non subito) e **non e' simmetrica**: scatta solo dal lato che ha
+    /// pacchetti in coda. E' pero' **l'unica** riga che dice *perche'* Steam non lascia passare
+    /// (`err=4 TIMEOUT` = nessun Accept dall'altra parte, o firewall/relay). Per questo e' registrata e
+    /// loggata: senza, un fallimento del tunnel resta "non funziona".
     ///
     /// ⚠️ TUTTO IN `try/catch`: nessun metodo di questa classe lancia verso il gioco se non dove il
     /// contratto lo prevede (`Send` → `IOException`, e solo per il link dichiarato perso).
     /// </summary>
     internal static class SteamP2PTransportImpl
     {
-        /// <summary>Un pacchetto valido non arriva da 5 s: il link e' perso.</summary>
-        private const float TIMEOUT_SECONDS = 5f;
+        /// <summary>
+        /// ⏱️ LA SOGLIA DELL'HANDSHAKE: **25 s** senza **mai** un pacchetto ricevuto (prima
+        /// negoziazione P2P: 3-7 s tipici, 10-15 s con il relay). Vedi il commento di classe.
+        /// </summary>
+        private const float HANDSHAKE_TIMEOUT_SECONDS = 25f;
+
+        /// <summary>⏱️ LA SOGLIA DEL BATTITO: un link **gia' aperto** che tace per 5 s e' perso.</summary>
+        private const float KEEPALIVE_TIMEOUT_SECONDS = 5f;
 
         /// <summary>Il battito: uno ogni 3 s (§9: "1 byte ogni 2-3 s").</summary>
         private const float KEEPALIVE_SECONDS = 3f;
@@ -87,6 +123,28 @@ namespace Blasphemous.Multiplayer.Client.Network
         private const string MarkerUnavailable = "[Net] p2p: la sessione non e' piu' disponibile";
 
         // ─── STATO ──────────────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// ⭐ UNO STATO SOLO, ESPLICITO: `Connecting` → `Connected` → `Disconnected`.
+        ///
+        /// ⚠️ PERCHE' UN ENUM E NON DUE BOOLEANI: il difetto era che **una** soglia di 5 s valeva in
+        /// **due** fasi diverse ("sto negoziando" e "sono connesso"). Con lo stato, la domanda "quale
+        /// timeout vale adesso?" ha una risposta sola, e il passaggio all'altra fase e' un **evento**
+        /// (il primo pacchetto) invece di un'inferenza.
+        /// </summary>
+        private enum Phase
+        {
+            /// <summary>Nessun tentativo in corso (o fallito): `Send` non deve partire.</summary>
+            Disconnected,
+
+            /// <summary>Hello partito (o in partenza), nessun pacchetto ricevuto: vale il timeout di 25 s.</summary>
+            Connecting,
+
+            /// <summary>Almeno un pacchetto valido ricevuto: vale il timeout del battito, 5 s.</summary>
+            Connected,
+        }
+
+        private static Phase _phase = Phase.Disconnected;
         private static bool _opened;
         private static bool _helloed;
         private static bool _linkLost;
@@ -106,6 +164,19 @@ namespace Blasphemous.Multiplayer.Client.Network
         private static readonly int[] _foreign = new int[3];
         private static readonly int[] _foreignLogged = new int[3];
         private static readonly HashSet<ulong> _peerLogged = new HashSet<ulong>();
+
+        /// <summary>I peer per cui e' gia' stata detta la riga "sessione di ritorno accettata".</summary>
+        private static readonly HashSet<ulong> _returnLogged = new HashSet<ulong>();
+
+        /// <summary>Quanti pacchetti si sono gia' tracciati per canale (vedi `RX_LOG_FIRST`).</summary>
+        private static readonly int[] _rxLogged = new int[3];
+
+        /// <summary>
+        /// Quante righe `rx canale=... da=...` per canale. **Tre**, non per frame: la traccia serve a
+        /// rispondere a "i pacchetti arrivano, e su quale canale?", non a contare il traffico (per quello
+        /// c'e' la sonda, che stampa ogni 3 s).
+        /// </summary>
+        private const int RX_LOG_FIRST = 3;
         private static int _droppedStale;
         private static int _droppedStaleLogged;
         private static int _sendFailLogged;
@@ -170,6 +241,11 @@ namespace Blasphemous.Multiplayer.Client.Network
                 _opened = true;
                 _helloed = false;
                 _linkLost = false;
+
+                // ⭐ ENTRA NELLA FASE DI NEGOZIAZIONE: da qui e fino al **primo pacchetto ricevuto** vale
+                // `HANDSHAKE_TIMEOUT_SECONDS` (25 s), non i 5 s del battito. Vedi `Tick`.
+                _phase = Phase.Connecting;
+
                 _txSeq = 0u;
                 _lastRx = Time.realtimeSinceStartup;
                 _openedAt = _lastRx;
@@ -182,10 +258,12 @@ namespace Blasphemous.Multiplayer.Client.Network
                 _outbox.Clear();
                 _lastSeqByOrigin.Clear();
                 _peerLogged.Clear();
+                _returnLogged.Clear();
                 for (int i = 0; i < 3; i++)
                 {
                     _foreign[i] = 0;
                     _foreignLogged[i] = 0;
+                    _rxLogged[i] = 0;
                 }
 
                 // ⚠️ DUE NUMERI DIVERSI, E VANNO DETTI ENTRAMBI: `hostSteamId` e' il DATO che l'host ha
@@ -235,6 +313,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             _opened = false;
             _helloed = false;
             _linkLost = false;
+            _phase = Phase.Disconnected;
             _host = CSteamID.Nil;
             _lobby = CSteamID.Nil;
             _outbox.Clear();
@@ -242,18 +321,42 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// ⭐⭐ IL CICLO PER FRAME: aprire (hello), ricevere i tre canali, controllare il timeout,
-        /// mandare il battito, svuotare la coda che aspettava l'hello.
+        /// ⭐⭐ IL CICLO PER FRAME: aprire (hello), ricevere i tre canali, controllare **il timeout della
+        /// fase in cui siamo**, mandare il battito, svuotare la coda che aspettava l'hello.
         ///
-        /// ⚠️ L'ORDINE NON E' UN CAPRICCIO: prima si apre (l'hello deve partire prima dei frame di
-        /// gioco, vedi ③), poi si **riceve** (svuotare i buffer per frame, altrimenti si riempiono),
-        /// poi si controlla il timeout (dopo la ricezione: un pacchetto arrivato in questo frame deve
-        /// poter dire "sono vivo"), poi si manda il battito.
+        /// ⚠️ L'ORDINE NON E' UN CAPRICCIO: prima si **riceve** (il buffer va svuotato in ogni frame fin
+        /// dal `Begin`, altrimenti si satura e blocca l'avanzamento — vedi il commento dentro `Tick`),
+        /// poi si apre (l'hello deve partire prima dei frame di gioco, vedi ③), poi si controlla il
+        /// timeout della fase (dopo la ricezione: un pacchetto arrivato in questo frame deve poter dire
+        /// "sono vivo"), poi si manda il battito.
+        ///
+        /// ⭐⭐ E IL TIMEOUT CHE SI CONTROLLA DIPENDE DALLO STATO — questa e' la correzione:
+        ///   · `Connecting` ⇒ **25 s** dal `Begin`. Scaduti **senza aver mai ricevuto un pacchetto**,
+        ///     l'handshake e' fallito: `[Net] p2p: handshake scaduto (25 s)` + `Disconnected`. Prima di
+        ///     questo fix qui c'erano i 5 s del battito, cioe' la mod abbandonava mentre Steam stava
+        ///     ancora aprendo il tunnel (3-7 s tipici, 10-15 s col relay).
+        ///   · `Connected`  ⇒ **5 s** dall'ultimo pacchetto valido. Qui i 5 s sono **giusti**: il link
+        ///     e' aperto, il peer manda un battito ogni 3 s, e 5 s di silenzio sono un fatto.
         /// </summary>
         internal static void Tick()
         {
             try
             {
+                if (!_opened || _linkLost)
+                    return;
+
+                // ⭐⭐ SI LEGGE **PRIMA** DI TUTTO, e **non** solo da "connesso": il ciclo di lettura parte
+                // dal `Begin`, in ogni frame, qualunque sia lo stato. Se si aspettasse di essere
+                // `Connected` per iniziare a leggere, Steam spingerebbe i pacchetti in un buffer che
+                // nessuno svuota, il buffer si saturerebbe e il passaggio a `Connected` — che dipende dal
+                // **leggere** il primo pacchetto — non arriverebbe **mai**: un deadlock. (E il buffer
+                // consegna retroattivamente: un pacchetto letto 3 s dopo l'`Accept` e' ancora li'.)
+                //
+                // ⚠️ E' anche il motivo per cui questa riga sta **prima** dell'hello: fra il `Begin` e
+                // l'hello c'e' l'attesa dei dati della lobby (fino a 3 s), e in quella finestra il buffer
+                // va svuotato lo stesso.
+                Drain();
+
                 if (!_opened || _linkLost)
                     return;
 
@@ -263,20 +366,35 @@ namespace Blasphemous.Multiplayer.Client.Network
                         return;
                 }
 
-                Drain();
-
                 if (!_opened || _linkLost)
                     return;
 
                 float now = Time.realtimeSinceStartup;
 
-                if (now - _lastRx >= TIMEOUT_SECONDS)
+                if (_phase == Phase.Connecting)
                 {
-                    LinkLost("nessun pacchetto da " + (int)(now - _lastRx) + " s (soglia " +
-                             (int)TIMEOUT_SECONDS + " s)");
-                    return;
+                    // ⚠️ `_phase` e' ancora `Connecting` SOLO se nessun pacchetto valido e' mai arrivato:
+                    // il primo pacchetto porta a `Connected` dentro `Handle` (vedi `MarkConnected`).
+                    float waited = now - _openedAt;
+
+                    if (waited >= HANDSHAKE_TIMEOUT_SECONDS)
+                    {
+                        HandshakeExpired(waited);
+                        return;
+                    }
+                }
+                else if (_phase == Phase.Connected)
+                {
+                    if (now - _lastRx >= KEEPALIVE_TIMEOUT_SECONDS)
+                    {
+                        LinkLost("nessun pacchetto da " + (int)(now - _lastRx) + " s (soglia " +
+                                 (int)KEEPALIVE_TIMEOUT_SECONDS + " s)");
+                        return;
+                    }
                 }
 
+                // ⭐ IL BATTITO SI MANDA IN **ENTRAMBE** LE FASI, di proposito: durante l'handshake tiene
+                // viva la sessione (e il NAT/relay aperto) e provoca una risposta dall'host.
                 if (now >= _nextKeepAlive)
                 {
                     _nextKeepAlive = now + KEEPALIVE_SECONDS;
@@ -288,6 +406,60 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception e)
             {
                 ModLog.Error(MarkerOpen + "errore in Tick: " + e.GetType().Name + ": " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 🔴 L'HANDSHAKE E' SCADUTO: **25 s** e nessun pacchetto e' mai arrivato. Si dice con la sua
+        /// riga (e' il marker che il referto manda a cercare), si passa a `Disconnected` e si alza
+        /// l'evento: da li' in poi `Send` lancia `IOException`, che e' la via con cui
+        /// `NetworkManager.SendQueue` si disconnette.
+        ///
+        /// ⚠️ NON e' `LinkLost("nessun pacchetto...")`: quella riga parla di un **link aperto** che
+        /// tace, e qui il link **non si e' mai aperto**. Due fatti diversi, due righe diverse — e il
+        /// ragazzo che legge il log deve poter capire quale dei due e'.
+        /// </summary>
+        private static void HandshakeExpired(float waited)
+        {
+            _phase = Phase.Disconnected;
+
+            // ⚠️ E IL LINK VA DICHIARATO PERSO, non solo lo stato: `_linkLost` e' cio' che ferma `Tick`
+            // (senza, il ciclo continuerebbe a mandare il battito a una sessione che non esiste) e cio'
+            // che fa lanciare `IOException` al `Send` successivo — la via che `NetworkManager.SendQueue`
+            // usa gia' per disconnettersi.
+            _linkLost = true;
+
+            if (!_timeoutLogged)
+            {
+                _timeoutLogged = true;
+
+                ModLog.Error(SteamP2PTransport.MarkerHandshakeTimeout +
+                             (int)HANDSHAKE_TIMEOUT_SECONDS + " s): nessun pacchetto ricevuto dall'host=" +
+                             _host.m_SteamID + " (attesa " + (int)waited + " s, hello=" +
+                             (_helloed ? "partito" : "MAI PARTITO") + "): la negoziazione P2P non si e' " +
+                             "aperta (relay lento, firewall, o host che non risponde)");
+            }
+
+            RaiseDisconnected();
+        }
+
+        /// <summary>
+        /// Alza l'evento di fine. **Una via sola** per i tre modi in cui il link finisce (handshake
+        /// scaduto, battito perso, sessione non disponibile): se un giorno cambia il modo in cui si
+        /// avvisa, cambia in un punto. Il `try/catch` c'e' perche' qui siamo dentro `Tick`, cioe' nel
+        /// late update della mod: un gestore che lancia fermerebbe il resto del ciclo.
+        /// </summary>
+        private static void RaiseDisconnected()
+        {
+            try
+            {
+                Action handler = _onDisconnected;
+                if (handler != null)
+                    handler();
+            }
+            catch (Exception e)
+            {
+                ModLog.Error(MarkerOpen + "errore in Disconnected: " + e.GetType().Name + ": " + e.Message);
             }
         }
 
@@ -415,17 +587,21 @@ namespace Blasphemous.Multiplayer.Client.Network
             _lastRx = Time.realtimeSinceStartup;
             _nextKeepAlive = _lastRx + KEEPALIVE_SECONDS;
 
-            ModLog.Info(MarkerOpen + "hello inviato a host=" + _host.m_SteamID + " (DICHIARATO nella lobby=" +
-                        _lobby.m_SteamID + "; proprietario attuale=" +
+            // ⭐ MARKER ① — **DOPO** l'invio, non prima (cosi' dice che il pacchetto e' **partito**, non
+            // che si e' provato a mandarlo) e con la soglia dell'handshake dichiarata: chi legge il log
+            // sa **quanto** si e' disposti ad aspettare, e non deve indovinarlo dal codice.
+            ModLog.Info(SteamP2PTransport.MarkerHelloSent + _host.m_SteamID + " (timeout handshake " +
+                        (int)HANDSHAKE_TIMEOUT_SECONDS + "s) - host DICHIARATO nella lobby=" +
+                        _lobby.m_SteamID + " (proprietario attuale=" +
                         SteamMatchmaking.GetLobbyOwner(_lobby).m_SteamID + ") canale=" +
                         P2PWire.ChannelReliable);
 
             FlushOutbox();
 
-            Action connected = _onConnected;
-            if (connected != null)
-                connected();
-
+            // ⚠️ E QUI **NON** SI ALZA `Connected`: il tunnel **non e' aperto**, e' solo stato chiesto.
+            // L'evento parte dal primo pacchetto ricevuto (`MarkConnected`), che e' l'unico fatto che
+            // dica "l'altra parte mi sente". Prima di questo fix l'evento partiva qui, e la schermata
+            // diceva "connesso" mentre nessun byte era ancora arrivato.
             return true;
         }
 
@@ -470,10 +646,9 @@ namespace Blasphemous.Multiplayer.Client.Network
             Notify("P2P: la sessione non e' piu' disponibile");
 
             _linkLost = true;
+            _phase = Phase.Disconnected;
 
-            Action handler = _onDisconnected;
-            if (handler != null)
-                handler();
+            RaiseDisconnected();
         }
 
         /// <summary>Una notifica a schermo, con il `try/catch` addosso (la UI puo' non esistere ancora).</summary>
@@ -637,6 +812,17 @@ namespace Blasphemous.Multiplayer.Client.Network
             uint ignoredSeq;
             ulong controlSender;
 
+            // ⭐ LA TRACCIA DELLA RICEZIONE, e dice **canale** e **mittente**: se il tunnel e' sano
+            // (`active=1` nella sonda) ma il gioco non si connette, questo e' il punto in cui si vede se i
+            // pacchetti si leggono su un canale diverso da quello su cui l'altro manda. Le prime
+            // `RX_LOG_FIRST` per canale: per frame sarebbero 30 righe al secondo, cioe' un log illeggibile.
+            if (_rxLogged[channel] < RX_LOG_FIRST)
+            {
+                _rxLogged[channel]++;
+                ModLog.Info(MarkerOpen + "rx canale=" + channel + " da=" + remote.m_SteamID +
+                            " byte=" + length);
+            }
+
             if (!P2PWire.TryParse(packet, length, out kind, out ignoredOffset, out controlSender, out ignoredSeq))
             {
                 _foreign[channel]++;
@@ -645,6 +831,12 @@ namespace Blasphemous.Multiplayer.Client.Network
                                 remote.m_SteamID + ", " + length + " byte): scartato (sonda P2P accesa?)");
                 return;
             }
+
+            // ⭐⭐ IL PRIMO PACCHETTO VALIDO E' IL FATTO CHE APRE IL TUNNEL: `Connecting` → `Connected`.
+            // E' **qui** che si alza l'evento `Connected` (non quando l'hello parte: quello dice solo che
+            // abbiamo chiesto), ed e' qui che parte il marker `connesso (handshake Ns)`.
+            if (_phase == Phase.Connecting)
+                MarkConnected(channel);
 
             // QUALUNQUE pacchetto valido dice "sono vivo": e' il battito che tiene il timeout.
             _lastRx = Time.realtimeSinceStartup;
@@ -694,6 +886,44 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
+        /// <summary>
+        /// ⭐⭐ `Connecting` → `Connected`: il **primo pacchetto valido** e' l'unico fatto che dice che il
+        /// tunnel si e' aperto (prima di questo istante si sa solo che abbiamo *chiesto* la sessione).
+        ///
+        /// Scrive **due** righe, di proposito:
+        ///   · `[Net] p2p: primo pacchetto (canale N) dopo Xs` — **dove** e' arrivato (il canale sbagliato
+        ///     e' un'ipotesi da escludere, non da indovinare);
+        ///   · `[Net] p2p: connesso (handshake Xs)` — ⭐ **il** marker del fix: se non compare entro 25 s,
+        ///     al suo posto c'e' `handshake scaduto`. E il valore di X dice **quanto** ci mette la rete
+        ///     vera (3-7 s tipici, 10-15 s col relay).
+        ///
+        /// E da qui in poi vale la soglia del **battito** (5 s), non piu' quella dell'handshake (25 s).
+        /// </summary>
+        private static void MarkConnected(int channel)
+        {
+            float now = Time.realtimeSinceStartup;
+            float handshake = now - _openedAt;
+            string seconds = handshake.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+
+            _phase = Phase.Connected;
+
+            ModLog.Info(SteamP2PTransport.MarkerFirstPacket + channel + ") dopo " + seconds + "s");
+            ModLog.Info(SteamP2PTransport.MarkerConnected + seconds + "s) - host=" + _host.m_SteamID +
+                        ": da adesso il timeout e' quello del battito (" +
+                        (int)KEEPALIVE_TIMEOUT_SECONDS + " s)");
+
+            try
+            {
+                Action connected = _onConnected;
+                if (connected != null)
+                    connected();
+            }
+            catch (Exception e)
+            {
+                ModLog.Error(MarkerOpen + "errore in Connected: " + e.GetType().Name + ": " + e.Message);
+            }
+        }
+
         /// <summary>Consegna il payload (i frame, senza intestazione) al seam. Copiato: il buffer si riusa.</summary>
         private static void Deliver(byte[] packet, int offset, int count)
         {
@@ -721,6 +951,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 return;
 
             _linkLost = true;
+            _phase = Phase.Disconnected;
 
             if (!_timeoutLogged)
             {
@@ -732,9 +963,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                     ModLog.Error(MarkerLinkLost + ": " + reason);
             }
 
-            Action handler = _onDisconnected;
-            if (handler != null)
-                handler();
+            RaiseDisconnected();
         }
 
         // ─── LA CALLBACK CHE ACCETTA LE SESSIONI ───────────────────────────────────────────────────
@@ -760,24 +989,49 @@ namespace Blasphemous.Multiplayer.Client.Network
                 if (id == 0UL)
                     return;
 
+                // ⭐ MARKER ② — la richiesta si dice **sempre**, prima di ogni cancello: e' il fatto che
+                // dice se il tunnel e' stato chiesto **a noi**. Senza questa riga, "l'altro dice che ha
+                // mandato" e "io non ho visto niente" sono indistinguibili.
+                ModLog.Info(SteamP2PTransport.MarkerSessionRequest + id + " (lato PEER)");
+
                 if (!SteamLobbyImpl.IsLobbyMember(remote))
                 {
-                    ModLog.Warn(MarkerOpen + "sessione rifiutata: " + id + " non e' un membro della lobby");
+                    ModLog.Warn(SteamP2PTransport.MarkerAcceptFail + id + " (non e' un membro della lobby: " +
+                                "sessione NON accettata)");
                     return;
                 }
 
-                if (!SteamNetworking.AcceptP2PSessionWithUser(remote))
+                bool accepted;
+                try
                 {
-                    // Non e' un guasto: quasi sempre la sessione era gia' accettata (dalla sonda o da
-                    // una richiesta precedente). Lo si dice una volta per peer.
-                    if (_peerLogged.Add(id))
-                        ModLog.Info(MarkerOpen + "sessione con " + id + " gia' accettata (Accept ha " +
-                                    "risposto false: nessun problema, la sessione esiste)");
+                    accepted = SteamNetworking.AcceptP2PSessionWithUser(remote);
+                }
+                catch (Exception e)
+                {
+                    ModLog.Error(SteamP2PTransport.MarkerAcceptFail + id + " eccezione: " +
+                                 e.GetType().Name + ": " + e.Message);
                     return;
                 }
 
-                if (_peerLogged.Add(id))
-                    ModLog.Info(MarkerOpen + "sessione accettata: peer=" + id + " (membro della lobby)");
+                // ⭐ MARKER ③ — L'ESITO, sempre: `true` = la sessione ora esiste; `false` = Steam l'ha
+                // rifiutata **in locale** (quasi sempre: esisteva gia', oppure l'id non e' piu' valido).
+                if (accepted)
+                {
+                    if (_peerLogged.Add(id))
+                        ModLog.Info(SteamP2PTransport.MarkerAcceptOk + id + " ACCETTATA (membro della lobby)");
+
+                    // ⭐⭐ LA SESSIONE **DI RITORNO**: quando l'host risponde, sul PC del peer arriva una
+                    // `P2PSessionRequest_t` **dall'host**, e senza un `Accept` anche di quella il pacchetto
+                    // di risposta resta nel buffer di Valve e scade (il tunnel resterebbe aperto in
+                    // **un verso solo**). Questa riga dice che il verso di ritorno e' stato accettato.
+                    if (_host.m_SteamID != 0UL && id == _host.m_SteamID && _returnLogged.Add(id))
+                        ModLog.Info(SteamP2PTransport.MarkerReturnAccepted + "=" + id);
+                }
+                else if (_peerLogged.Add(id))
+                {
+                    ModLog.Info(SteamP2PTransport.MarkerAcceptFail + id + " (Steam ha risposto false: " +
+                                "sessione gia' presente o id non piu' valido)");
+                }
             }
             catch (Exception e)
             {
@@ -786,8 +1040,53 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Registra `Callback&lt;P2PSessionRequest_t&gt;` una volta sola, e solo se Steam e' pronto
-        /// (registrare prima dell'`Init` parlerebbe con l'API nativa in un punto che non controlliamo).
+        /// ⭐⭐ LA SCATOLA NERA: `P2PSessionConnectFail_t`.
+        ///
+        /// Arriva **dopo** ~10-15 s dal tentativo (non subito) e **non e' simmetrica**: scatta solo dal lato
+        /// che ha pacchetti in coda. E' pero' **l'unica** riga che dice *perche'* Steam non lascia passare:
+        ///
+        ///   **0** `NONE` · **1** `NOT_RUNNING_SAME_APP` (l'altro ha chiuso, o AppID diverso) ·
+        ///   **2** `NO_RIGHTS_TO_APP` (licenza) · **3** `DESTINATION_NOT_LOGGED_IN` (offline) ·
+        ///   **4** `TIMEOUT` ⇒ il codice che conta: **nessun `Accept` dall'altra parte**, o firewall/relay.
+        ///
+        /// ⚠️ NON disconnette: e' una **misura**, e la decisione la prende il timeout (25 s di handshake,
+        /// 5 s di battito). Chiamare qui una disconnessione darebbe due fini per lo stesso fatto.
+        /// </summary>
+        private static void OnSessionConnectFail(P2PSessionConnectFail_t failure)
+        {
+            try
+            {
+                ulong id = failure.m_steamIDRemote.m_SteamID;
+                int error = failure.m_eP2PSessionError;
+
+                ModLog.Error(SteamP2PTransport.MarkerSessionFail + id + " err=" + error + " " +
+                             ErrorName(error) + " (lato PEER: tunnel non aperto)");
+            }
+            catch (Exception e)
+            {
+                ModLog.Error(MarkerOpen + "errore in P2PSessionConnectFail_t: " + e.GetType().Name + ": " +
+                             e.Message);
+            }
+        }
+
+        /// <summary>Il nome dell'errore di Steam: un numero da solo non si legge.</summary>
+        private static string ErrorName(int error)
+        {
+            switch (error)
+            {
+                case 0: return "NONE";
+                case 1: return "NOT_RUNNING_SAME_APP";
+                case 2: return "NO_RIGHTS_TO_APP";
+                case 3: return "DESTINATION_NOT_LOGGED_IN";
+                case 4: return "TIMEOUT";
+                default: return "SCONOSCIUTO";
+            }
+        }
+
+        /// <summary>
+        /// Registra `Callback&lt;P2PSessionRequest_t&gt;` (e la `P2PSessionConnectFail_t`) una volta sola, e
+        /// solo se Steam e' pronto (registrare prima dell'`Init` parlerebbe con l'API nativa in un punto
+        /// che non controlliamo).
         /// </summary>
         private static bool EnsureRegistered()
         {
@@ -801,6 +1100,20 @@ namespace Blasphemous.Multiplayer.Client.Network
             {
                 _cbSessionRequest = Callback<P2PSessionRequest_t>.Create(OnSessionRequest);
                 _registered = true;
+
+                // ⭐ L'ERRORE DI SESSIONE, registrato nello stesso punto: e' l'unica riga che dice *perche'*
+                // Steam non lascia passare, e arriva quando nessun altro sta dicendo niente.
+                try
+                {
+                    _cbSessionFail = Callback<P2PSessionConnectFail_t>.Create(OnSessionConnectFail);
+                }
+                catch (Exception e)
+                {
+                    ModLog.Warn(MarkerOpen + "Callback<P2PSessionConnectFail_t>.Create: " +
+                                e.GetType().Name + ": " + e.Message + " (la sessione funziona lo stesso, " +
+                                "manca solo la riga dell'errore)");
+                }
+
                 return true;
             }
             catch (Exception e)
@@ -818,6 +1131,9 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// potrebbe raccoglierla, e le callback smetterebbero di arrivare **in silenzio**.
         /// </summary>
         private static Callback<P2PSessionRequest_t> _cbSessionRequest;
+
+        /// <summary>La scatola nera della sessione: stessa ragione (campo, non locale).</summary>
+        private static Callback<P2PSessionConnectFail_t> _cbSessionFail;
 
         /// <summary>Una riga sola per motivo: `Tick` e' per frame, il log non deve diventare un fiume.</summary>
         private static readonly HashSet<string> _loggedReasons = new HashSet<string>();

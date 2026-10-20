@@ -47,6 +47,37 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// <summary>Il token che sceglie questo filo nel campo "Server IP".</summary>
         internal const string RequestToken = "p2p";
 
+        // ─── I MARKER DELLA DIAGNOSI: UNA DEFINIZIONE SOLA, PER I DUE LATI ────────────────────────
+        //
+        // ⚠️ PERCHE' QUI E NON DENTRO LE `*Impl`: sono **stringhe**, non tipi `Steamworks`, e questa
+        // classe e' il punto neutro che entrambe le implementazioni (peer e host) possono nominare senza
+        // aggiungere superficie al motore. Scritte una volta sola, le due macchine producono le
+        // **stesse** righe, e i due log si possono mettere in colonna.
+        //
+        // ⚠️ E SONO CINQUE PIU' DUE, SCELTI DOVE SI PRENDE LA DECISIONE (non dove si vede il dettaglio):
+        //   ① l'adapter si arma (senza questa riga l'host e' sordo e nessuno lo sa);
+        //   ② il peer manda l'hello e arma il timeout dell'handshake;
+        //   ③ l'host riceve la richiesta di sessione — e se l'adapter **non** e' armato lo dice;
+        //   ④ l'host accetta (o Steam rifiuta) — `AcceptP2PSessionWithUser` vero/falso;
+        //   ⑤ il primo pacchetto esce dalla ricezione, da entrambi i lati, con `connesso (handshake)`
+        //      subito dopo;
+        //   ·  la `P2PSessionConnectFail_t`, che e' **l'unica** riga che dice *perche'* Steam non
+        //      lascia passare (arriva 10-15 s dopo il tentativo, non subito).
+        //
+        // La tabella di lettura (cosa significa quale riga manca) sta in
+        // `scratch\REFERTO-TIMEOUT-E-UI.md`.
+        internal const string MarkerAdapterActive = "[Net] p2p: adapter attivo (lobby=";
+        internal const string MarkerHelloSent = "[Net] p2p: hello inviato a ";
+        internal const string MarkerSessionRequest = "[Net] p2p: richiesta sessione da ";
+        internal const string MarkerNotArmed = "[Net] p2p: richiesta da ";
+        internal const string MarkerAcceptOk = "[Net] p2p: sessione con ";
+        internal const string MarkerAcceptFail = "[Net] p2p: accept FALLITO ";
+        internal const string MarkerReturnAccepted = "[Net] p2p: peer ha accettato la sessione di ritorno dall host";
+        internal const string MarkerFirstPacket = "[Net] p2p: primo pacchetto (canale ";
+        internal const string MarkerConnected = "[Net] p2p: connesso (handshake ";
+        internal const string MarkerHandshakeTimeout = "[Net] p2p: handshake scaduto (";
+        internal const string MarkerSessionFail = "[Net] p2p: SESSIONE FALLITA peer=";
+
         private static bool _failureLogged;
 
         /// <summary>
@@ -144,6 +175,41 @@ namespace Blasphemous.Multiplayer.Client.Network
                 ModLog.Error(Marker + ": nessuna lobby Steam in cui entrare. Accetta un invito (o ospita " +
                              "tu), poi premi Connect con '" + RequestToken + "' nel campo Server IP");
                 throw new SocketException((int)SocketError.NotConnected);
+            }
+
+            ReportOpen(host, port);
+        }
+
+        /// <summary>
+        /// ⭐ IL MARKER DI APERTURA DEL P2P — gemello di `[Net] trasporto=tcp host=... porta=...`
+        /// (`TcpTransport.Connect`).
+        ///
+        /// 🔴 PERCHE' E' STATO AGGIUNTO (e non e' cosmesi): la costante <see cref="Marker"/> compariva
+        /// **solo** nei rami di errore di questa classe, quindi un log con il tunnel **aperto** non diceva
+        /// da nessuna parte "sto andando in P2P". Nella diagnosi del fallimento
+        /// (`scratch\DIAGNOSI-P2P-FALLITO.md`) la riga `[Net] trasporto=p2p` era **assente**: non si
+        /// poteva distinguere "il P2P non e' partito" da "e' partito e non ha risposto nessuno". Dopo
+        /// questa riga la distinzione e' nel log, e il campo "Server IP" dice `p2p` solo se qualcuno l'ha
+        /// scritto davvero.
+        ///
+        /// ⚠️ SOLO LOG: nessuno stato, nessuna decisione, nessun byte sul filo. Il `try/catch` c'e' perche'
+        /// `LobbySummary` chiama Steam (e un log non deve mai essere la ragione per cui una connessione
+        /// non si apre).
+        /// </summary>
+        private static void ReportOpen(string host, int port)
+        {
+            try
+            {
+                // La concatenazione (non `string.Format`) fonde `Marker` e `" host="` in **un solo
+                // letterale**, che e' quello che `tools\marker-check.ps1` trova nella DLL — la stessa
+                // ragione gia' scritta in `TcpTransport.Connect`.
+                ModLog.Info(Marker + " host=" + host + " porta=" +
+                            port.ToString(System.Globalization.CultureInfo.InvariantCulture) + " - " +
+                            LobbySummary());
+            }
+            catch (Exception e)
+            {
+                Report("LogOpen", e);
             }
         }
 

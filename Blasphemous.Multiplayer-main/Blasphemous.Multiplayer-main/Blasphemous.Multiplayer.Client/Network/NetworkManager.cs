@@ -27,6 +27,24 @@ namespace Blasphemous.Multiplayer.Client.Network
         private string _serverIp = string.Empty;
 
         /// <summary>
+        /// ⭐⭐ "C'E' UN TENTATIVO IN CORSO, E NESSUNO HA ANCORA DATO UN ESITO" — dall'avvio del dial fino
+        /// a *qualunque* esito (Intro accettato, rifiuto, timeout, eccezione).
+        ///
+        /// 🔴 PERCHE' ESISTE (⭐ questo e' il fix della **schermata bloccata su "Connecting..."**):
+        /// `ConnectionDisplay` alza il proprio `_attemptingConnection` prima del dial e lo abbassa **solo**
+        /// dentro `OnConnect`. Ma `OnConnect` veniva invocato in **due** punti soli: la `SocketException`
+        /// del TCP e la risposta `Intro` del server. Il **timeout P2P** non passa da nessuno dei due: il
+        /// trasporto alza `Disconnected`, si arriva a questa `OnDisconnect`, e `OnConnect` **non veniva
+        /// chiamato** ⇒ il flag della schermata restava `true` **per sempre** ⇒ `DisplayMiddle` (che non
+        /// disegna nessun bottone) ⇒ **solo il riavvio del gioco**.
+        ///
+        /// ✅ Da qui in poi `OnDisconnect` sa se stava leggendo un tentativo, e in quel caso chiude l'esito
+        /// come **rifiuto di connessione**. Vale per **entrambi** i trasporti: e' il trasporto che dice
+        /// "e' finita", non il protocollo.
+        /// </summary>
+        private bool _attempting;
+
+        /// <summary>
         /// `true` mentre siamo **dentro** `Disconnect()`: il trasporto P2P emette `Disconnected` anche
         /// li', e senza questa bandierina `OnTransportEnded` chiamerebbe `OnDisconnect` due volte (due
         /// notifiche, due rimozioni). Il TCP non ne ha bisogno: non e' sottoscritto.
@@ -65,6 +83,10 @@ namespace Blasphemous.Multiplayer.Client.Network
         {
             if (_connectionStatus != ConnectionStatus.Disconnected)
                 return false;
+
+            // ⭐ DA QUI IN POI C'E' UN TENTATIVO IN CORSO: l'esito **deve** arrivare a chi ha premuto
+            // "Connect", anche quando arriva sotto forma di "il trasporto e' finito" (vedi `_attempting`).
+            _attempting = true;
 
             try
             {
@@ -107,6 +129,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 // Lo stesso `catch` di oggi, sulla stessa eccezione: il trasporto NON la cattura
                 // (`TcpTransport.Connect`), altrimenti questo ramo non verrebbe mai raggiunto.
                 ModLog.Info("Failed to establish connection");
+                _attempting = false;
                 OnConnect?.Invoke(false, RefusalType.Connection);
                 return false;
             }
@@ -121,10 +144,22 @@ namespace Blasphemous.Multiplayer.Client.Network
             //
             // ⚠️ `_ending` esiste per UNA ragione: il trasporto P2P emette `Disconnected` anche dentro
             // questa chiamata, e `OnTransportEnded` non deve chiamare `OnDisconnect` una seconda volta.
+            //
+            // ⭐ E IL CASO "NON C'E' NIENTE DA CHIUDERE" NON DEVE ESPLODERE: `_transport` e' `null` dopo
+            // una connessione fallita, e questa funzione la chiama anche il bottone "Annulla" della
+            // schermata di connessione (`ConnectionDisplay.CancelConnect`), che e' proprio la rete di
+            // sicurezza per quando il tentativo e' ancora in corso. Prima un `null` qui era una
+            // `NullReferenceException` dentro l'`OnGUI`.
+            ICoopTransport transport = _transport;
+
+            if (transport == null && _connectionStatus == ConnectionStatus.Disconnected)
+                return;
+
             _ending = true;
             try
             {
-                _transport.Disconnect();
+                if (transport != null)
+                    transport.Disconnect();
             }
             finally
             {
@@ -166,6 +201,20 @@ namespace Blasphemous.Multiplayer.Client.Network
 
         private void OnDisconnect()
         {
+            // ⭐⭐ (B) L'ESITO NEGATIVO ARRIVA ANCHE A CHI HA PREMUTO "CONNECT".
+            //
+            // 🔴 Il difetto: quando il P2P falliva (timeout d'handshake, timeout del battito, sessione non
+            // piu' disponibile) o quando un TCP cadeva, si arrivava **solo** qui. `OnConnect` non veniva
+            // invocato, quindi `ConnectionDisplay._attemptingConnection` restava `true` e la schermata
+            // restava su "Connecting..." **senza nessun bottone**: l'unica uscita era riavviare il gioco.
+            //
+            // ⚠️`wasAttempting` va letto **prima** di azzerare il campo, e il campo si azzera **sempre**:
+            // il flag non deve sopravvivere a un fallimento. E l'invocazione e' **dopo** aver riportato lo
+            // stato a "sconnesso", cosi' chi riceve l'esito trova gia' `IsConnected == false` (e la
+            // schermata torna a `DisplayStart` con i bottoni attivi).
+            bool wasAttempting = _attempting;
+            _attempting = false;
+
             _connectionStatus = ConnectionStatus.Disconnected;
             _serverIp = string.Empty;
             _transport = null;
@@ -176,6 +225,15 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             ModLog.Info("Disconnected from server");
             Main.Multiplayer.OnDisconnect();
+
+            if (!wasAttempting)
+                return;
+
+            // "Rifiuto di connessione" e non un tipo nuovo: e' lo **stesso** esito che il client riceve
+            // quando il socket non si apre (`RefusalType.Connection`), quindi la notifica a schermo e' una
+            // di quelle gia' localizzate (`refcon`) e non serve nessuna stringa nuova.
+            ModLog.Info("[Net] connessione fallita senza risposta: la schermata torna disponibile");
+            OnConnect?.Invoke(false, RefusalType.Connection);
         }
 
         // Server
@@ -589,6 +647,13 @@ namespace Blasphemous.Multiplayer.Client.Network
             bool success = response == RefusalType.Accepted;
 
             ModLog.Info($"Established full connection (Success: {success})");
+
+            // ⭐ L'ESITO VERO E' QUESTO (c'e' una risposta del server, anche quando e' un rifiuto): il
+            // tentativo e' concluso, e l'`OnConnect` in fondo a questa funzione lo dira' con il motivo
+            // esatto (`RefusalType`). Va azzerato **prima** di `Disconnect()`: altrimenti `OnDisconnect`
+            // vedrebbe ancora un tentativo in corso e aggiungerebbe il suo esito generico (`Connection`),
+            // cioe' due esiti per lo stesso tentativo — e il secondo cancellerebbe il motivo vero.
+            _attempting = false;
 
             if (success)
             {

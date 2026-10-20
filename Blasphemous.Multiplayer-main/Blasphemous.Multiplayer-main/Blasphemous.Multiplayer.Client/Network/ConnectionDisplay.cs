@@ -568,6 +568,54 @@ public class ConnectionDisplay : MonoBehaviour
         };
 
         GUI.Label(new Rect(0, 20, 330, 380), "Connnecting...", bigStyle);
+
+        // ⭐⭐ LA VIA D'USCITA — RETE DI SICUREZZA, INDIPENDENTE DAL RESTO DEL FIX.
+        //
+        // 🔴 Il difetto, osservato dall'utente: quando il P2P falliva la schermata restava **qui**, e
+        // questa schermata **non disegna nessun bottone**: l'unica uscita era riavviare il gioco. Il
+        // fix vero e' che l'esito negativo arrivi a `OnConnect` (`NetworkManager.OnDisconnect`), ma una
+        // UI che puo' restare senza uscita se qualcosa *ancora* non arriva e' una UI sbagliata lo stesso.
+        // Quindi il "si puo' sempre tornare indietro" non dipende dal fatto che il fix funzioni.
+        //
+        // ⚠️ "Annulla" e' **la stessa parola di ripiego** che l'utente ha chiesto: riporta a
+        // `DisplayStart` (i campi sono ancora compilati, l'invito non e' perso) e chiude il tentativo.
+        // Sta sulla riga 5, la stessa di "Connect"/"Host session": cosi' il bottone cade esattamente dove
+        // l'utente l'ha lasciato e la finestra non cambia altezza.
+        if (ReadButton("Annulla", 5))
+            CancelConnect();
+    }
+
+    /// <summary>
+    /// ⭐ ANNULLA IL TENTATIVO IN CORSO — la rete di sicurezza della schermata di connessione.
+    ///
+    /// Fa tre cose, in quest'ordine: abbassa `_attemptingConnection` (cosi' il frame successivo disegna
+    /// `DisplayStart` e **non** torna qui), toglie la sottoscrizione all'esito (un esito che arrivasse
+    /// dopo non deve riportare la schermata da un'altra parte) e chiude il trasporto se c'e'.
+    ///
+    /// ⚠️ NON tocca i campi compilati: server/nome/password/squadra restano, quindi "Annulla" e' un
+    /// ritorno al punto di prima e non una perdita di quello che si e' scritto.
+    ///
+    /// ⚠️ NON spegne la sessione-host (`HostSession`): e' un'altra cosa (una porta aperta, non un
+    /// tentativo), e chiudere quella e' il mestiere di "Stop host" e di "Disconnect" (vedi `TryDisconnect`).
+    ///
+    /// ⚠️ Tutto in `try/catch`: questo corpo gira dentro `OnGUI`, e un guasto qui non deve poter fermare
+    /// il resto della schermata.
+    /// </summary>
+    private void CancelConnect()
+    {
+        _attemptingConnection = false;
+
+        ModLog.Info("[Net] tentativo di connessione annullato dal giocatore");
+
+        try
+        {
+            Main.Multiplayer.NetworkManager.OnConnect -= OnConnect;
+            Main.Multiplayer.NetworkManager.Disconnect();
+        }
+        catch (System.Exception e)
+        {
+            ModLog.Error("[Net] errore annullando il tentativo: " + e.GetType().Name + ": " + e.Message);
+        }
     }
 
     private void DisplayEnd()
