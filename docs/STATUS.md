@@ -18,7 +18,33 @@ is in.
 Nothing else changes. This is not a different game, a different save or a different difficulty: it is
 the game you know, with a second Penitent in it.
 
-## 2. What used to be impossible
+## 2. How you start a game today
+
+There are two doors, and both are in the mod's multiplayer panel.
+
+**"Host session"** — one of you presses it: his game opens the door and he is already inside, because the
+host is also the first player. The other one types the host's address in the "Server IP" field and presses
+"Connect". This is the way that does not need anything but the two of you.
+
+**The Steam invite** — the host presses "Host session" and then "Steam: Host", and invites his friend from
+the Steam overlay. The friend accepts and types **nothing**: no address, no port. The two games find each
+other and you are in the same Cvstodia.
+
+⚠️ **The condition:** invites and the player-to-player link belong to **Steam**. They need the Steam copy
+of the game, Steam running, and both of you having launched the game from Steam. **On another launcher
+(GOG and the like) they are simply not there** — and nothing is lost: you type the **IP**, which is the way
+that always works (same network, or an address you can reach).
+
+⭐ **The new thing:** with a Steam invite, two players on **different networks** find each other with **no
+address to type and no port to open on the router**. That is the result: before, you either shared a
+network, or you had to know an address and open a door.
+
+**And its limits, in two lines:** the host **is** the session — when he closes the game, it ends for both;
+the direct link needs Steam, the IP does not; on a minority of networks Steam has to pass the traffic
+through its own relay instead of a direct line — it works the same, the first connection can just take
+longer.
+
+## 3. What used to be impossible
 
 Two games used to run **side by side**. Two worlds, two sets of enemies, two versions of every fight:
 you could stand in the same room as your friend and, in fact, be playing a different game.
@@ -30,7 +56,7 @@ Now there is **one world**:
 - if you die, **I see you die**;
 - if the boss hits me, **I lose health**.
 
-## 3. What syncs, and what it means
+## 4. What syncs, and what it means
 
 - **Enemies and their position** — you see them walk. They do not jump from place to place.
 - **Death and respawn** — nobody disappears: the moment your teammate dies you know it, and you know
@@ -46,7 +72,7 @@ Now there is **one world**:
 - **Life guilt** — a penalty new to this mod: every death takes a bite out of your maximum health, and
   only a bonfire gives it back — and only to whoever sits.
 
-## 4. The problems we had to solve
+## 5. The problems we had to solve
 
 - The boss threw itself at the player of the machine that ran it, even when it was after the other one
   ⇒ now it goes where it is aiming, and the one it is aiming at is the one it hits.
@@ -61,7 +87,7 @@ Now there is **one world**:
   and the view follows the one who is still alive — and in single player you get the game's own death
   screen, untouched.
 
-## 5. What it is today
+## 6. What it is today
 
 | What | Today |
 |---|---|
@@ -81,12 +107,12 @@ Now there is **one world**:
 
 ⚠️ **The real limits are not on this page**: they are in `BUG-NOTI.md`, one entry each.
 
-## 6. Known limits
+## 7. Known limits
 
 Some bosses — the DLC and the later additions — have no classic death flag, and the per-boss behaviour
 has not been tuned for all of them. See `BUG-NOTI.md`.
 
-## 7. What has not been seen in game yet
+## 8. What has not been seen in game yet
 
 Seven features are implemented and verified in code, but nobody has observed them in a real match:
 the per-boss aim and recited death · the projectiles of three enemies · the four bosses without a

@@ -11,13 +11,20 @@
 > **What it is not.** Not a chronicle: no "on such a day we did X". **The chronicle itself no longer exists**:
 > the day-by-day record (decisions, measurements, dead ends, the reasoning behind every number) was
 > `docs\TODO.md`, **deleted in `bdea334`** — what it said is in `git log docs/TODO.md`. **The "why" is here**:
-> §5 is the decisions, `docs\BUG-NOTI.md` the declared limits and accepted prices, `docs\STATUS.md` §4 the
+> §5 is the decisions, `docs\BUG-NOTI.md` the declared limits and accepted prices, `docs\STATUS.md` §5 the
 > problems that were solved. The rollback points are `docs\RIPRISTINO.md`.
 >
-> **State.** Branch `fix-f1a`. Every `file:line` below was re-measured at `ebf1484`; after that commit only
-> documentation changed (`a084166` and this page), so the code is still that one — do not trust numbers
-> quoted inside older reports, some are 20+ lines behind. Code paths are relative to
-> `Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\`; document paths to the repository root.
+> **State.** Branch `fix-f1a`, HEAD `e243e07`. This page was written and measured against `e2fe745`, its
+> parent, and pushed one step further by `e243e07`, which closes the P2P session on a timeout and on a normal
+> exit — no interface, no threshold, no channel changes. Every `file:line` below was re-measured at
+> `ebf1484`; **after that commit the network layer landed** — `a8b2bde` (the peer identity), `cd5f11f` (the
+> server seam), `22e1a9e` (the P2P transport), `2a6ca17` (the invite chooses the P2P), `e2fe745` (the two P2P
+> timeouts and the screen that unblocks) — and those commits ride the wire, the server seam and the identity,
+> not the game patches: every one of their deploys, the last included, still checks **272** Harmony targets
+> with **0** missing (`scratch\REFERTO-TIMEOUT-E-UI.md`, header of the report). What changed in the network
+> layer is §2, "The wire, in three layers". Do not trust numbers quoted inside older reports, some are 20+
+> lines behind. Code paths are relative to `Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\`;
+> document paths to the repository root.
 
 ---
 
@@ -26,7 +33,7 @@
 **Co-op for Blasphemous** — Unity **2017.4.40f1**, BepInEx **5.4.23.4**, Blasphemous **Modding API 3.0.1**,
 **HarmonyX** (the `0Harmony.dll` shipped with BepInEx). Two binaries: the client plugin `BlasClient.dll`
 (loaded from `Modding\plugins`) and a standalone console server shipped in `SERVER-COOP`.
-**272 Harmony patch targets** (see §2, last bullet).
+**272 Harmony patch targets** (see §2, the bullet with the count).
 
 **The principle: the co-op is a layer. With no server connection the game behaves exactly as vanilla.**
 All new behaviour hangs off one predicate — the socket, `CoopGate.IsMultiplayerActive()`
@@ -80,6 +87,86 @@ answers `false`, which is the inert state (`CoopGate.cs:22-31`). If you add a fe
   never from a note: `tools\verify-patch-targets.ps1` prints `bersagli controllati : 272`, type missing 0,
   method missing 0, `ESITO : tutti validi` — re-run today against the deployed build of `a188060`.
 
+### The wire, in three layers
+
+Added by the network work (`a8b2bde`, `cd5f11f`, `22e1a9e`, `2a6ca17`, `e2fe745`): before it, the wire was
+one socket in one file and a peer was a string. The reports are `scratch\REFERTO-C1A-IDENTITA.md`,
+`REFERTO-C1B1-SEAM-SERVER.md`, `REFERTO-C1B2-P2P.md`, `REFERTO-FIX-INVITO-P2P.md`,
+`REFERTO-TIMEOUT-E-UI.md`; the requirement list they come from is `docs\STEAM_INVITES.md` §9-§10 (in the
+client project's `docs\` folder).
+
+- ⭐ **The client: one interface, two wires.** `NetworkManager` speaks only to `ICoopTransport`
+  (`Blasphemous.Multiplayer.Client\Network\ICoopTransport.cs`): `Connect` / `Disconnect` / `IsConnected` /
+  `Send` plus three events. The contract is on **bytes**: `Send(byte[] framed, TransportClass cls)` gets the
+  buffer already framed (`[ushort len][byte type][payload]`, protocol 11) and the transport must not
+  interpret, split or re-frame it. Two implementations: **`TcpTransport`** (the IP path —
+  `SimpleTcpClient`, and the `NoDelay` that used to pierce the abstraction now lives inside it) and
+  **`SteamP2PTransport`** (the P2P path, whose Steamworks calls are all inside `SteamP2PTransportImpl`).
+  `NetworkManager.CreateTransport` chooses on the **"Server IP" field**: the literal `p2p` ⇒ P2P, anything
+  else ⇒ TCP — so the IP path stays the default and no flag has to be added. ⭐ And the Steam **invite
+  writes that token** (`ConnectionDisplay.ApplySteamJoin`), so *accepting an invite is what selects the
+  P2P*; before `2a6ca17` it wrote the host's **LAN address** there, and the invite died on a private IP.
+- ⭐ **The server: one interface, N wires, one map.** `IServerTransport`
+  (`Blasphemous.Multiplayer.Server\IServerTransport.cs`) = `Start` / `Stop` / `Send(PeerId, frame)` /
+  listening addresses / `DelayDisabled` plus `PeerConnected`, `PeerDisconnected`, `FrameReceived`. Three
+  implementations: **`TcpServerTransport`** (the listener — today's `SimpleTcpServer`, the same lines moved),
+  **`P2PServerTransport`** (the host-side adapter: it has **no listener**, it polls
+  `IsP2PPacketAvailable` on the three channels and accepts a session only for a **member of the lobby**;
+  it also keeps the `[origin]` of a relayed packet, or every player would collapse into one stream), and
+  **`CompositeServerTransport`**, which holds N transports and a
+  `Dictionary<PeerId, IServerTransport>` — **peer → transport** — so `Server` sees one interface and does not
+  know there can be two. A transport must announce a peer **before** delivering its first frame.
+  ⭐ **And the host stays a TCP client on the loopback**: his own game connects to `127.0.0.1:27051` with
+  `TcpTransport`, exactly as before. `SendP2PPacket(ownSteamID)` would be UDP loopback negotiating with
+  itself, so the host's own traffic never goes through Steam — the P2P work does not touch that path.
+- ⭐ **The identity: a value, not a string.** `PeerId` (`Blasphemous.Multiplayer.Common\PeerId.cs`, a
+  `struct` in a **multi-target** project `net35;net8.0`): `PeerKind` (`Ip` | `Steam`) + the IP string + a
+  bare `ulong` for the SteamID. The transport is the only one that knows how a peer is called on its wire
+  and builds the value (`TcpServerTransport` → `PeerId.FromIp(e.ip)`); from there on the server speaks
+  `PeerId`, and for the IP case `ToString()` is **the same string as before**, so the log lines and the
+  socket lookup are byte-identical (the string's own hash is kept on purpose, to keep the dictionary's
+  enumeration order). ⇒ **No `Steamworks` type outside the `*Impl`** (verified with Cecil on the deployed
+  DLL: the types naming Steamworks are all `*Impl`, or the compiler-generated closures inside one, «FUORI»
+  = 0). **And the reason is not hygiene**: on a
+  non-Steam copy (GOG & co.) those types may not exist, and a missing type is not "a feature that is
+  absent" but a **`TypeLoadException` raised when the JIT compiles the method that names it**, i.e. at the
+  **call site**. That is why the façade (`SteamLobby`, `SteamP2PTransport`, `P2PServerTransport`) names no
+  Steam type, asks **by reflection** whether the Steam type exists (`SteamLobby.Available`), and calls the
+  implementation from a method of its own: with no Steam the implementation is never touched, so its JIT
+  never runs. Without Steam the mod works as it did, over the IP.
+- ⭐ **The three P2P channels** (`Network\P2PWire.cs`; the classification is `docs\STEAM_INVITES.md` §10):
+  **0** = `k_EP2PSendUnreliableNoDelay` — positions, orientation, animation clip, enemy snapshots, effects,
+  ping; **1** = `k_EP2PSendReliable` — every atomic event and durable fact (deaths, bosses, damage, scene,
+  team, progress, intro, pause, the three latched STOPs); **2** = `k_EP2PSendReliable` but **isolated** —
+  skins and heavy payloads, so a PNG cannot delay a death and a death cannot queue behind a PNG. Channel 0
+  is the one that needs help: unreliable does not order, so each packet carries `[origin 8][seq 4]` and the
+  receiver keeps the last accepted sequence **per sender** and drops older ones — otherwise the last
+  *arrival* wins instead of the last *sample*, and a position goes out up to **60 Hz** (every frame in which
+  the player moved more than 0.03, plus a 5 Hz heartbeat when standing still). ⭐ **Which channel is decided
+  by whoever builds the payload**, not by the message type: `NetworkType.Attack` is a multiplexer (five
+  messages, two classes), `Effect` has two (29 cosmetic vs the three latched STOPs), and `Animation` is one
+  **reliable byte (death) inside an unreliable message** — so the class travels as an argument
+  (`TransportClass`), and `TcpTransport` **ignores it on purpose**: one ordered reliable stream has no
+  channel and not one byte changes. The 3-byte prefix and the 12-byte header are the **transport's** format,
+  never the protocol's: the protocol stays 11 and the server never sees them.
+- ⭐ **The two P2P timeouts** (`SteamP2PTransportImpl`, the fix of `e2fe745`): one explicit state —
+  `Connecting` → `Connected` → `Disconnected` — and **one threshold per state**. `Connecting`: **25 s**
+  measured from `Begin` without **ever** a packet received ⇒ `handshake scaduto (25 s)`. `Connected`: the
+  phase changes on the **first valid packet received** (and says so: `primo pacchetto (canale N) dopo Xs`,
+  then `connesso (handshake Xs)`) ⇒ from that instant **5 s** of silence is a lost link. Why 25 and not 5:
+  the legacy first negotiation takes **3-7 s**, with spikes of **10-15 s** when the punch-through fails and
+  the traffic has to go through the **relay**; and the hello is **not lost** — Steam holds it in a
+  transition buffer (~15-20 s) and delivers it on the `Accept`, so aborting at 5 s destroyed precisely the
+  mechanism that was about to work. The 5 s was **not widened, it was moved**, to where it is true: an open
+  link silent for 5 s is dead. `P2PSessionConnectFail_t` is not a substitute — it arrives **10-15 s** late
+  and only on the side that has packets queued — hence the application heartbeat (one packet every 3 s).
+- ⭐⭐ **The golden rule: the TCP works always, everything else is additive.** The IP path is the base and
+  the regression test: the framing harness over the TCP wire must stay **byte-identical** (42 frames,
+  `sha256 9ecdfa42…`) every time the wire is touched, and it has, in all five commits listed above. Steam is
+  a set of **additions** — lobby, invites, the P2P transport, the probe — each behind its own gate, each
+  silent when Steam, the lobby or the library is absent. If you add a wire, add a transport; do not put a
+  branch in the protocol.
+
 ---
 
 ## 3. What is implemented and verified
@@ -118,6 +205,20 @@ the deployed DLL it says so; anything implemented but **not observed in game** i
 - **All of it off in single player** — and the reverse side, which is the point: the death screen is the
   game's own, opaque one (`DeathScreenTransparency.cs:120`), life is full (`LifeGuilt.cs:157`), and the
   team notice does not fire because there are no teammates (`BossFightDeathWarning.cs:168-169`).
+- **The Steam invite and the P2P wire** — the client seam, the server seam and the new identity (§2, "The
+  wire, in three layers") are implemented and deployed, and verified where a wire can be verified without
+  two players: the 42-frame TCP harness stays **byte-identical** (`sha256 9ecdfa42…`), the deploy still
+  reports **272** targets with 0 missing, and Cecil on the deployed DLL finds **zero** `Steamworks` outside
+  the `*Impl`. **In game**: one two-machine session ran over the P2P — `[Net] p2p: connesso (handshake
+  5.4s)`, about two minutes of link, positions, animations, damage and pause travelling on `[Net] p2p: rx`,
+  no drop, no re-handshake, no exception; no boss was alive during it (`scratch\CONFERMA-P2P.md`). And the
+  P2P crosses NAT where the TCP cannot: on a phone hotspot, **15** probe measurements all `relay=0
+  via=diretto err=0`, bytes in **both** directions, while the TCP dial to the host's private address was
+  refused (`scratch\ESITO-SONDA-P2P.md`). The end-to-end attempt that failed before the timeout fix — hello
+  accepted, then 5 s of silence on both sides and the screen stuck on *Connecting…* — is
+  `scratch\DIAGNOSI-P2P-FALLITO.md`; that is what `e2fe745` closed.
+  *Not measured*: whether those sessions went **direct** or through the **relay** (the probe was not armed
+  in the game logs), and the relay under the game's AppID — the open question of `docs\STEAM_INVITES.md` §8.
 
 ---
 
