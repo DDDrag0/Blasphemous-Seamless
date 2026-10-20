@@ -1,5 +1,6 @@
 using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Common;
+using Blasphemous.Multiplayer.Server;
 using CoopServer = Blasphemous.Multiplayer.Server.Server;
 using System;
 using System.Net;
@@ -214,7 +215,15 @@ namespace Blasphemous.Multiplayer.Client.Host
                                 port + " (TIME_WAIT o NIC occupata): provo l'avvio vero");
                 }
 
-                CoopServer started = new CoopServer(MAX_PLAYERS, password ?? string.Empty);
+                // ⭐⭐ C1b-1 — IL FILO DEL SERVER SI SCEGLIE QUI, E OGGI E' TCP: esattamente lo stesso
+                // socket di prima (bind wildcard IPv4, `DelayDisabled`, `GetListeningIPs`), contenuto in
+                // `TcpServerTransport`. Il composito e' il registro dei fili del server: **oggi ne ha
+                // uno**, domani avra' accanto il P2P dei peer remoti. `Server` non lo sa e non cambia.
+                // ⛔ In questo commit NIENTE P2P: qui non esiste `SendP2PPacket` e non deve esistere.
+                CompositeServerTransport transport = new CompositeServerTransport();
+                transport.Add(new TcpServerTransport());
+
+                CoopServer started = new CoopServer(MAX_PLAYERS, password ?? string.Empty, transport);
                 if (!started.Start(port))
                 {
                     // `Server.Start` ritorna `false` su `SocketException` e su `InvalidOperationException`

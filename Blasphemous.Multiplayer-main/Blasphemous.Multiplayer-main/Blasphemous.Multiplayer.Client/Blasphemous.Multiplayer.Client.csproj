@@ -36,7 +36,7 @@
 
   <ItemGroup>
     <!-- ⭐⭐ IL SERVER DENTRO IL CLIENT: GLI STESSI SORGENTI, NON UNA COPIA.
-         Questi cinque file sono `Compile` di QUESTO progetto e vivono nel progetto del server: la
+         Questi otto file sono `Compile` di QUESTO progetto e vivono nel progetto del server: la
          logica del server resta UNA sola, in un posto solo, e ogni sua modifica arriva a entrambe le
          build. Le poche righe che non possono essere comuni stanno dentro `#if COOP_HOST` e sono
          elencate una per una in `scratch\REFERTO-SERVER-NEL-CLIENT.md`.
@@ -44,12 +44,18 @@
          · `Logger.cs`   una porta sola per le sue righe -> console (standalone) / `ModLog` (client)
          · `Core.cs`     i dati di squadra; il `Main` della console e' `#if !COOP_HOST`
          · `Models\*.cs` lo stato in RAM (giocatori, progresso di squadra)
+         · `IServerTransport.cs`         (C1b-1) il seam del filo, lato SERVER: un'interfaccia, niente socket
+         · `TcpServerTransport.cs`       (C1b-1) l'unica implementazione: avvolge `SimpleTCP`, righe di prima
+         · `CompositeServerTransport.cs` (C1b-1) il registro dei fili: oggi UNO (TCP), domani TCP + P2P
          ⚠️ NON compilati qui, di proposito:
          · `ServerArguments.cs` -> sono gli argomenti della riga di comando (Basalt), non esistono nel gioco;
          · `ServerLog.cs`       -> il file `ServerOutput.log` accanto all'exe; nel gioco il log e' quello della mod. -->
     <Compile Include="..\Blasphemous.Multiplayer.Server\Server.cs" Link="Host\Server.cs" />
     <Compile Include="..\Blasphemous.Multiplayer.Server\Logger.cs" Link="Host\Logger.cs" />
     <Compile Include="..\Blasphemous.Multiplayer.Server\Core.cs" Link="Host\Core.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\IServerTransport.cs" Link="Host\IServerTransport.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\TcpServerTransport.cs" Link="Host\TcpServerTransport.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\CompositeServerTransport.cs" Link="Host\CompositeServerTransport.cs" />
     <Compile Include="..\Blasphemous.Multiplayer.Server\Models\PlayerInfo.cs" Link="Host\Models\PlayerInfo.cs" />
     <Compile Include="..\Blasphemous.Multiplayer.Server\Models\TeamInfo.cs" Link="Host\Models\TeamInfo.cs" />
   </ItemGroup>

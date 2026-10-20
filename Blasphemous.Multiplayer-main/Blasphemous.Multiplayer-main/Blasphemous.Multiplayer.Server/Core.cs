@@ -40,7 +40,14 @@ internal static class Core
         var options = CommandParser.ProcessArguments<ServerArguments>(args);
 
         // Create server
-        server = new Server(options.MaxPlayers, options.Password);
+        // ⭐⭐ C1b-1 — IL TRASPORTO SI SCEGLIE **QUI**, NON DENTRO IL SERVER. Il `Server` parla solo con
+        // `IServerTransport`; l'unica implementazione di questo giro e' il TCP, che contiene le righe
+        // del socket che prima stavano in `Server.Start`. Il composito c'e' perche' domani i fili
+        // possono essere due (TCP per l'host locale + P2P per i peer): oggi ne contiene **uno**.
+        CompositeServerTransport transport = new CompositeServerTransport();
+        transport.Add(new TcpServerTransport());
+
+        server = new Server(options.MaxPlayers, options.Password, transport);
         if (!server.Start(options.Port))
         {
             Logger.Error($"Server failed to start on port {options.Port}");

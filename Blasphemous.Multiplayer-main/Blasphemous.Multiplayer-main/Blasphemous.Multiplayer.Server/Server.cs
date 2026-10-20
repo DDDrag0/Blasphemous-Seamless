@@ -1,7 +1,6 @@
 using Blasphemous.Multiplayer.Common;
 using Blasphemous.Multiplayer.Common.Enums;
 using Blasphemous.Multiplayer.Server.Models;
-using SimpleTCP;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,13 +24,41 @@ namespace Blasphemous.Multiplayer.Server;
 /// ⭐ E due cose che prima NON esistevano e che l'accorpamento richiede: uno `Stop()` (prima l'unico
 /// spegnimento era `Environment.Exit(0)` nella console, che nel gioco non si puo' usare) e un
 /// `IsRunning` per non avviare due volte lo stesso server.
+///
+/// ⭐⭐ C1b-1 — IL FILO E' DIETRO UN'INTERFACCIA, E QUESTA CLASSE NON SA PIU' QUALE SIA.
+/// Fino a C1a questa classe era **cucita** a `SimpleTcpServer`: un campo, tre eventi, una `Start` e
+/// una `Send`. Quel modello e' quello di un **listener**; un trasporto P2P non ne ha uno (le sessioni
+/// si accettano per peer, e i pacchetti arrivano gia' attribuiti a un `CSteamID`). Adesso il filo e'
+/// <see cref="IServerTransport"/> e l'unica riga di questa classe che nomina il TCP e' **zero**:
+/// il trasporto arriva dal costruttore, lo crea chi avvia il server (`Core.Main` nello standalone,
+/// `HostSession` nel client) — e puo' essere <see cref="TcpServerTransport"/> da solo oppure un
+/// <see cref="CompositeServerTransport"/> che ne contiene piu' d'uno (domani TCP + P2P).
+/// ⚠️ CIO' CHE QUESTO FILE **NON** HA PERSO: la logica (autenticazione, host, scene, relay, replay),
+/// il framing `[ushort len][byte type][payload]`, i testi dei log e i byte sul filo. Sono le stesse
+/// righe di prima; le sole righe che se ne sono andate sono quelle del socket fisico.
 /// </summary>
 public class Server
 {
     private readonly int _maxPlayers;
     private readonly string _password;
 
-    private SimpleTcpServer server;
+    /// <summary>
+    /// ⭐⭐ IL FILO — UN'INTERFACCIA, NON UN SOCKET. Contiene le righe che prima stavano qui dentro
+    /// (`new SimpleTcpServer()`, i tre eventi, `Start`, `Send`, `GetListeningIPs`) e nient'altro.
+    ///
+    /// ⚠️ Non e' mai `null`: arriva dal costruttore e vive quanto il server. Cio' che distingue
+    /// "ascolto" da "fermo" non e' piu' "il campo e' `null`" ma <see cref="_listening"/>, perche' un
+    /// trasporto iniettato non si puo' "azzerare" senza toglierlo a chi l'ha creato.
+    /// </summary>
+    private readonly IServerTransport _transport;
+
+    /// <summary>
+    /// `true` fra una `Start` riuscita e la `Stop` successiva. Prima questa riga era
+    /// `server != null`, e la semantica e' la stessa: un `Start` fallito NON lascia il server "acceso"
+    /// (prima azzerava il campo, cosi' `IsRunning` non mentiva e `DelayDisabled` non toccava un
+    /// oggetto mai avviato).
+    /// </summary>
+    private bool _listening;
 
     /// <summary>
     /// ⭐⭐ LE CHIAVI SONO `PeerId`, NON `string ip` — ed e' TUTTO il senso di C1a.
@@ -54,21 +81,40 @@ public class Server
 
     private int _port;
 
-    public Server(int maxPlayers, string password)
+    /// <summary>
+    /// ⭐ IL SERVER SI COSTRUISCE **CON** IL SUO FILO. Il trasporto non si crea qui dentro: lo crea
+    /// chi avvia il server, e questa e' l'unica differenza visibile del seam in C1b-1.
+    ///   · standalone (`Core.Main`): `new Server(maxPlayers, password, trasportoTcp)`;
+    ///   · client (`HostSession.TryStart`): idem — **oggi** TCP, esattamente come prima.
+    /// Una `Start` fallita non e' un errore del costruttore: il server resta costruito e non acceso.
+    /// </summary>
+    public Server(int maxPlayers, string password, IServerTransport transport)
     {
         // Change how this works later
         _maxPlayers = maxPlayers;
         _password = password;
+
+        if (transport == null)
+            throw new ArgumentNullException(nameof(transport));
+
+        _transport = transport;
+
+        // Gli eventi si sottoscrivono UNA volta, qui: il trasporto vive quanto il server, mentre prima
+        // i tre `+=` stavano in `Start` perche' ogni `Start` creava un `SimpleTcpServer` nuovo. Fermare
+        // e riavviare lo stesso server non duplica quindi nessun handler.
+        _transport.PeerConnected += clientConnected;
+        _transport.PeerDisconnected += clientDisconnected;
+        _transport.FrameReceived += Receive;
     }
 
     /// <summary>
     /// `true` se questo oggetto sta ascoltando ADESSO. Nel client e' cio' che distingue "host
-    /// avviato" da "host fermo": senza, il bottone potrebbe avviare un secondo `SimpleTcpServer`
+    /// avviato" da "host fermo": senza, il bottone potrebbe avviare un secondo trasporto
     /// sulla stessa porta (cioe' il caso "porta occupata" provocato da noi stessi).
     /// </summary>
     public bool IsRunning
     {
-        get { return server != null; }
+        get { return _listening; }
     }
 
     /// <summary>La porta su cui questo server sta ascoltando (0 se non e' mai partito).</summary>
@@ -83,7 +129,8 @@ public class Server
     ///
     /// `_port != 0` e `IsRunning` dicono che **noi crediamo** di essere accesi: sono lo stato di
     /// questo oggetto, non quello del sistema operativo. Questa funzione invece chiede all'ascoltatore
-    /// (`SimpleTcpServer.GetListeningIPs()`, che enumera i `ServerListener` vivi) **quali socket
+    /// (`SimpleTcpServer.GetListeningIPs()`, che enumera i `ServerListener` vivi — dietro
+    /// `IServerTransport.ListeningAddresses`, perche' e' una domanda al filo) **quali socket
     /// esistono adesso**, e restituisce la lista. E' la differenza fra "avviato" e "raggiungibile su
     /// quell'indirizzo": con il bind per-NIC del client, `IsRunning` era `true` mentre il loopback non
     /// era fra i listener - cioe' il marker diceva il vero sullo stato e il falso sull'ascolto.
@@ -96,23 +143,12 @@ public class Server
     /// </summary>
     public string ListeningAddresses()
     {
+        if (!_listening)
+            return "(fermo)";
+
         try
         {
-            SimpleTcpServer listening = server;
-            if (listening == null)
-                return "(fermo)";
-
-            System.Collections.Generic.List<System.Net.IPAddress> addresses = listening.GetListeningIPs();
-            if (addresses == null || addresses.Count == 0)
-                return "(nessun ascoltatore)";
-
-            string[] text = new string[addresses.Count];
-            for (int i = 0; i < addresses.Count; i++)
-                text[i] = addresses[i].ToString();
-
-            // Concatenazione e non `string.Join(",", addresses)`: net35 vuole l'array di stringhe, e
-            // qui l'array si costruisce a mano senza LINQ (stessa resa).
-            return string.Join(",", text);
+            return _transport.ListeningAddresses();
         }
         catch (Exception e)
         {
@@ -132,13 +168,19 @@ public class Server
         return connectedPlayers;
     }
 
+    /// <summary>
+    /// ⭐ IL RITARDO DI INVIO DEL FILO (Nagle, dentro `SimpleTCP`): `true` = spento, come oggi.
+    /// E' una proprieta' del **trasporto**, non dell'engine: questa resta solo perche' era gia'
+    /// pubblica. Con il server fermo il getter rispondeva `false` (il campo era `null`), un dettaglio
+    /// che nessuno legge; adesso risponde il valore vero del trasporto.
+    /// </summary>
     public bool DelayDisabled
     {
-        get => server != null && server.DelayDisabled;
+        get { return _transport != null && _transport.DelayDisabled; }
         set
         {
-            if (server != null)
-                server.DelayDisabled = value;
+            if (_transport != null)
+                _transport.DelayDisabled = value;
         }
     }
 
@@ -146,69 +188,31 @@ public class Server
     {
         try
         {
-            server = new SimpleTcpServer();
-            server.ClientConnected += clientConnected;
-            server.ClientDisconnected += clientDisconnected;
-            server.DataReceived += Receive;
-
-            // ⭐⭐ IL BIND: WILDCARD NEL CLIENT, INVARIATO NELLO STANDALONE — E NON E' UNA PREFERENZA.
-            //
-            // `SimpleTcpServer.Start(int port)` NON lega `IPAddress.Any`: enumera le NIC con
-            // `OperationalStatus == Up` (`SimpleTcpServer.GetIPAddresses()`) e apre **un listener per
-            // OGNI indirizzo unicast** di ognuna (`ServerListener` ctor -> `TcpListenerEx.Start()`).
-            // Quindi il loopback c'e' **solo se il runtime lo elenca fra le NIC**. E' esattamente il
-            // difetto misurato nella "host session": `[Host] server avviato` + rifiuto istantaneo di
-            // `127.0.0.1` (0 righe `[Server]` per quel dial) mentre l'IP LAN funziona — cioe' il
-            // listener era sui NIC e NON sul loopback. Il dettaglio, con le prove, sta in
-            // `scratch\REFERTO-AUTOCONNECT.md`.
-            //
-            // ⇒ Nel client si lega ESPLICITAMENTE la wildcard IPv4: un solo listener, che copre
-            //   `127.0.0.1` **e** la LAN, senza dipendere da cosa il runtime elenca. Ed e' l'unica
-            //   riga che cambia, perche' lo standalone (`SERVER-COOP\`, `net8.0`) continua a chiamare
-            //   `Start(port)` con la sua strada per-NIC: **il bind del server esterno non si tocca**.
-            //
-            // ⚠️ La porta occupata resta un `SocketException` da `Start(IPAddress, int)` (il
-            //   `ServerListener` lancia dentro il costruttore): stesso `catch`, stesso `false`, stessa
-            //   riga `[Host] porta occupata` di prima. Non si perde nessun caso d'errore.
-            //
-            // ⚠️ Con la wildcard il firewall di Windows mostra la richiesta di autorizzazione al primo
-            //   avvio (gia' documentato in `HostSession`): se la si nega, la LAN non passa ma il
-            //   loopback continua a funzionare, quindi l'host entra in partita lo stesso.
-#if COOP_HOST
-            server.Start(System.Net.IPAddress.Any, port);
-#else
-            server.Start(port);
-#endif
-            server.DelayDisabled = true;
+            // ⭐ UNA RIGA SOLA PER IL FILO. `Start` apre la porta e ritorna `false` quando non si apre
+            // (porta occupata). I due casi che questa classe catturava — `SocketException` e
+            // `InvalidOperationException("Port was already occupied for all network interfaces")` —
+            // ora stanno in `TcpServerTransport.Start`, dove la porta si apre davvero, insieme alle
+            // due cose che sono del filo e non del server: il bind **wildcard nel client / per-NIC
+            // nello standalone** e lo spegnimento del ritardo interno di `SimpleTCP`.
+            // ⚠️ La garanzia per chi chiama non cambia: su porta occupata si ritorna `false`, mai
+            // un'eccezione; nello standalone la riga `[Host] porta occupata` e la `Server failed to
+            // start on port` della console continuano a essere vere.
+            if (!_transport.Start(port))
+                return false;
         }
         catch (System.Net.Sockets.SocketException)
         {
-            // ⚠️ Qui il campo viene azzerato, e prima no: un `Start` fallito lasciava un
-            // `SimpleTcpServer` mai avviato nel campo, quindi `DelayDisabled` toccava un oggetto non
-            // inizializzato e `IsRunning` avrebbe detto "sto ascoltando" su una porta che non e' mai
-            // stata aperta. Nessun cambio di comportamento per lo standalone (che su `false` esce),
-            // e nel client e' la differenza fra "riprovo" e "credo di essere acceso".
-            server = null;
+            // Cintura: il contratto di `IServerTransport.Start` e' di non lanciare, e il server si
+            // comporta come se fosse rispettato — `false`, che e' cio' che `Core.Main` e `HostSession`
+            // sanno leggere. Un `Start` fallito NON lascia il server acceso.
             return false;
         }
         catch (InvalidOperationException)
         {
-            // ⭐ MISURATO, NON SUPPOSTO: con la porta occupata `SimpleTcpServer.Start` NON lancia
-            // `SocketException`, lancia `InvalidOperationException("Port was already occupied for all
-            // network interfaces")`. Il `catch` qui sopra quindi non e' MAI scattato su questo caso:
-            // fino a oggi uno standalone avviato su una porta gia' occupata moriva con un'eccezione
-            // non gestita (`Unhandled exception ... at Server.Start`) invece di stampare
-            // "Server failed to start on port", che era esattamente cio' che `Main` si aspettava.
-            //
-            // ⇒ Questa riga e' l'unica differenza di COMPORTAMENTO per lo standalone, e va nella
-            //   direzione voluta: da "crash" a "messaggio chiaro e uscita pulita". Sul percorso
-            //   buono non cambia niente.
-            // ⇒ Nel client e' cio' che rende `[Host] porta occupata` vero anche quando la porta viene
-            //   presa fra la prova di liberta' e il `bind` vero (vedi `HostSession.IsPortFree`).
-            server = null;
             return false;
         }
 
+        _listening = true;
         _port = port;
         connectedPlayers = new Dictionary<PeerId, PlayerInfo>();
         _hostPeer = null;
@@ -236,18 +240,20 @@ public class Server
     /// </summary>
     public void Stop()
     {
-        // L'ordine e' deliberato: prima si stacca il campo, poi si ferma l'ascoltatore. Da questo
+        // L'ordine e' deliberato: prima si stacca "sto ascoltando", poi si ferma il filo. Da questo
         // istante `Send` non manda piu' niente (vedi la guardia li' sotto) mentre `Stop()` sta
         // chiudendo i socket, quindi nessuna scrittura parte su una connessione in smontaggio.
-        SimpleTcpServer running = server;
-        server = null;
+        // Prima questa riga era `server = null`: la semantica e' identica (il campo non poteva essere
+        // "azzerato" davvero, perche' il trasporto e' di chi ce l'ha dato).
+        bool wasListening = _listening;
+        _listening = false;
         _port = 0;
 
-        if (running != null)
+        if (wasListening)
         {
             try
             {
-                running.Stop();
+                _transport.Stop();
             }
             catch (Exception e)
             {
@@ -264,17 +270,16 @@ public class Server
 
     /// <summary>
     /// ⭐ IL PACCHETTO VERSO UN PEER: `peer` e' la chiave del dizionario, e il filo non sa niente di
-    /// tutto questo. `peer.ToString()` e' ESATTAMENTE la stringa IP di prima (vedi `PeerId.ToString`),
-    /// quindi `server.Send(...)` riceve gli stessi byte di prima e cerca lo stesso socket di prima.
-    /// Il frame qui sotto e' INVARIATO: `[ushort len][byte type][payload]`, nessun byte nuovo.
+    /// tutto questo. Il frame qui sotto e' INVARIATO: `[ushort len][byte type][payload]`, nessun byte
+    /// nuovo — ed e' **tutto** cio' che questo metodo fa al messaggio: il trasporto riceve questo
+    /// array e lo scrive tale e quale.
     /// </summary>
     private void Send(PeerId peer, byte[] data, NetworkType dataType)
     {
-        // ⚠️ `server == null` significa "fermo" (mai avviato, o `Stop()` appena chiamato). Prima
-        // questa guardia non serviva: il campo era sempre valorizzato dal processo. Nel gioco il
-        // server puo' essere spento mentre i manager del client stanno ancora girando, e un
-        // `NullReferenceException` qui arriverebbe al thread di update della mod.
-        if (server == null)
+        // ⚠️ `!_listening` significa "fermo" (mai avviato, o `Stop()` appena chiamato). Prima questa
+        // guardia era `server == null`; la semantica e' la stessa e serve per la stessa ragione: nel
+        // gioco il server puo' essere spento mentre i manager del client stanno ancora girando.
+        if (!_listening)
             return;
 
         if (data != null && data.Length > 0)
@@ -285,8 +290,9 @@ public class Server
 
             try
             {
-                // ⭐ IL PUNTO IN CUI L'IDENTITA' TORNA AD ESSERE IL FILO: `ToString()` -> stringa IP.
-                server.Send(peer.ToString(), list.ToArray());
+                // ⭐ IL PUNTO IN CUI L'IDENTITA' TORNA AD ESSERE IL FILO: il trasporto sa che per il
+                // TCP `peer.ToString()` e' la stringa IP di prima, quindi trova lo stesso socket.
+                _transport.Send(peer, list.ToArray());
             }
             catch (Exception)
             {
@@ -297,21 +303,18 @@ public class Server
     }
 
     // Data should be formatted as length length type data
-    private void Receive(object sender, DataReceivedEventArgs e)
+    private void Receive(PeerId peer, byte[] received)
     {
-        // ⭐⭐ IL PUNTO DI CONTATTO COL SOCKET, 1 di 3 — e uno dei due soli in cui `e.ip` esiste ancora.
-        //
-        // `e.ip` e' `IPEndPoint.ToString()`, cioe' `ip:porta` (misurato: "127.0.0.1:54470"), e NON e'
-        // normalizzato di proposito: `PeerId.FromIp` conserva la stringa identica, quindi la chiave del
-        // dizionario e il testo dei log restano quelli di prima. Da questa riga in poi tutto il server
-        // parla di `peer`, mai di stringhe.
-        PeerId peer = PeerId.FromIp(e.ip);
-
+        // ⭐⭐ IL PUNTO DI CONTATTO COL FILO, 1 di 3 — ma `e.ip` qui NON esiste piu': e' il trasporto a
+        // consegnare gia' il `PeerId` (`TcpServerTransport` fa `PeerId.FromIp(e.ip)`), e non lo
+        // normalizza di proposito perche' quella stringa e' anche la chiave con cui `SimpleTCP` trova
+        // il socket a cui scrivere. Da questa riga in poi tutto il server parla di `peer`, mai di
+        // stringhe, e `peer` e' esattamente l'argomento che prima si ricavava da `e.ip`.
         int startIdx = 0;
-        while (startIdx < e.data.Length - 3)
+        while (startIdx < received.Length - 3)
         {
-            ushort length = BitConverter.ToUInt16(e.data, startIdx);
-            NetworkType type = (NetworkType)e.data[startIdx + 2];
+            ushort length = BitConverter.ToUInt16(received, startIdx);
+            NetworkType type = (NetworkType)received[startIdx + 2];
 
             // ⚠️ PORTING net35 — QUESTA E' LA SOLA RIGA DEL SERVER che non compilava sul client.
             // Prima era il range: `e.data[(startIdx + 3)..(startIdx + 3 + length)]`, che richiede
@@ -325,20 +328,20 @@ public class Server
             // thread che muore, connessione che resta appesa). Qui il frame troncato viene scartato
             // con la riga d'errore che questo metodo usava gia' per i dati malformati, e il ciclo si
             // chiude. Nessun cambio di protocollo: un frame integro prende la stessa strada di prima.
-            if (startIdx + 3 + length > e.data.Length)
+            if (startIdx + 3 + length > received.Length)
             {
                 Logger.Error("Received data was formatted incorrectly");
                 return;
             }
 
             byte[] messageData = new byte[length];
-            Array.Copy(e.data, startIdx + 3, messageData, 0, length);
+            Array.Copy(received, startIdx + 3, messageData, 0, length);
 
             //Logger.Info($"Received {type} packet: {length} bytes");
             processDataReceived(type, messageData);
             startIdx += 3 + length;
         }
-        if (startIdx != e.data.Length)
+        if (startIdx != received.Length)
             Logger.Error("Received data was formatted incorrectly");
 
         // Determines which received function to call based on the type
@@ -369,18 +372,23 @@ public class Server
         }
     }
 
-    private void clientConnected(object sender, ClientConnectionEventArgs e)
+    /// <summary>
+    /// ⭐ PUNTO DI CONTATTO COL FILO, 2 di 3. Il `peer` arriva **gia'** come <see cref="PeerId"/> dal
+    /// trasporto (che e' l'unico a sapere che per il TCP e' `ip:porta`), e il testo e' byte per byte
+    /// quello di prima: `peer.ToString()` rende la stessa stringa che c'era in `e.ip`.
+    /// </summary>
+    private void clientConnected(PeerId peer)
     {
-        // ⭐ PUNTO DI CONTATTO COL SOCKET, 2 di 3. Il testo e' byte per byte quello di prima:
-        // `peer.ToString()` rende la stringa IP esatta (`ip:porta`) che c'era in `e.ip`.
-        PeerId peer = PeerId.FromIp(e.ip);
         Logger.Info("Client connected at " + peer.ToString());
     }
 
-    private void clientDisconnected(object sender, ClientConnectionEventArgs e)
+    /// <summary>
+    /// ⭐ PUNTO DI CONTATTO COL FILO, 3 di 3. Stessa cosa: `e.ip` non esiste piu' qui, il `PeerId` e'
+    /// gia' l'identita' con cui il server indicizza tutto — e `peer.ToString()` restituisce la stessa
+    /// stringa di prima.
+    /// </summary>
+    private void clientDisconnected(PeerId peer)
     {
-        // ⭐ PUNTO DI CONTATTO COL SOCKET, 3 di 3.
-        PeerId peer = PeerId.FromIp(e.ip);
         Logger.Info("Client disconnected at " + peer.ToString());
 
         // Make sure this client was actually connected, not just rejected from server
