@@ -118,6 +118,15 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     {
         CutsceneProbe.Unsubscribe();
 
+        // 🔴 E LA SESSIONE P2P SI CHIUDE CON LA MOD. Senza questa riga la chiusura normale del gioco
+        // (ospite) non passava da nessun `Disconnect`: `CloseP2PSessionWithUser` vive in
+        // `SteamP2PTransportImpl.End()`, che si raggiunge solo da qui. La sessione sarebbe rimasta
+        // aperta fino alla morte del processo.
+        //
+        // ⚠️ PRIMA di `HostSession.Stop()`: e' lo Stop a spegnere il server, quindi il `Disconnect`
+        // deve poter ancora chiudere il filo. E in `try/catch`: `OnDispose` non deve lanciare.
+        try { NetworkManager?.Disconnect(); } catch { }
+
         // ⭐ LA SESSIONE-HOST SI CHIUDE CON LA MOD. Il server ascolta su una porta del PROCESSO del
         // gioco: se la mod sparisce (o il gioco si chiude) senza `Stop()`, il socket resta aperto
         // finche' il processo non muore, e in quel tempo la porta 27051 risulta occupata a chiunque

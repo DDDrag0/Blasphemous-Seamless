@@ -429,6 +429,13 @@ namespace Blasphemous.Multiplayer.Client.Network
             // usa gia' per disconnettersi.
             _linkLost = true;
 
+            // 🔴 E LA SESSIONE P2P VA CHIUSA, o resta aperta fino al `Begin` successivo o alla morte del
+            // processo: qui il link non si e' mai aperto, quindi nessuno la chiudera' piu'.
+            //
+            // ⚠️ NON si chiama `End()`: azzera `_linkLost` (`:315`) e romperebbe il contratto "`Send`
+            // lancia `IOException`", cioe' la via con cui la UI si sblocca. Si chiude e basta.
+            if (_host.m_SteamID != 0UL) { try { SteamNetworking.CloseP2PSessionWithUser(_host); } catch { } }
+
             if (!_timeoutLogged)
             {
                 _timeoutLogged = true;
@@ -952,6 +959,13 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             _linkLost = true;
             _phase = Phase.Disconnected;
+
+            // 🔴 E LA SESSIONE P2P VA CHIUSA: il link e' perso, `_host` resta valorizzato e senza questa
+            // riga la sessione vive fino al `Begin` successivo o alla morte del processo.
+            //
+            // ⚠️ NON si chiama `End()`: azzera `_linkLost` e romperebbe il contratto "`Send` lancia
+            // `IOException`", cioe' la via con cui la UI si sblocca.
+            if (_host.m_SteamID != 0UL) { try { SteamNetworking.CloseP2PSessionWithUser(_host); } catch { } }
 
             if (!_timeoutLogged)
             {
