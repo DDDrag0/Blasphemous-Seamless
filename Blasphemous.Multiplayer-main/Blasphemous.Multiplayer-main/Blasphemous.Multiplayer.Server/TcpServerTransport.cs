@@ -73,12 +73,6 @@ public class TcpServerTransport : IServerTransport
     /// <inheritdoc/>
     public event Action<PeerId, byte[]> FrameReceived;
 
-    /// <summary>`true` se c'e' un ascoltatore vivo adesso.</summary>
-    public bool IsListening
-    {
-        get { return _server != null; }
-    }
-
     /// <inheritdoc/>
     public bool DelayDisabled
     {

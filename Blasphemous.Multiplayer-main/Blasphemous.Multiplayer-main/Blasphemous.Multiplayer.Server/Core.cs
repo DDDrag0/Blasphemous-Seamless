@@ -10,12 +10,6 @@ namespace Blasphemous.Multiplayer.Server;
 
 internal static class Core
 {
-#if !COOP_HOST
-    // Sta solo nel processo della console: e' il server che `Main` crea. Nel client il server lo
-    // crea `HostSession` e vive la' (`CoopServer _server`), quindi qui non servirebbe a niente.
-    private static Server server;
-#endif
-
     private static readonly Dictionary<byte, TeamInfo> teamGameDatas = [];
 
 #if !COOP_HOST
@@ -25,7 +19,7 @@ internal static class Core
         get
         {
             string text = "Blasphemous Multiplayer Server";
-            string version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3) ?? "Unknown";
+            string version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
             return $"{text} v{version}";
         }
     }
@@ -47,7 +41,11 @@ internal static class Core
         CompositeServerTransport transport = new CompositeServerTransport();
         transport.Add(new TcpServerTransport());
 
-        server = new Server(options.MaxPlayers, options.Password, transport);
+        // ⭐ IL SERVER E' UNA VARIABILE LOCALE, non un campo statico: prima era `private static Server
+        // server` (`#if !COOP_HOST`) assegnato qui e letto SOLO dalla riga qui sotto, nello stesso `Main`.
+        // Come campo era write-only: nessun altro file lo nominava (e non poteva, essendo `private`).
+        // Il tipo e' locale, la vita e' quella di `Main`, e il comportamento non cambia.
+        Server server = new Server(options.MaxPlayers, options.Password, transport);
         if (!server.Start(options.Port))
         {
             Logger.Error($"Server failed to start on port {options.Port}");

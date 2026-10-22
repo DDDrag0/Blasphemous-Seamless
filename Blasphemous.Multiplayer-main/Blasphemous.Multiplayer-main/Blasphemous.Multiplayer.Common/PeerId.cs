@@ -93,15 +93,6 @@ public struct PeerId : IEquatable<PeerId>
     }
 
     /// <summary>
-    /// `true` se questo valore NON e' un peer: solo `default(PeerId)`, cioe' la struct non
-    /// inizializzata. Serve dove oggi si testava `string.IsNullOrEmpty(ip)`.
-    /// </summary>
-    public bool IsEmpty
-    {
-        get { return _ip == null && _steam == 0UL; }
-    }
-
-    /// <summary>
     /// ⭐ LA FABBRICA DEL FILO TCP: da una stringa del socket a un'identita'. Nessuna trasformazione:
     /// il valore e' conservato BYTE PER BYTE (spazi, porta, maiuscole comprese), perche' e' la stessa
     /// stringa che `SimpleTCP` usa per trovare il socket a cui scrivere.

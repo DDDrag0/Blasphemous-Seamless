@@ -3,7 +3,6 @@ using Blasphemous.Multiplayer.Common.Enums;
 using Blasphemous.Multiplayer.Server.Models;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
 
 namespace Blasphemous.Multiplayer.Server;
@@ -107,16 +106,6 @@ public class Server
         _transport.FrameReceived += Receive;
     }
 
-    /// <summary>
-    /// `true` se questo oggetto sta ascoltando ADESSO. Nel client e' cio' che distingue "host
-    /// avviato" da "host fermo": senza, il bottone potrebbe avviare un secondo trasporto
-    /// sulla stessa porta (cioe' il caso "porta occupata" provocato da noi stessi).
-    /// </summary>
-    public bool IsRunning
-    {
-        get { return _listening; }
-    }
-
     /// <summary>La porta su cui questo server sta ascoltando (0 se non e' mai partito).</summary>
     public int Port
     {
@@ -166,22 +155,6 @@ public class Server
     public Dictionary<PeerId, PlayerInfo> getPlayers()
     {
         return connectedPlayers;
-    }
-
-    /// <summary>
-    /// ⭐ IL RITARDO DI INVIO DEL FILO (Nagle, dentro `SimpleTCP`): `true` = spento, come oggi.
-    /// E' una proprieta' del **trasporto**, non dell'engine: questa resta solo perche' era gia'
-    /// pubblica. Con il server fermo il getter rispondeva `false` (il campo era `null`), un dettaglio
-    /// che nessuno legge; adesso risponde il valore vero del trasporto.
-    /// </summary>
-    public bool DelayDisabled
-    {
-        get { return _transport != null && _transport.DelayDisabled; }
-        set
-        {
-            if (_transport != null)
-                _transport.DelayDisabled = value;
-        }
     }
 
     public bool Start(int port)

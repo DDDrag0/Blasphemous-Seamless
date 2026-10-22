@@ -68,25 +68,6 @@ public class CompositeServerTransport : IServerTransport
     }
 
     /// <summary>
-    /// Un composito gia' pieno: `new CompositeServerTransport(new TcpServerTransport())` e' la forma
-    /// che usano oggi lo standalone (`Core.Main`) e la host session (`HostSession`).
-    /// </summary>
-    public CompositeServerTransport(params IServerTransport[] children)
-    {
-        if (children == null)
-            return;
-
-        for (int i = 0; i < children.Length; i++)
-            Add(children[i]);
-    }
-
-    /// <summary>Quanti fili sono registrati adesso (in C1b-1: 1).</summary>
-    public int Count
-    {
-        get { return transports.Count; }
-    }
-
-    /// <summary>
     /// Registra un trasporto e si mette in ascolto dei suoi eventi. Non lo avvia: lo avvia
     /// <see cref="Start"/>, tutti insieme, sulla stessa porta.
     /// ⚠️ Aggiungere due volte lo stesso oggetto non fa niente (non si duplicano gli eventi).
@@ -106,40 +87,6 @@ public class CompositeServerTransport : IServerTransport
         transport.PeerConnected += watcher.OnPeerConnected;
         transport.PeerDisconnected += watcher.OnPeerDisconnected;
         transport.FrameReceived += watcher.OnFrameReceived;
-    }
-
-    /// <summary>
-    /// Toglie un trasporto: si stacca dai suoi eventi e dimentica i peer che aveva annunciato.
-    /// ⚠️ NON lo ferma: la vita dell'oggetto e' di chi l'ha creato (qui non si chiudono porte che non
-    /// abbiamo aperto in questo momento). `Stop()` ferma quello che `Start()` ha avviato.
-    /// </summary>
-    public bool Remove(IServerTransport transport)
-    {
-        if (transport == null)
-            return false;
-
-        Watcher watcher;
-        if (!watchers.TryGetValue(transport, out watcher))
-            return false;
-
-        transport.PeerConnected -= watcher.OnPeerConnected;
-        transport.PeerDisconnected -= watcher.OnPeerDisconnected;
-        transport.FrameReceived -= watcher.OnFrameReceived;
-
-        watchers.Remove(transport);
-        transports.Remove(transport);
-
-        // I peer di quel filo non sono piu' raggiungibili da qui.
-        List<PeerId> orphaned = new List<PeerId>();
-        foreach (KeyValuePair<PeerId, IServerTransport> pair in owners)
-        {
-            if (pair.Value == transport)
-                orphaned.Add(pair.Key);
-        }
-        for (int i = 0; i < orphaned.Count; i++)
-            owners.Remove(orphaned[i]);
-
-        return true;
     }
 
     /// <inheritdoc/>
