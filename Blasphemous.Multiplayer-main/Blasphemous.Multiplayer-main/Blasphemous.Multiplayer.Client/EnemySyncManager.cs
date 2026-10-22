@@ -1288,10 +1288,25 @@ namespace Blasphemous.Multiplayer.Client
         private static int _registrations;
 
         /// <summary>
-        /// Enemies skipped because they are scenery, not enemies: created by the spawn pipeline but never
-        /// activated by the game, so they have run no code. See IsInertScenery.
+        /// Le entita' di scena scartate alla registrazione, per ID: create dallo spawn pipeline del gioco
+        /// ma mai attivate, quindi nessuno ha eseguito codice su di loro. La misura e' `IsInertScenery`,
+        /// la stessa funzione che decide di non sincronizzarle.
+        ///
+        /// PERCHE' UNA LISTA E NON UN CONTATORE. `RegisterEnemies` rioffre lo stesso oggetto inerte a
+        /// OGNI riscansione (ogni 0.5 s), perche' un oggetto scartato non entra in `_enemyIds`: un
+        /// contatore incrementato li' conta i TENTATIVI, non le entita' - nella stanza di prova le due
+        /// entita' di scena sarebbero diventate ~240 in un minuto, tutte immobili per la stessa ragione.
+        /// L'id (lo stesso che userebbe la sincronizzazione: scena + nome + posizione) e' la chiave che
+        /// rende quel numero una misura, e dice QUALE entita' e' inerte.
         /// </summary>
-        private static int _inertSkipped;
+        private static readonly List<string> _inertIds = new List<string>();
+
+        /// <summary>
+        /// Quante voci di `_inertIds` sono gia' state scritte nel log. Il marker parla quando la misura
+        /// cresce: non a ogni riscansione (che rioffre gli stessi oggetti) e non a ogni
+        /// `multiplayer sync` (che altrimenti ripeterebbe la stessa riga).
+        /// </summary>
+        private static int _inertReported;
 
         /// <summary>
         /// Deaths learned from another machine's join announcement, i.e. kills that happened before this
@@ -1337,6 +1352,31 @@ namespace Blasphemous.Multiplayer.Client
             if (notSpawned > 0)
                 warning += $" NOTA: {notSpawned} nemici non ancora creati dallo spawn point";
 
+            // ⭐ ⑤ [EnemyInert] — QUI, PRIMA del `return` che segue.
+            //
+            // Fino a `308ecaa` questo blocco stava DOPO il `return`: il compilatore lo segnalava (CS0162,
+            // "codice irraggiungibile") e la riga non e' mai comparsa in nessun log, in nessuna build.
+            // Non era una svista innocua: il marker DOVEVA dire "queste entita' sono inerti", cioe' FERME
+            // perche' nessun codice del gioco le ha mai eseguite (inattive E senza `EnemyBehaviour`, vedi
+            // `IsInertScenery`) - ed e' esattamente il sintomo indagato come "un nemico fermo che non si
+            // muove e non si fa spingere". Se il sintomo torna, il log deve dire se quell'immobilita' e'
+            // QUESTA (per costruzione) o un'altra (un guasto da inseguire).
+            //
+            // LA CONDIZIONE E' MISURATA, NON DECISA: `_inertIds` si riempie solo dove `IsInertScenery` ha
+            // gia' scartato l'entita' in `RegisterEnemy`, e conta ID DISTINTI - non tentativi.
+            //
+            // NIENTE RAFICA: si scrive quando la misura CRESCE, cioe' una volta per entita' entrata nella
+            // lista (`RegisterEnemies` rioffre gli stessi oggetti inerti ogni 0.5 s: un contatore di
+            // tentativi sarebbe l'unica "raffica" possibile, e non c'e' piu'). `LevelLoaded` azzera
+            // misura e memoria a ogni scena, cosi' il numero descrive la stanza in cui si e' adesso.
+            if (_inertIds.Count > _inertReported)
+            {
+                ModLog.Info($"[EnemyInert] {_inertIds.Count} entita' di scena ignorate " +
+                            $"(create dal gioco ma mai attive: nessun codice eseguito, quindi immobili per costruzione) " +
+                            $"· id: {string.Join(" · ", _inertIds.ToArray())}");
+                _inertReported = _inertIds.Count;
+            }
+
             return string.Format(
                 "scene={0} role={1} connected={2} spawnPoints={3} tracked={4} registered={5} ids={6} fingerprint={7} | sent={8} recv={9} dmgSent={10} dmgApplied={11} killsSent={12}{13}",
                 _scene,
@@ -1353,12 +1393,6 @@ namespace Blasphemous.Multiplayer.Client
                 _damageApplied,
                 _killsSent,
                 warning);
-
-            // Scenery skipped this scene, reported separately so it never again looks like enemies that
-            // fail to move. See IsInertScenery.
-            if (_inertSkipped > 0)
-                ModLog.Info($"[EnemyInert] {_inertSkipped} entita' di scena ignorate " +
-                            $"(create dal gioco ma mai attive: nessun codice eseguito, quindi immobili per costruzione)");
         }
 
         /// <summary>
@@ -2627,6 +2661,13 @@ namespace Blasphemous.Multiplayer.Client
             _idsDirty = false;
             _countedDuplicates.Clear();
 
+            // ⑤ [EnemyInert]: la misura e' PER SCENA, come `_duplicateIds` e `_registrations` qui sopra.
+            // L'id e' qualificato dalla scena, quindi le voci vecchie non possono ricomparire; azzerare
+            // serve a due cose: il numero nel marker descrive la stanza in cui si e' adesso, e una visita
+            // nuova a una stanza gia' vista puo' riparlare (il marker si sblocca sul cambio di stato).
+            _inertIds.Clear();
+            _inertReported = 0;
+
             ModLog.Info($"[EnemySync] Scene {scene}: level loaded (IsHost: {IsHost})");
         }
 
@@ -3540,10 +3581,17 @@ namespace Blasphemous.Multiplayer.Client
 
             // Scenery is not synchronised. See IsInertScenery: an Enemy that has never been active has
             // run no code at all, so it neither moves nor animates - and that immobility was mistaken for
-            // a synchronisation failure for several rounds. Reporting it once is enough.
+            // a synchronisation failure for several rounds.
+            //
+            // ⭐ ⑤ [EnemyInert]: la misura e' l'ID, e si aggiunge UNA VOLTA. Questo metodo e' quello che
+            // il gioco offre a ogni riscansione (`RegisterEnemies`, ogni 0.5 s) e un oggetto scartato qui
+            // non entra in `_enemyIds`: senza il controllo sul doppione la stessa entita' veniva contata
+            // due volte al secondo, e il marker l'avrebbe chiamata "N entita'" per sempre nuove.
             if (IsInertScenery(enemy))
             {
-                _inertSkipped++;
+                if (!_inertIds.Contains(id))
+                    _inertIds.Add(id);
+
                 return;
             }
 
