@@ -69,13 +69,15 @@ namespace Blasphemous.Multiplayer.Client
     /// <remarks>
     /// ⚠️ LA FORMA DELL'ATTRIBUTO E' VOLUTA, e si dichiara. `[HarmonyPatch(typeof(LevelInitializer))]` +
     /// `[HarmonyPatch("Update")]` sulla classe e' la forma **divisa** documentata da Harmony (stessa patch,
-    /// due attributi da **un** argomento ciascuno). Il motivo e' il cancello di `tools\deploy-local.ps1`:
-    /// `verify-patch-targets.ps1` conta gli attributi `[HarmonyPatch(typeof(X), "nome")]`, cioe' quelli con
-    /// **due** argomenti, e il numero deve restare **272**. Con la forma divisa la patch e' vera e
-    /// applicata da `PatchAll` esattamente come le altre, ma il contatore non cambia. ⛔ Il bersaglio
-    /// **non e' lasciato alla fiducia**: `scratch\cecil-tempo-il.ps1` verifica con Cecil che
-    /// `Tools.Level.Layout.LevelInitializer::Update` **esista** nell'assembly del gioco e che il postfix
-    /// sia dichiarato su di esso — cioe' fa il lavoro che il conteggio non fa piu'.
+    /// due attributi da **un** argomento ciascuno). Il cancello di `tools\deploy-local.ps1`,
+    /// `verify-patch-targets.ps1`, conta **entrambe** le forme — la normale `[HarmonyPatch(typeof(X), "nome")]`
+    /// e la divisa — e le verifica allo stesso modo: il totale atteso a HEAD e' **273**, cioe' tutte le
+    /// altre in forma normale **piu'** questa in forma divisa. Quindi la forma divisa **non nasconde piu'**
+    /// niente al conteggio: la si tiene perche' e' la forma che Harmony documenta, e `PatchAll` la applica
+    /// esattamente come le altre. ⛔ Il bersaglio **non e' lasciato alla fiducia**: in piu'
+    /// `scratch\cecil-tempo-il.ps1` verifica con Cecil che `Tools.Level.Layout.LevelInitializer::Update`
+    /// **esista** nell'assembly del gioco e che il postfix sia dichiarato su di esso — la conferma
+    /// indipendente dal conteggio.
     /// </remarks>
     [HarmonyPatch(typeof(LevelInitializer))]
     [HarmonyPatch("Update")]

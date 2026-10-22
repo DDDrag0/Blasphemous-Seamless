@@ -20,7 +20,7 @@
 > `ebf1484`; **after that commit the network layer landed** — `a8b2bde` (the peer identity), `cd5f11f` (the
 > server seam), `22e1a9e` (the P2P transport), `2a6ca17` (the invite chooses the P2P), `e2fe745` (the two P2P
 > timeouts and the screen that unblocks) — and those commits ride the wire, the server seam and the identity,
-> not the game patches: every one of their deploys, the last included, still checks **272** Harmony targets
+> not the game patches: every one of their deploys, the last included, still checks **273** Harmony targets
 > with **0** missing (`scratch\REFERTO-TIMEOUT-E-UI.md`, header of the report). What changed in the network
 > layer is §2, "The wire, in three layers". Do not trust numbers quoted inside older reports, some are 20+
 > lines behind. Code paths are relative to `Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\`;
@@ -33,7 +33,7 @@
 **Co-op for Blasphemous** — Unity **2017.4.40f1**, BepInEx **5.4.23.4**, Blasphemous **Modding API 3.0.1**,
 **HarmonyX** (the `0Harmony.dll` shipped with BepInEx). Two binaries: the client plugin `BlasClient.dll`
 (loaded from `Modding\plugins`) and a standalone console server shipped in `SERVER-COOP`.
-**272 Harmony patch targets** (see §2, the bullet with the count).
+**273 Harmony patch targets** (see §2, the bullet with the count).
 
 **The principle: the co-op is a layer. With no server connection the game behaves exactly as vanilla.**
 All new behaviour hangs off one predicate — the socket, `CoopGate.IsMultiplayerActive()`
@@ -81,11 +81,14 @@ answers `false`, which is the inert state (`CoopGate.cs:22-31`). If you add a fe
   by sitting at a Prie-Dieu — never by the guilt fragment, never by the Confessor (`LifeGuilt.cs:781`);
   the counter survives closing the game because it is a file (`Modding\data\Multiplayer\life-guilt.txt`,
   `LifeGuilt.cs:105`, `:660`). The game's own guilt (`Fervour.MaxFactor`) is not touched anywhere.
-- **272 Harmony targets.** 269 → 270 with the bonfire patch (`LifeGuilt.cs:45`), 270 → 272 with the two
+- **273 Harmony targets.** 269 → 270 with the bonfire patch (`LifeGuilt.cs:45`), then the two
   `InstantiateArea` postfixes, which are **done** (`a188060`, one `Postfix` per method, both calling the
-  relay's own `EffectRelay.OnPoolSpawn`; `EffectRelayInstantiateArea.cs`). Read the number from the tool,
-  never from a note: `tools\verify-patch-targets.ps1` prints `bersagli controllati : 272`, type missing 0,
-  method missing 0, `ESITO : tutti validi` — re-run today against the deployed build of `a188060`.
+  relay's own `EffectRelay.OnPoolSpawn`; `EffectRelayInstantiateArea.cs`), then the time-while-paused
+  patch: it declares its target in the **divided form** (`[HarmonyPatch(typeof(LevelInitializer))]` plus
+  `[HarmonyPatch("Update")]`, `TimeWhilePaused.cs:69-81`) and is counted now that the gate sees both
+  shapes. Read the number from the tool, never from a note: `tools\verify-patch-targets.ps1` prints
+  `bersagli controllati : 273` (all the rest in the normal form, this one divided), type missing 0,
+  method missing 0, `ESITO : tutti validi` — re-run today on the deployed build.
 
 ### The wire, in three layers
 
@@ -208,7 +211,7 @@ the deployed DLL it says so; anything implemented but **not observed in game** i
 - **The Steam invite and the P2P wire** — the client seam, the server seam and the new identity (§2, "The
   wire, in three layers") are implemented and deployed, and verified where a wire can be verified without
   two players: the 42-frame TCP harness stays **byte-identical** (`sha256 9ecdfa42…`), the deploy still
-  reports **272** targets with 0 missing, and Cecil on the deployed DLL finds **zero** `Steamworks` outside
+  reports **273** targets with 0 missing, and Cecil on the deployed DLL finds **zero** `Steamworks` outside
   the `*Impl`. **In game**: one two-machine session ran over the P2P — `[Net] p2p: connesso (handshake
   5.4s)`, about two minutes of link, positions, animations, damage and pause travelling on `[Net] p2p: rx`,
   no drop, no re-handshake, no exception; no boss was alive during it (`scratch\CONFERMA-P2P.md`). And the
@@ -242,7 +245,7 @@ regression**: if a player reports one, it is already written down.
 - **Raw `Object.Instantiate` sites inside bosses remain outside the relay** (~18 of them, `BUG-NOTI.md` voce 7):
   they never pass through `PoolManager`, so the hook cannot see them; the signal is silence, not an error.
   **The two `InstantiateArea` of `BossJumpAttack` / `BossTeleportAttack` are no longer among them**: they
-  are hooked since `a188060` (270 → 272 targets, §2) and only their **run in game** is missing (§8).
+  are hooked since `a188060` (two of the 273 targets, §2) and only their **run in game** is missing (§8).
 - **Cosmetic effects are not relayed by design.** The sender filters on `Weapon`/`Projectile`
   (`EffectRelay.cs:1429`): a purely cosmetic prefab is dropped — the hook fires and the packet does not.
 - **Audio is a separate channel**, outside the relay (`EffectRelay.cs:64`): sounds travel on the effect
