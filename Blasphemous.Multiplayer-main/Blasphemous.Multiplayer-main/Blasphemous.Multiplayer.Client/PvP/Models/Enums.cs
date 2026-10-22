@@ -135,9 +135,11 @@ public enum AttackType
     // ne' una riga di server (un server vecchio inoltra i byte senza interpretarli; un client vecchio non
     // trova 203 in `attacks.json` ed esce da solo, `AttackManager.cs:31`).
     //
-    // ⚠️ IL PAYLOAD E' DI UN BYTE, ed e' un VERSO (1 = in pausa, 0 = ripresa), non uno STATO: e' la
-    // differenza che rende impossibile un rimbalzo. Vedi `PauseNotice` per il ciclo completo, per il
-    // battito che tiene viva la notifica e per il timeout che la fa cadere se il peer sparisce.
+    // ⚠️ IL PAYLOAD E' DI UN BYTE, ed e' un **FLAG DI STATO** (1 = "sono in pausa", 0 = "non lo sono"),
+    // non un comando: chi lo riceve accende o spegne una RIGA e non tocca il gioco. Il filo non cambia di
+    // una virgola (canale, un byte, `Reliable`): cambia il significato, e con esso il destinatario — il
+    // **battito** rimanda il flag finche' dura. Vedi `PauseNotice` per il ciclo completo, per il battito
+    // e per il timeout che fa cadere l'avviso se il peer sparisce.
     //
     // 203 sta accanto a 200/201/202 nello stesso blocco, e resta fuori dai blocchi 0..140 e da
     // `NoDamage = 255`, perche' il byte viaggia come `(byte)attackType`.
