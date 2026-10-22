@@ -35,177 +35,160 @@
 # Questo script controlla ogni bersaglio PRIMA del deploy. Se trova un metodo o un tipo che non
 # esiste - o una forma divisa incompleta - esce con codice 1 e dice quale.
 #
+# GLI ESITI (dichiarati, e distinti dal testo - non dal solo numero).
+#     0  la sonda e' stata compilata, eseguita, e TUTTI i bersagli esistono
+#     1  la verifica NON e' stata eseguita (senza `dotnet`, build della sonda fallita, sonda
+#        mancante/non compilata, oppure ZERO bersagli trovati) - oppure e' stata eseguita e ha
+#        trovato bersagli rotti.
+# Il numero 1 e' lo stesso nei due casi (il deploy si ferma in entrambi: e' quello che conta), ma il
+# MESSAGGIO dice quale dei due e': "non ho potuto compilare la sonda" non e' "un nome in
+# [HarmonyPatch] e' sbagliato". Fino al 2026-10-22 il gate usciva **0** quando `dotnet` non c'era
+# ($code non inizializzato -> `exit $null` -> 0), cioe' dichiarava "tutto valido" senza aver misurato
+# niente. Il messaggio "un nome in [HarmonyPatch] e' sbagliato" si stampa SOLO sulla strada in cui la
+# sonda ha davvero controllato qualcosa.
+#
+# LA SONDA. Il programma C# e il suo `.csproj` sono TRACCIATI in `tools\verify-patch-targets\`
+# (Program.cs + probe.csproj). Questo script ne fa una COPIA in $env:TEMP e compila li', cosi' la repo
+# non si sporca di bin/obj. Prima il `.csproj` stava in `D:\Codificando\scratch\` (fuori dalla repo,
+# gitignored): su un clone pulito la sonda non c'era e il gate usciva 1 = "bersagli inesistenti",
+# cioe' la diagnosi piu' allarmante possibile per un problema di setup.
+#
 # USO
 #     .\verify-patch-targets.ps1
 #     .\verify-patch-targets.ps1 -ModDll <percorso> -GameDll <percorso>
+#     .\verify-patch-targets.ps1 -ProbeSource <cartella con Program.cs + probe.csproj>
+#     .\verify-patch-targets.ps1 -ProbeDir <cartella di lavoro dove copiare e compilare la sonda>
 
 [CmdletBinding()]
 param(
     [string] $ModDll  = 'D:\SteamLibrary\steamapps\common\Blasphemous\Modding\plugins\BlasClient.dll',
     [string] $GameDll = 'D:\SteamLibrary\steamapps\common\Blasphemous\Blasphemous_Data\Managed\Assembly-CSharp.dll',
-    [string] $ProbeDir = 'D:\Codificando\scratch\verify-patch-targets'
+    [string] $ProbeSource = '',
+    [string] $ProbeDir    = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
+if (-not $ProbeSource) { $ProbeSource = Join-Path $PSScriptRoot 'verify-patch-targets' }
+# La cartella di lavoro e' UNA PER PROCESSO ($PID): due verifier in parallelo - per esempio due
+# worktree dello stesso repo, uno che deploya e uno che controlla un'altra branch - scriverebbero la
+# stessa Program.cs e uno dei due verificherebbe il codice dell'altro. Con $PID non si incontrano; e
+# la sonda viene comunque ricopiata a ogni esecuzione, quindi non si esegue mai un binario stantio.
+if (-not $ProbeDir)    { $ProbeDir    = Join-Path ([System.IO.Path]::GetTempPath()) ("blasphemous-coop-verify-patch-targets\$PID") }
+
+$probeCsproj  = Join-Path $ProbeSource 'probe.csproj'
+$probeProgram = Join-Path $ProbeSource 'Program.cs'
+$probeDll     = Join-Path $ProbeDir 'bin\Debug\net8.0\probe.dll'
+
 if (-not (Test-Path $ModDll))  { Write-Host "  mod non trovata: $ModDll" -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $GameDll)) { Write-Host "  gioco non trovato: $GameDll" -ForegroundColor Red; exit 1 }
-if (-not (Test-Path $ProbeDir)) { Write-Host "  la sonda non esiste: $ProbeDir" -ForegroundColor Red; exit 1 }
 
-$program = Join-Path $ProbeDir 'Program.cs'
-@'
-using Mono.Cecil; using System; using System.Linq; using System.IO; using System.Collections.Generic;
-class P {
-  // Tipo -> nomi dei metodi. Copre gioco E mod: la mod si patcha da sola.
-  static Dictionary<string, HashSet<string>> idx = new Dictionary<string, HashSet<string>>();
-  static int tot = 0, bad = 0, tmiss = 0, normale = 0, divisa = 0, incompleta = 0;
-
-  // Il bersaglio si verifica allo stesso modo in cui ci arriva Harmony: tipo esistente, metodo esistente.
-  static void Verifica(string tn, string mn, string owner) {
-    tot++;
-    HashSet<string> ms;
-    if (!idx.TryGetValue(tn, out ms)) {
-      tmiss++;
-      Console.WriteLine("  TIPO ASSENTE  : " + tn + "." + mn + "   [" + owner + "]");
-      return;
+# La sonda e' versionata: se manca, manca NELLA REPO, e il gate non puo' misurare niente. Dirlo cosi'
+# e' l'unico modo di non mandare a cercare una patch rotta al posto di un file mancante.
+foreach ($f in @($probeCsproj, $probeProgram)) {
+    if (-not (Test-Path $f)) {
+        Write-Host ""
+        Write-Host "  NON HO POTUTO VERIFICARE: la sonda non e' nella repo, manca $f" -ForegroundColor Red
+        Write-Host "  La cartella della sonda e': $ProbeSource" -ForegroundColor Red
+        Write-Host "  Nessun bersaglio Harmony e' stato controllato: questo exit 1 NON significa" -ForegroundColor Yellow
+        Write-Host "  'ci sono bersagli inesistenti', significa 'il gate non ha potuto girare'." -ForegroundColor Yellow
+        exit 1
     }
-    if (!ms.Contains(mn)) {
-      bad++;
-      Console.WriteLine("  METODO ASSENTE: " + tn + "." + mn + "   [" + owner + "]");
-    }
-  }
-
-  // Un [HarmonyPatch(typeof(T))]: la META' TIPO della forma divisa (null se l'attributo non e' questa forma).
-  static string TipoDa(CustomAttribute ca) {
-    var a = ca.ConstructorArguments;
-    if (a.Count == 1 && a[0].Value is TypeReference) return ((TypeReference)a[0].Value).FullName;
-    return null;
-  }
-
-  // Un [HarmonyPatch("nome")]: la META' NOME della forma divisa (null se l'attributo non e' questa forma).
-  static string NomeDa(CustomAttribute ca) {
-    var a = ca.ConstructorArguments;
-    if (a.Count == 1 && a[0].Value is string) return (string)a[0].Value;
-    return null;
-  }
-
-  // LA REGOLA PRUDENTE: fra i due attributi divisi non deve esserci NIENT'ALTRO che altri [Harmony*].
-  // Righe consecutive, o al massimo altri attributi Harmony in mezzo. Qualunque altra cosa interrompe
-  // l'accoppiamento: niente coppie a distanza, mai.
-  static bool Vicini(IList<CustomAttribute> cas, int a, int b) {
-    for (int k = a + 1; k < b; k++)
-      if (!cas[k].AttributeType.Name.StartsWith("Harmony", StringComparison.Ordinal)) return false;
-    return true;
-  }
-
-  static void Main(string[] a) {
-    var modPath = a[0]; var gamePath = a[1]; var gameDir = Path.GetDirectoryName(gamePath);
-    var r = new DefaultAssemblyResolver(); r.AddSearchDirectory(gameDir);
-    var game = AssemblyDefinition.ReadAssembly(gamePath, new ReaderParameters{AssemblyResolver=r});
-    var mod = AssemblyDefinition.ReadAssembly(modPath, new ReaderParameters{AssemblyResolver=r});
-
-    foreach (var asm in new[]{ game, mod }) {
-      foreach (var t in asm.MainModule.GetTypes()) {
-        if (!idx.ContainsKey(t.FullName)) idx[t.FullName] = new HashSet<string>();
-        foreach (var m in t.Methods) idx[t.FullName].Add(m.Name);
-      }
-    }
-
-    foreach (var t in mod.MainModule.GetTypes()) {
-      var cas = t.CustomAttributes;
-      var sospesiTipo = new List<int>();   // [HarmonyPatch(typeof(X))] in attesa del nome
-
-      for (int i = 0; i < cas.Count; i++) {
-        var ca = cas[i];
-        if (ca.AttributeType.Name != "HarmonyPatch") continue;
-        var args = ca.ConstructorArguments;
-
-        // FORMA NORMALE: un attributo con tipo + nome.
-        if (args.Count >= 2) {
-          var tr = args[0].Value as TypeReference;
-          var mn = args[1].Value as string;
-          if (tr == null || mn == null) continue;   // forme che non dichiarano tipo+metodo (es. MethodType)
-          normale++;
-          Verifica(tr.FullName, mn, t.Name);
-          continue;
-        }
-
-        // FORMA DIVISA, prima meta': il tipo, che resta in attesa del nome.
-        if (TipoDa(ca) != null) { sospesiTipo.Add(i); continue; }
-
-        // FORMA DIVISA, seconda meta': il nome, che cerca il suo tipo QUI VICINO.
-        var nome = NomeDa(ca);
-        if (nome == null) continue;
-        int preso = -1;
-        for (int k = sospesiTipo.Count - 1; k >= 0; k--) {
-          if (Vicini(cas, sospesiTipo[k], i)) { preso = sospesiTipo[k]; sospesiTipo.RemoveAt(k); break; }
-        }
-        if (preso < 0) {
-          incompleta++;
-          Console.WriteLine("  PATCH INCOMPLETA: [HarmonyPatch(\"" + nome + "\")] senza il suo [HarmonyPatch(typeof(...))]   [" + t.Name + "]");
-          continue;
-        }
-        var tnDiviso = TipoDa(cas[preso]);
-        divisa++;
-        Console.WriteLine("  PATCH DIVISA  : " + tnDiviso + "." + nome + "   [" + t.Name + "]");
-        Verifica(tnDiviso, nome, t.Name);
-      }
-
-      // Un tipo dichiarato e mai accoppiato: O e' un idioma legittimo (il nome sta sui METODI della
-      // patch, come vuole Harmony), O e' una patch incompleta. Le due cose si distinguono guardando i
-      // metodi; se non c'e' nessun nome, e' un ERRORE e si dichiara.
-      foreach (int i in sospesiTipo) {
-        var tn = TipoDa(cas[i]);
-        var nomi = new List<string>();
-        foreach (var m in t.Methods) {
-          foreach (var ca in m.CustomAttributes) {
-            if (ca.AttributeType.Name != "HarmonyPatch") continue;
-            var n = NomeDa(ca);
-            if (n != null && !nomi.Contains(n)) nomi.Add(n);
-          }
-        }
-        if (nomi.Count == 0) {
-          incompleta++;
-          Console.WriteLine("  PATCH INCOMPLETA: [HarmonyPatch(typeof(" + tn + "))] senza il nome del metodo   [" + t.Name + "]");
-          continue;
-        }
-        foreach (var n in nomi) {
-          divisa++;
-          Console.WriteLine("  PATCH DIVISA  : " + tn + "." + n + "   [" + t.Name + ", nome sul metodo]");
-          Verifica(tn, n, t.Name);
-        }
-      }
-    }
-
-    bool ok = bad == 0 && tmiss == 0 && incompleta == 0;
-    string esito = "tutti validi";
-    if (!ok) esito = (bad + tmiss > 0 ? "CI SONO BERSAGLI INESISTENTI" : "")
-                   + (incompleta > 0 ? ((bad + tmiss > 0 ? " E " : "") + "CI SONO PATCH INCOMPLETE") : "");
-
-    Console.WriteLine("  bersagli controllati : " + tot);
-    Console.WriteLine("    forma normale      : " + normale);
-    Console.WriteLine("    forma divisa       : " + divisa);
-    Console.WriteLine("  tipo assente         : " + tmiss);
-    Console.WriteLine("  METODO assente       : " + bad);
-    Console.WriteLine("  patch incompleta     : " + incompleta);
-    Console.WriteLine("  ESITO                : " + esito);
-    Environment.Exit(ok ? 0 : 1);
-  }
 }
-'@ | Set-Content -Path $program -Encoding utf8
+
+# `$code` parte da 1 e NON da $null: qualunque strada che non arrivi a misurare (eccezione, sonda
+# mancante, build fallita) deve lasciare il gate ROSSO. Un gate che dichiara "tutto valido" quando non
+# ha potuto girare e' peggio di un gate assente.
+$code     = 1
+$esito    = 'nonmisurato'
+$output   = @()
+$buildOut = @()
+$dettaglio = ''
+
+# Copia della sonda in una cartella temporanea: la repo resta pulita (niente bin/obj dentro tools\),
+# e la copia e' sempre quella TRACCIATA - non una versione lasciata li' da una sessione precedente.
+New-Item -ItemType Directory -Path $ProbeDir -Force | Out-Null
+Copy-Item $probeCsproj  $ProbeDir -Force
+Copy-Item $probeProgram $ProbeDir -Force
 
 Push-Location $ProbeDir
 try {
-    & dotnet build --nologo -v q -nodeReuse:false -clp:ErrorsOnly 2>&1 | Out-Null
-    & dotnet "bin\Debug\net8.0\probe6.dll" $ModDll $GameDll 2>&1 | ForEach-Object { "  $_" }
-    $code = $LASTEXITCODE
-} finally {
+    $buildOut = & dotnet build 'probe.csproj' --nologo -v q -nodeReuse:false 2>&1
+    $buildCode = $LASTEXITCODE
+    if ($null -eq $buildCode) { $buildCode = 1 }
+
+    if ($buildCode -ne 0) {
+        $esito = 'buildko'
+    }
+    elseif (-not (Test-Path $probeDll)) {
+        $esito = 'noprobe'
+    }
+    else {
+        # L'output della sonda si mostra SEMPRE: quando trova un bersaglio rotto, le righe
+        # "TIPO ASSENTE"/"METODO ASSENTE" SONO la diagnosi.
+        $output = & dotnet $probeDll $ModDll $GameDll 2>&1
+        $code = $LASTEXITCODE
+        if ($null -eq $code) { $code = 1 }
+        $esito = if ($code -eq 0) { 'ok' } elseif ($code -eq 3) { 'zerobersagli' } else { 'bersagli' }
+    }
+}
+catch {
+    # `dotnet` non esiste, o non parte: era ESATTAMENTE il caso in cui il vecchio script usciva 0.
+    $esito = 'nondotnet'
+    $dettaglio = $_.Exception.Message
+    $code = 1
+}
+finally {
     Pop-Location
 }
 
-if ($code -ne 0) {
-    Write-Host ""
-    Write-Host "  Un nome sbagliato in [HarmonyPatch] compila e fallisce a runtime, e la PatchAll" -ForegroundColor Yellow
-    Write-Host "  che abortisce impedisce l'applicazione di TUTTE le patch successive." -ForegroundColor Yellow
+if ($esito -eq 'ok') {
+    $output | ForEach-Object { "  $_" }
+    # Successo: la cartella di lavoro si butta, cosi' $env:TEMP non si riempie di compilazioni
+    # (ricompilare costa ~3 s). Se invece il gate FALLISCE la cartella resta: li' dentro c'e' quello
+    # che serve a capire.
+    Remove-Item $ProbeDir -Recurse -Force -ErrorAction SilentlyContinue
+    exit 0
 }
+
+if ($esito -eq 'nondotnet') {
+    Write-Host ""
+    Write-Host "  NON HO POTUTO COMPILARE LA SONDA: 'dotnet' non e' disponibile o non parte." -ForegroundColor Red
+    Write-Host "  Dettaglio: $dettaglio" -ForegroundColor Red
+    Write-Host "  Nessun bersaglio Harmony e' stato controllato. Questo exit 1 NON significa" -ForegroundColor Yellow
+    Write-Host "  'ci sono bersagli inesistenti': significa 'il gate non ha potuto girare'." -ForegroundColor Yellow
+    exit 1
+}
+
+if ($esito -eq 'buildko') {
+    Write-Host ""
+    Write-Host "  NON HO POTUTO COMPILARE LA SONDA: la BUILD della sonda e' fallita (exit $buildCode)." -ForegroundColor Red
+    Write-Host "  Questo NON e' un problema delle patch Harmony: la verifica non e' stata eseguita." -ForegroundColor Red
+    Write-Host "  Output della build:" -ForegroundColor Red
+    $buildOut | ForEach-Object { "  $_" }
+    exit 1
+}
+
+if ($esito -eq 'noprobe') {
+    Write-Host ""
+    Write-Host "  NON HO POTUTO VERIFICARE: la build e' passata ma $probeDll non esiste." -ForegroundColor Red
+    Write-Host "  Se hai rinominato l'AssemblyName in probe.csproj, questo script lo cerca ancora li'." -ForegroundColor Yellow
+    exit 1
+}
+
+if ($esito -eq 'zerobersagli') {
+    $output | ForEach-Object { "  $_" }
+    Write-Host ""
+    Write-Host "  NON HO MISURATO NIENTE: la sonda non ha trovato NESSUN attributo [HarmonyPatch]." -ForegroundColor Red
+    Write-Host "  La mod ne ha 273: se il conteggio e' zero, la DLL letta e' quella sbagliata ($ModDll)." -ForegroundColor Red
+    Write-Host "  Questo exit 1 NON significa 'ci sono bersagli inesistenti': la verifica non ha misurato." -ForegroundColor Yellow
+    exit 1
+}
+
+# esito 'bersagli': la sonda HA girato, e ha trovato qualcosa. Questa e' l'unica strada in cui la
+# diagnosi "un nome in [HarmonyPatch] e' sbagliato" e' VERA.
+$output | ForEach-Object { "  $_" }
+Write-Host ""
+Write-Host "  Un nome sbagliato in [HarmonyPatch] compila e fallisce a runtime, e la PatchAll" -ForegroundColor Yellow
+Write-Host "  che abortisce impedisce l'applicazione di TUTTE le patch successive." -ForegroundColor Yellow
 exit $code

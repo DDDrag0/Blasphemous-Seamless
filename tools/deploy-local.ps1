@@ -20,6 +20,15 @@ $ErrorActionPreference = 'Stop'
 
 if (-not (Test-Path $Game)) { throw "Cartella di gioco non trovata: $Game" }
 
+# IL GATE HARMONY NON E' UN ACCESSORIO, quindi si controlla PRIMA di copiare: se lo script non c'e'
+# (rinominato, spostato, checkout parziale) il deploy si ferma qui, senza toccare la cartella di gioco.
+# Prima era `if (Test-Path $verifier) { ... }` in fondo: il gate spariva in silenzio e il deploy
+# proseguiva come se la verifica fosse stata fatta. Un gate opzionale non e' un gate.
+$verifier = Join-Path $PSScriptRoot 'verify-patch-targets.ps1'
+if (-not (Test-Path $verifier)) {
+    throw "Gate Harmony non trovato: $verifier - la verifica NON e' stata eseguita, quindi il deploy non parte (non si copia una build che nessuno ha controllato)."
+}
+
 # 1. le RISORSE della mod, nella stessa forma in cui le copiava la build (resources\** -> Modding\**).
 #    Non e' cosmesi: da qui arriva Common.dll, che il ModdingAPI risolve a runtime da Modding\data
 #    (Main.LoadMissingAssemblies), e che contiene il numero di protocollo e NetworkType. Una
@@ -75,13 +84,13 @@ Get-ChildItem $srvSrc -File | ForEach-Object { Copy-Item $_.FullName (Join-Path 
 #
 # E' successo l'11 ottobre 2026 (OnPlayerSpawn e' un evento, non un metodo) e ha bruciato una sessione.
 # Da allora il deploy si ferma se un bersaglio non esiste: e' il momento giusto per scoprirlo, perche'
-# e' l'ultimo prima del test.
-$verifier = Join-Path $PSScriptRoot 'verify-patch-targets.ps1'
-if (Test-Path $verifier) {
-    ""
-    "=== bersagli delle patch Harmony ==="
-    & pwsh -NoProfile -File $verifier -ModDll $modDst
-    if ($LASTEXITCODE -ne 0) {
-        throw "Il deploy e' stato copiato, ma ci sono bersagli Harmony INESISTENTI: un test ora non misurerebbe niente. Vedi l'elenco sopra."
-    }
+# e' l'ultimo prima del test. Il verifier e' stato controllato all'inizio: qui si esegue sempre.
+""
+"=== bersagli delle patch Harmony ==="
+& pwsh -NoProfile -File $verifier -ModDll $modDst
+if ($LASTEXITCODE -ne 0) {
+    # Due cause possibili, e la vecchia riga ne dichiarava una sola ("bersagli INESISTENTI"): puo'
+    # anche essere che il verifier non sia riuscito a compilare la sua sonda. Ripetere qui una
+    # diagnosi che il verifier ha gia' smentito e' il difetto che questo script non deve avere.
+    throw "Il deploy e' stato copiato, ma il gate Harmony NON e' passato (exit $LASTEXITCODE): leggi il messaggio qui sopra. Se dice 'non ho potuto compilare la sonda', il problema NON sono le patch: la verifica non e' stata eseguita. In entrambi i casi un test ora non misurerebbe niente."
 }
