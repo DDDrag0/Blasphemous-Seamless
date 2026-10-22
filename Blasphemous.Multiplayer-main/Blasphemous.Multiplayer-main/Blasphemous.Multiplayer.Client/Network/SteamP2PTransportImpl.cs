@@ -75,6 +75,30 @@ namespace Blasphemous.Multiplayer.Client.Network
     /// lenta da vedere.
     ///
     /// ─────────────────────────────────────────────────────────────────────────────────────────────
+    /// ③ LA RICONNESSIONE (⭐ questo e' il fix del "dopo una disconnessione non torna e non avvisa")
+    ///
+    /// 🔴 IL DIFETTO, misurato: `_linkLost = true` (e `_opened`/`_helloed` **ancora** `true`) faceva da
+    /// muro in testa a `Tick`. Da li' in poi non si svuotavano i canali, non partiva l'hello, non si
+    /// mandava il battito — e i **due controlli di fase stavano sotto quel return**, quindi non scattava
+    /// piu' nessun timeout: silenzio totale. E l'`Accept` di Steam **non** riportava in vita niente:
+    /// `OnSessionRequest` chiamava **solo** `AcceptP2PSessionWithUser`, quindi la sessione tornava a
+    /// esistere e il trasporto restava morto. La firma nei log era: `peer ha accettato la sessione di
+    /// ritorno dall host=…` **senza** `hello inviato` — la sessione si accetta, il trasporto e' gia' morto.
+    ///
+    /// ✅ IL FIX, in due parti:
+    ///   · ① `ReviveLink` — su una `P2PSessionRequest_t` **accettata e dal nostro host**, il link torna
+    ///     vivo con un reset **mirato** (solo lo stato del link: `_linkLost = false`, hello da rimandare,
+    ///     battito riavviato, fase di nuovo `Connecting`). **Mai `End()`**, che chiuderebbe la sessione
+    ///     appena accettata e azzererebbe anche `_host`/`_lobby`.
+    ///   · ② `CheckPhase` — i controlli di fase stanno **prima di ogni return** di `Tick`: una scadenza
+    ///     non puo' piu' essere saltata da un ritorno anticipato, quindi un fallimento **avvisa**
+    ///     (marker + notifica) invece di sparire.
+    ///
+    /// ⭐ LA CATENA CHE L'UTENTE DEVE VEDERE, dopo una disconnessione e una riconnessione: `link
+    /// RITROVATO …` → `hello inviato a …` → `primo pacchetto (canale N) dopo Xs` → `connesso (handshake
+    /// Xs)`. Se non si riconnette, al posto degli ultimi due: `handshake scaduto (25 s)` + notifica.
+    ///
+    /// ─────────────────────────────────────────────────────────────────────────────────────────────
     /// LA SCATOLA NERA: `P2PSessionConnectFail_t`
     ///
     /// Arriva **dopo** ~10-15 s (non subito) e **non e' simmetrica**: scatta solo dal lato che ha
@@ -148,6 +172,14 @@ namespace Blasphemous.Multiplayer.Client.Network
         private static bool _opened;
         private static bool _helloed;
         private static bool _linkLost;
+
+        /// <summary>
+        /// "QUESTO LINK E' GIA' STATO DATO PER PERSO E POI RIANIMATO" (`ReviveLink`). Serve **solo** a
+        /// decidere chi da' la notifica del fallimento successivo: dopo una rianimazione il percorso
+        /// normale tace (vedi `NotifyIfOutOfSession`), quindi la deve dare il trasporto. Si azzera in
+        /// `End()`, cioe' a ogni chiusura voluta e all'inizio di ogni `Begin`.
+        /// </summary>
+        private static bool _revived;
         private static CSteamID _lobby = CSteamID.Nil;
         private static CSteamID _host = CSteamID.Nil;
         private static ulong _myId;
@@ -313,6 +345,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             _opened = false;
             _helloed = false;
             _linkLost = false;
+            _revived = false;
             _phase = Phase.Disconnected;
             _host = CSteamID.Nil;
             _lobby = CSteamID.Nil;
@@ -342,7 +375,16 @@ namespace Blasphemous.Multiplayer.Client.Network
         {
             try
             {
-                if (!_opened || _linkLost)
+                // ⚠️ IL CANCELLO D'INGRESSO E' **SOLO** `_opened` = "c'e' un tentativo armato nella mod".
+                // Lo azzera `End()` (una chiusura VOLUTA non si rianima) e nient'altro lo tocca.
+                //
+                // 🔴 PRIMA QUI C'ERA `if (!_opened || _linkLost) return;` E `_linkLost` ERA UN MURO:
+                // da quel `return` in poi non si svuotavano piu' i canali, non partiva piu' l'hello, non
+                // si mandava piu' il battito — e i due controlli di fase stavano **sotto** quel return,
+                // quindi non scattava piu' **nessun** timeout: dopo una disconnessione il log diventava
+                // muto e la schermata non sapeva piu' niente. E' il difetto ③ (vedi `CheckPhase` per i
+                // controlli, ora **prima** del cancello, e `ReviveLink` per l'accept che riporta in vita).
+                if (!_opened)
                     return;
 
                 // ⭐⭐ SI LEGGE **PRIMA** DI TUTTO, e **non** solo da "connesso": il ciclo di lettura parte
@@ -355,43 +397,36 @@ namespace Blasphemous.Multiplayer.Client.Network
                 // ⚠️ E' anche il motivo per cui questa riga sta **prima** dell'hello: fra il `Begin` e
                 // l'hello c'e' l'attesa dei dati della lobby (fino a 3 s), e in quella finestra il buffer
                 // va svuotato lo stesso.
+                //
+                // ⭐ E SI LEGGE ANCHE A **LINK PERSO**: il buffer di Steam va svuotato comunque (un
+                // residuo della sessione morta lo riempirebbe fino a bloccare l'avanzamento della
+                // sessione **successiva**), ma quei pacchetti **non si consegnano** — sono avanzi di un
+                // tunnel chiuso (vedi il primo controllo in `Handle`).
                 Drain();
 
-                if (!_opened || _linkLost)
-                    return;
-
-                if (!_helloed)
-                {
-                    if (!TrySendHello())
-                        return;
-                }
-
-                if (!_opened || _linkLost)
+                if (!_opened)
                     return;
 
                 float now = Time.realtimeSinceStartup;
 
-                if (_phase == Phase.Connecting)
-                {
-                    // ⚠️ `_phase` e' ancora `Connecting` SOLO se nessun pacchetto valido e' mai arrivato:
-                    // il primo pacchetto porta a `Connected` dentro `Handle` (vedi `MarkConnected`).
-                    float waited = now - _openedAt;
+                // ⭐⭐ ② I CONTROLLI DI FASE **PRIMA** DI OGNI ALTRO RETURN — e questa posizione E' il fix.
+                //
+                // Un timeout che non si controlla non avvisa, e un fallimento che non avvisa non si
+                // distingue da "non e' successo niente". Prima di questo spostamento c'erano **tre** vie
+                // per saltarli: il cancello su `_linkLost` in testa, il `return` quando l'hello non parte
+                // (sotto), e il `return` per `!_opened` in mezzo. Da qui in poi la domanda "e' scaduta la
+                // fase in cui sono?" si fa **sempre**, qualunque sia lo stato del link.
+                if (CheckPhase(now))
+                    return;
 
-                    if (waited >= HANDSHAKE_TIMEOUT_SECONDS)
-                    {
-                        HandshakeExpired(waited);
-                        return;
-                    }
-                }
-                else if (_phase == Phase.Connected)
-                {
-                    if (now - _lastRx >= KEEPALIVE_TIMEOUT_SECONDS)
-                    {
-                        LinkLost("nessun pacchetto da " + (int)(now - _lastRx) + " s (soglia " +
-                                 (int)KEEPALIVE_TIMEOUT_SECONDS + " s)");
-                        return;
-                    }
-                }
+                if (_linkLost)
+                    return;
+
+                if (!_helloed && !TrySendHello())
+                    return;
+
+                if (!_opened || _linkLost)
+                    return;
 
                 // ⭐ IL BATTITO SI MANDA IN **ENTRAMBE** LE FASI, di proposito: durante l'handshake tiene
                 // viva la sessione (e il NAT/relay aperto) e provoca una risposta dall'host.
@@ -407,6 +442,56 @@ namespace Blasphemous.Multiplayer.Client.Network
             {
                 ModLog.Error(MarkerOpen + "errore in Tick: " + e.GetType().Name + ": " + e.Message);
             }
+        }
+
+        /// <summary>
+        /// ⭐⭐ ② IL SORVEGLIANTE DELLA FASE — **dove** sta e' il fix, non cosa fa.
+        ///
+        /// Risponde a **una** domanda: "la fase in cui sono ha superato la sua scadenza?". Le due fasi
+        /// hanno due soglie diverse e nessuna terza possibilita' (vedi il commento di classe):
+        ///
+        ///   · `Connecting` ⇒ **25 s** da `_openedAt` senza **mai** un pacchetto ⇒ `HandshakeExpired`;
+        ///   · `Connected`  ⇒ **5 s** dall'ultimo pacchetto valido ⇒ `LinkLost`.
+        ///
+        /// ⚠️ `Disconnected` NON si sorveglia, e non e' una dimenticanza: e' la fase in cui il fatto e'
+        /// **gia' stato detto** (marker + evento + notifica, una volta sola). Ripeterlo sarebbe un
+        /// secondo avviso per lo stesso fatto — cioe' il difetto opposto.
+        ///
+        /// ⚠️ E' **idempotente per frame**: dopo una dichiarazione la fase diventa `Disconnected` (lo
+        /// fanno `HandshakeExpired` e `LinkLost`), quindi al frame dopo questa funzione ritorna `false` e
+        /// il ciclo prosegue. Non c'e' nessun contatore da azzerare a mano.
+        /// </summary>
+        private static bool CheckPhase(float now)
+        {
+            if (_phase == Phase.Connecting)
+            {
+                float waited = now - _openedAt;
+
+                if (waited < HANDSHAKE_TIMEOUT_SECONDS)
+                    return false;
+
+                // ⚠️ `_phase` e' ancora `Connecting` SOLO se nessun pacchetto valido e' mai arrivato:
+                // il primo pacchetto porta a `Connected` dentro `Handle` (vedi `MarkConnected`). E
+                // `_openedAt` e' il momento in cui il tentativo e' stato **armato**: `Begin` per una
+                // connessione nuova, `ReviveLink` per una **riconnessione** — cosi' i 25 s si contano
+                // dalla rianimazione, non dal `Begin` di mezz'ora prima.
+                HandshakeExpired(waited);
+                return true;
+            }
+
+            if (_phase == Phase.Connected)
+            {
+                float silent = now - _lastRx;
+
+                if (silent < KEEPALIVE_TIMEOUT_SECONDS)
+                    return false;
+
+                LinkLost("nessun pacchetto da " + (int)silent + " s (soglia " +
+                         (int)KEEPALIVE_TIMEOUT_SECONDS + " s)");
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -447,7 +532,18 @@ namespace Blasphemous.Multiplayer.Client.Network
                              "aperta (relay lento, firewall, o host che non risponde)");
             }
 
+            // ⭐ ② LA NOTIFICA, e **solo quando serve**: se il gioco e' gia' fuori sessione (il caso
+            // della **riconnessione** fallita) il percorso normale non la da', perche' `OnTransportEnded`
+            // esce subito a stato gia' "sconnesso" — e il giocatore vedrebbe solo la schermata ferma.
+            // Cosi' invece "non si e' riconnesso" **si vede**, oltre che leggersi nel log.
+            NotifyIfOutOfSession("P2P: riconnessione non riuscita (l'host non risponde)");
+
             RaiseDisconnected();
+
+            // ⭐ E SI DICE COME SI RIENTRA (stessa riga di `LinkLost`): senza, dopo lo scaduto il log si
+            // ferma e non si distingue "sto aspettando" da "ho rinunciato".
+            ModLog.Info(MarkerOpen + "link non aperto: si rientra con un Accept dell'host " +
+                        "(`ReviveLink`) o con un Connect nuovo (`Begin`)");
         }
 
         /// <summary>
@@ -819,6 +915,16 @@ namespace Blasphemous.Multiplayer.Client.Network
             uint ignoredSeq;
             ulong controlSender;
 
+            // ⚠️ PRIMO CONTROLLO: A LINK PERSO NON SI CONSEGNA NIENTE.
+            // Da quando `Tick` svuota i canali **anche** dopo una disconnessione (vedi li': il buffer di
+            // Steam va comunque drenato), qui possono arrivare gli **avanzi** della sessione morta. Il
+            // gioco in quel momento non e' piu' in sessione (`NetworkManager` ha azzerato il trasporto e
+            // mostra la schermata di connessione): consegnarli significherebbe mutare uno stato che
+            // nessuno sta piu' seguendo. Si scartano — e la rianimazione **non** passa da qui, passa
+            // dall'`Accept` (`ReviveLink`), che e' l'evento che dice "l'host e' tornato".
+            if (_linkLost)
+                return;
+
             // ⭐ LA TRACCIA DELLA RICEZIONE, e dice **canale** e **mittente**: se il tunnel e' sano
             // (`active=1` nella sonda) ma il gioco non si connette, questo e' il punto in cui si vede se i
             // pacchetti si leggono su un canale diverso da quello su cui l'altro manda. Le prime
@@ -977,7 +1083,158 @@ namespace Blasphemous.Multiplayer.Client.Network
                     ModLog.Error(MarkerLinkLost + ": " + reason);
             }
 
+            // ⭐ ② LA SECONDA VOLTA (dopo una riconnessione) LA NOTIFICA LA DA' QUESTO, non
+            // `NetworkManager`: quello esce subito a stato gia' "sconnesso" (`OnTransportEnded`). Vedi
+            // `NotifyIfOutOfSession`. La **prima** volta non fa niente, perche' il gioco e' ancora
+            // "connesso" e la notifica arriva dalla via normale (una sola, non due).
+            NotifyIfOutOfSession("P2P: link perso di nuovo (l'host non manda piu' niente)");
+
             RaiseDisconnected();
+
+            // ⭐ E SI DICE **COSA SUCCEDE ADESSO**: senza questa riga, chi legge il log dopo il timeout
+            // trova il silenzio e non sa se la mod sta aspettando, se ha rinunciato, o se e' viva. Il
+            // link resta dichiarato perso (non si finge che sia tornato, vedi sopra) e si riapre in
+            // **due** modi soltanto, entrambi scritti qui.
+            ModLog.Info(MarkerOpen + "in attesa di una nuova sessione P2P: la riapre un Accept dell'host " +
+                        "(`ReviveLink`) o un Connect nuovo (`Begin`). Fino ad allora nessun pacchetto " +
+                        "parte e nessuno arriva");
+        }
+
+        /// <summary>
+        /// ⭐⭐ ① L'ACCEPT **RIPORTA IL TRASPORTO IN VITA** — il difetto era che l'accettazione era **solo
+        /// Steam** (`AcceptP2PSessionWithUser`, in `OnSessionRequest`): la sessione tornava a esistere,
+        /// ma `_linkLost` restava `true`, `Tick` esce in testa e da li' non partiva piu' **niente** — ne'
+        /// l'hello, ne' il battito, ne' un timeout. La firma nei log era esattamente questa:
+        /// `peer ha accettato la sessione di ritorno` e poi il vuoto, senza `hello inviato`.
+        ///
+        /// ✅ Qui il reset e' **MIRATO**: si tocca **solo lo stato del link**. Le tre cose da rimettere in
+        /// riga, e la ragione di ciascuna:
+        ///   · `_linkLost = false` — il muro che ferma `Tick` (e che fa lanciare `IOException` a `Send`);
+        ///   · `_helloed = false` — ⭐ l'hello si **rimanda**: la sessione e' nuova, e l'host deve
+        ///     ri-annunciare questo peer. E' anche il marker che l'utente cerca (`hello inviato a …`);
+        ///   · `_phase = Connecting` + `_openedAt = adesso` — si rientra in **negoziazione**, quindi vale
+        ///     il timeout dell'handshake (25 s) contato da **questo** istante, non i 5 s del battito e non
+        ///     il `Begin` di mezz'ora prima. Cosi' se la riconnessione non riesce lo dice
+        ///     `handshake scaduto (25 s)` — con la notifica — invece di sparire.
+        ///
+        /// ⛔ **NON SI CHIAMA `End()` E NON SI TOCCA**: `_host`, `_lobby`, `_myId`, `_txSeq`, `_outbox`.
+        ///   · `End()` chiuderebbe la sessione che **Steam ci ha appena riaccettato** e azzererebbe anche
+        ///     `_host`/`_lobby`/`_linkLost`, cioe' proprio lo stato che qui serve: e' l'opposto di un
+        ///     reset mirato (ed e' la ragione per cui il mandato dice di non usarlo);
+        ///   · `_txSeq` **non** si azzera: il ricevente tiene l'ultima sequenza accettata **per mittente**
+        ///     e la scarta se non e' piu' nuova (`P2PWire.IsNewer`). Ripartire da 0 farebbe scartare
+        ///     *tutti* i pacchetti del canale 0 come "vecchi" — un blocco silenzioso, il difetto opposto;
+        ///   · `_outbox` **non** si svuota: sono i frame di gioco che aspettavano l'hello, e adesso
+        ///     l'hello c'e'.
+        ///
+        /// ⚠️ L'UNICA memoria che si butta e' quella del **ricevente** (`_lastSeqByOrigin`): dopo una
+        /// sessione nuova il mittente puo' ripartire da una sequenza piu' bassa, e tenere la memoria
+        /// vecchia farebbe scartare il suo primo pacchetto utile. I contatori di log si azzerano perche'
+        /// la riconnessione e' un evento nuovo e va tracciata da capo (poche righe, non un fiume).
+        /// </summary>
+        private static void ReviveLink(string why)
+        {
+            // Senza un tentativo armato non c'e' niente da rianimare: chi ha chiuso lo ha fatto con
+            // `End()` (una scelta), e rianimare da soli riaprirebbe un filo che il gioco ha lasciato.
+            if (!_opened)
+                return;
+
+            // Gia' vivo: niente da fare (e nessuna riga in piu' a ogni accept).
+            if (!_linkLost)
+                return;
+
+            float now = Time.realtimeSinceStartup;
+
+            _linkLost = false;
+            _helloed = false;
+            _revived = true;
+            _phase = Phase.Connecting;
+            _openedAt = now;
+            _lastRx = now;
+            _nextKeepAlive = now;
+            _timeoutLogged = false;
+            _sendFailLogged = 0;
+            _outboxDropped = 0;
+            _droppedStale = 0;
+            _droppedStaleLogged = 0;
+            _lastSeqByOrigin.Clear();
+            _peerLogged.Clear();
+            _returnLogged.Clear();
+
+            for (int i = 0; i < 3; i++)
+            {
+                _foreign[i] = 0;
+                _foreignLogged[i] = 0;
+                _rxLogged[i] = 0;
+            }
+
+            ModLog.Info(MarkerOpen + "link RITROVATO (" + why + "): l'hello si rimanda e il battito " +
+                        "riparte - hello=no, link=ok, fase=negoziazione (timeout " +
+                        (int)HANDSHAKE_TIMEOUT_SECONDS + " s)");
+
+            Notify("P2P: link ritrovato, riconnessione in corso");
+
+            // ⚠️ NIENTE `_onConnected` QUI: l'evento parte dal **primo pacchetto valido**
+            // (`MarkConnected`), che e' l'unico fatto che dice "l'altra parte mi sente". Lo stesso
+            // contratto di `Begin` (vedi il commento in `TrySendHello`).
+        }
+
+        /// <summary>
+        /// "E' L'HOST CHE ASPETTO?" — il cancello della rianimazione. Non basta che un pacchetto o una
+        /// richiesta arrivino: se arrivano da un altro membro della lobby, il link **nostro** con l'host
+        /// non e' tornato, e riarmare l'hello verso `_host` sulla base di un estraneo sarebbe un falso
+        /// positivo (il difetto del marker `:596`, che stampa solo perche' `_host` e' valorizzato).
+        ///
+        /// `_host` e' il valore che l'hello ha gia' usato; se non c'e' ancora (accept arrivato prima del
+        /// primo hello), vale l'host **dichiarato** nei dati della lobby — la stessa fonte di
+        /// `TrySendHello`, non `GetLobbyOwner` (vedi li' perche').
+        /// </summary>
+        private static bool IsExpectedHost(ulong id)
+        {
+            if (id == 0UL)
+                return false;
+
+            if (id == _myId)
+                return false;
+
+            if (_host.m_SteamID != 0UL)
+                return id == _host.m_SteamID;
+
+            ulong declared = DeclaredHost();
+            return declared != 0UL && declared == id;
+        }
+
+        /// <summary>
+        /// Una notifica a schermo **solo quando nessun altro la dara'** — cioe' dopo una
+        /// **riconnessione** (`ReviveLink`), dove il percorso normale non arriva: `RaiseDisconnected`
+        /// passa da `NetworkManager.OnTransportEnded`, che esce subito a stato gia' "sconnesso"
+        /// (`if (_connectionStatus == Disconnected) return`), e il gioco non e' piu' in sessione.
+        ///
+        /// ⚠️ IL CANCELLO `_revived` NON E' UN DETTAGLIO: sulla **prima** connessione la notifica la da'
+        /// gia' il percorso normale (`OnConnect(false, RefusalType.Connection)`, o `Multiplayer.OnDisconnect`
+        /// con la stringa localizzata), e aggiungerne una seconda qui sarebbe due avvisi per lo stesso
+        /// fatto. Dopo una rianimazione invece quel percorso tace, e senza questa riga il giocatore
+        /// vedrebbe solo una schermata ferma: il "non avvisa" del difetto ③.
+        /// </summary>
+        private static void NotifyIfOutOfSession(string message)
+        {
+            try
+            {
+                if (!_revived)
+                    return;
+
+                if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
+                    return;
+
+                if (Main.Multiplayer.NetworkManager.IsConnected)
+                    return;
+
+                Notify(message);
+            }
+            catch (Exception)
+            {
+                // Niente: la riga di log c'e' gia', e la notifica e' un di piu'.
+            }
         }
 
         // ─── LA CALLBACK CHE ACCETTA LE SESSIONI ───────────────────────────────────────────────────
@@ -1046,6 +1303,21 @@ namespace Blasphemous.Multiplayer.Client.Network
                     ModLog.Info(SteamP2PTransport.MarkerAcceptFail + id + " (Steam ha risposto false: " +
                                 "sessione gia' presente o id non piu' valido)");
                 }
+
+                // ⭐⭐ ① E L'ACCETTAZIONE **NON E' SOLO DI STEAM**: se la sessione che torna e' quella
+                // con il **nostro host**, il link torna vivo (`ReviveLink`).
+                //
+                // 🔴 Il difetto, misurato: qui c'era **solo** `AcceptP2PSessionWithUser`. La sessione
+                // tornava a esistere, `_linkLost` restava `true` e `Tick` usciva in testa ⇒ nessun hello
+                // rimandato, nessun battito, nessun timeout che avvisasse. Nel log: `peer ha accettato la
+                // sessione di ritorno dall host=…` e poi il nulla, fino a `SESSIONE FALLITA err=4`.
+                //
+                // ⚠️ VALE ANCHE SE STEAM HA RISPOSTO `false`: quel `false` significa "la sessione c'e'
+                // gia' / l'id non e' piu' valido" (vedi la riga sopra), non "l'host non c'e'": la
+                // richiesta **e'** una prova che l'host sta parlando con noi. Se poi il tunnel non regge,
+                // lo dicono i 25 s dell'handshake — cioe' il log lo dice, invece di tacere.
+                if (IsExpectedHost(id))
+                    ReviveLink("P2PSessionRequest_t da " + id + " accettata (lato PEER)");
             }
             catch (Exception e)
             {
