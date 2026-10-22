@@ -2,6 +2,7 @@ using Blasphemous.ModdingAPI;
 using Blasphemous.Multiplayer.Client.Players;
 using Blasphemous.Multiplayer.Client.ProgressSync;
 using Blasphemous.Multiplayer.Client.PvP.Models;
+using Blasphemous.Multiplayer.Common;
 using Blasphemous.Multiplayer.Common.Enums;
 using Framework.Managers;
 using Gameplay.GameControllers.Entities;
@@ -622,7 +623,11 @@ namespace Blasphemous.Multiplayer.Client.Network
         public void SendIntro(string room, string player, string password, byte team)
         {
             var bytes = new List<byte>();
-            bytes.Add(PROTOCOL_VERSION);
+            // ⭐ LA VERSIONE E' UNA SOLA, e non vive piu' in fondo a questo file: sta in
+            // `Common\Protocol.cs`, cioe' nella DLL che client e server condividono (e che il deploy
+            // copia in `Modding\data`). Due definizioni separate dello stesso numero potevano
+            // divergere in silenzio; una sola non puo'. Il valore resta 11.
+            bytes.Add(Protocol.PROTOCOL_VERSION);
 
             bytes.Add((byte)room.Length);
             bytes.AddRange(Encoding.UTF8.GetBytes(room));
@@ -1072,7 +1077,5 @@ namespace Blasphemous.Multiplayer.Client.Network
         // Maybe replace name with entire ConnectInfo
         public delegate void ConnectDelegate(bool success, RefusalType refusal);
         public event ConnectDelegate OnConnect;
-
-        private const byte PROTOCOL_VERSION = 11;
     }
 }

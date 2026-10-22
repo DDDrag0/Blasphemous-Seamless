@@ -1021,7 +1021,10 @@ public class Server
         byte protocol = data[idx++];
 
         // Ensure the protocol version matches
-        if (protocol != PROTOCOL_VERSION)
+        // ⭐ LA COSTANTE E' UNA SOLA, e non vive piu' in fondo a questo file: sta in
+        // `Common\Protocol.cs`, cioe' nella DLL che client e server condividono. Due definizioni
+        // separate dello stesso numero potevano divergere; una sola non puo'.
+        if (protocol != Protocol.PROTOCOL_VERSION)
         {
             Logger.Warn("Player connection rejected: Protocol version doesn't match");
             sendPlayerIntro(peer, RefusalType.Protocol);
@@ -1406,6 +1409,4 @@ public class Server
         bool isHost = peer == _hostPeer;
         Send(peer, new byte[] { (byte)(isHost ? 1 : 0) }, NetworkType.HostAssign);
     }
-
-    private const byte PROTOCOL_VERSION = 11;
 }
