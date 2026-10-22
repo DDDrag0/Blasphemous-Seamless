@@ -347,6 +347,25 @@ public class Server
         // Determines which received function to call based on the type
         void processDataReceived(NetworkType type, byte[] data)
         {
+            // ⭐⭐ DIFESA 1 — LA LUNGHEZZA DEL PAYLOAD SI CONTROLLA PRIMA DI LEGGERLO. La guardia qui
+            // sopra difende l'HEADER del frame; questa difende il PAYLOAD, che era la superficie
+            // rimasta aperta: `BitConverter.ToSingle(data, 4)`, `data[0]` e
+            // `Encoding.UTF8.GetString(data, 2, ...)` leggono OLTRE la fine se il pacchetto e' piu'
+            // corto di cosi', e l'eccezione nascerebbe QUI DENTRO, cioe' nel thread di lettura del
+            // trasporto: la stessa classe di guasto che la guardia del framing esiste per evitare
+            // (thread che muore, connessione che resta appesa).
+            // ⚠️ Un pacchetto malformato NON si lancia: si SCARTA, si dichiara (una volta sola, vedi
+            // `reportShortPayload`), e il ciclo prosegue, perche' gli altri frame dello stesso buffer
+            // possono essere integri.
+            // ⚠️ Un pacchetto VALIDO non passa di qui invano: la tabella dice il MINIMO per tipo, e
+            // per i tipi che non hanno un minimo (i relay opachi) vale zero.
+            int required = MinimumPayloadLength(type);
+            if (required > 0 && data.Length < required)
+            {
+                reportShortPayload(type, required, data.Length);
+                return;
+            }
+
             switch (type)
             {
                 case NetworkType.Position:      ReceivePosition(peer, data); break;
@@ -370,6 +389,115 @@ public class Server
                     Logger.Error($"Data type '{type}' is not valid"); break;
             }
         }
+    }
+
+    // ⭐⭐ LE DUE DIFESE DEL PAYLOAD — 1 di 3: QUANTI BYTE SERVONO, tipo per tipo.
+    //
+    // Questa tabella e' l'UNICO posto in cui vive il minimo di un pacchetto: ogni `Receive*` legge il
+    // suo payload sapendo che il controllo e' gia' passato, e `receivePlayerIntro` (l'unica `Receive*`
+    // con una forma variabile) si difende da sola con `TryReadString`.
+    // ⚠️ Il valore e' il minimo che il codice legge DAVVERO, non la lunghezza "giusta":
+    //   · Position: 2 float (`ToSingle(data, 0)` e `(data, 4)`) = 8 byte;
+    //   · Animation / Direction / Team: 1 byte (`data[0]`);
+    //   · Progress: 1 byte tipo + 1 byte valore (`data[0]`, `data[1]`); l'id e' la coda e puo' essere
+    //     vuoto;
+    //   · Ping: 1 float + 1 ushort (`ToSingle(data, 0)`, `ToUInt16(data, 4)`) = 6 byte;
+    //   · 0 per i relay opachi (EnterScene, LeaveScene, Skin, Attack, Effect, Enemy*): il server li
+    //     inoltra e non li interpreta, quindi non c'e' niente da leggere - e un minimo inventato
+    //     scarterebbe pacchetti che oggi passano;
+    //   · 0 anche per i tipi che questo server non conosce: li rifiuta lo `switch`, non questa tabella.
+    private static int MinimumPayloadLength(NetworkType type)
+    {
+        switch (type)
+        {
+            case NetworkType.Position:  return 8;
+            case NetworkType.Animation: return 1;
+            case NetworkType.Direction: return 1;
+            case NetworkType.Team:      return 1;
+            case NetworkType.Progress:  return 2;
+            case NetworkType.Ping:      return 6;
+            default:                    return 0;
+        }
+    }
+
+    // ⭐⭐ 2 di 3: LO SCARTO DICHIARATO, UNA VOLTA E NON A RAFFICA.
+    //
+    // Un peer ostile (o un pacchetto corrotto) puo' mandare mille payload corti: una riga per pacchetto
+    // sarebbe un log che cresce senza limite, cioe' il difetto della crescita illimitata spostato dal
+    // dizionario al file. Quindi si scrive quando la notizia e' NUOVA:
+    //   · la PRIMA volta per ogni tipo (cosi' il log nomina ogni superficie che qualcuno sta provando);
+    //   · quando cambia la FORMA dello scarto (`attesi` diverso = un'altra lettura oltre la fine, e non
+    //     e' una ripetizione) - ma solo per i primi `SHORT_PAYLOAD_NEW_SHAPES` scarti del tipo, perche'
+    //     una forma che cambia a ogni pacchetto (per esempio `attesi` che cresce con la lunghezza
+    //     dichiarata nell'Intro) sarebbe di nuovo una raffica travestita;
+    //   · poi solo ogni `SHORT_PAYLOAD_LOG_EVERY` scarti DI QUEL TIPO, con i due conteggi.
+    // ⚠️ I contatori sono ARRAY indicizzati dal tipo e non un `Dictionary`: `Receive` puo' girare su
+    // piu' thread di lettura (uno per client) e un dizionario mutato da due thread non e' sicuro. Due
+    // incrementi persi su un array non fanno danno: spostano solo la riga di log successiva.
+    // ⚠️ Il marker si costruisce per CONCATENAZIONE, cosi' il suo letterale resta contiguo e una
+    // ricerca a byte (`tools\marker-check.ps1`) lo trova. Prefisso: `[Server] payload corto: `.
+    private readonly int[] _shortPayloads = new int[256];
+
+    private readonly int[] _shortPayloadLastExpected = new int[256];
+
+    private int _shortPayloadsTotal;
+
+    private const int SHORT_PAYLOAD_LOG_EVERY = 100;
+
+    private const int SHORT_PAYLOAD_NEW_SHAPES = 8;
+
+    private void reportShortPayload(NetworkType type, int expected, int have)
+    {
+        // NetworkType e' un enum `byte`: 0..255, cioe' esattamente gli slot degli array.
+        int slot = (byte)type;
+        int count = ++_shortPayloads[slot];
+        int total = ++_shortPayloadsTotal;
+
+        // `attesi` e' sempre >= 1 (si scarta solo quello che serviva), quindi 0 = "mai scritto".
+        bool newShape = _shortPayloadLastExpected[slot] != expected && count <= SHORT_PAYLOAD_NEW_SHAPES;
+        if (!newShape && count % SHORT_PAYLOAD_LOG_EVERY != 0)
+            return;
+
+        _shortPayloadLastExpected[slot] = expected;
+
+        Logger.Warn("[Server] payload corto: tipo=" + type
+            + " attesi=" + expected
+            + " ho=" + have
+            + (count == 1
+                ? ""
+                : " (scarti di questo tipo: " + count + ", totali: " + total + ")"));
+    }
+
+    // ⭐⭐ 3 di 3: I BYTE CI SONO? Le due funzioni con cui un `Receive*` non legge oltre la fine.
+    //
+    // `HasBytes` e' il controllo secco: `data` ha almeno `start + count` byte? Se no, il pacchetto e'
+    // corto: si scarta e lo si dichiara, con `attesi` = i byte che servivano fino a quel punto e
+    // `ho` = quelli arrivati. `false` = chi chiama si ferma, senza lanciare niente.
+    private bool HasBytes(byte[] data, int start, int count, NetworkType type)
+    {
+        if (data != null && start >= 0 && count >= 0 && start + count <= data.Length)
+            return true;
+
+        reportShortPayload(type, start + count, data == null ? 0 : data.Length);
+        return false;
+    }
+
+    // Il campo `[byte lunghezza][lunghezza byte di testo]`, letto DOPO aver controllato che ci sia:
+    // la lunghezza dichiarata dal filo non supera MAI la fine del payload.
+    private bool TryReadString(byte[] data, ref int idx, NetworkType type, out string value)
+    {
+        value = string.Empty;
+
+        if (!HasBytes(data, idx, 1, type))
+            return false;
+
+        int length = data[idx];
+        if (!HasBytes(data, idx + 1, length, type))
+            return false;
+
+        value = Encoding.UTF8.GetString(data, idx + 1, length);
+        idx += length + 1;
+        return true;
     }
 
     /// <summary>
@@ -661,6 +789,42 @@ public class Server
 
     // Team
 
+    /// <summary>
+    /// ⭐⭐ DIFESA 2 — L'INTERVALLO VALIDO DI `team`, e vive in UN SOLO POSTO.
+    ///
+    /// `team` e' un `byte` che arriva DAL FILO (`receivePlayerIntro` e `receivePlayerTeam`), e prima
+    /// d'ora nessuno lo validava: `Core.getTeamData` crea una voce per QUALUNQUE valore, mentre la
+    /// pulizia (`Core.removeUnusedGameData`) ne guardava solo 1..10 — cioe' le squadre 0 e 11..255 non
+    /// venivano MAI rimosse, e il dizionario cresceva per tutta la vita del processo (nel client: il
+    /// processo del gioco, che vive per ore).
+    /// ⇒ 1..10 e' l'intervallo vero (10 = i posti/squadre del menu, `HostSession.MAX_PLAYERS`), e i due
+    /// ingressi passano da `sanitizeTeam`. La pulizia, dal canto suo, ora scansiona TUTTI i valori
+    /// possibili della chiave (0..255), cosi' nessuna squadra puo' restare immortale nemmeno se un
+    /// giorno l'intervallo cambia.
+    /// </summary>
+    private const byte MIN_TEAM = 1;
+    private const byte MAX_TEAM = 10;
+
+    /// <summary>
+    /// ⭐⭐ LA SCELTA DICHIARATA: **NORMALIZZARE**, non rifiutare.
+    ///
+    /// Un `team` fuori da 1..10 viene portato a <see cref="MIN_TEAM"/> e DICHIARATO con un marker.
+    /// Rifiutare avrebbe voluto dire o un nuovo valore di `RefusalType` (cioe' un cambio del protocollo,
+    /// che questo giro non fa) o riusare un rifiuto che parla d'altro (`Protocol`, `DuplicateName`): un
+    /// log che dice una cosa falsa e' peggio di un log che dice cosa e' successo. Normalizzando, il
+    /// giocatore entra (come oggi, quando `team` era quasi sempre 1) e il server non impara nessuna
+    /// chiave nuova: nessuna squadra immortale.
+    /// </summary>
+    private byte sanitizeTeam(byte team)
+    {
+        if (team >= MIN_TEAM && team <= MAX_TEAM)
+            return team;
+
+        Logger.Warn("[Server] team fuori range: valore=" + team
+            + " (validi " + MIN_TEAM + ".." + MAX_TEAM + ") -> normalizzato a " + MIN_TEAM);
+        return MIN_TEAM;
+    }
+
     private void sendPlayerTeam(PeerId peer)
     {
         PlayerInfo current = getCurrentPlayer(peer);
@@ -694,7 +858,10 @@ public class Server
     private void receivePlayerTeam(PeerId peer, byte[] data)
     {
         PlayerInfo current = getCurrentPlayer(peer);
-        current.team = data[0];
+        // ⭐ DIFESA 2 sull'ingresso del pacchetto `Team`: la squadra che entra nello stato e' SOLO
+        // quella valida. Un valore fuori da 1..10 verrebbe altrimenti memorizzato e usato come chiave
+        // di `Core.getTeamData` - cioe' una squadra che la pulizia non sapeva nemmeno di dover cercare.
+        current.team = sanitizeTeam(data[0]);
 
         sendPlayerTeam(peer);
         Core.removeUnusedGameData(connectedPlayers);
@@ -782,6 +949,15 @@ public class Server
             return;
         }
 
+        // ⭐⭐ DIFESA 1 sull'Intro: e' l'unica `Receive*` con una forma VARIABILE (il byte di protocollo,
+        // TRE stringhe `[len][byte]` e il byte della squadra), quindi non la copre la tabella
+        // `MinimumPayloadLength`: ogni lettura passa da `HasBytes`/`TryReadString`, che controllano i
+        // byte PRIMA di leggerli. Un payload corto si ferma qui, dichiarato, e il thread di lettura
+        // resta vivo. Nessun byte cambia per un pacchetto valido: gli stessi byte, letti nell'ordine di
+        // prima (protocollo, stanza, nome, password, squadra).
+        if (!HasBytes(data, idx, 1, NetworkType.Intro))
+            return;
+
         byte protocol = data[idx++];
 
         // Ensure the protocol version matches
@@ -792,13 +968,13 @@ public class Server
             return;
         }
 
-        byte roomLength = data[idx];
-        string room = Encoding.UTF8.GetString(data, idx + 1, roomLength);
-        idx += roomLength + 1;
+        // La stanza non si usa (e' informativa): si legge per farla scorrere, ma si legge DOPO il
+        // controllo dei byte. `out _` perche' il valore non serve, come prima.
+        if (!TryReadString(data, ref idx, NetworkType.Intro, out _))
+            return;
 
-        byte nameLength = data[idx];
-        string name = Encoding.UTF8.GetString(data, idx + 1, nameLength);
-        idx += nameLength + 1;
+        if (!TryReadString(data, ref idx, NetworkType.Intro, out string name))
+            return;
 
         // Ensure there are no duplicate names
         foreach (PlayerInfo player in connectedPlayers.Values)
@@ -811,9 +987,12 @@ public class Server
             }
         }
 
-        byte passwordLength = data[idx];
-        string password = passwordLength == 0 ? null : Encoding.UTF8.GetString(data, idx + 1, passwordLength);
-        idx += passwordLength + 1;
+        if (!TryReadString(data, ref idx, NetworkType.Intro, out string passwordRaw))
+            return;
+
+        // La password vuota resta `null` come prima: `string.IsNullOrEmpty(_password)` distingue il caso
+        // "nessuna password impostata" da "password sbagliata", e la stringa vuota non lo farebbe.
+        string password = passwordRaw.Length == 0 ? null : passwordRaw;
 
         // Ensure the password is correct
         if (!string.IsNullOrEmpty(_password) && (password == null || password != _password))
@@ -823,7 +1002,13 @@ public class Server
             return;
         }
 
-        byte team = data[idx];
+        if (!HasBytes(data, idx, 1, NetworkType.Intro))
+            return;
+
+        // ⭐ DIFESA 2: la squadra che entra nello stato e' solo quella valida (vedi `sanitizeTeam`).
+        // Prima questo byte andava DENTRO `PlayerInfo` cosi' com'era - fino a 255, e la pulizia ne
+        // cercava solo 10.
+        byte team = sanitizeTeam(data[idx]);
 
         // Add new connected player
         Logger.Info("Player connection accepted");

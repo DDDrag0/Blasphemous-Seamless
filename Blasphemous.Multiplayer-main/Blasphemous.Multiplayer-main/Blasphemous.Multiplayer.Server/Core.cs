@@ -109,16 +109,27 @@ internal static class Core
     /// </summary>
     public static void removeUnusedGameData(Dictionary<PeerId, PlayerInfo> allPlayers)
     {
-        for (byte i = 1; i <= 10; i++)
+        // ⭐⭐ TUTTI i valori possibili della chiave, non 1..10. Prima questo ciclo era
+        // `for (byte i = 1; i <= 10; i++)`, e le squadre 0 e 11..255 non venivano MAI guardate: `team`
+        // arriva dal filo e `getTeamData` crea una voce per qualunque valore, quindi bastava UN
+        // pacchetto con `team = 200` per lasciare nel dizionario una squadra che nessuna pulizia
+        // avrebbe piu' rimosso - e nel client questo processo e' il gioco, che vive per ore.
+        // ⇒ 256 valori, l'intero dominio di un `byte`: nessuna squadra puo' restare immortale, nemmeno
+        // se un domani l'intervallo valido cambia (`Server.MIN_TEAM`/`MAX_TEAM`, che oggi e' 1..10).
+        // Il conto e' `int` e non `byte` di proposito: con `byte` la condizione `i <= 255` non
+        // finirebbe mai (al 255 l'incremento avvolge a 0).
+        for (int i = 0; i <= byte.MaxValue; i++)
         {
-            if (!teamGameDatas.ContainsKey(i))
+            byte team = (byte)i;
+
+            if (!teamGameDatas.ContainsKey(team))
                 continue;
 
             // If no player is currently on this team, remove the game data
             bool teamExists = false;
             foreach (PlayerInfo player in allPlayers.Values)
             {
-                if (player.team == i)
+                if (player.team == team)
                 {
                     teamExists = true;
                     break;
@@ -126,8 +137,8 @@ internal static class Core
             }
             if (!teamExists)
             {
-                Logger.Info("Removing game data for team " + i);
-                teamGameDatas.Remove(i);
+                Logger.Info("Removing game data for team " + team);
+                teamGameDatas.Remove(team);
             }
         }
     }
