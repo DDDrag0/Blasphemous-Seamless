@@ -334,6 +334,17 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// Chiude: un BYE (reliable, best effort: cosi' l'host lo sa **subito** invece di aspettare il
         /// timeout), poi `CloseP2PSessionWithUser` — una sessione lasciata aperta e' uno stato che
         /// nessuno vede e che resta fino alla chiusura del gioco. Idempotente, non lancia.
+        ///
+        /// 🔴 MA LA `Close` **NON GIRA DURANTE LO SHUTDOWN** — ed e' il secondo punto del crash in uscita.
+        /// Questo metodo e' l'ultimo anello del `Disconnect` di `Multiplayer.OnDispose` (il **primo** e'
+        /// `P2PServerTransportImpl.Stop`, vedi la'); senza questo cancello il crash si sarebbe soltanto
+        /// **spostato** da una `Close` all'altra. In chiusura ci pensa il processo: Steam chiude le
+        /// sessioni da se' quando il processo muore, ed e' il limite dichiarato.
+        ///
+        /// ⚠️ IL BYE RESTA, anche in chiusura, e la scelta e' dichiarata: e' una `Send`, non una
+        /// `Close` — l'ospite la mandava gia' prima di questo fix e chiudeva pulito (G2), ed e' il modo
+        /// in cui l'host sa **subito** che quel giocatore se n'e' andato invece di aspettare i 15 s del
+        /// timeout. Cio' che si toglie e' solo la chiamata nativa che ha fatto saltare G1.
         /// </summary>
         internal static void End()
         {
@@ -347,14 +358,19 @@ namespace Blasphemous.Multiplayer.Client.Network
                 // Un addio perso non deve impedire la chiusura.
             }
 
-            try
+            // 🔴 IL CANCELLO (vedi `P2PShutdownGate`): alzato nella PRIMA riga di `Multiplayer.OnDispose`.
+            // Quando e' alzato, della chiusura si occupa la morte del processo — che non sbaglia mai.
+            if (!P2PShutdownGate.Active)
             {
-                if (_host.m_SteamID != 0UL)
-                    SteamNetworking.CloseP2PSessionWithUser(_host);
-            }
-            catch (Exception)
-            {
-                // Idem.
+                try
+                {
+                    if (_host.m_SteamID != 0UL)
+                        SteamNetworking.CloseP2PSessionWithUser(_host);
+                }
+                catch (Exception)
+                {
+                    // Idem.
+                }
             }
 
             _opened = false;

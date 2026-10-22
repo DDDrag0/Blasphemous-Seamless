@@ -116,15 +116,28 @@ public class Multiplayer : BlasMod, ISlotPersistentMod<MultiplayerSlotData>, IGl
     // subscribed on a dying object. Log only.
     protected override void OnDispose()
     {
+        // 🔴🔴 PRIMA DI TUTTO: IL CANCELLO DELLA CHIUSURA. Da questa riga in poi **nessuna**
+        // `CloseP2PSessionWithUser` gira piu' (vedi `Network\P2PShutdownGate.cs`). E' il fix del crash
+        // in uscita: `Core.OnDestroy` → `ModLoader.Dispose` → qui → `HostSession.Stop` → il server →
+        // l'adapter P2P → `CloseP2PSessionWithUser` → **access violation NATIVO in `steam_api64`**
+        // (`scratch\DIAGNOSI-CRASH-E-AI.md` §A). In chiusura Steam sta gia' chiudendo: la sessione la
+        // chiude la **morte del processo**, ed e' il limite che avevamo gia' dichiarato.
+        //
+        // ⚠️ L'ORDINE E' IL FIX: alzato **qui**, cioe' **prima** di `NetworkManager?.Disconnect()`
+        // (sotto) e **prima** di `HostSession.Stop()` — i due percorsi che chiudevano la sessione.
+        // Se lo si alzasse dopo, il crash si sposterebbe soltanto da una `Close` all'altra.
+        P2PShutdownGate.Enter();
+
         CutsceneProbe.Unsubscribe();
 
-        // 🔴 E LA SESSIONE P2P SI CHIUDE CON LA MOD. Senza questa riga la chiusura normale del gioco
-        // (ospite) non passava da nessun `Disconnect`: `CloseP2PSessionWithUser` vive in
-        // `SteamP2PTransportImpl.End()`, che si raggiunge solo da qui. La sessione sarebbe rimasta
-        // aperta fino alla morte del processo.
+        // 🔴 E LA SESSIONE P2P SI CHIUDE CON LA MOD... **tranne la `Close`**, che adesso e' dietro il
+        // cancello qui sopra. Questa riga resta per il BYE: e' una `Send`, non una `Close`, e' il modo
+        // in cui l'altro giocatore sa **subito** che siamo usciti invece di aspettare i 15 s del
+        // timeout. La chiamata nativa che ha fatto saltare G1 (`CloseP2PSessionWithUser` in
+        // `SteamP2PTransportImpl.End()`) non parte piu', perche' `P2PShutdownGate.Active` e' vero.
         //
         // ⚠️ PRIMA di `HostSession.Stop()`: e' lo Stop a spegnere il server, quindi il `Disconnect`
-        // deve poter ancora chiudere il filo. E in `try/catch`: `OnDispose` non deve lanciare.
+        // deve poter ancora mandare l'addio. E in `try/catch`: `OnDispose` non deve lanciare.
         try { NetworkManager?.Disconnect(); } catch { }
 
         // ⭐ LA SESSIONE-HOST SI CHIUDE CON LA MOD. Il server ascolta su una porta del PROCESSO del

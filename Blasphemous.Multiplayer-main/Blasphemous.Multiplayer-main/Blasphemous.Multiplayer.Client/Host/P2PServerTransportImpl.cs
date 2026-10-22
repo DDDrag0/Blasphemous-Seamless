@@ -226,7 +226,7 @@ namespace Blasphemous.Multiplayer.Client.Host
             }
         }
 
-        /// <summary>Chiude le sessioni dei peer e smette di consegnare eventi. Idempotente, non lancia.</summary>
+        /// <summary>Dimentica i peer e smette di consegnare eventi. Idempotente, non lancia.</summary>
         internal static void Stop()
         {
             List<ulong> peers;
@@ -238,20 +238,36 @@ namespace Blasphemous.Multiplayer.Client.Host
                 _running = false;
             }
 
-            for (int i = 0; i < peers.Count; i++)
-            {
-                try
-                {
-                    SteamNetworking.CloseP2PSessionWithUser(new CSteamID(peers[i]));
-                }
-                catch (Exception)
-                {
-                    // Una sessione che non si chiude non deve impedire di fermare l'adapter.
-                }
-            }
-
+            // 🔴 QUI NON SI CHIUDE NESSUNA SESSIONE P2P — ed e' il FIX del crash in uscita.
+            //
+            // C'era un ciclo che chiamava `SteamNetworking.CloseP2PSessionWithUser(new CSteamID(peer))`
+            // per ogni peer, aggiunto **per igiene**. Ma questo `Stop` e' l'ULTIMO anello del percorso di
+            // chiusura del gioco: `Core.OnDestroy` → `ModLoader.Dispose` → `Multiplayer.OnDispose` →
+            // `HostSession.Stop` → `Server.Stop` → `CompositeServerTransport.stopAll` → **qui**. In quel
+            // momento Steam sta gia' chiudendo, e la `Close` finiva in un **access violation NATIVO in
+            // `steam_api64`** (`scratch\DIAGNOSI-CRASH-E-AI.md` §A, G1 L10458-10472): l'host moriva in
+            // uscita, l'ospite no.
+            //
+            // ⭐ LA REGOLA: *la `Close` non deve mai girare durante lo shutdown.* In chiusura ci pensa il
+            // **processo** — Steam chiude le sessioni da se' quando il processo muore, ed e' il limite
+            // che avevamo gia' dichiarato. Qui si **dimenticano** i peer (lo stato in RAM si azzera
+            // comunque, il server non deve piu' consegnare niente a nessuno) e non si tocca Steam.
+            //
+            // ⚠️ NON e' "messa dietro un cancello": e' **tolta**. Il cancello (`P2PShutdownGate`) serve
+            // al lato peer, dove il percorso di chiusura esiste ancora (`End()`); dal lato server una
+            // `Close` in uscita non serve a niente — se il processo sopravvive a questo `Stop` (l'host
+            // che lascia la sessione), le sessioni le chiude il percorso di gioco giusto (`Drop`), non la
+            // fine dell'adapter.
+            //
+            // ⛔ LE `Close` DEI PERCORSI DI GIOCO SONO RIMASTE TUTTE: `Drop` (peer perso / timeout),
+            // `LinkLost`, `HandshakeExpired`, il bottone "Disconnect". Vedi la tabella del referto
+            // `scratch\REFERTO-FIX-CRASH.md`.
             if (peers.Count > 0 || _registered)
-                ModLog.Info(MarkerStop + " peer=" + peers.Count);
+                ModLog.Info(MarkerStop + " peer=" + peers.Count +
+                            " - nessuna Close P2P da qui (" +
+                            (P2PShutdownGate.Active
+                                ? "chiusura del processo: le sessioni le chiude Steam"
+                                : "sessione lasciata al processo") + ")");
         }
 
         /// <summary>
