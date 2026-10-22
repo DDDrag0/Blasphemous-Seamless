@@ -66,13 +66,14 @@ namespace Blasphemous.Multiplayer.Client.Network
     ///     `[Net] p2p: primo pacchetto (canale N) dopo Xs` e subito dopo
     ///     `[Net] p2p: connesso (handshake Xs)`. ⭐ E' **il** marker che dice se il tunnel si e' aperto —
     ///     e il valore di X dice **quanto** ci mette la rete vera. Da questo istante (e **solo** da
-    ///     questo) vale la soglia del battito: `KEEPALIVE_TIMEOUT_SECONDS` = **5 s** senza nessun
+    ///     questo) vale la soglia del battito: `KEEPALIVE_TIMEOUT_SECONDS` = **15 s** senza nessun
     ///     pacchetto valido ⇒ link perso.
     ///
     /// ⚠️ E' UNA DISTINZIONE, NON UN NUMERO PIU' GRANDE: il 5 s non e' stato "allargato" (un link che si
     /// e' aperto e tace per 5 s e' davvero morto) — e' stato **spostato dove ha senso**, cioe' dopo il
     /// primo pacchetto. Un timeout unico a 25 s avrebbe reso la caduta di un link reale 5 volte piu'
-    /// lenta da vedere.
+    /// lenta da vedere. ⭐ POI IL 5 s E' DIVENTATO **15 s** (fix ③): cinque battiti da 3 s, perche' un
+    /// **hitch del gioco** (misurato: `frameMs 4190` e `4813`) non deve uccidere una sessione viva.
     ///
     /// ─────────────────────────────────────────────────────────────────────────────────────────────
     /// ③ LA RICONNESSIONE (⭐ questo e' il fix del "dopo una disconnessione non torna e non avvisa")
@@ -117,8 +118,22 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// </summary>
         private const float HANDSHAKE_TIMEOUT_SECONDS = 25f;
 
-        /// <summary>⏱️ LA SOGLIA DEL BATTITO: un link **gia' aperto** che tace per 5 s e' perso.</summary>
-        private const float KEEPALIVE_TIMEOUT_SECONDS = 5f;
+        /// <summary>
+        /// ⏱️ LA SOGLIA DEL BATTITO: un link **gia' aperto** che tace per **15 s** e' perso.
+        ///
+        /// ⭐⭐ FIX ③ — PRIMA ERANO **5 s** CONTRO UN BATTITO OGNI **3 s**, e quella era una trappola:
+        /// un **solo** battito perso (3 + 3 = 6 s &gt; 5 s) dichiarava morto un link vivo. Misurato:
+        /// la caduta arrivava dopo uno stallo di **4-5 s** del gioco (`fps=0.2`, `frameMs 4190` e
+        /// `4813`): un hitch di un frame non e' un guasto di rete, ma il margine era **zero**.
+        ///
+        /// 15 s = **cinque** battiti da 3 s: si perdono quattro battiti consecutivi prima di dire che
+        /// il link e' morto, e lo stallo del gioco — che e' la causa **misurata** di queste cadute —
+        /// non basta piu' a uccidere la sessione da solo.
+        ///
+        /// ⛔ E I **25 s** DELL'HANDSHAKE NON SI TOCCANO: quella e' la negoziazione (3-7 s tipici,
+        /// 10-15 s col relay) ed e' un'altra cosa. Qui si allarga solo la tolleranza del battito.
+        /// </summary>
+        private const float KEEPALIVE_TIMEOUT_SECONDS = 15f;
 
         /// <summary>Il battito: uno ogni 3 s (§9: "1 byte ogni 2-3 s").</summary>
         private const float KEEPALIVE_SECONDS = 3f;
@@ -164,7 +179,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             /// <summary>Hello partito (o in partenza), nessun pacchetto ricevuto: vale il timeout di 25 s.</summary>
             Connecting,
 
-            /// <summary>Almeno un pacchetto valido ricevuto: vale il timeout del battito, 5 s.</summary>
+            /// <summary>Almeno un pacchetto valido ricevuto: vale il timeout del battito, 15 s.</summary>
             Connected,
         }
 
@@ -275,7 +290,7 @@ namespace Blasphemous.Multiplayer.Client.Network
                 _linkLost = false;
 
                 // ⭐ ENTRA NELLA FASE DI NEGOZIAZIONE: da qui e fino al **primo pacchetto ricevuto** vale
-                // `HANDSHAKE_TIMEOUT_SECONDS` (25 s), non i 5 s del battito. Vedi `Tick`.
+                // `HANDSHAKE_TIMEOUT_SECONDS` (25 s), non i 15 s del battito. Vedi `Tick`.
                 _phase = Phase.Connecting;
 
                 _txSeq = 0u;
@@ -368,8 +383,10 @@ namespace Blasphemous.Multiplayer.Client.Network
         ///     l'handshake e' fallito: `[Net] p2p: handshake scaduto (25 s)` + `Disconnected`. Prima di
         ///     questo fix qui c'erano i 5 s del battito, cioe' la mod abbandonava mentre Steam stava
         ///     ancora aprendo il tunnel (3-7 s tipici, 10-15 s col relay).
-        ///   · `Connected`  ⇒ **5 s** dall'ultimo pacchetto valido. Qui i 5 s sono **giusti**: il link
-        ///     e' aperto, il peer manda un battito ogni 3 s, e 5 s di silenzio sono un fatto.
+        ///   · `Connected`  ⇒ **15 s** dall'ultimo pacchetto valido. Qui i 15 s sono **giusti**: il link
+        ///     e' aperto, il peer manda un battito ogni 3 s, e 15 s = cinque battiti persi (fix ③: prima
+        ///     erano 5 s, cioe' **meno di due battiti**, e un hitch di 4-5 s del gioco uccideva la
+        ///     sessione).
         /// </summary>
         internal static void Tick()
         {
@@ -451,7 +468,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         /// hanno due soglie diverse e nessuna terza possibilita' (vedi il commento di classe):
         ///
         ///   · `Connecting` ⇒ **25 s** da `_openedAt` senza **mai** un pacchetto ⇒ `HandshakeExpired`;
-        ///   · `Connected`  ⇒ **5 s** dall'ultimo pacchetto valido ⇒ `LinkLost`.
+        ///   · `Connected`  ⇒ **15 s** dall'ultimo pacchetto valido ⇒ `LinkLost`.
         ///
         /// ⚠️ `Disconnected` NON si sorveglia, e non e' una dimenticanza: e' la fase in cui il fatto e'
         /// **gia' stato detto** (marker + evento + notifica, una volta sola). Ripeterlo sarebbe un
@@ -539,6 +556,13 @@ namespace Blasphemous.Multiplayer.Client.Network
             NotifyIfOutOfSession("P2P: riconnessione non riuscita (l'host non risponde)");
 
             RaiseDisconnected();
+
+            // ⭐⭐ FIX ① — come in `LinkLost`: l'ingresso in lobby che aspettava questa sessione non e'
+            // piu' valido, e finché resta valorizzato ogni invito successivo viene scartato dal cancello
+            // di `StartJoin`. È il caso "la negoziazione non si è mai aperta" (relay/firewall): dopo,
+            // l'unica via utile è **accettare un invito nuovo**, e prima non poteva partire.
+            SteamLobbyImpl.ResetJoinAfterLinkLost("handshake scaduto (" + (int)HANDSHAKE_TIMEOUT_SECONDS +
+                                                  " s)");
 
             // ⭐ E SI DICE COME SI RIENTRA (stessa riga di `LinkLost`): senza, dopo lo scaduto il log si
             // ferma e non si distingue "sto aspettando" da "ho rinunciato".
@@ -1010,7 +1034,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         ///     al suo posto c'e' `handshake scaduto`. E il valore di X dice **quanto** ci mette la rete
         ///     vera (3-7 s tipici, 10-15 s col relay).
         ///
-        /// E da qui in poi vale la soglia del **battito** (5 s), non piu' quella dell'handshake (25 s).
+        /// E da qui in poi vale la soglia del **battito** (15 s), non piu' quella dell'handshake (25 s).
         /// </summary>
         private static void MarkConnected(int channel)
         {
@@ -1091,6 +1115,18 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             RaiseDisconnected();
 
+            // ⭐⭐ FIX ① — E L'INGRESSO IN LOBBY CHE HA APERTO QUESTA SESSIONE NON VALE PIÙ.
+            //
+            // 🔴 IL DIFETTO, misurato: `_joinLobby` sopravviveva alla caduta (il timeout non passa da
+            // `LeaveLobby`, che gira solo al ritorno al menu), quindi `StartJoin` lo leggeva come "c'e'
+            // gia' un ingresso in corso" e **scartava ogni invito**: `join: richiesta … ignorata`. Il
+            // campo moriva solo al `Dispose`. Azzerato **qui**, l'invito successivo passa.
+            //
+            // ⚠️ NON si chiama `LeaveLobby`: è la lobby dell'host, è ancora viva, e uscirne renderebbe
+            // questo giocatore un non-membro (l'host gli rifiuterebbe la sessione di ritorno). Il reset
+            // è di **stato locale** (`SteamLobbyImpl.ResetJoinAfterLinkLost`).
+            SteamLobbyImpl.ResetJoinAfterLinkLost(reason);
+
             // ⭐ E SI DICE **COSA SUCCEDE ADESSO**: senza questa riga, chi legge il log dopo il timeout
             // trova il silenzio e non sa se la mod sta aspettando, se ha rinunciato, o se e' viva. Il
             // link resta dichiarato perso (non si finge che sia tornato, vedi sopra) e si riapre in
@@ -1113,7 +1149,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         ///   · `_helloed = false` — ⭐ l'hello si **rimanda**: la sessione e' nuova, e l'host deve
         ///     ri-annunciare questo peer. E' anche il marker che l'utente cerca (`hello inviato a …`);
         ///   · `_phase = Connecting` + `_openedAt = adesso` — si rientra in **negoziazione**, quindi vale
-        ///     il timeout dell'handshake (25 s) contato da **questo** istante, non i 5 s del battito e non
+        ///     il timeout dell'handshake (25 s) contato da **questo** istante, non i 15 s del battito e non
         ///     il `Begin` di mezz'ora prima. Cosi' se la riconnessione non riesce lo dice
         ///     `handshake scaduto (25 s)` — con la notifica — invece di sparire.
         ///
@@ -1336,7 +1372,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         ///   **4** `TIMEOUT` ⇒ il codice che conta: **nessun `Accept` dall'altra parte**, o firewall/relay.
         ///
         /// ⚠️ NON disconnette: e' una **misura**, e la decisione la prende il timeout (25 s di handshake,
-        /// 5 s di battito). Chiamare qui una disconnessione darebbe due fini per lo stesso fatto.
+        /// 15 s di battito). Chiamare qui una disconnessione darebbe due fini per lo stesso fatto.
         /// </summary>
         private static void OnSessionConnectFail(P2PSessionConnectFail_t failure)
         {

@@ -108,6 +108,7 @@ internal static class SteamLobbyImpl
     internal const string MarkerJoinWaiting = "[Steam] join in attesa da ";
     internal const string MarkerJoinReady = "[Steam] join: dati pronti hostIp=";
     internal const string MarkerJoinDropped = "[Steam] join: scartato ";
+    internal const string MarkerJoinReset = "[Steam] join: ingresso azzerato (link perso) lobby=";
     internal const string MarkerLobbyMember = "[Steam] lobby: membro cambiato ";
     internal const string MarkerLobbyOwner = "[Steam] lobby: proprietario=";
     internal const string MarkerHostLeft = "[Steam] l'host ha chiuso la sessione";
@@ -193,6 +194,23 @@ internal static class SteamLobbyImpl
     private static bool _hostLobbyReady;     // ⭐ consumato dalla UI: "la lobby c'e', avvia l'host"
 
     private static CSteamID _joinLobby = CSteamID.Nil;   // la lobby che stiamo entrando (o Nil)
+
+    /// <summary>
+    /// ⭐ L'ULTIMA LOBBY IN CUI SIAMO DAVVERO ENTRATI, e che **sopravvive** all'azzeramento
+    /// dell'ingresso (`ResetJoinAfterLinkLost`).
+    ///
+    /// PERCHE' SERVE UN SECONDO CAMPO: dopo la caduta del link l'ingresso va azzerato (o `StartJoin`
+    /// scarta ogni invito), ma la lobby dell'host e' ancora viva — e due cose la usano ancora:
+    ///   · `SteamP2PTransportImpl.Begin` la legge da `CurrentLobby` per un **Connect manuale** (`p2p`),
+    ///     cioe' il rientro **senza** un invito nuovo;
+    ///   · `IsLobbyMember` decide se accettare la sessione **di ritorno** dell'host: senza questa
+    ///     memoria, dopo l'azzeramento la risposta sarebbe "non e' un membro" e il tunnel si aprirebbe
+    ///     in un verso solo (docs\STEAM_INVITES.md §9).
+    ///
+    /// ⚠️ Si azzera SOLO con un'uscita **voluta** (`LeaveLobby`): non e' un cancello, e' una memoria.
+    /// </summary>
+    private static CSteamID _lastJoinLobby = CSteamID.Nil;
+
     private static bool _joinEntered;        // LobbyEnter_t con successo: siamo DENTRO
     private static float _joinSince;         // quando e' partito il JoinLobby
     private static float _joinDataSince;     // quando abbiamo cominciato ad aspettare i dati
@@ -245,6 +263,10 @@ internal static class SteamLobbyImpl
     ///
     /// ⚠️ NON GUARDA SE UNA SESSIONE TCP È APERTA: è il punto della sonda — deve funzionare anche
     /// quando il TCP non arriva (secondo PC su un hotspot).
+    ///
+    /// ⭐ E C'E' UN TERZO PASSO: dopo una caduta l'ingresso viene azzerato (`ResetJoinAfterLinkLost`)
+    /// ma la lobby resta quella dell'host, e un **Connect manuale** (`p2p`) deve poterla ancora
+    /// nominare — altrimenti l'unico modo di rientrare sarebbe un invito nuovo.
     /// </summary>
     internal static CSteamID CurrentLobby
     {
@@ -253,7 +275,10 @@ internal static class SteamLobbyImpl
             if (_hostLobby.m_SteamID != 0UL)
                 return _hostLobby;
 
-            return _joinLobby;
+            if (_joinLobby.m_SteamID != 0UL)
+                return _joinLobby;
+
+            return _lastJoinLobby;
         }
     }
 
@@ -276,7 +301,12 @@ internal static class SteamLobbyImpl
             if (IsMemberOf(_hostLobby, user))
                 return true;
 
-            return IsMemberOf(_joinLobby, user);
+            if (IsMemberOf(_joinLobby, user))
+                return true;
+
+            // ⭐ E LA LOBBY DA CUI SI VIENE: dopo una caduta l'ingresso e' azzerato (fix ①) e senza
+            // questa riga l'host verrebbe preso per uno sconosciuto proprio mentre prova a rientrare.
+            return IsMemberOf(_lastJoinLobby, user);
         }
         catch (Exception)
         {
@@ -466,6 +496,11 @@ internal static class SteamLobbyImpl
 
             ResetHostState();
             ResetJoinState();
+
+            // ⭐ E LA MEMORIA DELLA LOBBY SE NE VA CON L'USCITA **VOLUTA** (non con la caduta): e' la
+            // differenza fra "ho chiuso io" (non c'e' piu' niente da riusare) e "e' caduto il link"
+            // (la lobby dell'host e' ancora viva, e un Connect manuale deve poterla nominare).
+            _lastJoinLobby = CSteamID.Nil;
 
             if (host.m_SteamID != 0UL)
             {
@@ -707,6 +742,10 @@ internal static class SteamLobbyImpl
             _joinDataDone = false;
             _hostLeftReported = false;
 
+            // ⭐ E LA MEMORIA: questa e' la lobby in cui siamo DAVVERO entrati. Resta anche quando
+            // `_joinLobby` viene azzerato da una caduta (vedi `ResetJoinAfterLinkLost`).
+            _lastJoinLobby = lobby;
+
             // ⭐ PRIMO TENTATIVO: la cache, subito, senza nessuna attesa.
             if (TryReadJoinData("cache"))
                 return;
@@ -867,6 +906,14 @@ internal static class SteamLobbyImpl
                 !int.TryParse(portText, out port) || port <= 0 || port > 65535)
                 return false;
 
+            // ⭐⭐ FIX ⑤ — LA NOTIFICA UNA VOLTA SOLA. Questa funzione viene chiamata **due** volte per
+            // un invito: subito dalla cache (`LobbyEnter_t`) e poi dal ripiego (`LobbyDataUpdate_t`) —
+            // che arriva lo stesso, anche quando la cache aveva già i dati. Il risultato era la doppia
+            // notifica identica a schermo (`da=cache` + `da=update`). `_joinDataDone` e' il fatto "i
+            // dati sono gia' arrivati": se e' gia' true, questa e' la seconda lettura e la notifica
+            // l'ha gia' data la prima. Il resto (i campi, il marker) si riscrive come prima.
+            bool firstRead = !_joinDataDone;
+
             _joinIp = ip;
             _joinPort = port;
             _joinReady = true;
@@ -881,7 +928,11 @@ internal static class SteamLobbyImpl
             // riga che nella prova hotspot diceva `connessione a 192.168.147.1:27051` mentre il P2P
             // era gia' disponibile. L'IP resta **nel log** due righe sopra (`MarkerJoinReady`), dove
             // serve: e' la diagnostica di quale host ha invitato.
-            Notify("Steam: invito accettato, connessione P2P");
+            //
+            // ⭐ E UNA VOLTA SOLA per invito: vedi `firstRead` (fix ⑤).
+            if (firstRead)
+                Notify("Steam: invito accettato, connessione P2P");
+
             return true;
         }
         catch (Exception e)
@@ -958,6 +1009,12 @@ internal static class SteamLobbyImpl
             {
                 ModLog.Info(MarkerJoinRequest + lobby.m_SteamID + " ignorata: c'e' gia' un ingresso in corso (id=" +
                             _joinLobby.m_SteamID + ")");
+
+                // ⭐⭐ FIX ④ — E LO SI DICE ANCHE A SCHERMO. L'host questo messaggio ce l'ha gia' (ramo
+                // `IsConnectedNow()`, sotto); qui no, e il rifiuto era **muto**: nel log si leggeva
+                // `ignorata: c'e' gia' un ingresso in corso`, ma a schermo non succedeva niente e
+                // l'invito sembrava un tasto rotto. Una notifica per invito scartato, non una per frame.
+                Notify("Steam: invito ignorato, c'e' gia' un ingresso in corso");
                 return;
             }
 
@@ -1211,6 +1268,68 @@ internal static class SteamLobbyImpl
         _hostLobbyReady = false;
     }
 
+    /// <summary>
+    /// ⭐⭐ FIX ① — IL LINK P2P È MORTO: L'INGRESSO IN LOBBY NON VALE PIÙ, e va azzerato **qui**, non
+    /// alla chiusura del gioco.
+    ///
+    /// 🔴 IL DIFETTO, misurato: dopo il timeout del battito `_joinLobby` restava valorizzato (il
+    /// timeout non passa da `LeaveLobby` — quello gira solo al ritorno al menu). Quindi `StartJoin`
+    /// lo leggeva come "c'è già un ingresso in corso" e **scartava ogni invito**:
+    ///
+    ///   `[Steam] join: richiesta lobby=… ignorata: c'e' gia' un ingresso in corso (id=…)`
+    ///
+    /// e il campo moriva solo al `Dispose`: la sessione non tornava, e l'invito successivo non
+    /// partiva nemmeno (nessun trasporto, nessun hello, nessuna riga a schermo).
+    ///
+    /// ✅ IL RESET PASSA DAL PERCORSO CHE ESISTE GIÀ (`ResetJoinState`), e **non** da
+    /// `SteamMatchmaking.LeaveLobby`: la lobby è dell'host ed è ancora viva, e uscirne renderebbe
+    /// questo giocatore un **non-membro** — l'host gli rifiuterebbe la prossima sessione P2P
+    /// (`IsLobbyMember`, docs\STEAM_INVITES.md §9). Si azzera il **cancello**, non la lobby.
+    ///
+    /// ⚠️ E LA MEMORIA RESTA (`_lastJoinLobby`): dopo l'azzeramento `CurrentLobby` continua a
+    /// nominarla, quindi un **Connect manuale** (`p2p`) rientra senza aspettare un invito nuovo, e
+    /// `IsLobbyMember` riconosce l'host quando la sessione di ritorno arriva. Senza questa riga il
+    /// fix ① spegnerebbe il rientro manuale del fix precedente.
+    ///
+    /// ⚠️ E LA LOBBY D'HOST NON SI TOCCA: se stiamo ospitando, `_joinLobby` **è** la lobby nostra e
+    /// il link che è morto è quello del peer — l'host resta in piedi e in ascolto (fix ②).
+    ///
+    /// Non fa niente (e non stampa niente) se non c'era nessun ingresso in corso: il percorso che
+    /// non usa Steam non paga nemmeno un confronto.
+    /// </summary>
+    internal static void ResetJoinAfterLinkLost(string reason)
+    {
+        try
+        {
+            CSteamID join = _joinLobby;
+
+            if (join.m_SteamID == 0UL)
+                return;
+
+            // La lobby che ospitiamo noi non è un "ingresso": quella resta.
+            if (_hostLobby.m_SteamID != 0UL && join.m_SteamID == _hostLobby.m_SteamID)
+                return;
+
+            // La memoria si scrive prima del reset: se per qualche ragione non era stata scritta
+            // all'ingresso, questo è l'ultimo momento utile per non perdere l'unico modo di rientrare.
+            _lastJoinLobby = join;
+
+            ModLog.Warn(MarkerJoinReset + join.m_SteamID + " motivo=" + (reason ?? "(non detto)") +
+                        ": il prossimo invito non trova piu' il cancello chiuso (la lobby resta: la " +
+                        "memoria serve al Connect manuale)");
+
+            ResetJoinState();
+        }
+        catch (Exception e)
+        {
+            ModLog.Error(MarkerError + e.GetType().Name + ": " + e.Message + " (ResetJoinAfterLinkLost)");
+        }
+    }
+
+    /// <summary>
+    /// Azzera lo stato dell'INGRESSO. ⚠️ NON azzera `_lastJoinLobby`: quella è una **memoria**, e la
+    /// butta via solo l'uscita voluta (`LeaveLobby`). Vedi `ResetJoinAfterLinkLost`.
+    /// </summary>
     private static void ResetJoinState()
     {
         _joinLobby = CSteamID.Nil;

@@ -49,8 +49,17 @@ namespace Blasphemous.Multiplayer.Client.Host
     /// </summary>
     internal static class P2PServerTransportImpl
     {
-        /// <summary>Un peer che non manda piu' niente da 5 s non c'e' piu' (stessa soglia del lato peer).</summary>
-        private const float TIMEOUT_SECONDS = 5f;
+        /// <summary>
+        /// ⏱️ Un peer che non manda piu' niente da **15 s** non c'e' piu' (stessa soglia del lato peer).
+        ///
+        /// ⭐⭐ FIX ③ — PRIMA ERANO **5 s** contro un battito ogni **3 s**: un solo battito perso bastava
+        /// a buttare fuori un giocatore vivo. La caduta misurata arrivava dopo uno stallo di **4-5 s**
+        /// del gioco (`fps=0.2`, `frameMs 4190` / `4813`), cioe' un hitch, non una rete morta. 15 s =
+        /// cinque battiti: le due soglie (qui e `KEEPALIVE_TIMEOUT_SECONDS` del lato peer) **devono
+        /// restare uguali**, altrimenti il lato con la soglia piu' corta chiude la sessione per primo e
+        /// l'altro vede la caduta come "l'host ha chiuso".
+        /// </summary>
+        private const float TIMEOUT_SECONDS = 15f;
 
         /// <summary>Quanti pacchetti si leggono al massimo per canale per frame.</summary>
         private const int MAX_PACKETS_PER_FRAME = 64;
@@ -66,6 +75,7 @@ namespace Blasphemous.Multiplayer.Client.Host
         private const string MarkerHello = "[Net] p2p peer connesso: ";
         private const string MarkerGone = "[Net] p2p peer disconnesso: ";
         private const string MarkerTimeout = "[Net] p2p timeout peer=";
+        private const string MarkerHostSolo = "[Net] p2p host: nessun peer connesso ";
         private const string MarkerSendFail = "[Net] p2p invio fallito: ";
 
         // ─── STATO ──────────────────────────────────────────────────────────────────────────────────
@@ -539,8 +549,31 @@ namespace Blasphemous.Multiplayer.Client.Host
         private static void Drop(ulong steamId, string reason)
         {
             bool existed;
+            bool wasPeer;    // era un peer ANNUNCIATO: cioe' una sessione vera, non un avanzo
+            bool aloneNow;   // dopo questo drop non resta nessun peer annunciato
+
             lock (_gate)
+            {
+                PeerState state;
+                wasPeer = _peers.TryGetValue(steamId, out state) && state.Announced;
+
                 existed = _peers.Remove(steamId);
+
+                // ⚠️ Il conteggio si fa SOTTO IL CANCELLO: fra questo drop e il prossimo frame un altro
+                // peer potrebbe sparire, e un "sono solo" letto fuori sarebbe gia' vecchio.
+                aloneNow = existed;
+                if (aloneNow)
+                {
+                    foreach (KeyValuePair<ulong, PeerState> pair in _peers)
+                    {
+                        if (pair.Value.Announced)
+                        {
+                            aloneNow = false;
+                            break;
+                        }
+                    }
+                }
+            }
 
             if (!existed)
                 return;
@@ -558,6 +591,56 @@ namespace Blasphemous.Multiplayer.Client.Host
             catch (Exception)
             {
                 // Una sessione che non si chiude non deve impedire di dimenticare il peer.
+            }
+
+            // ⭐⭐ FIX ② — IL LINK È MORTO: anche lo stato del GIOCATORE torna a sconnesso (il server no).
+            // Dopo aver detto al server che quel peer non c'è più, e **solo** se non ne resta nessun
+            // altro: vedi `ResetHostPlayerState`.
+            if (wasPeer && aloneNow)
+                ResetHostPlayerState(reason);
+        }
+
+        /// <summary>
+        /// ⭐⭐ FIX ② — L'HOST NON È PIÙ "CONNESSO" QUANDO IL LINK CON IL PEER MUORE, e resta in ascolto.
+        ///
+        /// 🔴 IL DIFETTO, misurato: dopo la caduta l'adapter restava armato (giusto) ma il
+        /// `NetworkManager` dell'host restava `connected=True` (G1:780) — la sua connessione è quella
+        /// **locale** (il dial del loopback verso il proprio server) e il timeout del P2P non la tocca.
+        /// La conseguenza non è cosmetica: `SteamLobbyImpl.IsConnectedNow()` legge **proprio** quello
+        /// stato e scarta ogni invito (`[Steam] join: scartato gia' connessi a una sessione` +
+        /// "sei gia' connesso, invito ignorato"), quindi l'host non poteva riaccettare nessuno.
+        ///
+        /// ✅ Si riporta lo stato a **sconnesso** passando dalla porta di sempre
+        /// (`NetworkManager.Disconnect`), che azzera le code, chiude il filo **del giocatore** e avvisa
+        /// il gioco. ⛔ Il **server** non si ferma: `HostSession.Stop()` non si chiama da nessuna parte
+        /// qui, il listener resta su (`HostSession.IsRunning` resta vero) e questo adapter resta armato
+        /// ⇒ il prossimo peer entra dalla stessa porta, e "Host session" rimette l'host in partita senza
+        /// spegnere niente (`HostSession.TryStart` riusa il server già avviato).
+        ///
+        /// ⚠️ SI AZZERA **SOLO LO STATO DEL GIOCATORE**: lobby, adapter, sessioni dei peer e server non
+        /// si toccano. E si fa **solo** quando non resta nessun altro peer annunciato: con due ospiti,
+        /// perderne uno non deve buttare fuori l'host dalla sessione che sta ancora giocando con l'altro.
+        /// </summary>
+        private static void ResetHostPlayerState(string reason)
+        {
+            try
+            {
+                if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
+                    return;
+
+                if (!Main.Multiplayer.NetworkManager.IsConnected)
+                    return;
+
+                ModLog.Warn(MarkerHostSolo + "(" + reason + "): lo stato del giocatore torna a sconnesso " +
+                            "(un invito nuovo non trova piu' il cancello chiuso) - il server resta in " +
+                            "ascolto e l'adapter armato");
+
+                Main.Multiplayer.NetworkManager.Disconnect();
+            }
+            catch (Exception e)
+            {
+                ModLog.Error("[Net] p2p host: errore nel reset dello stato del giocatore: " +
+                             e.GetType().Name + ": " + e.Message);
             }
         }
 
