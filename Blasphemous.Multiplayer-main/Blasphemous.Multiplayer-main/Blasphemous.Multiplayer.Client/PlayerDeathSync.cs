@@ -387,6 +387,17 @@ namespace Blasphemous.Multiplayer.Client
             if (!__instance.Status.Dead || __instance.DeathEventLaunched)
                 return; // alive, or this death has already been announced by the game itself
 
+            // ⭐ ⑤ LA MORTE CHIUDE I MENU' PRIMA (`DeathMenuCloser.cs`) — e la riga e' la PRIMA di
+            // proposito. Questa prefix gira PRIMA che il corpo di `OnUpdate` invochi `OnDead`
+            // (`Penitent.cs:490-498`), cioe' prima che parta la schermata di morte; e' l'unico punto del
+            // progetto che garantisce quell'ordine, perche' `DeadScreenWidget` e `UIController.OnDead`
+            // sono due iscritti allo stesso evento in ordine non deterministico. Con il tempo che corre
+            // in pausa (`TimeWhilePaused.cs`) si puo' morire CON un menu' aperto, e i tasti di quel menu'
+            // farebbero saltare `while (!Input.anyKey)` nella schermata di morte
+            // (`DeadScreenWidget.cs:87`): chiudendo adesso, quei tasti non sono piu' premuti quando il
+            // ciclo viene raggiunto (~6,3 s di attese non scalate dopo).
+            DeathMenuCloser.CloseBeforeDeathScreen();
+
             // MEASUREMENT ONLY - the death instant, once per death. It runs BEFORE the game's own
             // GuiltManager.OnPenitentDead (which is reached through OnDead, later in the same OnUpdate),
             // so the guilt count printed here is the one from the deaths BEFORE this one: the spawn line
