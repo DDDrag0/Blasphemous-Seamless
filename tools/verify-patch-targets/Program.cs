@@ -42,9 +42,63 @@ class P {
     return true;
   }
 
-  // Esiti: 0 tutti i bersagli esistono; 1 almeno un bersaglio non esiste (o c'e' una patch
-  // incompleta); 3 nessun [HarmonyPatch] trovato = la sonda non ha misurato niente.
+  // IL PROTOCOLLO CON LO SCRIPT (perche' non basta l'exit code).
+  //
+  // Un crash NON e' un esito, ma esce con un codice lo stesso - e non e' un codice nostro:
+  // un'eccezione non gestita esce con l'HRESULT (qui 0xE0434352, cioe' -532462766), un processo
+  // ucciso con un altro, e una libreria che fa `Environment.Exit(1)` esce con 1: lo STESSO 1 che
+  // prima significava "bersagli rotti". Percio' ogni esito MISURATO stampa, come ULTIMA riga, una
+  // marca macchina `SONDA-ESITO: <esito>`, e lo script crede al codice SOLO se combacia con la
+  // marca. Le combinazioni ammesse:
+  //     0 + TUTTI-VALIDI        la sonda ha controllato: tutti i bersagli esistono
+  //     2 + BERSAGLI-INVALIDI   la sonda ha controllato: ci sono bersagli rotti/incompleti
+  //     3 + ZERO-BERSAGLI       la sonda non ha trovato NESSUN attributo: non ha misurato niente
+  //     4 + ERRORE              la sonda e' partita e si e' fermata a meta': la riga
+  //                             `SONDA FALLITA: <tipo>: <messaggio>` dice perche'
+  // Qualunque altra combinazione = "non ho potuto verificare". Il 2 al posto dell'1 e' cio' che
+  // rende impossibile confondere "bersagli rotti" con un exit 1 di crash.
+  const string MARCA_ESITO = "SONDA-ESITO";
+  const string MARCA_CONTA = "SONDA-CONTA";
+
+  // Dichiara l'esito e termina. La marca si stampa DOPO i conteggi: e' l'ultima riga dell'output.
+  static void Dichiara(int codice, string esito) {
+    Console.WriteLine("  " + MARCA_CONTA + ": totale=" + tot + " normale=" + normale + " divisa=" + divisa
+                    + " tipoassente=" + tmiss + " metodoassente=" + bad + " incompleta=" + incompleta);
+    Console.WriteLine("  " + MARCA_ESITO + ": " + esito);
+    Console.Out.Flush();
+    Environment.Exit(codice);
+  }
+
   static void Main(string[] a) {
+    try { Esegui(a); }
+    catch (Exception e) {
+      // La sonda non ha potuto controllare: lo DICHIARA (codice 4 + marca ERRORE) invece di
+      // lasciare che l'eccezione grezza arrivi a chi legge l'exit code. Senza questo, un
+      // BadImageFormatException su una DLL illeggibile veniva letto come "le patch sono sbagliate".
+      Console.Out.Flush();
+      var causa = e;
+      while (causa.InnerException != null) causa = causa.InnerException;
+      var perche = e.GetType().Name + ": " + e.Message;
+      if (!ReferenceEquals(causa, e)) perche += "; causa: " + causa.GetType().Name + ": " + causa.Message;
+      Console.WriteLine("  SONDA FALLITA: " + perche);
+      Console.WriteLine("  SONDA TRACCIA:");
+      Console.WriteLine(e.ToString());
+      Console.WriteLine("  " + MARCA_ESITO + ": ERRORE");
+      Console.Out.Flush();
+      Environment.Exit(4);
+    }
+
+    // `Esegui` non torna mai: ogni sua strada dichiara un esito e termina. Se un giorno tornasse -
+    // una riga cancellata, un `Environment.Exit` diventato `return` - il default NON e' 0: e' un
+    // esito non dichiarato, cioe' "non ho potuto verificare". Un verde per omissione e' il difetto
+    // che questo file esiste per non avere.
+    Console.WriteLine("  SONDA FALLITA: la sonda e' tornata senza dichiarare un esito");
+    Console.WriteLine("  " + MARCA_ESITO + ": ERRORE");
+    Console.Out.Flush();
+    Environment.Exit(4);
+  }
+
+  static void Esegui(string[] a) {
     var modPath = a[0]; var gamePath = a[1]; var gameDir = Path.GetDirectoryName(gamePath);
     var r = new DefaultAssemblyResolver(); r.AddSearchDirectory(gameDir);
     var game = AssemblyDefinition.ReadAssembly(gamePath, new ReaderParameters{AssemblyResolver=r});
@@ -130,7 +184,7 @@ class P {
     if (tot == 0) {
       Console.WriteLine("  bersagli controllati : 0");
       Console.WriteLine("  ESITO                : NESSUN BERSAGLIO TROVATO - la verifica NON ha misurato niente");
-      Environment.Exit(3);
+      Dichiara(3, "ZERO-BERSAGLI");
     }
 
     bool ok = bad == 0 && tmiss == 0 && incompleta == 0;
@@ -145,6 +199,6 @@ class P {
     Console.WriteLine("  METODO assente       : " + bad);
     Console.WriteLine("  patch incompleta     : " + incompleta);
     Console.WriteLine("  ESITO                : " + esito);
-    Environment.Exit(ok ? 0 : 1);
+    Dichiara(ok ? 0 : 2, ok ? "TUTTI-VALIDI" : "BERSAGLI-INVALIDI");
   }
 }
