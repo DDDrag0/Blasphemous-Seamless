@@ -593,33 +593,40 @@ namespace Blasphemous.Multiplayer.Client.Host
                 // Una sessione che non si chiude non deve impedire di dimenticare il peer.
             }
 
-            // ⭐⭐ FIX ② — IL LINK È MORTO: anche lo stato del GIOCATORE torna a sconnesso (il server no).
-            // Dopo aver detto al server che quel peer non c'è più, e **solo** se non ne resta nessun
-            // altro: vedi `ResetHostPlayerState`.
+            // ⭐⭐ FIX ② — IL LINK È MORTO, e questo riguarda il PEER: dopo averlo tolto e dopo averlo
+            // detto al server, e **solo** se non ne resta nessun altro annunciato, si scrive la riga
+            // dell'host (vedi `ResetHostPlayerState`).
+            // ⛔ E NON si tocca la connessione dell'host: `Drop` azzera lo stato del **peer** (`_peers`,
+            // `CloseP2PSessionWithUser`), non quello del giocatore locale.
             if (wasPeer && aloneNow)
                 ResetHostPlayerState(reason);
         }
 
         /// <summary>
-        /// ⭐⭐ FIX ② — L'HOST NON È PIÙ "CONNESSO" QUANDO IL LINK CON IL PEER MUORE, e resta in ascolto.
+        /// ⭐⭐ FIX ② — LA CADUTA DI UN PEER **NON** RIGUARDA LA CONNESSIONE DELL'HOST.
         ///
-        /// 🔴 IL DIFETTO, misurato: dopo la caduta l'adapter restava armato (giusto) ma il
-        /// `NetworkManager` dell'host restava `connected=True` (G1:780) — la sua connessione è quella
-        /// **locale** (il dial del loopback verso il proprio server) e il timeout del P2P non la tocca.
-        /// La conseguenza non è cosmetica: `SteamLobbyImpl.IsConnectedNow()` legge **proprio** quello
-        /// stato e scarta ogni invito (`[Steam] join: scartato gia' connessi a una sessione` +
-        /// "sei gia' connesso, invito ignorato"), quindi l'host non poteva riaccettare nessuno.
+        /// 🔴 IL DIFETTO (osservato in gioco, introdotto dal fix ② della prima stesura): qui si chiamava
+        /// `NetworkManager.Disconnect()`. Ma la connessione del `NetworkManager` dell'host **non è** il
+        /// legame con il peer: è un client **TCP sul loopback** (`127.0.0.1:porta`) verso il **proprio**
+        /// server. Quella `Disconnect()` chiudeva il loopback ⇒ l'host non era più connesso al proprio
+        /// server, e non poteva rientrare dal percorso "Host session" (che sul server ancora in ascolto
+        /// risponde "porta occupata"). Il peer rientrava, l'host no.
         ///
-        /// ✅ Si riporta lo stato a **sconnesso** passando dalla porta di sempre
-        /// (`NetworkManager.Disconnect`), che azzera le code, chiude il filo **del giocatore** e avvisa
-        /// il gioco. ⛔ Il **server** non si ferma: `HostSession.Stop()` non si chiama da nessuna parte
-        /// qui, il listener resta su (`HostSession.IsRunning` resta vero) e questo adapter resta armato
-        /// ⇒ il prossimo peer entra dalla stessa porta, e "Host session" rimette l'host in partita senza
-        /// spegnere niente (`HostSession.TryStart` riusa il server già avviato).
+        /// ✅ CHE COSA È GIUSTO, e adesso è quello che succede: qui **non si chiama `Disconnect`**. La
+        /// caduta è del **peer**, e lo stato che va azzerato è il suo — cosa che `Drop` ha già fatto
+        /// **prima** di arrivare qui (`_peers.Remove`, `_onDisconnected` verso il server,
+        /// `CloseP2PSessionWithUser`; il server toglie il giocatore remoto e riassegna il ruolo). La
+        /// connessione dell'host al proprio server non viene toccata: niente `Disconnect`, niente
+        /// `HostSession.Stop`, niente riconnessione, niente riavvio dell'adapter.
         ///
-        /// ⚠️ SI AZZERA **SOLO LO STATO DEL GIOCATORE**: lobby, adapter, sessioni dei peer e server non
-        /// si toccano. E si fa **solo** quando non resta nessun altro peer annunciato: con due ospiti,
-        /// perderne uno non deve buttare fuori l'host dalla sessione che sta ancora giocando con l'altro.
+        /// ⚠️ E IL CANCELLO DEGLI INVITI NON È UN DIFETTO: `SteamLobbyImpl.IsConnectedNow()` legge lo
+        /// stato del `NetworkManager`, e l'host **è** già nella sua sessione (`connected=true`). Scartare
+        /// un invito è quindi corretto: l'invito lo accetta il **peer**, e il server dell'host — rimasto
+        /// in ascolto con l'adapter armato — accoglie la sua sessione P2P come sempre.
+        ///
+        /// Il metodo resta il punto in cui si **misura** che l'host è rimasto dov'era: la riga di sempre
+        /// (`MarkerHostSolo`) adesso porta anche lo stato della connessione locale, cosi' il test
+        /// dell'utente si legge dal log: `connesso=true` = la caduta del peer non ha toccato l'host.
         /// </summary>
         private static void ResetHostPlayerState(string reason)
         {
@@ -628,18 +635,16 @@ namespace Blasphemous.Multiplayer.Client.Host
                 if (Main.Multiplayer == null || Main.Multiplayer.NetworkManager == null)
                     return;
 
-                if (!Main.Multiplayer.NetworkManager.IsConnected)
-                    return;
+                bool connected = Main.Multiplayer.NetworkManager.IsConnected;
 
-                ModLog.Warn(MarkerHostSolo + "(" + reason + "): lo stato del giocatore torna a sconnesso " +
-                            "(un invito nuovo non trova piu' il cancello chiuso) - il server resta in " +
-                            "ascolto e l'adapter armato");
-
-                Main.Multiplayer.NetworkManager.Disconnect();
+                ModLog.Warn(MarkerHostSolo + "(" + reason + "): la caduta e' del peer, l'host resta " +
+                            "connesso al proprio server (nessun Disconnect sul loopback) " +
+                            "connesso=" + (connected ? "true" : "false") +
+                            " - il server resta in ascolto e l'adapter armato");
             }
             catch (Exception e)
             {
-                ModLog.Error("[Net] p2p host: errore nel reset dello stato del giocatore: " +
+                ModLog.Error("[Net] p2p host: errore nella riga dello stato del giocatore: " +
                              e.GetType().Name + ": " + e.Message);
             }
         }
