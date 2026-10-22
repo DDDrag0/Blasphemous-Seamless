@@ -500,6 +500,66 @@ public class Server
         return true;
     }
 
+    // ⭐⭐ LA TERZA SUPERFICIE DEL PROGRESSO — 1 di 3: I DUE TETTI, DICHIARATI IN UN POSTO SOLO.
+    //
+    // La lunghezza del payload non era l'unico modo di far nascere un'eccezione DENTRO il thread di
+    // lettura: il VALORE del pacchetto `Progress` ne era un altro, e nessuna delle due difese di sopra
+    // lo copriva (una guarda i byte, l'altra il framing).
+    //
+    // · IL TIPO. `Core.getTeamData(...).AddTeamProgress` fa `progressSets[progressType]`, e `progressSets`
+    //   e' un array di `TeamInfo.NUMBER_OF_PROGRESS_TYPES` slot indicizzato dal `byte` del filo: un tipo
+    //   >= 14 lanciava `IndexOutOfRangeException` dentro `receivePlayerProgress`, cioe' nello stesso
+    //   punto — e con lo stesso esito — che il framing e il payload corto sono stati scritti per evitare:
+    //   thread che muore, connessione che resta appesa. Il tetto e' `NUMBER_OF_PROGRESS_TYPES`, la STESSA
+    //   costante che dimensiona l'array, cosi' non sono due numeri che possono divergere; e il dominio
+    //   che ne esce (0..13) e' esattamente quello di `ProgressType` (`Common\Enums\ProgressType.cs`),
+    //   cioe' quello che il client scrive davvero sul filo (`(byte)progress.Type`).
+    // · L'ID. La coda del payload non ha prefisso di lunghezza e non aveva tetto, mentre OGNI id nuovo
+    //   crea una voce in `progressSets[type]`: durante una sessione un peer poteva far crescere il
+    //   dizionario quanto voleva. Il tetto e' in BYTE del filo (non in caratteri: `progressId.Length`
+    //   sarebbe la lunghezza UTF-16, che per un id non ASCII non e' quella spedita), ed e' 256:
+    //   ~5 volte l'id piu' lungo che il client puo' mandare oggi (misurato: 49 caratteri in
+    //   `Data\FlagStates.cs`), quindi nessun pacchetto valido si avvicina al tetto.
+    // ⚠️ Come per il payload corto, oltre il tetto NON si lancia: si SCARTA il pacchetto e lo si dichiara
+    // (una volta sola, vedi `reportRejectedProgress`). E come per il corto, un pacchetto valido non passa
+    // di qui invano: nessun byte sul filo cambia.
+    private const byte MAX_PROGRESS_TYPE = (byte)(TeamInfo.NUMBER_OF_PROGRESS_TYPES - 1);
+
+    private const int MAX_PROGRESS_ID_LENGTH = 256;
+
+    // ⭐⭐ 2 di 3: LO STESSO RATE LIMIT DEL PAYLOAD CORTO, per la stessa ragione — un peer ostile puo'
+    // mandare mille progressi invalidi, e una riga per pacchetto sposterebbe la crescita illimitata dal
+    // dizionario al file di log (nel client: il log della mod). Prima riga per ogni motivo, poi una ogni
+    // `REJECTED_PROGRESS_LOG_EVERY` scarti DI QUEL MOTIVO, con i due conteggi.
+    // ⚠️ I contatori sono campi e non variabili locali perche' `Receive` puo' girare su piu' thread di
+    // lettura (uno per client); due incrementi persi fanno solo spostare la riga successiva.
+    // ⚠️ Il marker si costruisce per CONCATENAZIONE, cosi' il letterale resta contiguo e
+    // `tools\marker-check.ps1` lo trova. Prefisso: `[Server] progresso scartato: `.
+    private readonly int[] _rejectedProgress = new int[2];
+
+    private int _rejectedProgressTotal;
+
+    private const int REJECTED_PROGRESS_LOG_EVERY = 100;
+
+    // Gli indici dei due motivi: sono gli slot di `_rejectedProgress`.
+    private const int PROGRESS_REJECT_TYPE = 0;
+
+    private const int PROGRESS_REJECT_ID = 1;
+
+    private void reportRejectedProgress(int reason, string detail)
+    {
+        int count = ++_rejectedProgress[reason];
+        int total = ++_rejectedProgressTotal;
+
+        if (count != 1 && count % REJECTED_PROGRESS_LOG_EVERY != 0)
+            return;
+
+        Logger.Warn("[Server] progresso scartato: " + detail
+            + (count == 1
+                ? ""
+                : " (scarti di questo motivo: " + count + ", totali: " + total + ")"));
+    }
+
     /// <summary>
     /// ⭐ PUNTO DI CONTATTO COL FILO, 2 di 3. Il `peer` arriva **gia'** come <see cref="PeerId"/> dal
     /// trasporto (che e' l'unico a sapere che per il TCP e' `ip:porta`), e il testo e' byte per byte
@@ -1049,7 +1109,30 @@ public class Server
         PlayerInfo current = getCurrentPlayer(peer);
         byte progressType = data[0];
         byte progressValue = data[1];
-        string progressId = Encoding.UTF8.GetString(data, 2, data.Length - 2);
+
+        // ⭐⭐ LE DUE DIFESE DEL PROGRESSO — 3 di 3: il TIPO si controlla PRIMA di indicizzare l'array.
+        // `AddTeamProgress` fa `progressSets[progressType]` su `NUMBER_OF_PROGRESS_TYPES` slot: un tipo
+        // piu' grande lanciava `IndexOutOfRangeException` DENTRO questo thread. Qui si scarta, e il
+        // pacchetto non viene ne' memorizzato ne' inoltrato.
+        if (progressType > MAX_PROGRESS_TYPE)
+        {
+            reportRejectedProgress(PROGRESS_REJECT_TYPE,
+                "tipo=" + progressType + " (validi 0.." + MAX_PROGRESS_TYPE + ")");
+            return;
+        }
+
+        // ...e l'ID si misura in BYTE del filo, prima di decodificarlo: e' la lunghezza che il peer ha
+        // spedito, non quella UTF-16 della stringa che ne esce.
+        int progressIdLength = data.Length - 2;
+        if (progressIdLength > MAX_PROGRESS_ID_LENGTH)
+        {
+            reportRejectedProgress(PROGRESS_REJECT_ID,
+                "id lungo " + progressIdLength + " byte (massimo " + MAX_PROGRESS_ID_LENGTH
+                + ") tipo=" + progressType);
+            return;
+        }
+
+        string progressId = Encoding.UTF8.GetString(data, 2, progressIdLength);
 
         // Add the progress to the server data, and if it's new send it to the rest of the players
         if (!Core.getTeamData(current.team).AddTeamProgress(progressId, progressType, progressValue))
