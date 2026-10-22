@@ -39,13 +39,27 @@ public enum PeerKind : byte
 /// il socket. Se `ToString()` cambiasse una virgola, i log cambierebbero e `Send` non troverebbe piu'
 /// il destinatario.
 ///
-/// PERCHE' `GetHashCode` E' PROPRIO QUELLO DELLA STRINGA (caso IP). Un `Dictionary` enumera le chiavi
-/// in ordine di bucket: se l'hash cambiasse, cambierebbe l'ORDINE dei `foreach` sul dizionario, cioe'
-/// l'ordine dei pacchetti verso i peer e l'ordine delle righe di log nelle partite a 3+. Usando
-/// `string.GetHashCode()` l'hash e' identico a quello che il `Dictionary` da stringa a `PlayerInfo` di oggi
-/// calcolava, quindi la mappa resta la stessa mappa, con le stesse chiavi negli stessi bucket.
-/// (L'uguaglianza e' `StringComparer.Ordinal`, la stessa che il `Dictionary` da stringa a ... usava di
-/// default: `Equals`/`ContainsKey`/`Remove` si comportano come prima, carattere per carattere.)
+/// PERCHE' `GetHashCode` E' PROPRIO QUELLO DELLA STRINGA (caso IP). L'invariante che conta e' quella di
+/// ogni `Dictionary`: due valori UGUALI devono avere hash UGUALI, altrimenti `ContainsKey` / `Remove` /
+/// `Send` non ritroverebbero piu' il destinatario. `Equals` e' ordinale e l'hash e' quello della
+/// stringa, cioe' esattamente le due funzioni che il `Dictionary` da stringa a `PlayerInfo` di oggi
+/// usava senza dirlo: questa mappa e' quella di prima, stesse chiavi e stesse ricerche, carattere per
+/// carattere (`Equals`/`ContainsKey`/`Remove` si comportano come prima).
+///
+/// ⚠️ CIO' CHE L'HASH *NON* DECIDE: L'ORDINE. (Fino al 2026-10-22 questo commento diceva il contrario:
+/// "un `Dictionary` enumera le chiavi in ordine di bucket". E' FALSO.) Un `Dictionary` enumera i suoi
+/// slot in ORDINE D'INDICE, cioe' di inserimento — e, dopo un `Remove`, riusando lo slot liberato: l'hash
+/// sceglie DOVE va l'elemento, non QUANDO viene enumerato, e quindi non entra nell'ordine. Misurato:
+/// inserendo `zebra, alpha, mike, charlie, yankee` l'enumerazione e' quella stessa sequenza, non un
+/// ordine dettato dagli hash. La conclusione di prima regge, ma per un motivo piu' FORTE: quell'ordine
+/// dipende SOLO dalla storia di `Add`/`Remove` di QUELLA istanza di `Dictionary`, non da `PeerId` ne'
+/// dal suo hash. Cambiare l'hash avrebbe cambiato i bucket, non l'ordine.
+///
+/// ⭐ E COMUNQUE L'ORDINE FRA I DESTINATARI NON E' OSSERVABILE: di un fan-out contano CHI riceve e
+/// QUANTI, non in che sequenza il ciclo li tocca (ogni `Send` va su un socket diverso, e il destinatario
+/// riceve un pacchetto che non porta con se' la posizione nel ciclo). L'unico punto in cui l'ordine del
+/// `Dictionary` si vede e' l'ELEZIONE DELL'HOST (`Server.cs:574-579`: il primo rimasto in ordine di
+/// enumerazione diventa host) — che non e' un fan-out, e non e' cambiato.
 ///
 /// Il tipo e' IMMUTABILE: campi `readonly`, nessun setter, nessun modo di cambiare un'istanza dopo
 /// `FromIp`. Due `PeerId` con la stessa `Kind` e lo stesso valore sono uguali e hanno lo stesso hash.
@@ -144,10 +158,11 @@ public struct PeerId : IEquatable<PeerId>
     }
 
     /// <summary>
-    /// ⭐ L'HASH DEL CASO IP E' QUELLO DELLA STRINGA, di proposito: e' cio' che tiene identico
-    /// l'ordine di enumerazione del `Dictionary` (vedi il commento del tipo). Per il caso Steam si
-    /// mescola il `Kind`, cosi' due valori di tipo diverso non finiscono per caso nello stesso bucket
-    /// con lo stesso hash.
+    /// ⭐ L'HASH DEL CASO IP E' QUELLO DELLA STRINGA, di proposito: l'invariante e' che valori uguali
+    /// abbiano hash uguali (vedi il commento del tipo: l'hash NON decide l'ordine di enumerazione, che
+    /// dipende solo dalla storia di `Add`/`Remove` di quella istanza). Per il caso Steam si mescola il
+    /// `Kind`, cosi' due valori di tipo diverso non finiscono per caso nello stesso bucket con lo
+    /// stesso hash.
     /// </summary>
     public override int GetHashCode()
     {
