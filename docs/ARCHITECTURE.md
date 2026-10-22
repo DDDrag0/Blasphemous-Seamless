@@ -14,17 +14,24 @@
 > §5 is the decisions, `docs\BUG-NOTI.md` the declared limits and accepted prices, `docs\STATUS.md` §5 the
 > problems that were solved. The rollback points are `docs\RIPRISTINO.md`.
 >
-> **State.** Branch `fix-f1a`, HEAD `e243e07`. This page was written and measured against `e2fe745`, its
-> parent, and pushed one step further by `e243e07`, which closes the P2P session on a timeout and on a normal
-> exit — no interface, no threshold, no channel changes. Every `file:line` below was re-measured at
-> `ebf1484`; **after that commit the network layer landed** — `a8b2bde` (the peer identity), `cd5f11f` (the
-> server seam), `22e1a9e` (the P2P transport), `2a6ca17` (the invite chooses the P2P), `e2fe745` (the two P2P
-> timeouts and the screen that unblocks) — and those commits ride the wire, the server seam and the identity,
-> not the game patches: every one of their deploys, the last included, still checks **273** Harmony targets
-> with **0** missing (`scratch\REFERTO-TIMEOUT-E-UI.md`, header of the report). What changed in the network
-> layer is §2, "The wire, in three layers". Do not trust numbers quoted inside older reports, some are 20+
-> lines behind. Code paths are relative to `Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\`;
-> document paths to the repository root.
+> **State.** Branch `fix-f1a`, HEAD `9e75a0b` (tag `pre-refactor`). This page was written and measured
+> against `e243e07` and its network layer — `a8b2bde` (the peer identity), `cd5f11f` (the server seam),
+> `22e1a9e` (the P2P transport), `2a6ca17` (the invite chooses the P2P), `e2fe745` (the two P2P timeouts),
+> `694f16d` (the reconnection) — and then **updated across `694f16d..9e75a0b`, 16 commits**. What those
+> commits changed, and where it is written: the **pause is no longer shared** (§2, §3, §5 — this was the
+> one line here that taught the opposite, and it was false); the **world keeps running while a menu is
+> open** and the death closes the menus first (§2, §5); the P2P link **revives** itself and tolerates
+> **15 s** of silence (§2); the `Close` P2P **no longer runs during the shutdown** (§2, §5); the server
+> **validates its payloads, its `team` and its `progressType`** (§2); `PROTOCOL_VERSION` lives in
+> **`Common`** (§2, §6); the Harmony gate **stops lying** and counts both shapes of the attribute (§6);
+> the headless bench lives in **`tools\`** and proves the fan-out with **three peers** (§7); `build.yml`
+> is gone (§5). Every `file:line` that this update cites — or re-cites — was re-measured at `9e75a0b`; the
+> ones deliberately left on their old base are listed in `scratch\REFERTO-ARCHITECTURE-2.md`. **Do not
+> trust numbers quoted inside older reports**, some are 20+ lines behind, and two of them are no longer
+> true at all: *"the pause is shared"* (removed by `0246f0d`) and *"the heartbeat timeout is 5 s"* (now
+> 15 s, `6c06039`). Every deploy from `8d5dbc8` on still checks **273** Harmony targets with **0**
+> missing. Code paths are relative to
+> `Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\`; document paths to the repository root.
 
 ---
 
@@ -45,16 +52,44 @@ answers `false`, which is the inert state (`CoopGate.cs:22-31`). If you add a fe
 ## 2. Architecture in one page
 
 - **The server is a relay with no memory.** Team progress lives in RAM only
-  (`Blasphemous.Multiplayer.Server\Core.cs:11`) and is replayed to whoever connects — one packet per stored
-  key (`Server.cs:385-413`); when the last player of a team leaves, that team's data is **deleted**
-  (`Core.cs:68-91`, `teamGameDatas.Remove(i)` at `:88`, called from `Server.cs:143` and `:421`). There is
-  no persistence anywhere in the server project: restarting it zeroes everything. **This is by design** — a
-  server-side memory would mix saves from different sessions and different players, and a *wrong* flag
-  cannot be rebuilt while a *lost* one can (`§5`, "The server has no memory").
+  (`Blasphemous.Multiplayer.Server\Core.cs:13`) and is replayed to whoever connects — one packet per stored
+  key (`Server.cs:872-888`); when the last player of a team leaves, that team's data is **deleted**
+  (`Core.removeUnusedGameData`, `Core.cs:108-142`, `teamGameDatas.Remove(team)` at `:139`; called when a
+  client disconnects `Server.cs:562`, when a `Team` packet arrives `:900`, and at `Server.Start` `:199`, so a
+  session always starts from zero). There is no persistence anywhere in the server project: restarting it
+  zeroes everything. **This is by design** — a server-side memory would mix saves from different sessions and
+  different players, and a *wrong* flag cannot be rebuilt while a *lost* one can (`§5`, "The server has no
+  memory").
+- ⭐ **The server defends itself against the wire, and never throws on a malformed packet.** Three surfaces
+  were open and are now closed, each **before** the read that used to go past the end: **the payload
+  length** — a per-type minimum table (`MinimumPayloadLength`, `Server.cs:382-394`) checked in
+  `processDataReceived` (`:335-340`), so a short `Position`/`Animation`/`Direction`/`Team`/`Progress`/`Ping`
+  is **discarded and declared** (`[Server] payload corto: tipo=… attesi=… ho=…`, `:436`), never an exception
+  inside the transport's read thread — the very failure the framing guard was written for, applied to the
+  payload at last; **`team`** — a `byte` off the wire, **normalized** into 1..10 at **both** doors
+  (`sanitizeTeam`, `:851-859`, called at `:897` and `:1047`) rather than refused, because a `team` outside
+  1..10 used to create a dictionary entry that `Core.removeUnusedGameData` never removed and the cleanup now
+  scans the **whole** `byte` domain (`Core.cs:119`); **`progressType`** — a cap derived from the array it
+  indexes (`MAX_PROGRESS_TYPE = TeamInfo.NUMBER_OF_PROGRESS_TYPES - 1`, `:499`), so **0..13** passes (the
+  domain of `ProgressType`) and everything else is discarded and declared (`[Server] progresso scartato: `,
+  `:530`); plus a **256-byte** cap on the progress id (`:501`), which had no prefix and no limit and created
+  one entry per new id. **No byte on the wire changes**: the 42-frame harness stays `sha256 9ecdfa42…`, and
+  that is the proof. ⚠️ One declared regression: a non-standard client whose `team` was outside 1..10 now
+  shares team 1's progress instead of getting a bucket of its own (`scratch\AUDIT-REFACTOR.md` §④).
+- **The server has no dead limbs left, measured on both builds.** The members with zero callers were removed
+  (`308ecaa`) — `Server.IsRunning`, `Server.DelayDisabled`, `TcpServerTransport.IsListening`,
+  `CompositeServerTransport`'s `params` constructor / `Count` / `Remove` (while `Add` stays),
+  `PeerId.IsEmpty`, the write-only `Core` field, an unreachable `??` and one `using` — checked on the
+  **deployed binaries** (Cecil + reflection, `net35` with `COOP_HOST` and `net8.0` standalone), because the
+  server has two lives and "no callers in the client" is not "dead". ⚠️ Three were **kept with their proof**:
+  `Logger.Print` (five callers per build — it is the line that writes console *and* `ServerOutput.log`),
+  `ServerLog.Initialize` (called by `Write`), and `PeerId.Ip`, which stays **by decision** — it is the only
+  reading of the IP case, and it is `Common.dll`'s ABI.
 - **The authority is the client's save.** Each client re-pushes its own progress: on entering a scene
-  (`Multiplayer.cs:177`) and on connection (`:461`), via `SendAllProgress`
+  (`Multiplayer.cs:221`) and on connection (`:540`), via `SendAllProgress`
   (`ProgressSync\Helpers\FlagHelper.cs:22-25`) → `GetCurrentPersistentState("intro")` → the prefix that
-  sends every flag that is set (`FlagHelper.cs:46-69`); the server stores it again (`Server.cs:591`). So a
+  sends every flag that is set (`FlagHelper.cs:46-69`); the server stores it again (`AddTeamProgress`,
+  `Server.cs:1114`). So a
   flag the server has forgotten comes back from the player's own save, and a boss that was killed in a
   previous session is hidden through the flag (`HideDefeatedBosses`, `EnemySyncManager.cs:732`; the only
   reader of `_BOSSDEAD` is `FirstBossDeadFlagOn`, `:966`; called at `:2732`).
@@ -72,23 +107,54 @@ answers `false`, which is the inert state (`CoopGate.cs:22-31`). If you add a fe
   `Penitent` — it is forwarded, and the peer applies it through the game's own door,
   `Penitent.Damage(Hit)` (`EnemyHitPeerSync.cs:551`). Attack sites that used to throw on the bare proxy are
   guarded in `AggroProxyPatches.cs`.
-- **Pause is shared, through the game's own channel.** Received "paused" ⇒ `Core.Logic.PauseGame()`
-  (`PauseNotice.cs:465`) with the map tab opened on the passive; leaving goes through
-  `UIController.HideInventory` / `HidePauseMenu` (`:587`, `:592`). `Time.timeScale` is **never written** —
-  the effect on it is produced by the game (`PauseNotice.cs:21-26`).
+- 🔴 **Pause is NOT shared — the mod shows a line, and does nothing else.** This replaces a statement that
+  stood here and taught the opposite: until `0246f0d` the received "paused" called `Core.Logic.PauseGame()`
+  on the passive machine, with the map tab opened to disguise it. That is **gone, removed and not commented
+  out** (`PauseNotice.cs`, 1231 → 578 lines). The mod now **reads** `Core.Logic.IsPaused` (`:532`), sends it
+  as a **flag** on the `Attack` channel — `[AttackType.PauseRelay = 203][1|0]`, two bytes (`:292-293`, the
+  enum value at `PvP\Models\Enums.cs:152`) — and on the receiving side it only turns a sticky line on:
+  `YOUR TEAMMATE IS PAUSED` (`:76`, `Arm` at `:389`). No `PauseGame`, no `ResumeGame`, no menu opened or
+  closed, no `Time.timeScale` written — verified on the **deployed DLL** with Cecil
+  (`scratch\cecil-pausa-il.ps1`: 16 methods with a body, 142 calls, **zero** towards
+  `PauseGame`/`ResumeGame`/`set_TimeScale`/`HidePauseMenu`/`HideInventory`). The line clears itself when
+  the flag comes back "no", or after **8 s** without a beat (`:88`, `CheckRemoteStillPaused` at `:478`);
+  while the flag says "yes" the 3 s heartbeat re-sends it (`ObserveLocalFlag` at `:226`). ⚠️ **And the
+  reason, measured:** the game pauses **by itself** for tutorials, dialogues and cutscenes (a system `input
+  blocker`: `G2:1164` → `G2:1168` in `scratch\DIAGNOSI-PAUSA-BUG.md`), so a pause is **not a choice** of the
+  player. Propagated as an order it froze the peer inside a tutorial with no menu open, and the resume was
+  refused by an input blocker nobody ever cleared — 123 attempts in 2 s, then "ripresa FRENATA" and a game
+  **frozen for good**. A pause that is not a decision cannot be an instruction.
+- ⭐ **The time: with a server, a paused game does not stop the world — the menu opens and the world keeps
+  running.** One `Postfix` on `LevelInitializer.Update()` (`TimeWhilePaused.cs:82-95`), i.e. on the method
+  that copies `CurrentLevelConfig.TimeScale` into `Time.timeScale` **every frame** and is the only place in
+  the decompiled game that writes it, re-writes `Time.timeScale = 1` **after** the copy when
+  `CoopGate.IsMultiplayerActive()` is true and `UIController.Paused` (the real pause — it reads
+  `TimeScaleReal`) says the game is paused (`:143-160`). `TimeScaleReal` is **never** written: the game must
+  go on believing it is paused. ⭐ **And why, measured:** with `timeScale = 0` `FixedUpdate` stops, so the
+  enemies **possessed by that machine** stop for the peer too, which sees puppets (0 `[EnemyTick]` in 30/30
+  pause windows on the pausing side, while the probes that live on unscaled clocks keep going —
+  `scratch\DIAGNOSI-CRASH-E-AI.md` §B). It covers **all seven** ways into the pause (ESC, map, inventory,
+  tutorial, unlock, dialogues, console) without listing them, and in single player it does nothing: no
+  write, no log. ⚠️ The price, declared: you can **die with a menu open**, which is why the death **closes
+  the menus first** (`DeathMenuCloser.cs:70`, called from the prefix of `Penitent.OnUpdate`,
+  `PlayerDeathSync.cs:399`, i.e. **before** `OnDead` reaches the game's death screen) — otherwise the
+  `while (!Input.anyKey)` of `DeadScreenWidget` skips the death screen for whoever is holding a key.
 - **Life guilt is a separate penalty on a separate channel.** Three fixed steps on `Life.MaxFactor`:
   0 deaths → 1.0, 1 → 0.8, 2 → 0.6, 3+ → 0.4 with the floor in code (`LifeGuilt.cs:84-90`). Reset **only**
   by sitting at a Prie-Dieu — never by the guilt fragment, never by the Confessor (`LifeGuilt.cs:781`);
   the counter survives closing the game because it is a file (`Modding\data\Multiplayer\life-guilt.txt`,
   `LifeGuilt.cs:105`, `:660`). The game's own guilt (`Fervour.MaxFactor`) is not touched anywhere.
-- **273 Harmony targets.** 269 → 270 with the bonfire patch (`LifeGuilt.cs:45`), then the two
+- **273 Harmony targets.** 269 → 270 with the bonfire patch (`LifeGuilt.cs:781`), then the two
   `InstantiateArea` postfixes, which are **done** (`a188060`, one `Postfix` per method, both calling the
   relay's own `EffectRelay.OnPoolSpawn`; `EffectRelayInstantiateArea.cs`), then the time-while-paused
   patch: it declares its target in the **divided form** (`[HarmonyPatch(typeof(LevelInitializer))]` plus
-  `[HarmonyPatch("Update")]`, `TimeWhilePaused.cs:69-81`) and is counted now that the gate sees both
-  shapes. Read the number from the tool, never from a note: `tools\verify-patch-targets.ps1` prints
-  `bersagli controllati : 273` (all the rest in the normal form, this one divided), type missing 0,
-  method missing 0, `ESITO : tutti validi` — re-run today on the deployed build.
+  `[HarmonyPatch("Update")]`, `TimeWhilePaused.cs:82-83`) and is counted now that the gate sees both
+  shapes — **272 in the normal form + 1 divided = 273**. Read the number from the tool, never from a note:
+  `tools\verify-patch-targets.ps1` prints `bersagli controllati : 273`, type missing 0, method missing 0,
+  `ESITO : tutti validi` — re-run today on the deployed build (`scratch\REFERTO-PEERID-E-BANCO.md` §②,
+  `scratch\AUDIT-REFACTOR.md` §①). ⚠️ And the number is now **measured, not asserted**: before `a4ba597` the
+  divided form was invisible to the gate, so `PatchAll` would have failed at runtime while the deploy said
+  everything was fine.
 
 ### The wire, in three layers
 
@@ -152,23 +218,72 @@ client project's `docs\` folder).
   (`TransportClass`), and `TcpTransport` **ignores it on purpose**: one ordered reliable stream has no
   channel and not one byte changes. The 3-byte prefix and the 12-byte header are the **transport's** format,
   never the protocol's: the protocol stays 11 and the server never sees them.
-- ⭐ **The two P2P timeouts** (`SteamP2PTransportImpl`, the fix of `e2fe745`): one explicit state —
-  `Connecting` → `Connected` → `Disconnected` — and **one threshold per state**. `Connecting`: **25 s**
-  measured from `Begin` without **ever** a packet received ⇒ `handshake scaduto (25 s)`. `Connected`: the
-  phase changes on the **first valid packet received** (and says so: `primo pacchetto (canale N) dopo Xs`,
-  then `connesso (handshake Xs)`) ⇒ from that instant **5 s** of silence is a lost link. Why 25 and not 5:
-  the legacy first negotiation takes **3-7 s**, with spikes of **10-15 s** when the punch-through fails and
-  the traffic has to go through the **relay**; and the hello is **not lost** — Steam holds it in a
-  transition buffer (~15-20 s) and delivers it on the `Accept`, so aborting at 5 s destroyed precisely the
-  mechanism that was about to work. The 5 s was **not widened, it was moved**, to where it is true: an open
-  link silent for 5 s is dead. `P2PSessionConnectFail_t` is not a substitute — it arrives **10-15 s** late
-  and only on the side that has packets queued — hence the application heartbeat (one packet every 3 s).
+- ⭐ **The heartbeat and the two thresholds** (`SteamP2PTransportImpl`): one explicit state —
+  `Connecting` → `Connected` → `Disconnected` (`:174-184`) — and **one threshold per state**. `Connecting`:
+  **25 s** measured from `Begin` without **ever** a packet received ⇒ `handshake scaduto (25 s)`
+  (`HANDSHAKE_TIMEOUT_SECONDS`, `:119`). `Connected`: the phase changes on the **first valid packet
+  received** (and says so: `primo pacchetto (canale N) dopo Xs`, then `connesso (handshake Xs)`) ⇒ from that
+  instant **15 s** of silence is a lost link (`KEEPALIVE_TIMEOUT_SECONDS`, `:136`). Why 25 and not 15: the
+  legacy first negotiation takes **3-7 s**, with spikes of **10-15 s** when the punch-through fails and the
+  traffic has to go through the **relay**; and the hello is **not lost** — Steam holds it in a transition
+  buffer (~15-20 s) and delivers it on the `Accept`, so aborting early destroyed precisely the mechanism
+  that was about to work. ⭐ **Why the heartbeat tolerance is 15 s and no longer 5** (`6c06039`): the
+  heartbeat is one packet every **3 s** (`KEEPALIVE_SECONDS`, `:139`), so 5 s meant that **one** lost beat
+  declared a live link dead — and the measured cause of those drops was a **4-5 s stall of the game**
+  (`fps=0.2`, `frameMs 4190` and `4813`), not a dead network. 15 s = **five** beats, so four consecutive
+  losses are tolerated. The **same 15 s** on the host side (`P2PServerTransportImpl.TIMEOUT_SECONDS`, `:62`):
+  **the two thresholds must stay equal**, or the shorter side closes first and the other reads it as "the
+  host hung up". `P2PSessionConnectFail_t` is not a substitute — it arrives **10-15 s** late and only on the
+  side that has packets queued — hence the application heartbeat.
+- ⭐ **The reconnection: a session that is accepted revives the transport** (`694f16d`). A
+  `P2PSessionRequest_t` from the host that we accept now calls `ReviveLink` (`:1187`) with a **targeted**
+  reset — `_linkLost = false`, the **hello re-sent**, the phase back to `Connecting` (so the 25 s count from
+  *that* instant, `:1203-1204`), and **never `End()`**, which would close the session Steam has just
+  re-accepted and wipe `_host`/`_lobby`. And the phase checks run **before every return** of `Tick`
+  (`CheckPhase`, `:497`, called at `:452`): a deadline can no longer be skipped by an early return, so every
+  failure **says so** (marker + notification) instead of going silent. ⭐ **The two gates that stayed closed
+  after a drop:** the peer's `_joinLobby` — left set by the timeout, it made `StartJoin` discard **every**
+  invite (`[Steam] join: richiesta lobby=… ignorata: c'e' gia' un ingresso in corso`) — is now reset by
+  `SteamLobbyImpl.ResetJoinAfterLinkLost` (`:1300`), which clears the **gate** and not the **lobby** (leaving
+  the host's lobby would make this player a non-member and the host would refuse the return session; the
+  memory `_lastJoinLobby` stays, so a manual `p2p` connect still works). The host's `IsConnectedNow()`
+  (`:1047`) **stays, and was not a defect**: on the host it reads the **loopback** client towards its own
+  server, so discarding an invite there is correct — the invite is the **peer's**, and the host's server,
+  still listening with the adapter armed, accepts its P2P session as always
+  (`P2PServerTransportImpl.cs:638-641`). What *was* a defect is the `Disconnect()` on that loopback, added by
+  `6c06039` and removed by `074c4e0`: it threw the **host** out of its own server, and "Host session" then
+  answered "porta occupata" — the peer came back, the host did not (`scratch\REFERTO-FIX-HOST-RIENTRO.md`).
+- 🔴 **The exit crash: `CloseP2PSessionWithUser` never runs during the shutdown** (`2ac4f1a`). The measured
+  crash was a **native access violation in `steam_api64`**, and the stack was `Core.OnDestroy` →
+  `ModLoader.Dispose` → `Multiplayer.OnDispose` → `HostSession.Stop` → `Server.Stop` →
+  `CompositeServerTransport.stopAll` → `P2PServerTransportImpl.Stop` → `CloseP2PSessionWithUser`: a native
+  call on a module already in teardown. The host died on exit and the guest did not, because only one of the
+  two `Close` paths was reached (`scratch\DIAGNOSI-CRASH-E-AI.md` §A). The rule is now a **gate**:
+  `P2PShutdownGate.Enter()` is the **first** line of `Multiplayer.OnDispose` (`Multiplayer.cs:129`, i.e.
+  **before** `HostSession.Stop()`), the flag is `volatile` (`Network\P2PShutdownGate.cs:47`, `Enter :53`,
+  `Active :69`), and it is read where a `Close` can still fire in shutdown — `SteamP2PTransportImpl.End`
+  (`:363`, and in IL that branch is a **jump**, not a convention). The `Close` in
+  `P2PServerTransportImpl.Stop` (`:230`) was **not** put behind the gate: it was **removed** — `Stop` now only
+  forgets the peers. In shutdown **the process closes the session**: Steam closes P2P sessions when the
+  process dies, which is the limit already declared. ⛔ The **gameplay** `Close`s all stay: `Drop` (peer
+  lost), `LinkLost`, `HandshakeExpired`, the "Disconnect" button.
+- ⭐ **The protocol number lives in one place — `Common` — and it stays 11.** `Protocol.PROTOCOL_VERSION`
+  (`Blasphemous.Multiplayer.Common\Protocol.cs:24`, a **`byte`**, the type of the byte `Intro` writes on the
+  wire) replaces the two `const byte PROTOCOL_VERSION = 11` that sat in `Server.cs` and `NetworkManager.cs`
+  and had to match on two different machines; `Protocol.VERSION` — a `const int 0` with **zero** occurrences
+  in the whole repository — is gone, and the place that was meant for it now holds the living number (uses:
+  `Server.cs:1000`, `NetworkManager.cs:630`). The value did **not** move to 12: this round changed
+  validation, not the wire — no new `NetworkType`, no new field, no different byte, and the 42 frames are the
+  proof. ⚠️ **And the `const` is inlined**: the 11 stays inside the IL of *both* DLLs, and `PROTOCOL_VERSION`
+  is absent from their metadata (present in `Common.dll` only) — so the single definition removes the
+  divergence **in the source**, not between binaries, and **the three DLLs must still be deployed together**
+  (`scratch\AUDIT-REFACTOR.md` §①; `tools\deploy-local.ps1:33-36`, `:57-61`).
 - ⭐⭐ **The golden rule: the TCP works always, everything else is additive.** The IP path is the base and
   the regression test: the framing harness over the TCP wire must stay **byte-identical** (42 frames,
-  `sha256 9ecdfa42…`) every time the wire is touched, and it has, in all five commits listed above. Steam is
-  a set of **additions** — lobby, invites, the P2P transport, the probe — each behind its own gate, each
-  silent when Steam, the lobby or the library is absent. If you add a wire, add a transport; do not put a
-  branch in the protocol.
+  `sha256 9ecdfa42…`) every time the wire is touched, and it has, in every deploy of this round that touched
+  the client or the server. Steam is a set of **additions** — lobby, invites, the P2P transport, the probe —
+  each behind its own gate, each silent when Steam, the lobby or the library is absent. If you add a wire, add
+  a transport; do not put a branch in the protocol.
 
 ---
 
@@ -197,8 +312,27 @@ the deployed DLL it says so; anything implemented but **not observed in game** i
   and `RISOLTO` on the peer **with** `istanzio` says the area travelled.*
 - **Peer damage** — the enemy channel applies damage on the receiving machine with the game's own
   `Penitent.Damage(Hit)`; measured in a log (`[DannoPeer] APPLICATO`, `scratch\REFERTO-DANNO-AL-PEER.md` §5).
-- **Shared pause** — measured, including the map opening on the passive machine
-  (`scratch\REFERTO-PAUSA-CONDIVISA.md`, the "R0" measurement).
+- **The pause notice** — the flag on channel 203, the sticky line, and the **absence** of any pause action:
+  verified by **construction** on the deployed DLL (Cecil: zero calls from `PauseNotice` to
+  `PauseGame`/`ResumeGame`/`set_TimeScale`/`HidePauseMenu`/`HideInventory` — `scratch\cecil-pausa-il.ps1`)
+  and by **content** (the markers of the removed code are **absent** from the DLL: `RX fronte=`,
+  `ho chiuso e ripreso`, `ripresa FRENATA`, `ho aperto la MAPPA`). The line **on screen** has not been
+  re-observed since: §8. ⚠️ The old "shared pause — measured, with the map opening on the passive"
+  (`scratch\REFERTO-PAUSA-CONDIVISA.md`) described code that **no longer exists**: that document is history,
+  not the state.
+- **The time** — the `LevelInitializer.Update` postfix is in the deployed DLL (marker `[Tempo]`), the target
+  was resolved independently with Cecil (`scratch\cecil-tempo-il.ps1` finds
+  `Tools.Level.Layout.LevelInitializer::Update` and the postfix declared on it), the **divided form** of the
+  attribute is exercised on **HarmonyX 2.7.0** (`scratch\armonia-merge\`: `Update chiamato: 2`, `postfix
+  eseguiti: 2`), and the IL contains **one** write of `Time.timeScale` (`ldc.r4 1`) gated on `CoopGate` +
+  `UIController.Paused`, with **zero** writes of `TimeScaleReal`. The world running in pause, and the death
+  screen arriving after the menus closed, are **not** observed in game: §8.
+- **The fan-out of the server** — proven on the headless bench with **three peers**, i.e. with **N ≥ 2**
+  destinations: **12/12** assertions pass, including the two that distinguish **who** and **how many**
+  (a `Position` reaching **two** peers with the same payload, and the scene filter keeping the third out) —
+  `tools\run-headless.ps1`, `scratch\REFERTO-PEERID-E-BANCO.md` §③. Before the third peer, every fan-out was
+  exercised with **N = 1**, so an extraction that stopped at the first recipient would have passed identically
+  (`scratch\RICERCA-FANOUT.md`).
 - **Life guilt** — the three steps, the persisted counter and the separation from the game's guilt
   fragment verified in game by the user (`scratch\REFERTO-COLPA-VITA.md`); the bonfire reset is local by design
   (whoever sits gets it, `LifeGuilt.cs:48-51`).
@@ -213,7 +347,7 @@ the deployed DLL it says so; anything implemented but **not observed in game** i
   two players: the 42-frame TCP harness stays **byte-identical** (`sha256 9ecdfa42…`), the deploy still
   reports **273** targets with 0 missing, and Cecil on the deployed DLL finds **zero** `Steamworks` outside
   the `*Impl`. **In game**: one two-machine session ran over the P2P — `[Net] p2p: connesso (handshake
-  5.4s)`, about two minutes of link, positions, animations, damage and pause travelling on `[Net] p2p: rx`,
+  5.4s)`, about two minutes of link, positions, animations and damage travelling on `[Net] p2p: rx`,
   no drop, no re-handshake, no exception; no boss was alive during it (`scratch\CONFERMA-P2P.md`). And the
   P2P crosses NAT where the TCP cannot: on a phone hotspot, **15** probe measurements all `relay=0
   via=diretto err=0`, bytes in **both** directions, while the TCP dial to the host's private address was
@@ -259,6 +393,24 @@ regression**: if a player reports one, it is already written down.
   would merge them.
 - **PE02 / Demake and the single-player death screen are implemented but unobserved**
   (`scratch\REFERTO-COLPA-PE02.md`, §6) — see §8.
+- **There is no automatic reconnection** (`scratch\REFERTO-FIX-RICONNESSIONE-2.md` §5). After a drop the
+  link has to be invited again (or "Host session" / Connect pressed): the fix guarantees that the gate no
+  longer blocks the invite and that a refusal is **visible**, not that the session reopens by itself. And a
+  **silence longer than 15 s** — a dead tunnel, or a stall of the game longer than five beats — still kills
+  the link: the tolerance was widened to what a hitch needs, not to infinity.
+- **The P2P sessions at shutdown are left to the process** (`scratch\REFERTO-FIX-CRASH.md` §6). `Stop` does
+  not close them any more, so the sessions of a host who **leaves the session without closing the game** stay
+  open until the peer times out or the process dies. The `BYE` still goes out on exit (it is a `Send`, not a
+  `Close`), and `SteamLobby.LeaveLobby()` still runs after `HostSession.Stop()` — if a crash ever showed up
+  inside one of those, the same rule has to be extended to it.
+- **What the time patch does not fix, and the risks it declares** (`scratch\REFERTO-FIX-TEMPO.md` §8):
+  `IsSlowMode()` becomes false while `Paused` is true, so one of the three "am I paused" guards
+  (`UIController.cs:386-393`) falls and a second widget could open on top of the menu — **not measured**;
+  gravity is **not** disabled while paused, so a player who pauses in mid-air could fall — **not measured**;
+  the audio of a world that now runs is heard (`LogicManager.PauseGame` only pauses the SFX bus, `:251` in the
+  decompiled game). And the death can also happen with a menu open, which is why the menus are closed at the
+  instant of death — a key **held** when the `while (!Input.anyKey)` is reached can still skip the screen
+  (~6.3 s after the death).
 
 The other declared items — the execution freeze that could not be reproduced, the tutorial rooms, the save
 folder when Steam is not running, the crossed execution, the dead player leaving the bossroom, the 1.5 s
@@ -297,15 +449,69 @@ re-opening one needs a new measurement, not a new opinion.
 - **`tools\verify-deploy.ps1` was deleted** (`RIPRISTINO.md`, "Come si torna indietro"). It printed "you can test" on a
   stale DLL and everyone used it precisely because it was reassuring. The gate is now
   `tools\marker-check.ps1`, which reads the **bytes** of the deployed DLL and can say NO.
+- 🔴 **The pause is not shared, and will not be shared again** (`0246f0d`, `scratch\REFERTO-FIX-PAUSA.md`).
+  The reason is not taste: the game puts itself in pause for tutorials, dialogues and cutscenes, so a pause
+  is **not a decision of the player** — and a thing that is not a decision cannot travel as an order. The
+  measured price of doing it anyway was a peer frozen inside a tutorial with no menu open, a resume refused
+  by a system input blocker, 123 retries in 2 s and a game frozen for good. What the mod does instead is
+  **inform**: a flag on channel 203, and a sticky line on the other machine. Re-opening this needs a new
+  measurement, not an opinion — and it would bring back the whole class of failures the removal closed.
+- **The time is patched on `LevelInitializer.Update()`, not on `PauseGame()`** (`e77d48d`,
+  `scratch\REFERTO-FIX-TEMPO.md` §2). `LevelInitializer.Update` is the only place in the decompiled game that
+  writes `Time.timeScale`, it runs every frame and it is the **last** to write; a postfix on `PauseGame()`
+  would be overwritten on the next frame. One patch, on the copy itself, covers **all seven** ways into the
+  pause without listing them. And `TimeScaleReal` is never written: the game must keep **believing** it is
+  paused, or the guards that read the pause open and a second widget lands on top of the menu.
+- **`team` out of range is normalized, not refused** (`e3b2049`, `scratch\REFERTO-DUE-DIFESE.md` §②). Refusing
+  would have meant a new `RefusalType` — i.e. a protocol change this round does not make — or reusing one
+  that speaks of something else (`Protocol`, `DuplicateName`), and a log that says a false thing is worse
+  than a log that says what happened. Normalizing keeps the player in the game and the server from learning
+  a key it would never clean.
+- 🔴 **The `Close` P2P never runs during the shutdown** (`2ac4f1a`, `scratch\REFERTO-FIX-CRASH.md` §2). In
+  shutdown the session is the **process's** business: Steam closes it when the process dies. The gate exists
+  because the peer side still has a closing path (`End()`), and closing a session is not an operation that
+  can be done "half way"; the server side did not get a gate — its `Close` was **removed**. Distinguishing
+  the two `Stop` cases with a gate would have left the **same native call** in the shutdown path, i.e. the
+  risk with one `if` more.
+- **`build.yml` was removed** (`9e75a0b`). It sat in the **nested** folder, it was **never executed**, and
+  there is **no remote** (`git remote -v` is empty): a dead configuration that would only have come alive
+  with the flattening of the repository, i.e. at the worst possible moment. Re-adding CI is a decision to be
+  taken when there is something to run it on, not a file to keep warm.
 
 ---
 
 ## 6. Traps — read before you build
 
-- 🔴 **`deploy-local.ps1` copies from `bin\Debug`** (`tools\deploy-local.ps1:42`, `:48`). A `Release`
+- 🔴 **`deploy-local.ps1` copies from `bin\Debug`** (`tools\deploy-local.ps1:51`, `:57`). A `Release`
   build followed by a deploy ships the **old Debug DLL** — and the deploy still prints a healthy target
-  count, because that gate checks the *names* of the patch targets, not the content
-  (`tools\verify-patch-targets.ps1:74-77`).
+  count, because that gate checks the **names** of the patch targets, not their content
+  (`tools\verify-patch-targets.ps1`). The gate is **mandatory** now and is checked **before** copying
+  (`tools\deploy-local.ps1:27-30`), but it is still a **name** gate: content is `marker-check`'s job.
+- 🔴 **The Harmony gate no longer lies — and each way it used to lie has its own sentence.**
+  (1) **A crash is not a wrong target.** The probe declares its outcome on its **last line**
+  (`SONDA-ESITO: <esito>`) and the script believes the exit code **only** when the mark matches: an
+  unhandled exception exits 4 + `ERRORE`, a code without its mark is a **crash** — before `c1381a8` any exit
+  other than 0/3 fell into "un nome in `[HarmonyPatch]` e' sbagliato", i.e. it accused the patches exactly
+  when the probe could not read the DLL (a corrupted DLL → `BadImageFormatException` → exit -532462766)
+  (`tools\verify-patch-targets.ps1:38-63`, `tools\verify-patch-targets\Program.cs:72-90`).
+  (2) **A stale probe is not green.** The working folder is **per `$PID`** and is **wiped** before copying,
+  because `Copy-Item` keeps timestamps and `dotnet build` does not recompile a `probe.dll` newer than the
+  `Program.cs` it finds: measured, a probe that crashes, left in the folder of a failed run, printed
+  `273 / tutti validi` and the gate exited **0** (`scratch\REFERTO-GATE-2.md` §4).
+  (3) **The probe is in the repo** — `tools\verify-patch-targets\` (`Program.cs` + `probe.csproj`, tracked):
+  before they sat in `D:\Codificando\scratch\`, and on a clean clone the gate could not run and exited 1 =
+  "targets do not exist", the most alarming diagnosis possible for a setup problem.
+  (4) **Both shapes of the attribute are counted** (§2, the bullet with the count): the divided form is
+  invisible to a regex over `[HarmonyPatch(typeof(X), "name")]`, and an invisible target is a `PatchAll` that
+  fails at runtime while the deploy says everything is fine.
+- ⚠️ **The three DLLs are deployed together, or not at all**: `BlasClient.dll`, `Blasphemous.Multiplayer.Common.dll`
+  and the server. `deploy-local.ps1` does all three from the same `bin\Debug` / `publish`
+  (`tools\deploy-local.ps1:40-67`), and the reason is written in the script: `Common.dll` carries the
+  protocol number and the `NetworkType` enum, and **`PROTOCOL_VERSION` is a `const`, so it is inlined** — a
+  new client with an old `Common.dll` is the silent divergence the single definition cannot prevent (§2).
+- ⚠️ **The bench runs the *deployed* server**, in a process of its own (a real console: `Core.Main` ends in
+  `Console.ReadKey` and throws if the streams are redirected), and writes its artifacts to `-OutDir`. Nothing
+  in the bench is tracked except the two scripts: the proof is the script, not the capture.
 - 🔴 **Markers must be concatenated.** `$"{MARK} …"` compiles to `string.Format`, so the DLL contains
   `"{0} …"` and the byte check reports the marker as missing (`scratch\REFERTO-2-HOOK.md`; the rule in code:
   `EffectRelayInstantiateArea.cs:111-117`). If a marker "looks present" in the source and the check says
@@ -333,11 +539,35 @@ cd ..\..
 & '.\tools\marker-check.ps1' -Dll 'Modding\plugins\BlasClient.dll' -Marker '[FxRelay]','[ColpaVita]'
 ```
 
-- The deploy runs the Harmony-target gate itself (`tools\deploy-local.ps1:79-86`) and **stops** if a target
+- The deploy runs the Harmony-target gate itself (`tools\deploy-local.ps1:88-96`) and **stops** if a target
   name does not exist: a wrong name in `[HarmonyPatch]` compiles, then aborts `PatchAll` at runtime and the
-  symptom looks like "the mod logs nothing at all".
+  symptom looks like "the mod logs nothing at all". Since `128e68e` the gate is required **before** anything
+  is copied (`:27-30`) and its message no longer re-states a diagnosis the verifier has already denied.
 - `marker-check` must exit **0** and print `ESITO: TUTTI i marker richiesti sono PRESENTI`. The `-Marker`
   array only works with the call operator `&`; with `-File` it takes a single value.
+
+### The headless bench — the only proof that a fan-out reaches **two** peers
+
+Two scripts, both tracked, both in `tools\`; the server must already be deployed (`SERVER-COOP`).
+
+```powershell
+pwsh -NoProfile -File .\tools\run-headless.ps1 `
+     -ServerDir '<...>\SERVER-COOP' -OutDir '<scratch>\out-3peer' -Via dotnet
+
+pwsh -NoProfile -File .\tools\compare-headless.ps1 `
+     -Before '<scratch>\out-after-...' -After '<scratch>\out-3peer'
+```
+
+- It opens **real TCP sockets** to the **deployed** server and sends **real packets** in the
+  `[ushort len][byte type][payload]` framing, capturing every byte the server answers.
+- **Section A** is the golden wire: **42 frames**, `sha256 9ecdfa42…`, byte-identical to the baseline. It is
+  the non-regression measure of the wire and it must not change when the wire is touched — it has not, in any
+  commit of the round.
+- **Section B** is the **three-peer** run (`127.0.0.1`, `.2`, `.3`): from there every fan-out has **N ≥ 2**
+  destinations, and the last line is a verdict — `ESITO: 12/12 PASS`, exit 0, or exit 1 with the failed
+  assertion named. An extraction that stops at the first recipient **does not pass any more**; before the
+  third peer it would have passed identically (`scratch\RICERCA-FANOUT.md`, `scratch\REFERTO-PEERID-E-BANCO.md` §③).
+- `-Via exe|dotnet` (default `dotnet`): the exe is unsigned and SmartScreen may hold it for minutes.
 
 ---
 
@@ -363,3 +593,33 @@ missing.
   observable, not a limit)*: `[FxRelay] hook InstantiateArea: prefab=… da=BossJump|BossTeleport`:
   if `RISOLTO` on the peer comes **with** `istanzio` the area is relayed, if it comes **without** it the
   prefab is cosmetic and nothing was sent (`EffectRelayInstantiateArea.cs:48-53`).
+- **The pause line, on screen** — `[Pausa] cancello APERTO` → `[Pausa] TX flag=pausa locale: si'` →
+  on the other machine `[Pausa] RX flag=… avviso A SCHERMO "YOUR TEAMMATE IS PAUSED"` → `[Pausa] NOTIFICA
+  TOLTA · motivo=…` (or `TIMEOUT di 8s` if the peer closed the game). What is **not** observed: that the line
+  really appears and disappears at the right moments, and that **no** `PauseGame` line ever comes back. The
+  absence of the call is proven on the deployed DLL (§3), not by the eye (`scratch\REFERTO-FIX-PAUSA.md` §6).
+- **The world running in pause** — start a tutorial / dialogue / cutscene on one machine and look at the
+  log `[Tempo] la pausa non ferma il mondo · in pausa il MONDO CORRE · TimeScaleReal(letto)=… · finestre=N`.
+  The other player must keep playing; nobody freezes. In single player the line is `cancello CHIUSO`.
+- **The death screen after the menus are closed** — die with a menu open: `[Morte] menu' chiusi PRIMA della
+  schermata di morte · modo=HideInventory|HidePauseMenu`. The screen must be seen, not skipped
+  (`scratch\REFERTO-FIX-TEMPO.md` §3-§4).
+- **The reconnection, in game** — after a drop the chain the user must see is `[Net] p2p: link RITROVATO
+  (…)` → `hello inviato a …` → `primo pacchetto (canale N) dopo Xs` → `connesso (handshake Xs)`, and on the
+  host `[Net] p2p host: nessun peer connesso (…): … connesso=true` (the host never left its own server).
+  The 15 s and the 25 s are proven by construction (the constant, the branch that reads it, the string in the
+  DLL), not by a stopwatch (`scratch\REFERTO-FIX-RICONNESSIONE-2.md` §5).
+- **The exit without crash** — close the game **as host**: the last lines of the log must be, in this order,
+  `[Net] chiusura in corso: da qui in poi nessuna CloseP2PSessionWithUser` and then
+  `[Net] p2p: adapter fermo peer=N - nessuna Close P2P da qui (…)`. Proven in IL (the branch is a jump), **not**
+  on the field: if the first line is there and the game died anyway, the crash is no longer that `Close`
+  (`scratch\REFERTO-FIX-CRASH.md` §6).
+- **`[EnemyInert]`** — five lines that had never been written to **any** log, in **any** build, because they
+  sat after a `return` (`CS0162`); reachable since `46e35fb` (`EnemySyncManager.cs:1355-1378`), counts
+  **distinct ids** and prints once per growth, and `LevelLoaded` resets it. The first run that shows it is the
+  measurement, and it answers a specific symptom: "an enemy that stands still and cannot be pushed" is
+  **by construction** inert scenery (`IsInertScenery`) or it is another fault (`scratch\REFERTO-ENEMY-INERT.md`).
+- **The server's two discards, in a live log** — `[Server] payload corto: tipo=… attesi=… ho=…` and
+  `[Server] progresso scartato: …` only ever appear when something malformed actually arrives. The negative
+  proofs exist on the bench (`scratch\REFERTO-DUE-DIFESE.md` §3.3-3.4, `scratch\REFERTO-TRE-PASSI.md` §1);
+  in a normal session they are **silence**, and that is the correct outcome.
