@@ -35,6 +35,9 @@ Expected: **0 errors**, about **469 warnings** — essentially all `CS1591` ("mi
 which is the baseline. A different count is a signal: more means something new, fewer usually means dead code was
 removed.
 
+> The paths above are the current layout. After a repository flattening the solution sits at the
+> repository root; the scripts in `tools/` locate it on their own, only the commands written here change.
+
 | project | target | what it produces |
 |---|---|---|
 | `Blasphemous.Multiplayer.Client` | `net35` | the mod — `BlasClient.dll`, loaded by BepInEx from `Modding/plugins/` |
@@ -59,6 +62,19 @@ Running the mod requires **Windows** and a working game installation.
 
 Run from the repository root. All the scripts are **relative to their own location** — they do not
 hardcode the repository path.
+
+**One command does the whole round** — build, warning count against the baseline, deploy, and a
+byte-level check that the DLL now sitting in the game is the one you just built:
+
+```powershell
+pwsh -NoProfile -File '.\tools\check.ps1'
+```
+
+It stops at the first red and exits non-zero. Green means: `0 error(s)` · `469 warning(s)` (the
+baseline) · `273` Harmony targets · `14/14` markers present · `game == bin/Debug` for the mod, Common
+and the server.
+
+The individual steps, if you want to run them yourself:
 
 ```powershell
 # copy the build into the game: mod, Common.dll and the server, then run the Harmony gate
@@ -86,7 +102,7 @@ The server protocol can be tested without the game, on any OS, by driving the re
 
 ```powershell
 pwsh -NoProfile -File '.\tools\run-headless.ps1' `
-  -ServerDir '.\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\publish\BlasServer' `
+  -ServerDir '.\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer.Server\bin\Debug\net8.0' `
   -OutDir    '.\scratch\bench'
 
 # compare against a previous run: only clock and ephemeral ports are normalised
@@ -97,9 +113,11 @@ pwsh -NoProfile -File '.\tools\compare-headless.ps1' -Before '.\scratch\old-run'
 not supposed to touch the wire. The bench also runs a three-peer section with explicit assertions
 about who must receive what, so a fan-out (`foreach (peer in connectedPlayers)`) is actually covered.
 
-> The `-ServerDir` above is the folder produced by the build. After a repository flattening the
-> solution moves to the repository root; the helper scripts find it on their own, the paths in this
-> section are the only ones that change.
+> `-ServerDir` is the folder produced by the build (`blas1mpserver.dll` plus its dependencies). Do
+> **not** point it at `publish/BlasServer`: that folder is written by an MSBuild target that only runs
+> when the server project is actually recompiled, so it can hold a stale server.
+> After a repository flattening the solution sits at the repository root; the scripts in `tools/` find
+> it on their own — only the paths written in this file change.
 
 ## 6. Repository layout
 
