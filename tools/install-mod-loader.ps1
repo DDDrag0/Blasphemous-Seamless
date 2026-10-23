@@ -159,7 +159,19 @@ $backupRoot = Join-Path $CachePath ("backup-" + (Get-Date -Format 'yyyyMMdd-HHmm
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
 # Where the multiplayer mod's solution lives, for the "next steps" message.
-$SolutionPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer.sln'
+# Anche qui la solution si CERCA sotto la radice (<repo>\tools\..) invece di scrivere la doppia cartella
+# 'Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main': quel nome e' un dettaglio di ADESSO, e
+# l'appiattimento (solution direttamente nella radice) lo cancellerebbe — lasciando qui un percorso
+# sbagliato in un messaggio, che e' il tipo di errore che non fa fallire niente e confonde dopo.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$slnItem  = Get-ChildItem -LiteralPath $RepoRoot -Filter 'Blasphemous.Multiplayer.sln' -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+if (-not $slnItem) {
+    $slnItem = Get-ChildItem -LiteralPath $RepoRoot -Filter 'Blasphemous.Multiplayer.sln' -File -Recurse -ErrorAction SilentlyContinue |
+               Select-Object -First 1
+}
+# Se non c'e' (installazione del solo loader, repo incompleto) il messaggio resta onesto: si nomina la radice.
+$SolutionPath = if ($slnItem) { $slnItem.FullName } else { Join-Path $RepoRoot '<repo>\Blasphemous.Multiplayer.sln (non trovata)' }
 
 Write-Step "Downloading and verifying"
 foreach ($c in $components) {
