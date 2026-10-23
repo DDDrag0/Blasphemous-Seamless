@@ -410,3 +410,11 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Artefatti di build della mod.
+#
+# Blasphemous.Multiplayer.Client.csproj copia Blasphemous.Multiplayer.Common.dll in
+# resources/data dopo OGNI build, con metadati nuovi: il file e' versionato, quindi ogni
+# build lo riscrive con byte diversi e sporca git senza alcuna modifica logica.
+# Ignorarlo tiene il working tree pulito. (Percorsi con "/": git non interpreta "\".)
+resources/data/Blasphemous.Multiplayer.Common.dll
