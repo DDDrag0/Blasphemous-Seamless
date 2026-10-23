@@ -38,7 +38,7 @@ bld/
 # The file is versioned, so each build rewrites it with new metadata and pollutes
 # Git: it ended up in 8 commits as pure noise, without any logical changes.
 # Ignoring it keeps the working tree clean after builds.
-Translated with DeepL.com (free version)resources/data/Blasphemous.Multiplayer.Common.dll
+resources/data/Blasphemous.Multiplayer.Common.dll
 
 # deployment tools
 tools/cache/
@@ -410,11 +410,3 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
-
-# Artefatti di build della mod.
-#
-# Blasphemous.Multiplayer.Client.csproj copia Blasphemous.Multiplayer.Common.dll in
-# resources/data dopo OGNI build, con metadati nuovi: il file e' versionato, quindi ogni
-# build lo riscrive con byte diversi e sporca git senza alcuna modifica logica.
-# Ignorarlo tiene il working tree pulito. (Percorsi con "/": git non interpreta "\".)
-resources/data/Blasphemous.Multiplayer.Common.dll
