@@ -13,7 +13,10 @@
 
 param(
     [string]$Game   = 'D:\SteamLibrary\steamapps\common\Blasphemous',
-    [string]$Repo   = 'D:\Codificando\Blasphemous COOP\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main'
+    # Radice del repo calcolata da DOVE STA QUESTO SCRIPT (<repo>\tools\deploy-local.ps1), non scritta a
+    # mano: prima era 'D:\Codificando\Blasphemous COOP\...' e la rinomina della cartella avrebbe fatto
+    # fallire il deploy con "repo non trovato" (o, peggio, l'avrebbe fatto puntare a una copia vecchia).
+    [string]$Repo   = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main')
 )
 
 $ErrorActionPreference = 'Stop'
