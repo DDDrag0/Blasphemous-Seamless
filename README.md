@@ -27,16 +27,16 @@ from a NuGet package, not from the operating system.
 ## 2. Build
 
 ```bash
-dotnet restore Blasphemous.Multiplayer-main/Blasphemous.Multiplayer-main/Blasphemous.Multiplayer.sln
-dotnet build   Blasphemous.Multiplayer-main/Blasphemous.Multiplayer-main/Blasphemous.Multiplayer.sln
+dotnet restore Blasphemous.Multiplayer.sln
+dotnet build   Blasphemous.Multiplayer.sln
 ```
 
 Expected: **0 errors**, about **469 warnings** — essentially all `CS1591` ("missing XML comment"),
 which is the baseline. A different count is a signal: more means something new, fewer usually means dead code was
 removed.
 
-> The paths above are the current layout. After a repository flattening the solution sits at the
-> repository root; the scripts in `tools/` locate it on their own, only the commands written here change.
+> The scripts in `tools/` locate the solution on their own, so the commands above are the only place
+> where the layout is written down.
 
 | project | target | what it produces |
 |---|---|---|
@@ -102,7 +102,7 @@ The server protocol can be tested without the game, on any OS, by driving the re
 
 ```powershell
 pwsh -NoProfile -File '.\tools\run-headless.ps1' `
-  -ServerDir '.\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer.Server\bin\Debug\net8.0' `
+  -ServerDir '.\Blasphemous.Multiplayer.Server\bin\Debug\net8.0' `
   -OutDir    '.\scratch\bench'
 
 # compare against a previous run: only clock and ephemeral ports are normalised
@@ -116,16 +116,17 @@ about who must receive what, so a fan-out (`foreach (peer in connectedPlayers)`)
 > `-ServerDir` is the folder produced by the build (`blas1mpserver.dll` plus its dependencies). Do
 > **not** point it at `publish/BlasServer`: that folder is written by an MSBuild target that only runs
 > when the server project is actually recompiled, so it can hold a stale server.
-> After a repository flattening the solution sits at the repository root; the scripts in `tools/` find
-> it on their own — only the paths written in this file change.
 
 ## 6. Repository layout
 
 ```
-Blasphemous.Multiplayer-main/Blasphemous.Multiplayer-main/   solution and the three projects
-  resources/                                                shipped assets (SimpleTCP.dll, json data …)
-tools/                                                       build, deploy and verification scripts
-docs/                                                        architecture, status, known issues
+Blasphemous.Multiplayer.sln   solution: the three projects below
+Blasphemous.Multiplayer.Client/    the mod (net35)
+Blasphemous.Multiplayer.Common/    protocol and shared types (net35 + net8.0)
+Blasphemous.Multiplayer.Server/    the standalone relay (net8.0)
+resources/                    shipped assets (SimpleTCP.dll, json data …)
+tools/                        build, deploy and verification scripts
+docs/                         architecture, status, known issues
 ```
 
 Build outputs (`bin/`, `obj/`, `publish/`) are **never** tracked.
