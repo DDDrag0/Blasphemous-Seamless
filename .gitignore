@@ -32,20 +32,6 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
-# Mod build artifacts.
-# Blasphemous.Multiplayer.Client.csproj copies Blasphemous.Multiplayer.Common.dll to
-# resources\data after every build (target “Copy resources to DevFolder/PublishFolder”).
-# The file is versioned, so each build rewrites it with new metadata and pollutes
-# Git: it ended up in 8 commits as pure noise, without any logical changes.
-# Ignoring it keeps the working tree clean after builds.
-resources/data/Blasphemous.Multiplayer.Common.dll
-
-# deployment tools
-tools/cache/
-tools/Released/
-tools/modtools-extract/
-tools/ModdingTools-win64.zip
-
 # Visual Studio 2015/2017 cache/options directory
 .vs/
 # Uncomment if you have tasks that create the project's static files in wwwroot
@@ -410,3 +396,20 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Mod build artifacts.
+# Blasphemous.Multiplayer.Client.csproj copies Blasphemous.Multiplayer.Common.dll to
+# resources\data after every build (target “Copy resources to DevFolder/PublishFolder”).
+# The file is versioned, so each build rewrites it with new metadata and pollutes
+# Git: it ended up in 8 commits as pure noise, without any logical changes.
+# Ignoring it keeps the working tree clean after builds.
+resources/data/Blasphemous.Multiplayer.Common.dll
+
+# deployment tools
+tools/cache/
+tools/Released/
+tools/modtools-extract/
+tools/ModdingTools-win64.zip
+
+# Docs
+docs/BUG NOTI.md
