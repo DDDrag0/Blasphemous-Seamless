@@ -407,9 +407,11 @@ resources/data/Blasphemous.Multiplayer.Common.dll
 
 # deployment tools
 tools/cache/
+tools/backup-*/
 tools/Released/
 tools/modtools-extract/
 tools/ModdingTools-win64.zip
 
 # Docs
 docs/BUG NOTI.md
+docs/RIPRISTINO.md
