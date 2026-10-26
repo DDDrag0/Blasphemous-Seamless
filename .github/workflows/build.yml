@@ -1,3 +1,22 @@
+# Blasphemous Seamless — release workflow
+#
+# What it verifies before publishing:
+#   · the solution builds in Release (all three projects, net35 included — its reference
+#     assemblies come from the `Microsoft.NETFramework.ReferenceAssemblies` NuGet package);
+#   · the server publishes for the three RIDs declared in Server.csproj;
+#   · the headless wire bench reproduces the committed baseline in `tools/bench-baseline/`.
+#     That step is the real gate: if the protocol changed, the run fails and the release is never
+#     created - and the failure NAMES the differing line (`compare-headless.ps1` normalizes clock
+#     and ephemeral ports, as declared there), instead of only printing `sha256 DIVERSO`.
+#   · the bench artifacts are uploaded on every outcome (`if: always()`), because a red run is
+#     exactly the run whose `frames.txt`/`bytes.txt` you need: without the upload they died with
+#     the runner and the 42-frame / different-sha256 case was undiagnosable.
+#
+# What it deliberately does NOT do:
+#   · `dotnet nuget push` — the .nupkg is produced by `GeneratePackageOnBuild`, but publishing it
+#     is public and irreversible and serves no purpose for a game mod;
+#   · the Harmony target gate — it needs the game's `Assembly-CSharp.dll`, which cannot be shipped.
+
 name: Build
 
 on:
@@ -158,6 +177,7 @@ jobs:
         retention-days: 7
 
     - name: Create Release & Upload
+      if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
         # `github.ref_name` is the tag name (v1.2.3); `github.ref` would be "refs/tags/v1.2.3".
