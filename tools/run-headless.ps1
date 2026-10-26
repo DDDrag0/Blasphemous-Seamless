@@ -58,6 +58,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Platform switch, computed once. `$IsWindows` does not exist on Windows PowerShell 5.1 (it reads
+# as $null, i.e. "not Windows"), so the edition check keeps 5.1 on the Windows path.
+$isWin = $IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop'
+
 $ServerDir = (Resolve-Path -LiteralPath $ServerDir).ProviderPath
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 Get-ChildItem $OutDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -241,15 +245,26 @@ function Check([string]$nome, [bool]$ok, [string]$dettaglio) {
 Get-Process blas1mpserver -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
 Get-Process -Name dotnet -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -match 'blas1mpserver\.dll' } |
-    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }
+    ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { } }
 Start-Sleep -Milliseconds 300
 
 if ($Via -eq 'exe') {
+    # -Via exe launches the .exe through cmd.exe + `start`: Windows-only, no Linux equivalent.
+    if (-not $isWin) { throw "-Via exe is Windows-only (it launches through cmd.exe): use -Via dotnet" }
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'start', '""', '/D', $ServerDir, 'blas1mpserver.exe', '-p', "$Port", '-mp', '10' -WindowStyle Hidden
     $launcher = $null
 } else {
-    $launcher = Start-Process -FilePath 'dotnet' -ArgumentList @('blas1mpserver.dll', '-p', "$Port", '-mp', '10') `
-                              -WorkingDirectory $ServerDir -WindowStyle Hidden -PassThru
+    # Splat the common parameters, then add -WindowStyle only on Windows: on Linux PowerShell
+    # rejects the PARAMETER itself ("The parameter '-WindowStyle' is not supported"), not just
+    # the value. Same executable, same arguments, same working directory, same hidden window.
+    $sp = @{
+        FilePath         = 'dotnet'
+        ArgumentList     = @('blas1mpserver.dll', '-p', "$Port", '-mp', '10')
+        WorkingDirectory = $ServerDir
+        PassThru         = $true
+    }
+    if ($isWin) { $sp.WindowStyle = 'Hidden' }
+    $launcher = Start-Process @sp
 }
 $deadline = (Get-Date).AddSeconds(10)
 $mine = @()
