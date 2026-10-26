@@ -37,7 +37,7 @@
 
 ## 1. What this mod is
 
-**Co-op for Blasphemous** — Unity **2017.4.40f1**, BepInEx **5.4.23.4**, Blasphemous **Modding API 3.0.1**,
+**Co-op for Blasphemous** — Unity **2017.4.40f1**, BepInEx **5.4.23.5**, Blasphemous **Modding API 3.0.1**,
 **HarmonyX** (the `0Harmony.dll` shipped with BepInEx). Two binaries: the client plugin `BlasClient.dll`
 (loaded from `Modding\plugins`) and a standalone console server shipped in `SERVER-COOP`.
 **273 Harmony patch targets** (see §2, the bullet with the count).
