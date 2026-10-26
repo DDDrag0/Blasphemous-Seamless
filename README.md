@@ -74,7 +74,7 @@ They are harmless to play with. Details, log strings and test steps are in the d
 Problems of this type depend on a combination of room, tutorial, entry order, and timing that cannot be recreated
 during a test run but that a player might accidentally trigger.
 
-⚠️ **The real limits are not on this page**: they are in **docs.Known bugs**, one entry each.
+⚠️ **The real limits are not on this page**: they are in **docs\KNOWN_BUGS.md**, one entry each.
 
 1. An execution followed by an enemy’s death could cause the game to freeze — **It should be fixed, but we can’t reproduce it**
 
@@ -176,7 +176,7 @@ Useful flags:
 
 ### After installing
 
-1. Build the mod; its post-build step copies `BlasClient.dll` into `<game>\Modding\`.
+1. Build the mod; Copy the build generated inside the `.\publish` folder into the game folder.
 2. Launch Blasphemous through Steam.
 3. Check `<game>\BepInEx\LogOutput.log` for the plugin list. If `BlasClient` is not mentioned there, the
    mod is still not loading and the log is the place to find out why.
