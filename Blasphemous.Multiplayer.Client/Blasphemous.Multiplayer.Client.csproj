@@ -4,10 +4,10 @@
     <TargetFramework>net35</TargetFramework>
     <LangVersion>latest</LangVersion>
 
-    <Title>Multiplayer</Title>
-    <Product>Multiplayer</Product>
-    <Authors>Damocles</Authors>
-    <Company>Damocles</Company>
+    <Title>Seamless Co-op</Title>
+    <Product>Seamless Co-op</Product>
+    <Authors>Damocles, DDDrag0</Authors>
+    <Company>Damocles, DDDrag0</Company>
     <Description>A multiplayer mod that allows you to play Blasphemous cooperatively or against other people</Description>
     <!-- Version handled in Directory.Build.props -->
 
@@ -15,7 +15,7 @@
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <GenerateDocumentationFile>True</GenerateDocumentationFile>
     <DocumentationFile>bin\$(Configuration)\$(TargetName).xml</DocumentationFile>
-    <RepositoryUrl>https://github.com/BrandenEK/Blasphemous.Multiplayer</RepositoryUrl>
+    <RepositoryUrl>https://github.com/DDDrag0/Blasphemous-Seamless</RepositoryUrl>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 
     <!-- Deploy to game folder toggle. Default FALSE: build does not touch the game.
