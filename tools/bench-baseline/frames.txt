@@ -1,0 +1,42 @@
+01 A <- HostAssign(1)+Intro(0)             type=13 len=1 payload=01
+01 A <- HostAssign(1)+Intro(0)             type=8 len=1 payload=00
+03 B <- HostAssign+Intro+replay di Alice   type=13 len=1 payload=00
+03 B <- HostAssign+Intro+replay di Alice   type=8 len=1 payload=00
+03 B <- HostAssign+Intro+replay di Alice   type=7 len=7 payload=05416c69636501
+03 B <- HostAssign+Intro+replay di Alice   type=5 len=22 payload=05416c69636550454e4954454e545f44454641554c54
+03 B <- HostAssign+Intro+replay di Alice   type=6 len=7 payload=05416c69636501
+03 B <- HostAssign+Intro+replay di Alice   type=3 len=13 payload=05416c6963655343454e452d41
+03 A <- Connection(Bob,true)               type=7 len=5 payload=03426f6201
+04 A <- EnterScene/Pos/Anim/Dir di Bob     type=3 len=11 payload=03426f625343454e452d41
+04 A <- EnterScene/Pos/Anim/Dir di Bob     type=0 len=12 payload=03426f620000000000000000
+04 A <- EnterScene/Pos/Anim/Dir di Bob     type=1 len=5 payload=03426f6200
+04 A <- EnterScene/Pos/Anim/Dir di Bob     type=2 len=5 payload=03426f6200
+04 B <- Pos/Anim/Dir di Alice              type=0 len=14 payload=05416c6963650000000000000000
+04 B <- Pos/Anim/Dir di Alice              type=1 len=7 payload=05416c69636500
+04 B <- Pos/Anim/Dir di Alice              type=2 len=7 payload=05416c69636500
+05 B <- Position di Alice (mirato)         type=0 len=14 payload=05416c6963650000c03f00002040
+06 B <- Animation di Alice                 type=1 len=7 payload=05416c69636503
+06 B <- Direction di Alice                 type=2 len=7 payload=05416c69636501
+07 A(host) <- EnemyDamageRequest dal peer  type=22 len=2 payload=dead
+09 B <- EnemyOwnership dall host           type=25 len=1 payload=02
+10 A <- Ping (chiave del Dictionary)       type=12 len=10 payload=0000803f03426f620000
+11 B <- Connection(Alice,false)+HostAssign(1) type=7 len=7 payload=05416c69636500
+11 B <- Connection(Alice,false)+HostAssign(1) type=13 len=1 payload=01
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob type=13 len=1 payload=00
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob type=8 len=1 payload=00
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob type=7 len=5 payload=03426f6201
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob type=5 len=20 payload=03426f6250454e4954454e545f44454641554c54
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob type=6 len=5 payload=03426f6201
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob type=3 len=11 payload=03426f625343454e452d41
+12 B <- Connection(Alice2,true)            type=7 len=8 payload=06416c6963653201
+13 B <- Connection(Alice2,false)           type=7 len=8 payload=06416c6963653200
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob type=13 len=1 payload=00
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob type=8 len=1 payload=00
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob type=7 len=5 payload=03426f6201
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob type=5 len=20 payload=03426f6250454e4954454e545f44454641554c54
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob type=6 len=5 payload=03426f6201
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob type=3 len=11 payload=03426f625343454e452d41
+14 B <- Connection(Dave,true)              type=7 len=6 payload=044461766501
+15 D <- Intro(12) DuplicateIp              type=8 len=1 payload=0c
+16 D <- Connection(Bob,false)+HostAssign(1) type=7 len=5 payload=03426f6200
+16 D <- Connection(Bob,false)+HostAssign(1) type=13 len=1 payload=01

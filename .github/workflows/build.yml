@@ -9,8 +9,13 @@
 #   · the solution builds in Release (all three projects, net35 included — its reference
 #     assemblies come from the `Microsoft.NETFramework.ReferenceAssemblies` NuGet package);
 #   · the server publishes for the three RIDs declared in Server.csproj;
-#   · the headless wire bench reproduces its golden `sha256`. That step is the real gate: if a
-#     single byte of the protocol changed, the run fails and the release is never created.
+#   · the headless wire bench reproduces the committed baseline in `tools/bench-baseline/`.
+#     That step is the real gate: if the protocol changed, the run fails and the release is never
+#     created - and the failure NAMES the differing line (`compare-headless.ps1` normalizes clock
+#     and ephemeral ports, as declared there), instead of only printing `sha256 DIVERSO`.
+#   · the bench artifacts are uploaded on every outcome (`if: always()`), because a red run is
+#     exactly the run whose `frames.txt`/`bytes.txt` you need: without the upload they died with
+#     the runner and the 42-frame / different-sha256 case was undiagnosable.
 #
 # What it deliberately does NOT do:
 #   · `dotnet nuget push` — the .nupkg is produced by `GeneratePackageOnBuild`, but publishing it
@@ -81,16 +86,100 @@ jobs:
         done
 
     - name: Run headless wire bench
-      # `-ExpectFramesSha256` makes the bench its own gate: it fails if the protocol bytes changed.
+      # `-ExpectFramesSha256 ''` = measure, do not judge on the raw sha256. The judgement moved to
+      # the two steps below, which explain first and fail second:
+      #   1. `compare-headless.ps1` against tools/bench-baseline/ prints the differing line;
+      #   2. the section A golden sha256 is still checked, with line endings normalized.
+      # Why the raw sha256 is not the gate any more: the artifact writer uses
+      # [IO.File]::WriteAllLines, i.e. `Environment.NewLine` - CRLF on Windows, LF on Linux. Same
+      # 42 frames, same order, different file bytes: the raw hash was Windows-only by construction.
+      # The bench still gates itself on everything else (17-step run, section B assertions, 42).
       # NOTE: -ServerDir is the BUILD output (bin/Release/net8.0), not publish/: the published
       # server is single-file and has no blas1mpserver.dll for `dotnet blas1mpserver.dll` to load.
-      # `compare-headless.ps1` is intentionally not used here: it needs a committed baseline.
       shell: pwsh
       run: |
         ./tools/run-headless.ps1 `
           -ServerDir 'Blasphemous.Multiplayer.Server/bin/Release/net8.0' `
           -OutDir    "${{ runner.temp }}/bench" `
-          -ExpectFramesSha256 '9ecdfa429aacd33031e0bedaed1af7755e4be2b8a6f40a13fd4beaea1d666dd2'
+          -ExpectFramesSha256 ''
+
+    - name: Compare against the committed baseline
+      # `tools/bench-baseline/` is a known-good copy of frames.txt + bytes.txt, taken from a
+      # passing local (Windows) run. Comparing against it is what turns a red bench into a report:
+      # `compare-headless.ps1` prints `DIFFERENT <file>` and the differing lines, so the run says
+      # WHICH frame changed. It fails the job on real differences (the release is then skipped,
+      # the artifacts are still uploaded below).
+      # Its output also goes into the bench artifact (compare.txt) and into the job summary.
+      # The baseline holds frames.txt + bytes.txt only: `server-log-pulito.txt` is reported as
+      # SKIPPED on purpose - the wire is the gate, and a log line must not block a release.
+      # `if: always()`: it also runs when the bench step went red on a section B assertion - in that
+      # case the wire comparison is exactly what you want to read next.
+      if: always()
+      shell: pwsh
+      run: |
+        $bench = "${{ runner.temp }}/bench"
+        New-Item -ItemType Directory -Path $bench -Force | Out-Null
+        $cmp = Join-Path $bench 'compare.txt'
+        if (-not (Test-Path (Join-Path $bench 'frames.txt'))) {
+          "::error::frames.txt is missing in ${bench}: the bench did not reach section A, so there is nothing to compare (its own log above says why; the artifacts are still uploaded below)"
+          exit 1
+        }
+        pwsh -NoProfile -File ./tools/compare-headless.ps1 `
+          -Before 'tools/bench-baseline' `
+          -After  $bench 2>&1 | Tee-Object -FilePath $cmp
+        $code = $LASTEXITCODE
+        if ($env:GITHUB_STEP_SUMMARY -and (Test-Path $cmp)) {
+          Get-Content -LiteralPath $cmp | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+        }
+        if ($code -ne 0) {
+          "::error::real differences between tools/bench-baseline and this run: see compare.txt (bench artifact) - read the lines above, they name the frame"
+          exit $code
+        }
+
+    - name: Section A golden sha256
+      # Second control, not the only one, and it runs even when the comparison above failed, so a
+      # red run carries both answers.
+      # The expected hash is the one a local Windows run produces (42 frames). It is compared on a
+      # CRLF-normalized copy, because the writer emits `Environment.NewLine`: LF on the Linux
+      # runner, CRLF locally. Identical frames, different file bytes - a real wire change still
+      # fails here, a line-ending-only difference is reported and does not block the release.
+      if: always()
+      shell: pwsh
+      run: |
+        $Expected = '9ecdfa429aacd33031e0bedaed1af7755e4be2b8a6f40a13fd4beaea1d666dd2'
+        $frames = "${{ runner.temp }}/bench/frames.txt"
+        if (-not (Test-Path $frames)) {
+          "::error::frames.txt is missing: the bench did not reach section A (see the run log above)"
+          exit 1
+        }
+        $raw = (Get-FileHash -LiteralPath $frames -Algorithm SHA256).Hash.ToLower()
+        $text = ([IO.File]::ReadAllText($frames, [Text.Encoding]::UTF8)) -replace "`r`n", "`n" -replace "`n", "`r`n"
+        $norm = ([BitConverter]::ToString(
+                  [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text))
+                )).Replace('-', '').ToLower()
+        "frames.txt        : $frames"
+        "sha256 (raw)      : $raw"
+        "sha256 (CRLF-norm): $norm"
+        "sha256 (expected) : $Expected"
+        if ($raw -eq $Expected) {
+          "OK: section A golden reproduced byte-for-byte"
+        } elseif ($norm -eq $Expected) {
+          "::warning::section A frames are identical; only the file line endings differ from the Windows baseline (LF on the runner vs CRLF locally) - not a wire change"
+        } else {
+          "::error::section A golden differs for real: the 42 frames, their order or a payload changed. The compare step above names the line."
+          exit 1
+        }
+
+    - name: Upload bench artifacts
+      # `if: always()`: it matters MOST when the bench fails - that is the run whose frames.txt and
+      # bytes.txt are needed. Without this, a red run is gone with the runner and the failure cannot
+      # be diagnosed at all. 7 days: long enough to download it from the failing run.
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bench
+        path: ${{ runner.temp }}/bench
+        retention-days: 7
 
     - name: Create Release & Upload
       uses: softprops/action-gh-release@v2

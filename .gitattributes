@@ -1,0 +1,6 @@
+# Golden bench artifacts (tools/bench-baseline/) are compared line by line AND by sha256.
+# `-text` = git must not touch their line endings: a checked-out baseline on the Linux runner has
+# to be the same bytes as the Windows run that produced it, or the sha256 in the report is a
+# different number on every platform. (The runner's OWN frames.txt is still LF: that is why the
+# section A control in .github/workflows/build.yml normalizes line endings before hashing.)
+tools/bench-baseline/** -text

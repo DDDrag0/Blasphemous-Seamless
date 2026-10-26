@@ -1,0 +1,24 @@
+01 A <- HostAssign(1)+Intro(0)             len=8 hex=01000d0101000800
+02 A <- (niente)                           len=0 hex=
+03 B <- HostAssign+Intro+replay di Alice   len=69 hex=01000d000100080007000705416c6963650116000505416c69636550454e4954454e545f44454641554c5407000605416c696365010d000305416c6963655343454e452d41
+03 A <- Connection(Bob,true)               len=8 hex=05000703426f6201
+04 A <- EnterScene/Pos/Anim/Dir di Bob     len=45 hex=0b000303426f625343454e452d410c000003426f62000000000000000005000103426f620005000203426f6200
+04 B <- Pos/Anim/Dir di Alice              len=37 hex=0e000005416c696365000000000000000007000105416c6963650007000205416c69636500
+05 B <- Position di Alice (mirato)         len=17 hex=0e000005416c6963650000c03f00002040
+06 B <- Animation di Alice                 len=10 hex=07000105416c69636503
+06 B <- Direction di Alice                 len=10 hex=07000205416c69636501
+07 A(host) <- EnemyDamageRequest dal peer  len=5 hex=020016dead
+07 B <- (niente)                           len=0 hex=
+08 A <- (niente: ownership dal peer)       len=0 hex=
+08 B <- (niente)                           len=0 hex=
+09 B <- EnemyOwnership dall host           len=4 hex=01001902
+10 A <- Ping (chiave del Dictionary)       len=13 hex=0a000c0000803f03426f620000
+11 B <- Connection(Alice,false)+HostAssign(1) len=14 hex=07000705416c6963650001000d01
+12 A2 <- HostAssign(0)+Intro(0)+replay di Bob len=61 hex=01000d000100080005000703426f620114000503426f6250454e4954454e545f44454641554c5405000603426f62010b000303426f625343454e452d41
+12 B <- Connection(Alice2,true)            len=11 hex=08000706416c6963653201
+13 B <- Connection(Alice2,false)           len=11 hex=08000706416c6963653200
+14 D(stesso IP di B) <- HostAssign(0)+Intro(0)+replay di Bob len=61 hex=01000d000100080005000703426f620114000503426f6250454e4954454e545f44454641554c5405000603426f62010b000303426f625343454e452d41
+14 B <- Connection(Dave,true)              len=9 hex=060007044461766501
+15 D <- Intro(12) DuplicateIp              len=4 hex=0100080c
+15 B <- (niente)                           len=0 hex=
+16 D <- Connection(Bob,false)+HostAssign(1) len=12 hex=05000703426f620001000d01
