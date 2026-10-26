@@ -239,7 +239,7 @@ function Check([string]$nome, [bool]$ok, [string]$dettaglio) {
 # With -Via dotnet, match by command line: the process is dotnet.exe (shared with the build
 # and compiler), so the process name alone is not enough.
 Get-Process blas1mpserver -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch { } }
-Get-CimInstance Win32_Process -Filter "Name='dotnet.exe'" -ErrorAction SilentlyContinue |
+Get-Process -Name dotnet -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine -match 'blas1mpserver\.dll' } |
     ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch { } }
 Start-Sleep -Milliseconds 300
