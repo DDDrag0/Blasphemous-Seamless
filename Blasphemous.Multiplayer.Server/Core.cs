@@ -52,16 +52,29 @@ internal static class Core
         Logger.Info($"Server has been started on port {options.Port}");
         Logger.Info("Press 'esc' to exit");
 
-        // Start read loop
-        while (true)
+        // Start read loop. Wrapped because Console.ReadKey throws InvalidOperationException when
+        // there is no console or stdin is redirected (CI: `dotnet blas1mpserver.dll` with piped
+        // stdin). That is not a reason to die: the process IS the server, so it must stay alive.
+        try
         {
-            ConsoleKeyInfo key = Console.ReadKey(true);
-
-            if (key.Key == ConsoleKey.Escape)
+            while (true)
             {
-                Logger.Info("Shutting down server");
-                Environment.Exit(0);
+                ConsoleKeyInfo key = Console.ReadKey(true);
+
+                if (key.Key == ConsoleKey.Escape)
+                {
+                    Logger.Info("Shutting down server");
+                    Environment.Exit(0);
+                }
             }
+        }
+        catch (InvalidOperationException)
+        {
+            // No console (CI, stdin redirected): reading a key is impossible, so the main thread
+            // blocks forever instead of returning - a `return` here would exit Main and kill the
+            // process while the listener is still needed. The process stops when it is killed.
+            Logger.Info("No console: waiting forever (headless mode)");
+            System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite);
         }
     }
 
