@@ -1,15 +1,3 @@
-<!-- La sonda di tools\verify-patch-targets.ps1: legge BlasClient.dll e Assembly-CSharp.dll con
-     Mono.Cecil e verifica che ogni bersaglio [HarmonyPatch] esista davvero.
-
-     PERCHE' STA QUI. Fino a questo commit il .csproj stava in D:\Codificando\scratch\ (fuori dalla
-     repo, gitignored) e il .ps1 gli scriveva accanto solo Program.cs: su un clone pulito la sonda
-     non c'era e il gate usciva 1, cioe' "bersagli inesistenti" - la diagnosi piu' allarmante
-     possibile per un problema di setup. Ora sorgente e progetto sono TRACCIATI; lo script ne fa una
-     copia in $env:TEMP e compila li', cosi' la repo non si sporca di bin/obj.
-
-     L'AssemblyName e' "probe" di proposito: prima era "probe6", un numero di versione nel nome di un
-     artefatto che doveva combaciare con il .csproj. Qui il nome e' fissato e lo script cerca sempre
-     bin\Debug\net8.0\probe.dll. -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>

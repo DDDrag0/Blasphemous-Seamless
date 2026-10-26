@@ -3,78 +3,52 @@ using System;
 namespace Blasphemous.Multiplayer.Common;
 
 /// <summary>
-/// Che cosa c'e' DENTRO un <see cref="PeerId"/>. Oggi solo <see cref="Ip"/>; <see cref="Steam"/> e'
-/// il caso che il tipo esiste per rendere possibile, e che in C1a NON e' ancora usato da nessuno.
+/// Kind of identity carried by <see cref="PeerId"/>. <see cref="Ip"/> is the only one in use; <see cref="Steam"/>
+/// exists so the type can already represent the future case without requiring any Steamworks type here.
 /// </summary>
 public enum PeerKind : byte
 {
-    /// <summary>L'identita' del filo TCP: la stringa che il socket ci da' (oggi `ip:porta`).</summary>
+    /// <summary>TCP identity: the exact string the socket gave us (today `ip:port`).</summary>
     Ip = 0,
 
-    /// <summary>Un `CSteamID` ridotto a `ulong`. Nessun tipo `Steamworks` entra qui: vedi il commento del tipo.</summary>
+    /// <summary>A `CSteamID` reduced to `ulong`. No Steamworks type enters here - see <see cref="PeerId"/>.</summary>
     Steam = 1,
 }
 
 /// <summary>
-/// ⭐⭐ L'IDENTITA' DI UN PEER — un valore, non una stringa.
+/// Immutable peer identity: a value, not a string.
 ///
-/// PERCHE' ESISTE. Il server indicizza i giocatori per identita': la chiave di `connectedPlayers`, il
-/// primo parametro di `Send(peer, ...)`, `getCurrentPlayer(peer)`, l'host della sessione. Fino a C1a
-/// quella chiave era `string ip` — e non era una scelta, era l'unica cosa che il trasporto sapesse
-/// dire. Con Steam il peer diventa un `CSteamID`, che NON e' una stringa e NON e' un IP: due
-/// giocatori dietro lo stesso NAT hanno lo stesso IP e due `CSteamID` diversi. Cambiare il tipo della
-/// chiave ADESSO, mentre vale ancora l'IP, e' il passo che rende quel cambio futuro una sostituzione
-/// di valore e non un rifacimento del server.
+/// The server keys players by this identity (dictionary key, `Send(peer, ...)` first argument,
+/// `getCurrentPlayer(peer)`, host election). Until now the key was `string ip`, which was the only
+/// thing the transport could supply; with Steam the peer becomes a `CSteamID`, which is not a string
+/// and not an IP (two players behind the same NAT share the IP but have different SteamIDs). Moving
+/// the key type now, while IP is still the only case, makes the future change a substitution of
+/// values instead of a server rewrite.
 ///
-/// 🔴 IL VINCOLO CHE QUESTO TIPO RISPETTA — NIENTE TIPI `Steamworks` QUI.
-/// `Blasphemous.Multiplayer.Common` e' multi-target `net35;net8.0` e la compilano client E server: non
-/// puo' referenziare `Steamworks.NET` (romperebbe la build del server e la CI). Percio' il caso Steam
-/// e' uno `ulong` nudo: la conversione da/verso `CSteamID` avverra' SOLO dentro le `*Impl`
-/// (`SteamP2PProbeImpl`, `SteamLobbyImpl`), cioe' dove il tipo `Steamworks` e' gia' confinato oggi.
+/// No Steamworks types are allowed here: <c>Blasphemous.Multiplayer.Common</c> is multi-target
+/// (<c>net35;net8.0</c>) and is compiled by both client and server, so it cannot reference
+/// <c>Steamworks.NET</c>. The Steam case is a bare <c>ulong</c>; the conversion to/from
+/// <c>CSteamID</c> happens only inside the <c>*Impl</c> classes.
 ///
-/// 🔴 IL SECONDO VINCOLO — IL FILO TCP RESTA IDENTICO, BYTE PER BYTE.
-/// Per un peer IP questo tipo E' la stringa di oggi: <see cref="FromIp"/> la conserva così com'e'
-/// (nessuna normalizzazione, nessun parsing, nessun `IPAddress`), e <see cref="ToString"/> la rende
-/// **esattamente** com'era — perche' finisce nei log e nella chiave che `SimpleTCP` usa per scegliere
-/// il socket. Se `ToString()` cambiasse una virgola, i log cambierebbero e `Send` non troverebbe piu'
-/// il destinatario.
+/// The TCP wire stays byte-for-byte identical: <see cref="FromIp"/> preserves the string as-is and
+/// <see cref="ToString"/> returns exactly the same string, because it is used both in logs and as the
+/// key <c>SimpleTCP</c> uses to select the socket.
 ///
-/// PERCHE' `GetHashCode` E' PROPRIO QUELLO DELLA STRINGA (caso IP). L'invariante che conta e' quella di
-/// ogni `Dictionary`: due valori UGUALI devono avere hash UGUALI, altrimenti `ContainsKey` / `Remove` /
-/// `Send` non ritroverebbero piu' il destinatario. `Equals` e' ordinale e l'hash e' quello della
-/// stringa, cioe' esattamente le due funzioni che il `Dictionary` da stringa a `PlayerInfo` di oggi
-/// usava senza dirlo: questa mappa e' quella di prima, stesse chiavi e stesse ricerche, carattere per
-/// carattere (`Equals`/`ContainsKey`/`Remove` si comportano come prima).
-///
-/// ⚠️ CIO' CHE L'HASH *NON* DECIDE: L'ORDINE. (Fino al 2026-10-22 questo commento diceva il contrario:
-/// "un `Dictionary` enumera le chiavi in ordine di bucket". E' FALSO.) Un `Dictionary` enumera i suoi
-/// slot in ORDINE D'INDICE, cioe' di inserimento — e, dopo un `Remove`, riusando lo slot liberato: l'hash
-/// sceglie DOVE va l'elemento, non QUANDO viene enumerato, e quindi non entra nell'ordine. Misurato:
-/// inserendo `zebra, alpha, mike, charlie, yankee` l'enumerazione e' quella stessa sequenza, non un
-/// ordine dettato dagli hash. La conclusione di prima regge, ma per un motivo piu' FORTE: quell'ordine
-/// dipende SOLO dalla storia di `Add`/`Remove` di QUELLA istanza di `Dictionary`, non da `PeerId` ne'
-/// dal suo hash. Cambiare l'hash avrebbe cambiato i bucket, non l'ordine.
-///
-/// ⭐ E COMUNQUE L'ORDINE FRA I DESTINATARI NON E' OSSERVABILE: di un fan-out contano CHI riceve e
-/// QUANTI, non in che sequenza il ciclo li tocca (ogni `Send` va su un socket diverso, e il destinatario
-/// riceve un pacchetto che non porta con se' la posizione nel ciclo). L'unico punto in cui l'ordine del
-/// `Dictionary` si vede e' l'ELEZIONE DELL'HOST (`Server.cs:574-579`: il primo rimasto in ordine di
-/// enumerazione diventa host) — che non e' un fan-out, e non e' cambiato.
-///
-/// Il tipo e' IMMUTABILE: campi `readonly`, nessun setter, nessun modo di cambiare un'istanza dopo
-/// `FromIp`. Due `PeerId` con la stessa `Kind` e lo stesso valore sono uguali e hanno lo stesso hash.
+/// <see cref="GetHashCode"/> for the IP case is the string's own hash, so <see cref="Equals"/> and
+/// hashing match the previous <c>Dictionary&lt;string, ...&gt;</c> behaviour. Enumeration order is
+/// <c>Dictionary</c>'s insertion order, not a hash order; this type does not affect it.
 /// </summary>
 public struct PeerId : IEquatable<PeerId>
 {
     private readonly PeerKind _kind;
 
     /// <summary>
-    /// Il valore quando `Kind == Ip`: la stringa del socket, NON interpretata. `null` per gli altri
-    /// casi (e per `default(PeerId)`, che non e' un peer valido).
+    /// The IP string when <c>Kind == Ip</c>, never interpreted. <c>null</c> for other kinds and for
+    /// <c>default(PeerId)</c>, which is not a valid peer.
     /// </summary>
     private readonly string? _ip;
 
-    /// <summary>Il valore quando `Kind == Steam`: un `CSteamID.m_SteamID` nudo.</summary>
+    /// <summary>The bare <c>CSteamID.m_SteamID</c> when <c>Kind == Steam</c>.</summary>
     private readonly ulong _steam;
 
     private PeerId(PeerKind kind, string? ip, ulong steam)
@@ -84,38 +58,35 @@ public struct PeerId : IEquatable<PeerId>
         _steam = steam;
     }
 
-    /// <summary>Quale delle due identita' porta questo valore.</summary>
+    /// <summary>Which identity this value carries.</summary>
     public PeerKind Kind
     {
         get { return _kind; }
     }
 
     /// <summary>
-    /// La stringa del peer quando `Kind == Ip` — quella che il trasporto ci ha dato, tale e quale.
-    /// Vuota per un <see cref="PeerKind.Steam"/> e per `default(PeerId)`: e' una lettura, non una
-    /// conversione, quindi non inventa niente.
+    /// The peer string when <c>Kind == Ip</c> - exactly what the transport supplied. Empty for
+    /// <see cref="PeerKind.Steam"/> and for <c>default(PeerId)</c>.
     /// </summary>
     public string? Ip
     {
         get { return _ip; }
     }
 
-    /// <summary>Il `CSteamID` (gia' ridotto a `ulong`) quando `Kind == Steam`; `0` negli altri casi.</summary>
+    /// <summary>The <c>CSteamID</c> (as <c>ulong</c>) when <c>Kind == Steam</c>; <c>0</c> otherwise.</summary>
     public ulong SteamId
     {
         get { return _steam; }
     }
 
     /// <summary>
-    /// ⭐ LA FABBRICA DEL FILO TCP: da una stringa del socket a un'identita'. Nessuna trasformazione:
-    /// il valore e' conservato BYTE PER BYTE (spazi, porta, maiuscole comprese), perche' e' la stessa
-    /// stringa che `SimpleTCP` usa per trovare il socket a cui scrivere.
+    /// Builds a peer from a TCP socket string. The value is stored byte-for-byte (spaces, port,
+    /// casing included) because it is the same string <c>SimpleTCP</c> uses to locate the socket.
     /// </summary>
     public static PeerId FromIp(string ip)
     {
-        // ⚠️ `null` non e' un peer: oggi `Dictionary` da stringa a ... lanciava su una chiave null, e
-        // questo tipo fa lo stesso invece di fabbricare un'identita' vuota che nessuno saprebbe
-        // indirizzare. `e.ip` di SimpleTCP non e' mai null (misurato in `scratch\REFERTO-C1A-IDENTITA.md`).
+        // A null is not a peer: throw instead of fabricating an identity nobody can address.
+        // SimpleTCP's `e.ip` is never null.
         if (ip == null)
             throw new ArgumentNullException(nameof(ip));
 
@@ -123,9 +94,8 @@ public struct PeerId : IEquatable<PeerId>
     }
 
     /// <summary>
-    /// La fabbrica del caso Steam: un `CSteamID.m_SteamID` nudo, nessun tipo `Steamworks` in vista.
-    /// ⚠️ In C1a NON e' chiamata da nessuno (niente P2P in questo commit): esiste perche' il caso
-    /// `PeerKind.Steam` sia gia' un valore che il tipo sa rappresentare, confrontare e stampare.
+    /// Builds a peer from a bare <c>CSteamID.m_SteamID</c>. Not used yet (no P2P in this build);
+    /// it exists so the Steam case is a value the type can represent, compare and print.
     /// </summary>
     public static PeerId FromSteam(ulong steamId)
     {
@@ -133,10 +103,8 @@ public struct PeerId : IEquatable<PeerId>
     }
 
     /// <summary>
-    /// Uguali se e solo se stessa `Kind` e stesso valore — e il confronto e' **ordinale**, la stessa
-    /// regola che il `Dictionary` da stringa a `PlayerInfo` usava di default. Niente `ToLower`, niente
-    /// trim, niente risoluzione di nomi: `"127.0.0.1:1"` e `"127.0.0.1:01"` sono peer DIVERSI, oggi
-    /// come prima di questo tipo.
+    /// Equal only when same <c>Kind</c> and same value, compared ordinally (the previous
+    /// <c>Dictionary&lt;string, ...&gt;</c> default). No trimming, no lowercasing, no name resolution.
     /// </summary>
     public bool Equals(PeerId other)
     {
@@ -146,23 +114,18 @@ public struct PeerId : IEquatable<PeerId>
         if (_kind == PeerKind.Steam)
             return _steam == other._steam;
 
-        // ⭐ `StringComparison.Ordinal`: e' esattamente `EqualityComparer<string>.Default`, cioe' il
-        // comparatore che il `Dictionary` da stringa a ... di oggi usava senza dirlo.
         return string.Equals(_ip, other._ip, StringComparison.Ordinal);
     }
 
-    /// <summary>`Equals` anche per la via di `object`: un `PeerId` in una `List`/`Dictionary` si comporta come ci si aspetta.</summary>
+    /// <summary><see cref="Equals(PeerId)"/> via <c>object</c>, so lists/dictionaries behave as expected.</summary>
     public override bool Equals(object? obj)
     {
         return obj is PeerId other && Equals(other);
     }
 
     /// <summary>
-    /// ⭐ L'HASH DEL CASO IP E' QUELLO DELLA STRINGA, di proposito: l'invariante e' che valori uguali
-    /// abbiano hash uguali (vedi il commento del tipo: l'hash NON decide l'ordine di enumerazione, che
-    /// dipende solo dalla storia di `Add`/`Remove` di quella istanza). Per il caso Steam si mescola il
-    /// `Kind`, cosi' due valori di tipo diverso non finiscono per caso nello stesso bucket con lo
-    /// stesso hash.
+    /// Hash for the IP case is the string's own hash so equal values hash equally. For Steam the kind
+    /// is mixed in so different kinds do not accidentally collide.
     /// </summary>
     public override int GetHashCode()
     {
@@ -173,12 +136,9 @@ public struct PeerId : IEquatable<PeerId>
     }
 
     /// <summary>
-    /// ⭐⭐ LA RAPPRESENTAZIONE — e per il filo TCP e' **ESATTAMENTE** la stringa IP di oggi.
-    ///
-    /// Questo non e' un dettaglio di stile: `ToString()` finisce nelle righe di log che devono restare
-    /// le stesse (`"Client connected at " + ip`, `"Designated host: {name} ({ip})"`) e, per il caso
-    /// Steam, sara' l'unica forma stampabile di un id che non e' un indirizzo. Nessun prefisso, nessuna
-    /// parentesi, nessun `"ip="`: solo il valore.
+    /// Representation used by logs and (for Steam) as the only printable form of the id. For the IP
+    /// case it is exactly the previous IP string - no prefix, no brackets - because both log lines
+    /// and the socket lookup depend on it.
     /// </summary>
     public override string ToString()
     {
@@ -188,13 +148,13 @@ public struct PeerId : IEquatable<PeerId>
         return _ip ?? string.Empty;
     }
 
-    /// <summary>Uguale a <see cref="Equals(PeerId)"/>, per poter scrivere `peer == _hostPeer` come si scriveva `ip == _hostIp`.</summary>
+    /// <summary>Same as <see cref="Equals(PeerId)"/>.</summary>
     public static bool operator ==(PeerId left, PeerId right)
     {
         return left.Equals(right);
     }
 
-    /// <summary>Il contrario di `==`.</summary>
+    /// <summary>Negation of <c>==</c>.</summary>
     public static bool operator !=(PeerId left, PeerId right)
     {
         return !left.Equals(right);

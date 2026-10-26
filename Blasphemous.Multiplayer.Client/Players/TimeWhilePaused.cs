@@ -9,85 +9,23 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client
 {
     /// <summary>
-    /// ⭐ A′ — IL TEMPO NON SI FERMA: **in pausa, e con un server, il MONDO CONTINUA A CORRERE.**
-    ///
-    /// IL PROBLEMA. In co-op i due giocatori sono in stanze diverse e ognuno simula cio' che possiede.
-    /// Quando uno apre un menu' (o il gioco lo mette in pausa da se' per un tutorial, un dialogo o una
-    /// cutscene), `LogicManager.PauseGame()` (`:244-253`) scrive `CurrentLevelConfig.TimeScale = 0f` e
-    /// `LevelInitializer.Update()` **ricopia quello zero in `Time.timeScale` a ogni frame**
-    /// (`Tools.Level.Layout\LevelInitializer.cs:234-237`). Con `timeScale = 0` `FixedUpdate` non gira e
-    /// `deltaTime` vale 0: **la simulazione di questa macchina si spegne**. Se questa macchina possiede
-    /// nemici o boss, quei nemici **si fermano anche per l'altro**, che li vede come burattini
-    /// (`scratch\VALUTAZIONE-TIMESCALE.md` §②, `scratch\DIAGNOSI-CRASH-E-AI.md` §B: 0 `[EnemyTick]` in
-    /// 30/30 finestre di pausa sul lato in pausa, mentre `[Probe]` e `[CorpsePeer]` — che vivono di
-    /// orologi NON scalati — continuano).
-    ///
-    /// ⭐ PERCHE' PROPRIO QUI, E NON SU `PauseGame()`. `LevelInitializer.Update()` e' **l'unico punto in
-    /// tutto il decompilato che scrive `Time.timeScale`** (le altre tre occorrenze sono letture, piu' il
-    /// ritorno a 1 del menu' principale in `Landing.cs:88`), gira **a ogni frame** ed e' **l'ultimo a
-    /// scrivere**. Un postfix su `PauseGame()` verrebbe annullato al frame successivo — e' la ragione per
-    /// cui la proposta "patch su `PauseGame`" e' stata scartata (§④ della valutazione). Qui invece la
-    /// correzione arriva **dopo** la copia, nello stesso frame: e' **una patch sola**, stabile per
-    /// costruzione, e copre **tutte e sette le vie di pausa** (ESC, mappa, inventario, tutorial, sblocco,
-    /// dialoghi, comando console) senza enumerarle.
-    ///
-    /// ⛔ COSA **NON** SI TOCCA — ed e' il cuore del fix: **`TimeScaleReal` resta quello che e'**. Il
-    /// gioco deve **credere** di essere in pausa. Se si riportasse su `TimeScaleReal` invece di
-    /// `Time.timeScale`, si aprirebbero le guardie che leggono la pausa (`InGameMenuWidget.cs:29`,
-    /// `NewInventoryWidget.cs:367`, `UIController.Paused`) e si potrebbe aprire un secondo widget sopra il
-    /// menu' — lo stato ibrido descritto in §③ della valutazione. Qui si scrive **solo**
-    /// `Time.timeScale`, che il gioco usa per simulare, non per decidere.
-    ///
-    /// ⭐ LA PAUSA "VERA" — IL VALORE DA CUI SI DECIDE. Non `Time.timeScale` (e' proprio quello che stiamo
-    /// correggendo, sarebbe un ragionamento circolare) e nemmeno `IsSlowMode()`, che **mente** dopo questa
-    /// patch (`Time.timeScale != 1` diventa falso mentre la pausa c'e' ancora). Si legge
-    /// **`UIController.Paused`** (`Gameplay.UI\UIController.cs:191`), che e' definito come
-    /// `|Core.Logic.CurrentLevelConfig.TimeScale| &lt; Mathf.Epsilon` — cioe' legge **`TimeScaleReal`**, il
-    /// campo che il gioco azzera quando mette in pausa e riporta su quando riprende. E' l'unica
-    /// definizione di pausa che questa patch **non** puo' falsificare.
-    ///
-    /// ⭐ IL CANCELLO. Solo con un server (`CoopGate.IsMultiplayerActive()`, **host o peer** — lo stesso
-    /// predicato della pausa e della Colpa). In **single player non succede niente**: nessuna scrittura,
-    /// nessun log, e il gioco pausa **come ha sempre fatto**. Non e' una gentilezza: senza un peer non
-    /// c'e' nessuno che sta simulando al posto nostro, e fermare il mondo e' esattamente cio' che il
-    /// giocatore ha chiesto premendo ESC.
-    ///
-    /// ⚠️ COSA RESTA, E SI DICHIARA. Con `timeScale = 1` e lo stato di pausa acceso:
-    ///   · il **giocatore locale resta fermo** — l'input e' bloccato dai chiamanti di `PauseGame`, ed e'
-    ///     voluto: e' lui che sta leggendo il menu';
-    ///   · **nemici, boss, trappole, piattaforme, proiettili, fisica** tornano a girare — che e' il fix;
-    ///   · `IsSlowMode()` diventa falso mentre `Paused` e' vero: la guardia "sono in pausa" su
-    ///     `UIController.cs:386-393` cade, mentre le altre due (`InGameMenuWidget.cs:29`,
-    ///     `NewInventoryWidget.cs:367`) leggono `Paused` e reggono. Rischio dichiarato nel referto;
-    ///   · si **puo' morire dentro un menu'**: e' la ragione di `DeathMenuCloser.cs`, che a ogni morte
-    ///     chiude i menu' **prima** che parta la schermata di morte;
-    ///   · l'audio: `PauseGame` mette in pausa **solo** il bus SFX (`:251`), la musica gia' oggi continua.
-    ///
-    /// ⚠️ TUTTO DENTRO `try/catch`: un errore di questa patch non deve mai fermare il gioco — ne' in un
-    /// senso ne' nell'altro.
+    /// Keeps the world running while the game is paused, but only when connected to a server.
+    /// The game's own pause sets <c>TimeScaleReal</c> to 0 and <c>LevelInitializer.Update</c>
+    /// copies that into <c>Time.timeScale</c> every frame. With <c>timeScale = 0</c> this machine
+    /// stops simulating, so any enemies/bosses it owns stop for the other player too. Hooking the
+    /// single write point is enough: no changes to <c>TimeScaleReal</c> (the game must believe it
+    /// is paused), no PauseGame/ResumeGame, no menu touched. Pause state is read from
+    /// <c>UIController.Paused</c>, which is the only predicate this patch cannot falsify.
+    /// Single player: nothing runs, the game pauses as usual.
     /// </summary>
     /// <remarks>
-    /// ⚠️ LA FORMA DELL'ATTRIBUTO E' VOLUTA, e si dichiara. `[HarmonyPatch(typeof(LevelInitializer))]` +
-    /// `[HarmonyPatch("Update")]` sulla classe e' la forma **divisa** documentata da Harmony (stessa patch,
-    /// due attributi da **un** argomento ciascuno). Il cancello di `tools\deploy-local.ps1`,
-    /// `verify-patch-targets.ps1`, conta **entrambe** le forme — la normale `[HarmonyPatch(typeof(X), "nome")]`
-    /// e la divisa — e le verifica allo stesso modo: il totale atteso a HEAD e' **273**, cioe' tutte le
-    /// altre in forma normale **piu'** questa in forma divisa. Quindi la forma divisa **non nasconde piu'**
-    /// niente al conteggio: la si tiene perche' e' la forma che Harmony documenta, e `PatchAll` la applica
-    /// esattamente come le altre. ⛔ Il bersaglio **non e' lasciato alla fiducia**: in piu'
-    /// `scratch\cecil-tempo-il.ps1` verifica con Cecil che `Tools.Level.Layout.LevelInitializer::Update`
-    /// **esista** nell'assembly del gioco e che il postfix sia dichiarato su di esso — la conferma
-    /// indipendente dal conteggio.
+    /// The patch is declared with two attribute usages (type and method), the form Harmony
+    /// documents; <c>PatchAll</c> applies it the same as the single-line form.
     /// </remarks>
     [HarmonyPatch(typeof(LevelInitializer))]
     [HarmonyPatch("Update")]
     internal static class LevelInitializerUpdate_TimeWhilePaused_Patch
     {
-        /// <summary>
-        /// Gira **dopo** `Time.timeScale = TimeScaleReal` (`:236`), una volta per frame, per tutta la vita
-        /// del livello. Non prende argomenti e non restituisce niente: legge due predicati pubblici e, se
-        /// serve, scrive **un** float.
-        /// </summary>
         [HarmonyPostfix]
         private static void Postfix()
         {
@@ -96,42 +34,36 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// LA DECISIONE, in un posto solo: `CoopTimeWhilePaused.AfterLevelInitializerUpdate()`.
-    /// Tre domande, nell'ordine, e ognuna puo' fermare tutto:
-    ///   ① il **cancello** (c'e' un server?) ② la **pausa vera** (`UIController.Paused`) ③ la **copia**.
+    /// Pause-time decision in one place. Three questions, in order, any of which can stop the
+    /// work: gate (is there a server), real pause (UIController.Paused), and the copy.
     /// </summary>
     internal static class CoopTimeWhilePaused
     {
-        /// <summary>Marker di ESITO: ogni riga di questa classe lo porta, cosi' si contano da sole.</summary>
+        /// <summary>Outcome marker.</summary>
         private const string MARK = "[Tempo]";
 
         /// <summary>
-        /// L'INTERRUTTORE: `false` spegne il fix (la copia torna a fare il suo mestiere, il mondo si ferma
-        /// in pausa come prima). `static readonly` e non `const` per la stessa ragione di
-        /// `PauseNotice.cs:73`: un `const false` rende irraggiungibile il ramo e il compilatore emette
-        /// CS0162.
+        /// Function toggle. static readonly (not const) so the early-return branch stays reachable
+        /// and the compiler does not emit CS0162.
         /// </summary>
         private static readonly bool TIME_RUNS_WHILE_PAUSED = true;
 
         /// <summary>
-        /// Il CANCELLO (⑤), come in `PauseNotice`: 0 = mai guardato, 1 = co-op, 2 = single player. Serve
-        /// solo a scrivere **una** riga quando lo stato cambia, invece di una per frame.
+        /// Gate state: 0 = never observed, 1 = co-op, 2 = single player. Used to write one line per
+        /// transition instead of one per frame.
         /// </summary>
         private static int _gateState;
 
-        /// <summary>Sono dentro una finestra di pausa in cui ho dovuto rimettere 1 (⇒ una riga all'ingresso).</summary>
+        /// <summary>True while inside a pause window whose timescale we had to correct.</summary>
         private static bool _windowOpen;
 
-        /// <summary>Quante finestre di pausa ho corretto, e in quanti frame ho dovuto scrivere.</summary>
+        /// <summary>Pause windows corrected, and frames corrected.</summary>
         private static int _windows;
         private static int _frames;
 
         /// <summary>
-        /// ⭐ IL PUNTO UNICO. Chiamata dal postfix di `LevelInitializer.Update`.
-        ///
-        /// ⛔ QUI, E SOLO QUI, SI SCRIVE `Time.timeScale` IN TUTTA LA MOD. Un posto solo, dichiarato, e
-        /// l'unica scrittura e' la riga marcata piu' sotto: nessuna scrittura di `TimeScaleReal`, nessuna
-        /// chiamata a `PauseGame`/`ResumeGame`, nessun menu' aperto o chiuso.
+        /// Single decision point, called from the LevelInitializer.Update postfix. This is the only
+        /// place in the mod that writes <c>Time.timeScale</c>.
         /// </summary>
         internal static void AfterLevelInitializerUpdate()
         {
@@ -142,23 +74,21 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (!CoopGate.IsMultiplayerActive())
                 {
-                    SinglePlayer();          // ⑤ senza server: il gioco pausa come sempre
+                    SinglePlayer();
                     return;
                 }
 
-                GateOpened();                // ⑤ la riga del cancello, una per ingresso in co-op
+                GateOpened();
 
                 if (!IsReallyPaused())
                 {
-                    PausaFinita();           // ② la pausa vera e' caduta: non c'e' niente da correggere
+                    PausaFinita();
                     return;
                 }
 
-                // ================== ⭐ L'UNICA SCRITTURA DI `Time.timeScale` DELLA MOD ==================
-                // La copia del gioco ha appena messo `TimeScaleReal` (0 in pausa) qui dentro: si rimette 1.
-                // `TimeScaleReal` NON si tocca: il gioco deve credere di essere in pausa.
+                // The game just copied TimeScaleReal (0 while paused) into Time.timeScale.
+                // TimeScaleReal is NOT touched: the game must still believe it is paused.
                 Time.timeScale = 1f;
-                // =======================================================================================
 
                 _frames++;
 
@@ -168,11 +98,11 @@ namespace Blasphemous.Multiplayer.Client
                 _windowOpen = true;
                 _windows++;
 
-                ModLog.Info(MARK + " la pausa non ferma il mondo · in pausa il MONDO CORRE ·" +
-                            " TimeScaleReal(letto)=" + F(TimeScaleReal()) + " (il gioco crede di essere in pausa)" +
-                            " · Time.timeScale=" + F(Time.timeScale) + " (quello che simula, riscritto qui)" +
+                ModLog.Info(MARK + " pause does not stop the world · world keeps running while paused ·" +
+                            " TimeScaleReal(letto)=" + F(TimeScaleReal()) + " (the game believes it is paused)" +
+                            " · Time.timeScale=" + F(Time.timeScale) + " (what actually simulates, rewritten here)" +
                             " · finestre=" + _windows +
-                            " · cancello=aperto · niente PauseGame/ResumeGame, nessun menu' toccato");
+                            " · cancello=aperto · no PauseGame/ResumeGame, no menu touched");
             }
             catch (Exception e)
             {
@@ -180,11 +110,10 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        // ============================================================================================
-        // ⑤ IL CANCELLO — solo con un server (host o peer). Il predicato e' lo STESSO della pausa,
-        // della Colpa e della schermata di morte trasparente (`CoopGate`): una definizione sola di
-        // "sto giocando in co-op", e se un giorno cambia, cambia per tutte.
-        // ============================================================================================
+        /// <summary>
+        /// Coop gate closed: the game keeps control of time. One line per transition into single
+        /// player, so the reason for the change is visible.
+        /// </summary>
         private static void SinglePlayer()
         {
             try
@@ -195,9 +124,9 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     bool prima = _gateState == 1;
                     _gateState = 2;
-                    ModLog.Info(MARK + " cancello CHIUSO (nessun server): il tempo resta del gioco - nessuna" +
-                                " scrittura di Time.timeScale, la pausa ferma il mondo come ha sempre fatto" +
-                                (prima ? " · la connessione e' caduta in questo istante" : ""));
+                    ModLog.Info(MARK + " cancello CHIUSO (no server): time belongs to the game - no write" +
+                                " to Time.timeScale, pause stops the world as usual" +
+                                (prima ? " · connection dropped at this instant" : ""));
                 }
             }
             catch (Exception e)
@@ -206,6 +135,7 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
+        /// <summary>Coop gate opened: one line to report the switch and current local pause state.</summary>
         private static void GateOpened()
         {
             try
@@ -214,9 +144,9 @@ namespace Blasphemous.Multiplayer.Client
                     return;
 
                 _gateState = 1;
-                ModLog.Info(MARK + " cancello APERTO (server connesso: host o peer): da qui, in pausa," +
-                            " Time.timeScale resta 1 - il mondo corre e i nemici di questa macchina non si" +
-                            " fermano piu' per l'altro · stato locale=" +
+                ModLog.Info(MARK + " cancello APERTO (server connected: host or peer): from here, in pause," +
+                            " Time.timeScale stays 1 - the world runs and this machine's enemies no longer" +
+                            " stop for the other player · stato locale=" +
                             (IsReallyPaused() ? "pausa" : "in gioco"));
             }
             catch (Exception e)
@@ -226,9 +156,8 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// La pausa e' caduta (resume, chiusura del menu', fine del tutorial): la finestra si chiude e si
-        /// scrive **una** riga. Da qui in poi la copia del gioco rimette da sola il valore giusto, quindi
-        /// non si scrive piu' niente.
+        /// The pause ended: close the window and write one line. The game's own copy is authoritative
+        /// again, so nothing else is written.
         /// </summary>
         private static void PausaFinita()
         {
@@ -238,7 +167,7 @@ namespace Blasphemous.Multiplayer.Client
                     return;
 
                 _windowOpen = false;
-                ModLog.Info(MARK + " la pausa e' finita: la copia del gioco torna a decidere da sola" +
+                ModLog.Info(MARK + " pause ended: the game's copy takes over again" +
                             " · finestre totali=" + _windows + " · frame corretti=" + _frames +
                             " · Time.timeScale=" + F(Time.timeScale) + " · TimeScaleReal(letto)=" + F(TimeScaleReal()));
             }
@@ -248,17 +177,10 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        // ============================================================================================
-        // LE DUE LETTURE. Entrambe su API PUBBLICHE, entrambe con `try/catch`: `UIController.Paused`
-        // legge `Core.Logic.CurrentLevelConfig.TimeScale`, e `CurrentLevelConfig` e' null fuori livello
-        // (e' la NRE gia' nota del progetto). In dubbio si risponde "non in pausa", che e' lo stato
-        // INERTE: nessuna scrittura, il gioco fa da se'.
-        // ============================================================================================
-
         /// <summary>
-        /// ⭐ LA PAUSA VERA: `UIController.Paused`, cioe' `|TimeScaleReal| &lt; Mathf.Epsilon`. Non
-        /// `Time.timeScale` (sarebbe circolare) e non `IsSlowMode()` (dopo questa patch mente). Non lancia
-        /// mai: un guasto vale "non in pausa".
+        /// Real pause state via <c>UIController.Paused</c> (which reads TimeScaleReal). Not
+        /// <c>Time.timeScale</c> (circular: this patch rewrites it) and not <c>IsSlowMode()</c> (it
+        /// lies after this patch). Never throws; on failure answers "not paused" - the inert state.
         /// </summary>
         private static bool IsReallyPaused()
         {
@@ -280,9 +202,8 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// `TimeScaleReal`, **letto** e basta (mai scritto): serve a stampare la prova che il gioco crede
-        /// ancora di essere in pausa mentre il mondo gira. Fuori livello non c'e': vale 0 come "non
-        /// disponibile", ed e' solo un numero nel log.
+        /// <c>TimeScaleReal</c> read-only, printed to prove the game still believes it is paused.
+        /// Out of level it is unavailable and reported as 0.
         /// </summary>
         private static float TimeScaleReal()
         {
@@ -299,23 +220,23 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        /// <summary>Formato FISSO dei numeri: la cultura di questa macchina scrive `0,5` e il log va letto.</summary>
+        /// <summary>Fixed numeric format (invariant) so logs compare across machines.</summary>
         private static string F(float value)
         {
             return value.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        /// <summary>L'ultimo `catch`: non rilancia mai, e se fallisce anche il log non c'e' un secondo posto.</summary>
+        /// <summary>Last catch before the mod's per-frame cycle: never rethrows.</summary>
         private static void Fail(string where, Exception e)
         {
             try
             {
-                ModLog.Error(MARK + " ECCEZIONE in " + where + ": " + e.GetType().Name + " - " + e.Message +
-                             " (il tempo NON e' stato toccato: la partita e' proseguita)");
+                ModLog.Error(MARK + " EXCEPTION in " + where + ": " + e.GetType().Name + " - " + e.Message +
+                             " (time was NOT touched: the game continued)");
             }
             catch (Exception)
             {
-                // Niente da fare: non c'e' un secondo posto dove dirlo.
+                // No second place to report if the log itself fails.
             }
         }
     }

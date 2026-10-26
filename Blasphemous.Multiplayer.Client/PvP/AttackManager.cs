@@ -14,9 +14,9 @@ namespace Blasphemous.Multiplayer.Client.PvP
         private readonly Dictionary<AttackType, AttackData> allAttacks;
 
         /// <summary>
-        /// Quanti passi del peer sono arrivati. Serve SOLO al filtro del log (vedi ReceiveEffect): i passi
-        /// sono l'effetto piu' frequente del canale e una riga ciascuno renderebbe il log illeggibile.
-        /// Non e' uno stato di gioco: non decide nulla, non si azzera a un evento, e nessun altro lo legge.
+        /// Counts peer footsteps. Used only by the log filter in ReceiveEffect: footsteps are the
+        /// most frequent effect on the channel and one line each would flood the log. Not game
+        /// state; nothing else reads it.
         /// </summary>
         private int footStepArrivals;
 
@@ -65,28 +65,15 @@ namespace Blasphemous.Multiplayer.Client.PvP
 
         /// <summary>
         /// Replays an effect the other player produced (A3 trails, A4 ground impact and slide dust).
-        ///
-        /// hasPosition is its own flag rather than a "zero means none" convention, because the origin is a
-        /// place an effect can legitimately happen at - the level's coordinates start there - and a convention
-        /// that quietly means two things is how an effect ends up drawn at the wrong end of the map.
+        /// hasPosition is its own flag rather than a "zero means none" convention, because the
+        /// origin is a place an effect can legitimately happen at; conflating the two would draw
+        /// an effect at the wrong end of the map.
         /// </summary>
         public void ReceiveEffect(string playerName, EffectType effect, bool hasPosition, Vector2 position)
         {
-            // Logged because this channel used to be completely SILENT on arrival, and that silence made the
-            // whole effect path unverifiable: an effect that never arrived and an effect that arrived and did
-            // nothing looked EXACTLY the same in the logs. One line per effect tells them apart, and every
-            // effect fix (trails, ground hits, slide dust) has to be verified through it.
-            // A5 - IL FILTRO SUI SUONI FREQUENTI, ed e' obbligatorio, non un abbellimento.
-            //
-            // Questa riga e' l'unica prova che un effetto e' ARRIVATO, e per A3/A4 si legge tutta: gli
-            // effetti di A4 sono rari e uno per uno contano. I PASSI no: alla cadenza della falcata sono
-            // 4..5 al secondo, e in una sessione di dieci minuti sono ~2700 righe che non dicono nulla di
-            // nuovo e nascondono quelle che dicono qualcosa. Un log che si puo' leggere e' lo strumento;
-            // un log che non si puo' leggere e' la ragione per cui un guasto resta invisibile per giorni.
-            //
-            // ⚠️ SI CONTA E SI STAMPA IL PRIMO E POI UNO OGNI DIECI. Il primo e' quello che dice "il
-            // canale e' acceso", il decimo quello che dice "sta ancora andando". Il contatore e' PER
-            // EFFETTO e non globale: se i passi si fermano mentre i fendenti continuano, si vede subito.
+            // This channel used to be silent on arrival, making the effect path unverifiable: "never
+            // arrived" and "arrived and did nothing" looked identical. Footsteps are filtered to
+            // first + every tenth to avoid flooding at ~4-5/s; other effects are one line each.
             if (effect == EffectType.FootStep)
             {
                 footStepArrivals++;
@@ -105,7 +92,7 @@ namespace Blasphemous.Multiplayer.Client.PvP
             OtherPlayerScript other = Main.Multiplayer.OtherPlayerManager.FindActivePlayer(playerName);
             if (other == null)
             {
-                ModLog.Warn($"[Effect] {effect} per {playerName}: giocatore attivo non trovato");
+                ModLog.Warn($"[Effect] {effect} for {playerName}: no active player found");
                 return;
             }
 

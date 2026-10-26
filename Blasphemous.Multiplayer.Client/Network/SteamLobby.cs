@@ -5,77 +5,36 @@ using System.Reflection;
 namespace Blasphemous.Multiplayer.Client.Network;
 
 /// <summary>
-/// ⭐⭐ LA FACCIATA DI STEAM — l'UNICA classe che il resto della mod nomina.
-///
-/// QUESTA CLASSE NON NOMINA NESSUN TIPO `Steamworks`: ne' un campo, ne' un parametro, ne' una riga di
-/// codice. E' una regola, non una preferenza, e nasce da un requisito vero: **la mod deve funzionare
-/// anche su una copia NON-Steam** (GOG &amp; co.), dove `Assembly-CSharp-firstpass.dll` puo' non avere
-/// affatto i tipi `Steamworks`. Il percorso TCP/IP e' la BASE; Steam e' un'aggiunta, e un'aggiunta non
-/// puo' impedire alla base di partire.
-///
-/// PERCHE' BASTA ISOLARE, E PERCHE' NON BASTA IL `try/catch` DENTRO L'IMPLEMENTAZIONE.
-/// Un tipo assente non produce "una funzione che non c'e'": produce una **`TypeLoadException`**, e
-/// viene lanciata **quando la JIT compila il metodo che nomina quel tipo** — cioe' al **punto di
-/// chiamata**, non dentro il metodo chiamato. Un `try/catch` scritto *dentro*
-/// `SteamLobbyImpl.Tick()` non verrebbe mai raggiunto. Quindi:
-///   · tutte le chiamate all'implementazione sono qui, dentro un `try/catch`, in **metodi di questa
-///     classe** (mai direttamente nel codice dell'implementazione);
-///   · prima di ogni chiamata c'e' un cancello che **chiede per riflessione** se il tipo
-///     `Steamworks.SteamAPI` esiste davvero (`Type.GetType` + giro delle assembly caricate): se non
-///     c'e', l'implementazione non viene **mai** toccata, quindi la sua JIT non parte, quindi niente
-///     eccezione;
-///   · se i tipi ci sono ma qualcosa esplode lo stesso, il `try/catch` di qui lo cattura e si scrive
-///     un marker. In nessun caso un guasto di Steam esce da questa classe.
-///
-/// ⚠️ E' anche la ragione per cui i metodi di questa facciata hanno quella forma un po' ripetitiva:
-/// ognuno e' un guscio — cancello, poi **una** chiamata, dentro un metodo suo. Non e' verbosita':
-/// e' la separazione che rende la `TypeLoadException` catturabile (la JIT dell'implementazione parte
-/// dalla chiamata, che sta dentro il `try`).
-///
-/// ⛔ NIENTE TRASPORTI QUI: la lobby porta l'IP e la porta dell'host, non i pacchetti. L'unica cosa
-/// che questa facciata in piu' chiama e' la **sonda P2P** (`SteamP2PProbe`), che *misura* se
-/// `SendP2PPacket` funziona e se il traffico va diretto o in relay: non trasporta niente e non tocca
-/// il protocollo, `ICoopTransport`, il server o il gioco (vedi `SteamP2PProbeImpl`).
+/// Facade over Steamworks - the only class the rest of the mod names. Names no Steamworks type:
+/// on a non-Steam copy those types may be missing and TypeLoadException surfaces at the call
+/// site, not inside the callee. All calls into SteamLobbyImpl go through wrappers guarded by a
+/// reflection probe for Steamworks.SteamAPI and a try/catch, so a missing or failing Steam never
+/// escapes this class. Lobby transport only; the P2P probe is called separately but with the
+/// same gate.
 /// </summary>
 internal static class SteamLobby
 {
-    /// <summary>
-    /// ⭐ Il marker della connessione innescata da un invito (`[Steam] join: connessione a &lt;ip&gt;:&lt;porta&gt;`).
-    ///
-    /// Sta QUI e non nell'implementazione per una ragione meccanica che e' anche la regola di questa
-    /// classe: `ConnectionDisplay` lo stampa, e `ConnectionDisplay` non deve nominare
-    /// `SteamLobbyImpl`. Essendo una `const`, il compilatore la **copia** nel punto d'uso: nominarla
-    /// non carica nessun'altra classe.
-    /// </summary>
-    internal const string MarkerJoinConnect = "[Steam] join: connessione a ";
+    /// <summary>Marker: invite-driven connection.</summary>
+    internal const string MarkerJoinConnect = "[Steam] join: connecting to ";
 
-    /// <summary>
-    /// ⭐ Il marker della copia NON-Steam: Steamworks non c'e' proprio. E' una riga **informativa**,
-    /// non un errore — la mod funziona lo stesso, con l'IP.
-    /// </summary>
+    /// <summary>Marker: Steamworks types are absent (non-Steam copy) - IP path is unaffected.</summary>
     internal const string MarkerNoSteamworks =
-        "[Steam] non disponibile: i tipi Steamworks non ci sono in Assembly-CSharp-firstpass " +
-        "(copia non-Steam?) - il percorso IP resta intatto";
+        "[Steam] unavailable: Steamworks types are missing from Assembly-CSharp-firstpass " +
+        "(non-Steam copy?) - the IP path is unaffected";
 
-    /// <summary>Il marker di un guasto catturato al confine.</summary>
-    internal const string MarkerError = "[Steam] errore: ";
+    /// <summary>Marker: failure caught at the boundary.</summary>
+    internal const string MarkerError = "[Steam] error: ";
 
-    private static bool _typesPresent;      // una risposta "si" e' definitiva
-    private static bool _typesLogged;       // la riga "non ci sono" esce una volta sola
-    private static bool _tickFailureLogged; // un guasto per frame non deve inondare il log
-    private static long _nextProbeTicks;    // prossima sonda (riprova solo finche' il "no" dura)
+    private static bool _typesPresent;      // a "yes" answer is final
+    private static bool _typesLogged;       // "missing" line printed once
+    private static bool _tickFailureLogged; // per-frame failures must not flood
+    private static long _nextProbeTicks;    // retry probe only while the "no" holds
 
     /// <summary>
-    /// `true` se i tipi `Steamworks` esistono in questo processo — **per riflessione**, senza mai
-    /// nominarli nel codice.
-    ///
-    /// Le due strade, in ordine: `Type.GetType` con il nome qualificato dell'assembly (veloce, e
-    /// funziona se l'assembly e' caricabile per nome), poi un giro delle assembly **gia' caricate**
-    /// (funziona anche se e' stata caricata con un nome diverso o da un percorso). `throwOnError:
-    /// false` + `try/catch`: qui un guasto vale "non ci sono".
-    ///
-    /// ⚠️ Finche' la risposta e' "no" si riprova ogni `PROBE_SECONDS` — non a ogni frame, e non mai
-    /// piu': Steamworks potrebbe comparire solo dopo che il gioco ha caricato firstpass.
+    /// True when the Steamworks types exist in this process - probed reflectively, never named.
+    /// Tries Type.GetType with the qualified name, then scans loaded assemblies (handles a
+    /// renamed/differently-loaded assembly). While the answer is "no" it retries every
+    /// PROBE_SECONDS, in case firstpass loads later.
     /// </summary>
     private static bool SteamworksPresent()
     {
@@ -124,7 +83,7 @@ internal static class SteamLobby
         }
         catch (Exception)
         {
-            // Un guasto della sonda vale "non ci sono": e' la risposta prudente, e non tocca il gioco.
+            // A probe failure counts as "absent": conservative and does not touch the game.
         }
 
         if (!_typesLogged)
@@ -136,10 +95,7 @@ internal static class SteamLobby
         return false;
     }
 
-    /// <summary>
-    /// "Steam c'e' e si puo' usare?" — il cancello della UI: bottone abilitato o no. **Non lancia.**
-    /// Se i tipi mancano (copia non-Steam) e' `false` senza nemmeno toccare l'implementazione.
-    /// </summary>
+    /// <summary>UI gate: true when Steam is present and usable. Never throws.</summary>
     internal static bool Available
     {
         get
@@ -159,7 +115,7 @@ internal static class SteamLobby
         }
     }
 
-    /// <summary>`true` se una lobby Steam e' nostra adesso (host).</summary>
+    /// <summary>True when a Steam lobby of ours exists right now (host).</summary>
     internal static bool HasHostLobby
     {
         get
@@ -179,7 +135,7 @@ internal static class SteamLobby
         }
     }
 
-    /// <summary>L'id della lobby che stiamo ospitando (0 se nessuna).</summary>
+    /// <summary>Lobby id we are hosting (0 if none).</summary>
     internal static ulong HostLobbyId
     {
         get
@@ -200,8 +156,8 @@ internal static class SteamLobby
     }
 
     /// <summary>
-    /// ⭐ Si arma una volta, all'inizializzazione della mod: legge `+connect_lobby` dalla riga di
-    /// comando e registra le callback. Se Steam non e' pronto non si perde niente: `Tick` riprova.
+    /// Arms once at mod init: reads +connect_lobby from the command line and registers callbacks.
+    /// If Steam is not ready yet, Tick retries.
     /// </summary>
     internal static void Arm()
     {
@@ -217,22 +173,14 @@ internal static class SteamLobby
             Report("Arm", e, false);
         }
 
-        // ⭐ E LA SONDA P2P SI ARMA CON LA LOBBY: registra `P2PSessionRequest_t`, cioe' la callback che
-        // **accetta** le sessioni. E' l'unica cosa della sonda che deve esistere anche a bottone non
-        // premuto — il peer puo' cominciare a mandare quando vuole, e una richiesta scartata perche'
-        // "non avevo ancora premuto" sarebbe un `rx=0` senza nessun errore da nessuna parte.
-        // ⚠️ `SteamP2PProbe` e' una facciata come questa: ha il suo cancello e il suo `try/catch`, quindi
-        // non lancia e non tocca niente se Steam (o i tipi Steamworks) non ci sono.
+        // The P2P probe is armed alongside the lobby: it registers P2PSessionRequest_t so a peer's
+        // session request is accepted even before the probe button is pressed.
         SteamP2PProbe.Arm();
     }
 
     /// <summary>
-    /// ⭐ Il ciclo per frame: il pump delle callback e le scadenze. Chiamato da
-    /// `Multiplayer.OnLateUpdate` (zero bersagli Harmony nuovi).
-    ///
-    /// ⚠️ Il guasto di `Tick` si logga **una volta sola**: e' per frame, e un log inondato non aiuta
-    /// nessuno. Se il guasto sparisce e torna, la riga non torna: e' un compromesso dichiarato, e il
-    /// marker che conta (`prima callback ricevuta`) parla comunque.
+    /// Per-frame cycle: callback pump and pending actions. Called from Multiplayer.OnLateUpdate.
+    /// Tick failures are logged once - a per-frame error must not flood the log.
     /// </summary>
     internal static void Tick()
     {
@@ -248,18 +196,13 @@ internal static class SteamLobby
             Report("Tick", e, true);
         }
 
-        // ⭐ E LA SONDA P2P AVANZA NELLO STESSO CICLO PER FRAME (zero bersagli Harmony nuovi, zero
-        // MonoBehaviour nuovi). Sta DOPO il pump di proposito: l'accettazione di una sessione arriva da
-        // una callback, e in questo frame deve essere gia' stata consegnata prima di leggere il canale.
-        // ⚠️ Facciata separata, cancello e `try/catch` suoi: un guasto della sonda non ferma la lobby, e
-        // a sonda spenta questa riga costa un `if` (nessun byte, nessuna chiamata nativa).
+        // P2P probe advances in the same per-frame cycle: accept-session callbacks are delivered
+        // before the channel is read. Separate facade, own gate and try/catch - a probe failure
+        // does not stop the lobby, and while stopped the probe call is a single if.
         SteamP2PProbe.Tick();
     }
 
-    /// <summary>
-    /// ⭐ "Steam: Host" — crea la lobby. L'avvio della sessione host resta al percorso che c'e' gia'
-    /// ("Host session"), quando arriva `LobbyCreated_t`. `false` = non si e' potuto nemmeno chiedere.
-    /// </summary>
+    /// <summary>Steam: Host - creates the lobby. The host session starts on LobbyCreated_t.</summary>
     internal static bool StartHost(string hostName)
     {
         if (!SteamworksPresent())
@@ -276,7 +219,7 @@ internal static class SteamLobby
         }
     }
 
-    /// <summary>Esce dalla lobby (host o join). Idempotente, e non fa niente se non c'era nessuna lobby.</summary>
+    /// <summary>Leaves the lobby (host or guest). Idempotent, no-op if none.</summary>
     internal static void LeaveLobby()
     {
         if (!SteamworksPresent())
@@ -292,7 +235,7 @@ internal static class SteamLobby
         }
     }
 
-    /// <summary>Consuma una volta sola "la lobby e' pronta" (`LobbyCreated_t`).</summary>
+    /// <summary>Consumes the "lobby ready" (LobbyCreated_t) action exactly once.</summary>
     internal static bool TryConsumeHostLobbyReady()
     {
         if (!SteamworksPresent())
@@ -309,7 +252,7 @@ internal static class SteamLobby
         }
     }
 
-    /// <summary>Consuma una volta sola l'indirizzo arrivato dalla lobby (invito accettato).</summary>
+    /// <summary>Consumes the join address (accepted invite) exactly once.</summary>
     internal static bool TryConsumeJoin(out string serverIp, out int port)
     {
         serverIp = string.Empty;
@@ -331,7 +274,7 @@ internal static class SteamLobby
         }
     }
 
-    /// <summary>Butta via le azioni Steam in attesa quando si e' gia' dentro una sessione.</summary>
+    /// <summary>Discards pending Steam actions when already inside a session.</summary>
     internal static void DropPendingWhileConnected()
     {
         if (!SteamworksPresent())
@@ -347,13 +290,10 @@ internal static class SteamLobby
         }
     }
 
-    // ─── I GUSCI VERSO L'IMPLEMENTAZIONE ─────────────────────────────────────────────────────────
+    // === Wrappers to the implementation ===
     //
-    // ⚠️ UN METODO PER CHIAMATA, e non e' verbosita' inutile: la JIT compila il corpo al primo uso,
-    // quindi la `TypeLoadException` dell'implementazione (se i tipi `Steamworks` mancassero davvero)
-    // nasce **qui dentro**, dentro il `try` del metodo che li ha invocati. Se queste righe stessero
-    // direttamente nei metodi pubblici qui sopra, la JIT caricherebbe l'implementazione compilando
-    // QUEI metodi, cioe' prima del `try`: un `catch` che non cattura mai niente.
+    // One method per call: the JIT compiles the body when first invoked, so a TypeLoadException
+    // from the implementation surfaces inside the caller's try, not before it.
 
     private static bool QueryAvailable()
     {
@@ -406,8 +346,8 @@ internal static class SteamLobby
     }
 
     /// <summary>
-    /// Una riga di log per un guasto catturato al confine. `once` e' per i metodi per frame: un
-    /// guasto che si ripete 60 volte al secondo non deve diventare 60 righe al secondo.
+    /// One log line for a failure caught at the boundary. `once` is for per-frame methods: a
+    /// repeating failure must not become a repeating line.
     /// </summary>
     private static void Report(string operation, Exception error, bool once)
     {
@@ -425,14 +365,14 @@ internal static class SteamLobby
         }
         catch (Exception)
         {
-            // Niente: se anche il log esplode, il gioco deve continuare.
+            // Nothing: if the log itself fails, the game must continue.
         }
     }
 
-    /// <summary>Il tipo che deve esistere, e l'assembly che lo porta (i due nomi delle cose).</summary>
+    /// <summary>Fully-qualified type and assembly that must exist for Steam to be usable.</summary>
     private const string STEAM_API_TYPE = "Steamworks.SteamAPI";
     private const string FIRSTPASS_ASSEMBLY = "Assembly-CSharp-firstpass";
 
-    /// <summary>Ogni quanto si riprova la sonda finche' i tipi non ci sono.</summary>
+    /// <summary>Retry interval for the "types not present" probe.</summary>
     private const int PROBE_SECONDS = 2;
 }

@@ -4,41 +4,27 @@ using System.Globalization;
 namespace Blasphemous.Multiplayer.Client.Network;
 
 /// <summary>
-/// ⭐ L'INVITO A GIOCO SPENTO: leggere `+connect_lobby &lt;id&gt;` dalla riga di comando.
+/// Parses the lobby id from "+connect_lobby &lt;id&gt;" on the command line.
 ///
-/// IL CASO. Quando un amico accetta un invito e Blasphemous **non** e' in esecuzione, e' Steam ad
-/// avviare il gioco, e l'unica cosa che consegna al processo nuovo e' un argomento sulla riga di
-/// comando: non esiste nessun processo a cui mandare una callback, perche' prima non c'era. Quindi
-/// questo caso non puo' arrivare da `GameLobbyJoinRequested_t` (quello e' il caso "gioco acceso",
-/// vedi `SteamLobby.OnJoinRequested`): va letto qui.
+/// When a friend accepts an invite while Blasphemous is not running, Steam starts the game and
+/// delivers only a command-line argument - there is no process to receive GameLobbyJoinRequested_t.
+/// The game itself does not handle the argument (connect_lobby does not appear in
+/// Assembly-CSharp-firstpass.dll), so the parsing is done here.
 ///
-/// ⚠️ NESSUNO LO LEGGE PER NOI. La stringa `connect_lobby` **non compare affatto** in
-/// `Assembly-CSharp-firstpass.dll` (0 occorrenze, verificato sui byte dell'assembly): il gioco non
-/// installa nessun gestore dell'argomento. Il parsing e' nostro, e questo file e' tutto il parsing
-/// che c'e'.
+/// Accepts both "+connect_lobby" "&lt;id&gt;" (Steam's form) and "+connect_lobby=&lt;id&gt;" (a user
+/// pasting it into a shortcut). The id is a ulong in decimal; anything unparsable is discarded
+/// silently. Index 0 (the executable path) is never inspected.
 ///
-/// ⭐ DUE FORME, NON UNA. Steam usa la forma a **due argomenti separati** (`+connect_lobby`,
-/// `&lt;id&gt;`), ed e' quella che scrive lui; ma un utente puo' anche incollare `+connect_lobby=&lt;id&gt;`
-/// in una scorciatoia o nelle opzioni di avvio, quindi si accettano entrambe. L'id e' un `ulong`
-/// in decimale: si prova a leggerlo e, se non e' un numero, si **scarta in silenzio** (nessun
-/// crash, nessuna eccezione: una riga di comando sbagliata non e' un guasto del gioco).
-///
-/// ⚠️ MAI L'INDICE 0: e' il percorso dell'eseguibile, e su una macchina dove il gioco sta in una
-/// cartella che contiene la parola `+connect_lobby` (assurdo, ma gratis da evitare) non e' un
-/// argomento. Si comincia da 1.
-///
-/// ⚠️ QUESTO FILE NON DIPENDE DA STEAMWORKS, di proposito: cosi' si puo' compilare e provare da solo,
-/// senza gioco e senza Steam (vedi il test headless nel referto). Se un giorno gli servisse
-/// `Steamworks`, quella proprieta' sparirebbe.
+/// Does not depend on Steamworks on purpose, so it can be built and tested standalone.
 /// </summary>
 internal static class SteamInviteCommandLine
 {
-    /// <summary>L'argomento che Steam mette sulla riga di comando: `+connect_lobby`.</summary>
+    /// <summary>The command-line argument Steam uses: "+connect_lobby".</summary>
     internal const string ARGUMENT = "+connect_lobby";
 
     /// <summary>
-    /// Cerca un id di lobby negli argomenti. Ritorna `false` (e `lobbyId = 0`) se non c'e', se e'
-    /// l'ultimo argomento senza valore, o se il valore non e' un numero: **non lancia mai**.
+    /// Searches for a lobby id. Returns false (and lobbyId = 0) when absent, when the value is
+    /// missing, or when it is not a number. Never throws.
     /// </summary>
     internal static bool TryParse(string[] args, out ulong lobbyId)
     {
@@ -49,14 +35,14 @@ internal static class SteamInviteCommandLine
             if (args == null)
                 return false;
 
-            // ⚠️ da 1: l'indice 0 e' il percorso dell'eseguibile.
+            // Start at 1: index 0 is the executable path.
             for (int i = 1; i < args.Length; i++)
             {
                 string arg = args[i];
                 if (string.IsNullOrEmpty(arg))
                     continue;
 
-                // ⭐ forma 1 (quella di Steam): "+connect_lobby" "<id>" — due argomenti separati.
+                // Form 1 (Steam's): "+connect_lobby" "<id>" as two arguments.
                 if (string.Equals(arg, ARGUMENT, StringComparison.OrdinalIgnoreCase))
                 {
                     if (i + 1 >= args.Length)
@@ -65,12 +51,10 @@ internal static class SteamInviteCommandLine
                     if (TryParseId(args[i + 1], out lobbyId))
                         return true;
 
-                    // Valore illeggibile: non si interrompe la scansione, ma non si e' trovato
-                    // niente nemmeno qui (si prova il resto della riga).
                     continue;
                 }
 
-                // ⭐ forma 2 (protettiva): "+connect_lobby=<id>" — un solo argomento.
+                // Form 2 (protective): "+connect_lobby=<id>" as one argument.
                 if (arg.Length > ARGUMENT.Length && arg[ARGUMENT.Length] == '=' &&
                     string.Compare(arg, 0, ARGUMENT, 0, ARGUMENT.Length, StringComparison.OrdinalIgnoreCase) == 0)
                 {
@@ -84,15 +68,15 @@ internal static class SteamInviteCommandLine
         }
         catch (Exception)
         {
-            // Una riga di comando non deve poter rompere il caricamento della mod.
+            // A malformed command line must not break mod loading.
             lobbyId = 0UL;
             return false;
         }
     }
 
     /// <summary>
-    /// Un id di lobby e' un `ulong` in decimale. Le virgolette (una scorciatoia le mette) e gli spazi
-    /// ai bordi si tolgono; qualunque altra cosa = non e' un id. `0` non e' un id valido.
+    /// Parses a lobby id: a ulong in decimal. Strips surrounding quotes and whitespace; anything
+    /// else is not an id. Zero is rejected.
     /// </summary>
     private static bool TryParseId(string text, out ulong lobbyId)
     {
@@ -105,8 +89,7 @@ internal static class SteamInviteCommandLine
         if (clean.Length == 0)
             return false;
 
-        // `NumberStyles.None`: niente segni, niente spazi, niente esadecimali. Un id di lobby e'
-        // solo cifre, e accettare altro vorrebbe dire accettare una stringa che Steam non manda.
+        // NumberStyles.None: no signs, no whitespace, no hex. Steam sends only digits.
         if (!ulong.TryParse(clean, NumberStyles.None, CultureInfo.InvariantCulture, out lobbyId))
         {
             lobbyId = 0UL;

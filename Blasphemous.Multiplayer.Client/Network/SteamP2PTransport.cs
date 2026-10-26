@@ -5,85 +5,42 @@ using System.Net.Sockets;
 namespace Blasphemous.Multiplayer.Client.Network
 {
     /// <summary>
-    /// ⭐⭐ IL TRASPORTO P2P, LATO PEER — il filo di Steam dietro lo **stesso** seam del TCP.
+    /// Peer-side P2P transport behind the same <c>ICoopTransport</c> seam as TCP. Enters the
+    /// current Steam lobby, targets its owner, sends a reliable hello, then routes frames on
+    /// three channels (0 unreliable with sequence, 1 reliable, 2 reliable-isolated for skins).
+    /// Reads per frame, drops stale packets per sender, detects link loss via a heartbeat.
     ///
-    /// COSA FA, IN TRE RIGHE: entra nella lobby Steam in cui siamo gia' (quella dell'invito), prende il
-    /// **proprietario** della lobby (l'host), gli manda un **hello** affidabile, e da quel momento manda
-    /// i frame di gioco su **tre canali** (`P2PWire`): 0 unreliable con numero di sequenza, 1 reliable,
-    /// 2 reliable isolato per le skin. Riceve in un ciclo per frame, scarta i pacchetti **vecchi** per
-    /// mittente, e tiene la sessione viva con un battito: se il battito manca per 5 s il link e' perso.
-    ///
-    /// 🔴 PERCHE' DUE CLASSI (`SteamP2PTransport` + `SteamP2PTransportImpl`) E NON UNA. La regola della
-    /// mod e' che **solo una `*Impl` nomina `Steamworks`** (vedi `SteamLobby.cs`), e la ragione e'
-    /// concreta: su una copia **non-Steam** (GOG &amp; co.) i tipi `Steamworks` possono mancare, e un tipo
-    /// assente non e' "una funzione che non c'e'": e' una **`TypeLoadException`** lanciata **quando la JIT
-    /// compila il metodo che lo nomina**, cioe' al **punto di chiamata**, non dentro il metodo chiamato.
-    /// Quindi:
-    ///   · questa classe **non nomina nessun tipo `Steamworks`** — ne' un campo, ne' un parametro;
-    ///   · ogni chiamata all'implementazione sta in **un metodo suo**, dentro un `try/catch`, e prima
-    ///     c'e' il cancello `SteamLobby.Available` (che e' gia' "Steam c'e' ed e' loggato", chiesto per
-    ///     riflessione da `SteamLobby`): se Steam non c'e', l'implementazione non viene **mai** toccata,
-    ///     la sua JIT non parte, e non c'e' nessuna eccezione da catturare;
-    ///   · un guasto esce da una porta sola e con la forma che il chiamante conosce gia':
-    ///     `Connect` lancia `SocketException` (la stessa che lancia `TcpTransport.Connect` e che
-    ///     `NetworkManager.Connect` traduce in `RefusalType.Connection`) e `Send` lancia
-    ///     `System.IO.IOException` (la stessa che lancia il socket caduto, e che `NetworkManager.SendQueue`
-    ///     usa per disconnettersi). Nessuna eccezione nuova nel contratto.
-    ///
-    /// ⚠️ QUANDO SI USA: **mai da solo**. Il filo lo sceglie il campo "Server IP" quando vale `p2p`
-    /// (<see cref="IsRequested"/>). La ragione per cui non si sceglie "sono in una lobby" e' che l'host
-    /// e' in lobby **anche lui**, e il suo client deve restare un client **TCP** sul loopback
-    /// (`scratch\REFERTO-C1B1-SEAM-SERVER.md` §4): cambiarglielo romperebbe l'unico percorso che i 42
-    /// frame misurano.
+    /// Names no Steamworks type: on a non-Steam copy those may be missing and TypeLoadException
+    /// surfaces at the call site. <see cref="SteamLobby.Available"/> gates every call into the
+    /// Impl so a missing Steam never touches it. Failures surface as <c>SocketException</c>
+    /// (Connect) or <c>IOException</c> (Send), matching the TCP contract. Chosen only via the
+    /// "p2p" token in the Server IP field; the host stays TCP on loopback.
     /// </summary>
     internal sealed class SteamP2PTransport : ICoopTransport
     {
-        /// <summary>
-        /// Il marker di apertura, gemello di `TcpTransport.Marker` (`[Net] trasporto=tcp`): da questa
-        /// riga si sa **quale** filo sta girando senza leggere il codice.
-        /// </summary>
+        /// <summary>Open marker, twin of TcpTransport.Marker: which wire is running.</summary>
         internal const string Marker = "[Net] trasporto=p2p";
 
-        /// <summary>Il token che sceglie questo filo nel campo "Server IP".</summary>
+        /// <summary>Token that selects this wire in the Server IP field.</summary>
         internal const string RequestToken = "p2p";
 
-        // ─── I MARKER DELLA DIAGNOSI: UNA DEFINIZIONE SOLA, PER I DUE LATI ────────────────────────
-        //
-        // ⚠️ PERCHE' QUI E NON DENTRO LE `*Impl`: sono **stringhe**, non tipi `Steamworks`, e questa
-        // classe e' il punto neutro che entrambe le implementazioni (peer e host) possono nominare senza
-        // aggiungere superficie al motore. Scritte una volta sola, le due macchine producono le
-        // **stesse** righe, e i due log si possono mettere in colonna.
-        //
-        // ⚠️ E SONO CINQUE PIU' DUE, SCELTI DOVE SI PRENDE LA DECISIONE (non dove si vede il dettaglio):
-        //   ① l'adapter si arma (senza questa riga l'host e' sordo e nessuno lo sa);
-        //   ② il peer manda l'hello e arma il timeout dell'handshake;
-        //   ③ l'host riceve la richiesta di sessione — e se l'adapter **non** e' armato lo dice;
-        //   ④ l'host accetta (o Steam rifiuta) — `AcceptP2PSessionWithUser` vero/falso;
-        //   ⑤ il primo pacchetto esce dalla ricezione, da entrambi i lati, con `connesso (handshake)`
-        //      subito dopo;
-        //   ·  la `P2PSessionConnectFail_t`, che e' **l'unica** riga che dice *perche'* Steam non
-        //      lascia passare (arriva 10-15 s dopo il tentativo, non subito).
-        //
-        // La tabella di lettura (cosa significa quale riga manca) sta in
-        // `scratch\REFERTO-TIMEOUT-E-UI.md`.
-        internal const string MarkerAdapterActive = "[Net] p2p: adapter attivo (lobby=";
-        internal const string MarkerHelloSent = "[Net] p2p: hello inviato a ";
-        internal const string MarkerSessionRequest = "[Net] p2p: richiesta sessione da ";
-        internal const string MarkerNotArmed = "[Net] p2p: richiesta da ";
-        internal const string MarkerAcceptOk = "[Net] p2p: sessione con ";
-        internal const string MarkerAcceptFail = "[Net] p2p: accept FALLITO ";
-        internal const string MarkerReturnAccepted = "[Net] p2p: peer ha accettato la sessione di ritorno dall host";
-        internal const string MarkerFirstPacket = "[Net] p2p: primo pacchetto (canale ";
-        internal const string MarkerConnected = "[Net] p2p: connesso (handshake ";
-        internal const string MarkerHandshakeTimeout = "[Net] p2p: handshake scaduto (";
-        internal const string MarkerSessionFail = "[Net] p2p: SESSIONE FALLITA peer=";
+        internal const string MarkerAdapterActive = "[Net] p2p: adapter active (lobby=";
+        internal const string MarkerHelloSent = "[Net] p2p: hello sent to ";
+        internal const string MarkerSessionRequest = "[Net] p2p: session request from ";
+        internal const string MarkerNotArmed = "[Net] p2p: request from ";
+        internal const string MarkerAcceptOk = "[Net] p2p: session with ";
+        internal const string MarkerAcceptFail = "[Net] p2p: accept FAILED ";
+        internal const string MarkerReturnAccepted = "[Net] p2p: peer accepted the return session from the host";
+        internal const string MarkerFirstPacket = "[Net] p2p: first packet (channel ";
+        internal const string MarkerConnected = "[Net] p2p: connected (handshake ";
+        internal const string MarkerHandshakeTimeout = "[Net] p2p: handshake expired (";
+        internal const string MarkerSessionFail = "[Net] p2p: SESSION FAILED peer=";
 
         private static bool _failureLogged;
 
         /// <summary>
-        /// Ipotizza il P2P quando il campo "Server IP" vale esattamente `p2p` (spazi e maiuscole
-        /// ignorati). Tutto il resto — indirizzi IP, `ip:porta`, nomi — resta **TCP**, byte per byte
-        /// come prima.
+        /// True when the Server IP field requests P2P (exact "p2p", case-insensitive). Anything
+        /// else - IPs, ip:port, hostnames - stays TCP.
         /// </summary>
         internal static bool IsRequested(string server)
         {
@@ -94,9 +51,9 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Collega il sink dell'implementazione agli eventi di **questa** istanza. Ce n'e' una sola per
-        /// volta (la crea `NetworkManager.Connect`), quindi il registro statico non si sovrascrive mai
-        /// "a meta'": una nuova connessione sostituisce la vecchia, che e' gia' stata chiusa.
+        /// Connects the Impl sink to this instance's events. One instance at a time, created by
+        /// <c>NetworkManager.Connect</c>; a new connection replaces the previous one, already
+        /// closed.
         /// </summary>
         internal SteamP2PTransport()
         {
@@ -117,11 +74,7 @@ namespace Blasphemous.Multiplayer.Client.Network
         public event Action Disconnected;
         public event Action<byte[]> DataReceived;
 
-        /// <summary>
-        /// `true` quando l'hello e' partito e il link non e' scaduto. `NetworkManager` **non** la usa
-        /// (la sua `IsConnected` e' rimasta quella di sempre): la usa la facciata per non toccare
-        /// l'implementazione inutilmente.
-        /// </summary>
+        /// <summary>True when the hello has been sent and the link has not expired.</summary>
         public bool IsConnected
         {
             get
@@ -142,20 +95,17 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Apre il filo. Lancia `SocketException` se il P2P non e' utilizzabile **adesso** (Steam non
-        /// disponibile, o nessuna lobby Steam: l'invito non e' stato accettato) — cosi' il chiamante
-        /// risponde al giocatore con lo stesso `RefusalType.Connection` di un socket rifiutato.
-        ///
-        /// ⚠️ E IL FALLO CHE ARRIVA DOPO (nessun pacchetto per 5 s) NON e' un'eccezione qui: e'
-        /// l'evento `Disconnected` piu' un `IOException` dal `Send` successivo, che e' la via di
-        /// `NetworkManager.SendQueue` → `OnDisconnect()`. Vedi `SteamP2PTransportImpl.Tick`.
+        /// Opens the wire. Throws <c>SocketException</c> when P2P is not usable (Steam unavailable,
+        /// or no lobby joined) so the caller answers with <c>RefusalType.Connection</c>, the same
+        /// refusal as a rejected TCP socket. Late failure (no packet for 5s) is not an exception
+        /// here: it is the <c>Disconnected</c> event plus an <c>IOException</c> on the next Send.
         /// </summary>
         public void Connect(string host, int port)
         {
             if (!SteamLobby.Available)
             {
-                ModLog.Warn(Marker + ": Steam non disponibile (i tipi Steamworks non ci sono, o nessun " +
-                            "account loggato): il P2P non si apre, il percorso TCP resta intatto");
+                ModLog.Warn(Marker + ": Steam unavailable (Steamworks types missing, or no " +
+                            "account): P2P not opened, TCP path unaffected");
                 throw new SocketException((int)SocketError.NotConnected);
             }
 
@@ -172,8 +122,8 @@ namespace Blasphemous.Multiplayer.Client.Network
 
             if (!started)
             {
-                ModLog.Error(Marker + ": nessuna lobby Steam in cui entrare. Accetta un invito (o ospita " +
-                             "tu), poi premi Connect con '" + RequestToken + "' nel campo Server IP");
+                ModLog.Error(Marker + ": no Steam lobby to join. Accept an invite (or host " +
+                             "yourself), then press Connect with '" + RequestToken + "' in the Server IP field");
                 throw new SocketException((int)SocketError.NotConnected);
             }
 
@@ -181,28 +131,16 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// ⭐ IL MARKER DI APERTURA DEL P2P — gemello di `[Net] trasporto=tcp host=... porta=...`
-        /// (`TcpTransport.Connect`).
-        ///
-        /// 🔴 PERCHE' E' STATO AGGIUNTO (e non e' cosmesi): la costante <see cref="Marker"/> compariva
-        /// **solo** nei rami di errore di questa classe, quindi un log con il tunnel **aperto** non diceva
-        /// da nessuna parte "sto andando in P2P". Nella diagnosi del fallimento
-        /// (`scratch\DIAGNOSI-P2P-FALLITO.md`) la riga `[Net] trasporto=p2p` era **assente**: non si
-        /// poteva distinguere "il P2P non e' partito" da "e' partito e non ha risposto nessuno". Dopo
-        /// questa riga la distinzione e' nel log, e il campo "Server IP" dice `p2p` solo se qualcuno l'ha
-        /// scritto davvero.
-        ///
-        /// ⚠️ SOLO LOG: nessuno stato, nessuna decisione, nessun byte sul filo. Il `try/catch` c'e' perche'
-        /// `LobbySummary` chiama Steam (e un log non deve mai essere la ragione per cui una connessione
-        /// non si apre).
+        /// Open marker for P2P. Without it, a log with an open tunnel could not say "P2P is going
+        /// out": the previous code only logged Marker on error paths. Log only, no state, no
+        /// decision. The try/catch guards LobbySummary because it calls Steam.
         /// </summary>
         private static void ReportOpen(string host, int port)
         {
             try
             {
-                // La concatenazione (non `string.Format`) fonde `Marker` e `" host="` in **un solo
-                // letterale**, che e' quello che `tools\marker-check.ps1` trova nella DLL — la stessa
-                // ragione gia' scritta in `TcpTransport.Connect`.
+                // Concatenation (not string.Format) merges Marker and " host=" into a single
+                // literal, which is what the marker-check tool finds in the DLL.
                 ModLog.Info(Marker + " host=" + host + " porta=" +
                             port.ToString(System.Globalization.CultureInfo.InvariantCulture) + " - " +
                             LobbySummary());
@@ -213,8 +151,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
-        /// <summary>Chiude il filo e avvisa. Non lancia: un guasto in chiusura non deve impedire al
-        /// chiamante di riportare il suo stato a "disconnesso".</summary>
+        /// <summary>Closes the wire and notifies. Must not throw; caller still reaches OnDisconnect.</summary>
         public void Disconnect()
         {
             if (SteamLobby.Available)
@@ -233,13 +170,13 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Manda i frame sul canale giusto. Lancia `System.IO.IOException` se il link e' stato dichiarato
-        /// perso (timeout): e' il contratto del seam, e la via che il chiamante ha gia'.
+        /// Sends frames on the correct channel. Throws <c>IOException</c> when the link has been
+        /// declared lost (timeout), the way the caller already expects.
         /// </summary>
         public void Send(byte[] framed, TransportClass cls)
         {
             if (!SteamLobby.Available)
-                throw new System.IO.IOException("[Net] trasporto=p2p: Steam non disponibile");
+                throw new System.IO.IOException("[Net] trasporto=p2p: Steam unavailable");
 
             try
             {
@@ -252,18 +189,15 @@ namespace Blasphemous.Multiplayer.Client.Network
             catch (Exception e)
             {
                 Report("Send", e);
-                throw new System.IO.IOException("[Net] trasporto=p2p: invio fallito (" + e.GetType().Name + ")");
+                throw new System.IO.IOException("[Net] trasporto=p2p: send failed (" + e.GetType().Name + ")");
             }
         }
 
         /// <summary>
-        /// ⭐ IL CICLO PER FRAME della ricezione (e del battito). Chiamato da `Multiplayer.OnLateUpdate`
-        /// **dopo** `SteamLobby.Tick()` — che e' il pump delle callback: un `P2PSessionRequest_t`
-        /// accettata in questo frame deve essere gia' stata consegnata prima di leggere i canali.
-        ///
-        /// ⚠️ `try/catch` **qui**, non dentro i gestori: questa funzione gira nel late update della mod,
-        /// e un'eccezione che sfugge fermerebbe il resto del ciclo (pacchetti, giocatori, nemici) per un
-        /// guasto di Steam. Un guasto si logga **una volta sola** (e' per frame).
+        /// Per-frame receive and heartbeat. Called from <c>Multiplayer.OnLateUpdate</c> after
+        /// <c>SteamLobby.Tick()</c> so an accepted <c>P2PSessionRequest_t</c> is delivered before
+        /// the channels are read. Never escapes: a Steam failure here would stop the mod's late
+        /// update for everyone. Logged once.
         /// </summary>
         internal static void Tick()
         {
@@ -280,10 +214,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
-        /// <summary>
-        /// ⭐ QUALE LOBBY — una riga di sola lettura per il referto e per il test: senza lobby non c'e'
-        /// P2P, e "p2p" da solo sulla schermata non basta a capirlo. Vuota se non c'e' nessuna lobby.
-        /// </summary>
+        /// <summary>Read-only lobby summary for the report. Empty when no lobby is joined.</summary>
         internal static string LobbySummary()
         {
             if (!SteamLobby.Available)
@@ -300,12 +231,11 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
-        // ─── GLI EVENTI, SOLLEVATI DALL'IMPLEMENTAZIONE (che gira sul thread del Tick) ──────────────
-        //
-        // ⚠️ UN `try/catch` attorno a ciascun gestore: qui siamo dentro `Tick`, cioe' dentro il late
-        // update della mod. Un gestore che lancia (per esempio `NetworkManager.ProcessQueue`) fermerebbe
-        // la lettura dei canali per sempre, e con essa il gioco. Il TCP non ha questo `catch` perche' li'
-        // l'eccezione risale al thread di lettura di `SimpleTCP`, dove non c'e' nessun altro da salvare.
+        // Handlers fired from within Tick (main thread). Each is guarded: a throwing handler would
+        // stop the per-frame channel read, and with it the game. The TCP side does not need this
+        // guard because the exception rises on SimpleTCP's read thread, where there is no one else
+        // to save.
+
         private void OnData(byte[] framed)
         {
             Action<byte[]> handler = DataReceived;
@@ -359,13 +289,10 @@ namespace Blasphemous.Multiplayer.Client.Network
             }
         }
 
-        // ─── I GUSCI VERSO L'IMPLEMENTAZIONE ─────────────────────────────────────────────────────────
+        // Wrappers to the implementation.
         //
-        // ⚠️ UN METODO PER CHIAMATA, come in `SteamLobby`: la JIT compila il corpo al primo uso, quindi
-        // la `TypeLoadException` dell'implementazione (se i tipi mancassero davvero) nasce **qui
-        // dentro**, dentro il `try` del metodo che li ha invocati. Se queste righe stessero direttamente
-        // nei metodi qui sopra, la JIT caricherebbe l'implementazione compilando QUEI metodi, cioe'
-        // prima del `try`: un `catch` che non cattura mai niente.
+        // One method per call: the JIT compiles the body when it is invoked, so a TypeLoadException
+        // from the Impl surfaces inside the caller's try, not before it.
 
         private static void CallSetSink(Action<byte[]> onData, Action onConnected, Action onDisconnected)
         {
@@ -403,8 +330,8 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Una riga di log per un guasto catturato al confine. `once` e' per i metodi per frame: un
-        /// guasto che si ripete 60 volte al secondo non deve diventare 60 righe al secondo.
+        /// One log line for a failure caught at the boundary. <c>once</c> is for per-frame methods:
+        /// a repeating failure must not become a repeating line.
         /// </summary>
         private static void Report(string operation, Exception error, bool once = false)
         {
@@ -418,12 +345,12 @@ namespace Blasphemous.Multiplayer.Client.Network
                     _failureLogged = true;
                 }
 
-                ModLog.Error(Marker + " errore: " + operation + ": " + error.GetType().Name + ": " +
+                ModLog.Error(Marker + " error: " + operation + ": " + error.GetType().Name + ": " +
                              error.Message);
             }
             catch (Exception)
             {
-                // Niente: se anche il log esplode, il gioco deve continuare.
+                // Nothing: if the log itself fails, the game must continue.
             }
         }
     }

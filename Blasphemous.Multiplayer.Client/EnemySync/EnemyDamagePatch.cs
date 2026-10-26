@@ -6,22 +6,10 @@ using Framework.Managers;
 namespace Blasphemous.Multiplayer.Client
 {
     /// <summary>
-    /// Makes player-dealt enemy damage host-authoritative.
-    ///
-    /// This patches <see cref="EnemyDamageArea.TakeDamage"/>, the hurtbox that actually applies the
-    /// damage, NOT PenitentSword.OnEnemyDamaged. That method only grants fervour and notifies the
-    /// inventory (it is subscribed to the static EnemyDamageArea.OnDamagedGlobal, which fires *after*
-    /// the damage has already been applied), so patching it would neither block nor duplicate damage.
-    ///
-    /// It is a postfix, which is what makes the authority model work out:
-    ///   - the HOST lets the vanilla damage happen and then broadcasts it, so peers can show it;
-    ///   - a PEER never sees its own hit applied (the host will), and asks the host to apply it;
-    ///   - damage the host relays back is marked by <see cref="EnemySyncManager.IsApplyingRemoteDamage"/>
-    ///     and is ignored here, which is what stops the loop and any double application.
-    ///
-    /// A prefix could not express this: on the host it would have to both let the damage through and
-    /// emit a packet, and a prefix that returns true cannot know whether the damage actually landed
-    /// (EnemyDamageArea drops a second hit on the same frame).
+    /// Implements host-authoritative enemy damage by patching <see cref="EnemyDamageArea.TakeDamage"/>.
+    /// A Postfix guarantees the damage is broadcast only after the base game has successfully applied it.
+    /// The host applies and broadcasts the damage; peers send damage requests to the host.
+    /// Incoming remote damage is flagged via <see cref="EnemySyncManager.IsApplyingRemoteDamage"/> to prevent infinite loops.
     /// </summary>
     [HarmonyPatch(typeof(EnemyDamageArea), "TakeDamage")]
     public class EnemyDamagePatch
@@ -29,14 +17,13 @@ namespace Blasphemous.Multiplayer.Client
         [HarmonyPostfix]
         public static void Postfix(EnemyDamageArea __instance, Hit hit)
         {
-            // Damage relayed by the host: already authorised, and re-broadcasting it would loop.
+            // Prevent infinite echo loops from incoming remote damage.
             if (EnemySyncManager.IsApplyingRemoteDamage)
                 return;
 
             if (!Main.Multiplayer.NetworkManager.IsConnected)
                 return;
 
-            // Only hits dealt by the local penitent are ours to route.
             if (!IsLocalPlayerHit(hit))
                 return;
 
@@ -48,22 +35,17 @@ namespace Blasphemous.Multiplayer.Client
             if (!EnemySyncManager.TryGetEnemyHandle(enemy, out handle))
                 return;
 
-            // The game truncates DamageAmount to int in TakeDamageAmount; send the same value so every
-            // machine ends up with the same health.
+            // Match the base game's truncation to int to maintain exact health sync across all clients.
             float amount = (float)(int)hit.DamageAmount;
 
-            // The hit's own description travels with it. The receiving machine rebuilds this Hit from
-            // scratch, and a rebuilt Hit that says "Normal" makes every blow sound like a light one and makes
-            // the enemy types that branch on the damage type react wrongly. The flags carry the booleans that
-            // change the reaction (see EnemySyncManager.HitFlagsFrom).
+            // Extract Hit metadata to ensure accurate remote recreation, preserving impact audio, 
+            // specific enemy reactions, and damage flags.
             byte damageType = (byte)hit.DamageType;
             byte damageElement = (byte)hit.DamageElement;
             byte flags = EnemySyncManager.HitFlagsFrom(hit);
 
             if (EnemySyncManager.IsHost)
             {
-                // The damage already landed here; the server relays this to the peers in the scene so
-                // they can show it too.
                 EnemySyncManager.RecordDamageApplied();
                 Main.Multiplayer.SendEnemyDamageRequest(handle, amount, damageType, damageElement, flags);
             }
@@ -83,13 +65,12 @@ namespace Blasphemous.Multiplayer.Client
                    hit.AttackingEntity.transform.IsChildOf(Core.Logic.Penitent.transform);
         }
 
-        // The damaged enemy is the one owning the damage area being patched.
         private static Enemy FindEnemy(EnemyDamageArea area)
         {
             if (area == null)
                 return null;
 
-            // Every Enemy needs an EnemyBehaviour, so looking the behaviour up is a reliable fallback.
+            // Fallback lookup via EnemyBehaviour.
             var behaviour = area.GetComponentInParent<Gameplay.GameControllers.Enemies.Framework.IA.EnemyBehaviour>();
             if (behaviour != null)
                 return behaviour.GetComponent<Enemy>() ?? behaviour.GetComponentInParent<Enemy>();

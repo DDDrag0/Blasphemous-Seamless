@@ -8,91 +8,17 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.Network;
 
 /// <summary>
-/// ⭐⭐ FASE B — LOBBY STEAM E INVITI, ADDITIVI, SOPRA IL TRASPORTO CHE C'E'.
-///
-/// COSA FA, IN DUE RIGHE: trasforma l'invito di un amico su Steam in una connessione IP gia'
-/// compilata; e viceversa, apre una lobby quando si ospita, cosi' l'invito si manda dall'overlay.
-/// **Non e' un trasporto**: i byte continuano a viaggiare sul TCP di sempre, verso il server di
-/// sempre (`HostSession` / `SERVER-COOP`). La lobby e' solo un **punto d'incontro**: porta l'IP e la
-/// porta dell'host, e nient'altro. Quindi il protocollo, il seam `ICoopTransport`, `TcpTransport`,
-/// il server, `PlayerDisplay`, il campo nome, le skin, la pausa e la Colpa **non sono toccati**.
-///
-/// ⛔ NIENTE P2P, E NON E' UNA SVOLTA A META': questa build di Steamworks (SDK 1.42) non ha
-/// `SteamNetworkingSockets` (0 occorrenze in firstpass), e il P2P legacy e' un altro lavoro
-/// (`docs\STEAM_INVITES.md` §8-§9). Qui non si chiama `SendP2PPacket` ne' `AcceptP2PSessionWithUser`:
-/// l'unica cosa che passa da Steam e' **il nome del posto, non i pacchetti**.
-///
-/// ─────────────────────────────────────────────────────────────────────────────────────────────
-/// LA SEQUENZA, E PERCHE' OGNI PASSO ASPETTA IL PRECEDENTE (§2.1 del piano)
-///
-///   HOST   CreateLobby(friendsOnly, 4)   -> LobbyCreated_t { m_eResult, m_ulSteamIDLobby }
-///          SetLobbyData(hostIp / hostPort / hostName)
-///          ActivateGameOverlayInviteDialog(lobby)
-///          e la sessione host parte dal bottone che esiste gia' ("Host session")
-///
-///   GUEST  +connect_lobby &lt;id&gt;   (gioco spento)  -> JoinLobby
-///          GameLobbyJoinRequested_t     (gioco acceso) -> JoinLobby
-///          -> LobbyEnter_t { m_EChatRoomEnterResponse }   (== 1, altrimenti e' un rifiuto CON MOTIVO)
-///          -> ⭐ GetLobbyData(hostIp / hostPort) SUBITO, dalla cache
-///          -> solo se sono vuoti: RequestLobbyData -> LobbyDataUpdate_t -> GetLobbyData
-///          -> i campi della schermata -> Connect
-///
-/// 🔴 LA REGOLA DELLA LETTURA, nella forma giusta (e la prima versione del piano sbagliava):
-///   · **dopo un `SetLobbyData` dell'host non si legge "nello stesso istante"**: il valore lo replica
-///     il back end di Steam, e una `GetLobbyData` emessa subito dopo puo' tornare **stringa vuota** e
-///     sembrare "lobby senza dati". Per l'**host** la regola vale, e la lettura la fa l'ospite;
-///   · **per l'ospite, in `LobbyEnter_t`, si legge SUBITO dalla cache.** Aspettare sempre
-///     `LobbyDataUpdate_t` appenderebbe il join: **Steam non manda quell'update se i dati sono gia' in
-///     cache** (`RequestLobbyData` su metadati identici salta la rete), quindi il callback non
-///     arriverebbe **mai** e il join resterebbe appeso per sempre — lo stesso sintomo di un click a
-///     vuoto. La strada giusta: leggere subito; **se** i dati sono vuoti, allora `RequestLobbyData` e
-///     si aspetta l'update. Vedi `OnLobbyEnter`.
-///   · **`m_EChatRoomEnterResponse` dice se il join e' avvenuto** (`1` = successo): dopo un ingresso
-///     fallito non ci sono dati da leggere, e il fallimento va **detto col suo motivo**, non
-///     trasformato in una lobby vuota che sembra funzionare.
-///
-/// 🔴 E L'HOST CHE SE NE VA NON SI ANNUNCIA DA SOLO: la lobby **non muore** con lui (la proprieta'
-/// passa al membro successivo), quindi senza `LobbyChatUpdate_t` l'ospite resterebbe dentro una
-/// sessione morta senza saperlo. Vedi `OnLobbyChatUpdate`.
-///
-/// ─────────────────────────────────────────────────────────────────────────────────────────────
-/// ⚠️ IL PUMP DELLE CALLBACK: LO CHIAMIAMO ANCHE NOI, E NON E' UN DOPPIONE.
-/// `SteamAPI.RunCallbacks()` lo chiama gia' `SteamManager.Update` del gioco. Chiamarlo qui costa
-/// quanto una coda vuota (la seconda chiamata del frame non trova niente da consegnare) e in cambio
-/// ci rende **indipendenti dal ciclo di vita del gioco**: se il suo `SteamManager` non gira — o e'
-/// stato distrutto in una scena — le NOSTRE callback continuano ad arrivare. Vedi `Tick()`.
-///
-/// ⚠️ E SE LE CALLBACK NON ARRIVANO, SI DICE: due scadenze (`HOST_CALLBACK_TIMEOUT_S`,
-/// `JOIN_CALLBACK_TIMEOUT_S`) scrivono un marker d'errore invece di lasciare il bottone muto. Il
-/// marker `[Steam] prima callback ricevuta:` e' la prova che il pump funziona: senza, il test e' cieco.
-///
-/// ⚠️ TUTTO IN `try/catch`: un guasto di Steam non deve rompere il gioco. Nessun metodo di questa
-/// classe lancia verso chi la chiama, e soprattutto **nessuno la chiama direttamente**: la facciata
-/// e' `SteamLobby` (vedi `SteamLobby.cs`), che e' l'unica classe che il resto della mod nomina.
-///
-/// 🔴 PERCHE' DUE CLASSI E NON UNA — LA COPIA NON-STEAM (GOG &amp; co.).
-/// Su una build non-Steam `Assembly-CSharp-firstpass.dll` puo' **non contenere affatto** i tipi
-/// `Steamworks`. Questa classe li nomina dappertutto (campi `CSteamID`, `Callback&lt;T&gt;`, ...), e un
-/// riferimento a un tipo assente non e' "Steam non c'e'": e' una **`TypeLoadException`** lanciata
-/// quando la JIT carica questa classe. Il percorso TCP/IP e' la BASE della mod e non deve poter
-/// morire per un'aggiunta, quindi:
-///   · **tutto** il codice che nomina `Steamworks` sta QUI, in una classe sola;
-///   · il resto della mod nomina solo `SteamLobby`, che di tipi `Steamworks` non ne ha **nessuno**
-///     (nemmeno nei campi o nelle firme) e che decide "ci sono i tipi?" **per riflessione**, prima;
-///   · la `TypeLoadException` viene lanciata al **punto di chiamata** (la JIT di questa classe parte
-///     quando la facciata la invoca), quindi e' catturabile dalla facciata stessa, che ha il
-///     `try/catch` addosso.
-/// ⇒ su una copia non-Steam: `[Steam] non disponibile` nel log, il bottone Steam disabilitato, e la
-///   schermata IP **identica a prima**. Vedi `SteamLobby.MarkerNoSteamworks`.
+/// Steam lobby and invites, additive on top of the existing transport. The lobby is a meeting
+/// point, not a transport: it carries hostIp / hostPort / hostName / hostSteamId only, bytes
+/// travel on the TCP transport as before. Names Steamworks types directly, so on a non-Steam
+/// copy a TypeLoadException would surface at the call site; the reflection-gated
+/// <see cref="SteamLobby"/> facade is the only caller and keeps the IP path working.
 /// </summary>
 internal static class SteamLobbyImpl
 {
-    // ⭐ I MARKER — tutti nuovi, tutti col prefisso `[Steam]`, nessuno sostituisce una riga esistente.
-    //    Servono a rispondere DAL LOG alle tre domande del test: Steam c'e'? il pump gira? i dati
-    //    della lobby sono arrivati?
     internal const string MarkerAvailable = "[Steam] disponibile=";
-    internal const string MarkerUnavailable = "[Steam] non disponibile";
-    internal const string MarkerFirstCallback = "[Steam] prima callback ricevuta: ";
+    internal const string MarkerUnavailable = "[Steam] unavailable";
+    internal const string MarkerFirstCallback = "[Steam] first callback received: ";
     internal const string MarkerHostCreate = "[Steam] host: CreateLobby ";
     internal const string MarkerHostCreated = "[Steam] host: lobby creata id=";
     internal const string MarkerHostFailed = "[Steam] host: creazione fallita ";
@@ -114,124 +40,90 @@ internal static class SteamLobbyImpl
     internal const string MarkerHostLeft = "[Steam] l'host ha chiuso la sessione";
     internal const string MarkerLeft = "[Steam] lobby lasciata";
     internal const string MarkerTimeout = "[Steam] timeout: ";
-    internal const string MarkerError = "[Steam] errore: ";
+    internal const string MarkerError = "[Steam] error: ";
 
-    // ⭐ LE CHIAVI DEI DATI DELLA LOBBY: `hostIp`, `hostPort`, `hostName`. Sono i tre nomi del piano
-    //    (§1 e §4 del piano), e sono l'UNICA cosa che questa classe mette in comune.
-    //    ⚠️ LA PASSWORD NON C'E', di proposito: il piano elenca quei tre dati e basta. Conseguenza
-    //    dichiarata nel referto: se l'host mette una password, l'ospite la deve scrivere a mano.
+    // Lobby data keys. No password here on purpose: the plan carries these three plus hostSteamId.
     internal const string KEY_IP = "hostIp";
     internal const string KEY_PORT = "hostPort";
     internal const string KEY_NAME = "hostName";
 
-    // ⭐⭐ C1b-2 — LA QUARTA CHIAVE: **CHI OSPITA**, per SteamID.
-    //
-    // 🔴 PERCHE' NON BASTA `GetLobbyOwner`. La lobby **non muore con l'host**: quando il proprietario
-    // esce, la proprieta' **passa al membro successivo** (e' la stessa proprieta' su cui poggia
-    // `LobbyChatUpdate_t`, vedi `OnLobbyChatUpdate`). Quindi dopo quell'istante `GetLobbyOwner`
-    // restituisce **un altro giocatore** — e un trasporto P2P che chiedesse a Steam "chi e' l'host?"
-    // manderebbe l'hello **al posto sbagliato**. Il sintomo sarebbe muto: la sessione non parte, o parte
-    // verso chi non ha un server.
-    //
-    // ⇒ l'host **si dichiara qui**, una volta, alla creazione della lobby: e' un fatto che resta vero
-    //   anche quando la proprieta' della lobby cambia, perche' e' un DATO, non un ruolo di Steam. Chi
-    //   legge (il trasporto P2P del peer) usa questo, e se manca dice **"la sessione non e' piu'
-    //   disponibile"** invece di indovinare un destinatario.
+    /// <summary>
+    /// Hosting SteamID. Needed because <c>GetLobbyOwner</c> transfers to the next member when the
+    /// host leaves - a P2P transport asking Steam "who is host?" would then address the wrong peer.
+    /// </summary>
     internal const string KEY_STEAM = "hostSteamId";
 
-    /// <summary>La lobby e' `friendsOnly` (inviti diretti, non compare nel matchmaking globale).</summary>
+    /// <summary>Friends-only: direct invites, does not appear in global matchmaking.</summary>
     private const ELobbyType LOBBY_TYPE = ELobbyType.k_ELobbyTypeFriendsOnly;
 
-    /// <summary>Quattro posti: il piano. (Il server ne accetta 10, ma l'invito e' per un amico.)</summary>
+    /// <summary>Four slots.</summary>
     private const int MAX_MEMBERS = 4;
 
-    /// <summary>`k_EChatRoomEnterResponseSuccess`: l'unico valore che significa "sono dentro".</summary>
+    /// <summary>The only <c>EChatRoomEnterResponse</c> meaning "joined".</summary>
     private const uint ENTER_SUCCESS = (uint)EChatRoomEnterResponse.k_EChatRoomEnterResponseSuccess;
 
-    /// <summary>Quanti `RequestLobbyData` si ripetono se i dati non sono ancora replicati.</summary>
+    /// <summary>Retry cap for RequestLobbyData when data has not replicated yet.</summary>
     private const int MAX_DATA_RETRIES = 3;
 
-    /// <summary>Ogni quanto si riprova a chiedere a Steam se c'e' (solo finche' la risposta e' no).</summary>
+    /// <summary>Availability re-probe interval while the answer is "no".</summary>
     private const float RECHECK_SECONDS = 2f;
 
-    /// <summary>Quanto si aspetta `LobbyCreated_t` prima di dire che le callback non arrivano.</summary>
+    /// <summary>Wait before reporting that LobbyCreated_t never arrived.</summary>
     private const float HOST_CALLBACK_TIMEOUT_S = 10f;
 
-    /// <summary>
-    /// Dopo quanti secondi senza dati della lobby si scrive `[Steam] join in attesa da Ns` — cosi' un
-    /// blocco **si vede** invece di sembrare un click a vuoto. Non e' un abbandono: si continua ad
-    /// aspettare fino a `JOIN_CALLBACK_TIMEOUT_S`.
-    /// </summary>
+    /// <summary>Warn threshold for "joined but data still empty" - visible block instead of a silent stall.</summary>
     private const float JOIN_DATA_WAIT_WARN_S = 5f;
 
-    /// <summary>Quanto si aspetta `LobbyEnter_t` / `LobbyDataUpdate_t` prima di dichiarare il guasto.</summary>
+    /// <summary>Wait for LobbyEnter_t / LobbyDataUpdate_t before declaring the callback dead.</summary>
     private const float JOIN_CALLBACK_TIMEOUT_S = 15f;
 
-    // ─── I CALLBACK, COME CAMPI (⚠️ NON LOCALI: il GC li ucciderebbe) ─────────────────────────────
-    //
-    // `Callback<T>.Create` registra il delegato in un registro GLOBALE del processo e tiene un
-    // `GCHandle` pinning sull'oggetto. Se il `Callback<T>` fosse una variabile locale di un metodo,
-    // dopo il ritorno non ci sarebbe piu' nessun riferimento gestito: il GC puo' raccoglierlo, il
-    // registro resta appeso a memoria liberata, e le callback **smettono di arrivare in silenzio**.
-    // Quindi: cinque campi statici, vivi quanto la mod.
+    // Callback<T>.Create pins the delegate in a global registry via GCHandle. A local Callback
+    // would be collected and the callbacks would silently stop; fields keep them alive.
     private static Callback<LobbyCreated_t> _cbLobbyCreated;
     private static Callback<LobbyEnter_t> _cbLobbyEnter;
     private static Callback<LobbyDataUpdate_t> _cbLobbyDataUpdate;
     private static Callback<GameLobbyJoinRequested_t> _cbJoinRequested;
     private static Callback<LobbyChatUpdate_t> _cbLobbyChatUpdate;
 
-    // ─── STATO ────────────────────────────────────────────────────────────────────────────────────
-    private static bool _available;          // Steam c'e' ed e' loggato (una volta vero, resta vero)
-    private static bool _availabilityLogged; // una riga sola per transizione, non una per frame
+    private static bool _available;          // Steam present and logged in (sticky once true)
+    private static bool _availabilityLogged; // one line per transition, not per frame
     private static float _nextAvailabilityCheck;
-    private static bool _callbacksReady;     // i cinque Callback<T> sono registrati
+    private static bool _callbacksReady;
     private static bool _firstCallbackLogged;
 
-    private static CSteamID _hostLobby = CSteamID.Nil;   // la lobby che stiamo ospitando (o Nil)
+    private static CSteamID _hostLobby = CSteamID.Nil;
     private static bool _creatingLobby;
     private static float _creatingSince;
     private static string _hostName = string.Empty;
-    private static bool _hostLobbyReady;     // ⭐ consumato dalla UI: "la lobby c'e', avvia l'host"
+    private static bool _hostLobbyReady;
 
-    private static CSteamID _joinLobby = CSteamID.Nil;   // la lobby che stiamo entrando (o Nil)
+    private static CSteamID _joinLobby = CSteamID.Nil;
 
     /// <summary>
-    /// ⭐ L'ULTIMA LOBBY IN CUI SIAMO DAVVERO ENTRATI, e che **sopravvive** all'azzeramento
-    /// dell'ingresso (`ResetJoinAfterLinkLost`).
-    ///
-    /// PERCHE' SERVE UN SECONDO CAMPO: dopo la caduta del link l'ingresso va azzerato (o `StartJoin`
-    /// scarta ogni invito), ma la lobby dell'host e' ancora viva — e due cose la usano ancora:
-    ///   · `SteamP2PTransportImpl.Begin` la legge da `CurrentLobby` per un **Connect manuale** (`p2p`),
-    ///     cioe' il rientro **senza** un invito nuovo;
-    ///   · `IsLobbyMember` decide se accettare la sessione **di ritorno** dell'host: senza questa
-    ///     memoria, dopo l'azzeramento la risposta sarebbe "non e' un membro" e il tunnel si aprirebbe
-    ///     in un verso solo (docs\STEAM_INVITES.md §9).
-    ///
-    /// ⚠️ Si azzera SOLO con un'uscita **voluta** (`LeaveLobby`): non e' un cancello, e' una memoria.
+    /// Last lobby we actually joined, surviving <c>ResetJoinAfterLinkLost</c>. After a link loss
+    /// <c>_joinLobby</c> is reset to prevent silently swallowing the next invite, but the host's
+    /// lobby is still alive and a manual P2P Connect and <c>IsLobbyMember</c> need to name it.
     /// </summary>
     private static CSteamID _lastJoinLobby = CSteamID.Nil;
 
-    private static bool _joinEntered;        // LobbyEnter_t con successo: siamo DENTRO
-    private static float _joinSince;         // quando e' partito il JoinLobby
-    private static float _joinDataSince;     // quando abbiamo cominciato ad aspettare i dati
-    private static bool _joinWaitingLogged;  // il marker "in attesa da Ns" esce una volta sola
+    private static bool _joinEntered;
+    private static float _joinSince;
+    private static float _joinDataSince;
+    private static bool _joinWaitingLogged;
     private static int _joinDataRetries;
     private static bool _joinRetryPending;
-    private static bool _joinDataDone;       // i dati sono arrivati (dalla cache o dall'update)
-    private static bool _hostLeftReported;   // "l'host ha chiuso": una volta sola
+    private static bool _joinDataDone;
+    private static bool _hostLeftReported;
 
-    private static bool _joinReady;          // ⭐ consumato dalla UI: hostIp/hostPort pronti
+    private static bool _joinReady;
     private static string _joinIp = string.Empty;
     private static int _joinPort;
 
-    private static ulong _cmdLineLobbyId;    // 0 = nessun `+connect_lobby`
-    private static bool _cmdLineRead;        // la riga di comando si legge UNA volta
+    private static ulong _cmdLineLobbyId;
+    private static bool _cmdLineRead;
     private static bool _cmdLineJoinStarted;
 
-    /// <summary>
-    /// `true` se Steam c'e' e si puo' usare: e' il cancello della UI (bottone abilitato o no).
-    /// Comodo e **non** lancia: internamente e' tutto in `try/catch`.
-    /// </summary>
+    /// <summary>True when Steam is present and usable - the UI gate.</summary>
     internal static bool Available
     {
         get
@@ -241,32 +133,21 @@ internal static class SteamLobbyImpl
         }
     }
 
-    /// <summary>`true` se una lobby Steam e' nostra ADESSO (host).</summary>
+    /// <summary>True while a Steam lobby of ours is active (host).</summary>
     internal static bool HasHostLobby
     {
         get { return _hostLobby.m_SteamID != 0UL; }
     }
 
-    /// <summary>L'id della lobby che stiamo ospitando, per il log/lo schermo. 0 se nessuna.</summary>
+    /// <summary>Lobby id we are hosting (0 if none).</summary>
     internal static ulong HostLobbyId
     {
         get { return _hostLobby.m_SteamID; }
     }
 
     /// <summary>
-    /// ⭐ LA LOBBY IN CUI SIAMO ADESSO — quella che ospitiamo se ne abbiamo una, altrimenti quella in cui
-    /// siamo entrati. `CSteamID.Nil` se non siamo in nessuna lobby.
-    ///
-    /// Serve alla sonda P2P (`SteamP2PProbeImpl`), che deve mandare il suo byte ai **peer della lobby**:
-    /// le due liste (`GetNumLobbyMembers`/`GetLobbyMemberByIndex`) sono le stesse che usa la lobby per
-    /// l'invito, e non c'è un secondo elenco da tenere allineato.
-    ///
-    /// ⚠️ NON GUARDA SE UNA SESSIONE TCP È APERTA: è il punto della sonda — deve funzionare anche
-    /// quando il TCP non arriva (secondo PC su un hotspot).
-    ///
-    /// ⭐ E C'E' UN TERZO PASSO: dopo una caduta l'ingresso viene azzerato (`ResetJoinAfterLinkLost`)
-    /// ma la lobby resta quella dell'host, e un **Connect manuale** (`p2p`) deve poterla ancora
-    /// nominare — altrimenti l'unico modo di rientrare sarebbe un invito nuovo.
+    /// The lobby we are in: hosted lobby if any, else the joined one, else the last joined one.
+    /// The last one survives a link-loss reset so a manual P2P Connect can still name it.
     /// </summary>
     internal static CSteamID CurrentLobby
     {
@@ -283,13 +164,9 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ "QUESTO UTENTE È UN MEMBRO DI UNA NOSTRA LOBBY?" — il cancello d'igiene delle sessioni P2P:
-    /// si accetta una sessione solo da chi è nella lobby (`docs\STEAM_INVITES.md` §9), altrimenti
-    /// chiunque conosca il nostro SteamID potrebbe farci aprire una sessione.
-    ///
-    /// Si guardano **entrambe** le lobby (host e join) e **non** solo `CurrentLobby`: se un giorno un
-    /// processo fosse in due lobby insieme, il peer della seconda non deve sembrare uno sconosciuto.
-    /// Non lancia: un guasto qui vale "non è un membro", che è la risposta prudente.
+    /// True when the user is a member of one of our lobbies. Gate for accepting P2P sessions: only
+    /// lobby members are accepted, so a stranger knowing the SteamID cannot open one. Checks both
+    /// the hosted and joined lobbies plus the last-joined memory (post-link-loss re-entry).
     /// </summary>
     internal static bool IsLobbyMember(CSteamID user)
     {
@@ -304,8 +181,6 @@ internal static class SteamLobbyImpl
             if (IsMemberOf(_joinLobby, user))
                 return true;
 
-            // ⭐ E LA LOBBY DA CUI SI VIENE: dopo una caduta l'ingresso e' azzerato (fix ①) e senza
-            // questa riga l'host verrebbe preso per uno sconosciuto proprio mentre prova a rientrare.
             return IsMemberOf(_lastJoinLobby, user);
         }
         catch (Exception)
@@ -314,7 +189,6 @@ internal static class SteamLobbyImpl
         }
     }
 
-    /// <summary>Il giro dei membri di UNA lobby. Separato perché serve per due lobby (host e join).</summary>
     private static bool IsMemberOf(CSteamID lobby, CSteamID user)
     {
         if (lobby.m_SteamID == 0UL)
@@ -332,19 +206,13 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ SI ARMA UNA VOLTA, all'inizializzazione della mod: legge la riga di comando (il caso "gioco
-    /// spento") e registra le callback se Steam e' gia' pronto. Idempotente: si puo' chiamare due volte.
-    ///
-    /// ⚠️ Se Steam non e' ancora pronto QUI (l'init del gioco puo' arrivare dopo la mod), non si perde
-    /// niente: `Tick()` riprova ogni frame finche' non riesce. E' il motivo per cui questa funzione non
-    /// ritorna un esito: non c'e' un "fallito", c'e' un "non ancora".
+    /// Called once at mod init: reads +connect_lobby (game-was-off case) and registers callbacks
+    /// if Steam is ready. Idempotent; if Steam is not ready yet, Tick retries.
     /// </summary>
     internal static void Arm()
     {
         try
         {
-            // ⭐ LA RIGA DI COMANDO — UNA VOLTA SOLA, prima di tutto il resto: e' l'unica cosa che
-            // esiste quando il gioco e' stato avviato da un invito e nessuna callback puo' arrivare.
             if (!_cmdLineRead)
             {
                 _cmdLineRead = true;
@@ -370,19 +238,9 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐⭐ IL CICLO PER FRAME: il pump delle callback, e le azioni che aspettano una callback.
-    ///
-    /// Si aggancia al ciclo per frame che la mod ha gia' (`Multiplayer.OnLateUpdate`), quindi **zero
-    /// bersagli Harmony nuovi e zero MonoBehaviour nuovi**.
-    ///
-    /// PERCHE' SI CHIAMA `RunCallbacks` ANCHE SE IL GIOCO LO FA GIA': vedi il commento in testa alla
-    /// classe. In breve — chiamarlo due volte per frame non e' un problema (la seconda trova la coda
-    /// vuota), e ci rende immuni al ciclo di vita dello `SteamManager` del gioco: se lui non gira,
-    /// le nostre callback arrivano lo stesso. E' un costo nullo per un guasto che altrimenti sarebbe
-    /// invisibile ("ho premuto e non e' successo niente").
-    ///
-    /// ⚠️ NON LANCIA MAI: e' dentro il `OnLateUpdate` della mod, e un'eccezione qui fermerebbe il
-    /// resto del ciclo (pacchetti, giocatori, nemici) per un guasto di Steam.
+    /// Per-frame: pumps Steam callbacks and drains pending actions. Runs twice per frame (the
+    /// game's SteamManager also calls RunCallbacks) - the second call sees an empty queue, and
+    /// running the pump here makes us independent from the game's SteamManager lifecycle.
     /// </summary>
     internal static void Tick()
     {
@@ -396,27 +254,21 @@ internal static class SteamLobbyImpl
             if (!_callbacksReady && !EnsureCallbacks())
                 return;
 
-            // ⭐ IL PUMP, CON IL SUO CANCELLO E IL SUO `try/catch` (vedi mandato): se il client Steam
-            // e' chiuso non si pompa niente, e se la chiamata esplode si scrive un marker e si va
-            // avanti. E' l'unica riga di questa classe che tocca il motore di callback.
             if (SteamAPI.IsSteamRunning())
                 SteamAPI.RunCallbacks();
 
-            // ① il join dal `+connect_lobby` aspetta solo che le callback siano pronte.
             if (_cmdLineLobbyId != 0UL && !_cmdLineJoinStarted)
             {
                 _cmdLineJoinStarted = true;
                 StartJoin(new CSteamID(_cmdLineLobbyId), "cmdline");
             }
 
-            // ② il secondo `RequestLobbyData`, se il primo e' arrivato prima dei dati.
             if (_joinRetryPending)
             {
                 _joinRetryPending = false;
                 RequestJoinData();
             }
 
-            // ③ le scadenze: se una callback non arriva, lo si dice (invece di restare muti).
             CheckTimeouts();
         }
         catch (Exception e)
@@ -426,12 +278,9 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ "STEAM: HOST" — crea la lobby, e **non** avvia niente: l'avvio della sessione host lo fa la
-    /// UI riusando il percorso del bottone che esiste gia' ("Host session"), quando `LobbyCreated_t`
-    /// e' arrivata (`TryConsumeHostLobbyReady`). Due cose distinte e in due momenti distinti, perche'
-    /// la lobby senza host annuncerebbe una porta dove non ascolta nessuno.
-    ///
-    /// Ritorna `false` solo se Steam non c'e' o se la chiamata esplode: in quel caso la UI lo dice.
+    /// Steam: Host - creates the lobby but does NOT start the session. The host session starts
+    /// later via the existing "Host session" path once LobbyCreated_t fires and the ready flag is
+    /// consumed, so a lobby never advertises a port where nothing listens.
     /// </summary>
     internal static bool StartHost(string hostName)
     {
@@ -441,7 +290,7 @@ internal static class SteamLobbyImpl
 
             if (!_available)
             {
-                ModLog.Warn(MarkerUnavailable + ": StartHost richiesto ma Steam non e' disponibile");
+                ModLog.Warn(MarkerUnavailable + ": StartHost requested but Steam is unavailable");
                 return false;
             }
 
@@ -450,16 +299,15 @@ internal static class SteamLobbyImpl
 
             _hostName = hostName ?? string.Empty;
 
-            // ⭐ Una lobby nostra c'e' gia': NON se ne crea una seconda (sarebbe la seconda lobby
-            // orfana della stessa sessione). Si riapre l'overlay degli inviti, che e' quello che
-            // l'utente vuole fare ripremendo il bottone.
+            // A lobby of ours already exists: do not create a second one; reopen the invite overlay
+            // instead (that is what the second click wants).
             if (HasHostLobby)
             {
                 OpenInviteOverlay("riapertura");
                 return true;
             }
 
-            // Doppio clic mentre la creazione e' in volo: si aspetta quella.
+            // Double-click while creation is in flight: let that one finish.
             if (_creatingLobby)
                 return true;
 
@@ -481,11 +329,8 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ Esce dalla lobby (host o join) e libera lo stato. Idempotente: se non c'e' nessuna lobby non
-    /// fa niente e **non stampa niente** (cosi' "Disconnect" di chi non usa Steam non aggiunge righe).
-    ///
-    /// Serve perche' una lobby che resta aperta e' peggio di un errore: annuncia una sessione che non
-    /// c'e' piu', e chi la vede dall'overlay entra in un vicolo cieco.
+    /// Leaves the current lobby (host or guest) and clears state. Idempotent: no-op and no log
+    /// line when there is no lobby, so Disconnect for a non-Steam user adds nothing.
     /// </summary>
     internal static void LeaveLobby()
     {
@@ -497,9 +342,7 @@ internal static class SteamLobbyImpl
             ResetHostState();
             ResetJoinState();
 
-            // ⭐ E LA MEMORIA DELLA LOBBY SE NE VA CON L'USCITA **VOLUTA** (non con la caduta): e' la
-            // differenza fra "ho chiuso io" (non c'e' piu' niente da riusare) e "e' caduto il link"
-            // (la lobby dell'host e' ancora viva, e un Connect manuale deve poterla nominare).
+            // A voluntary leave clears the last-joined memory; a link-loss reset keeps it.
             _lastJoinLobby = CSteamID.Nil;
 
             if (host.m_SteamID != 0UL)
@@ -516,16 +359,11 @@ internal static class SteamLobbyImpl
         }
         catch (Exception e)
         {
-            // Lo stato e' gia' stato azzerato: la lobby puo' restare appesa sul back end, ma il gioco
-            // non ne sa piu' niente e non ci si appende mai piu'.
             ModLog.Error(MarkerError + e.GetType().Name + ": " + e.Message + " (LeaveLobby)");
         }
     }
 
-    /// <summary>
-    /// ⭐ "LA LOBBY E' PRONTA": consuma una volta sola il segnale di `LobbyCreated_t`. La UI lo chiama
-    /// prima dei bottoni, e se ritorna `true` avvia la sessione host col percorso che c'e' gia'.
-    /// </summary>
+    /// <summary>Consumes the "lobby ready" flag once (set by LobbyCreated_t); the UI starts the host.</summary>
     internal static bool TryConsumeHostLobbyReady()
     {
         if (!_hostLobbyReady)
@@ -535,11 +373,7 @@ internal static class SteamLobbyImpl
         return true;
     }
 
-    /// <summary>
-    /// ⭐ "I DATI SONO ARRIVATI": consuma una volta sola l'indirizzo letto dalla lobby (subito in
-    /// `LobbyEnter_t` dalla cache, oppure dopo `LobbyDataUpdate_t` — vedi `TryReadJoinData`). La UI
-    /// compila i campi e connette.
-    /// </summary>
+    /// <summary>Consumes the join address once (cache read in LobbyEnter_t, or LobbyDataUpdate_t).</summary>
     internal static bool TryConsumeJoin(out string serverIp, out int port)
     {
         serverIp = _joinIp;
@@ -553,31 +387,23 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ "SEI GIA' CONNESSO, L'INVITO NON SI APPLICA QUI": la schermata chiama questo quando mostra
-    /// lo stato connesso. Butta via un join in attesa (con una riga, non in silenzio) e una lobby
-    /// d'host creata ma mai avviata (che altrimenti partirebbe al prossimo `Disconnect`), perche'
-    /// **un invito non deve riconnettersi da solo mezz'ora dopo**.
-    ///
-    /// Non fa niente (e non stampa niente) se non c'era niente in attesa: il percorso normale non
-    /// paga nemmeno un confronto.
+    /// Discards pending actions while connected: an invite must not reconnect by itself later, and
+    /// an untriggered host lobby would announce a closed port. No-op and no log when there is
+    /// nothing pending.
     /// </summary>
     internal static void DropPendingWhileConnected()
     {
         try
         {
-            // ⚠️ SOLO IL DATO NON ANCORA CONSUMATO (`_joinReady`), non "qualunque lobby in cui sono":
-            //    dopo un join riuscito si RESTA nella lobby per tutta la partita (serve al
-            //    `LobbyChatUpdate_t` per accorgersi che l'host e' uscito), quindi `_joinLobby != Nil`
-            //    e' lo stato NORMALE di chi sta giocando — trattarlo come "in attesa" vorrebbe dire una
-            //    notifica a ogni frame.
+            // Only the unconsumed flag is a "pending" action - being in a lobby is the normal state
+            // of a player already in a session, and must not trigger a notification per frame.
             if (_joinReady)
             {
-                ModLog.Warn(MarkerJoinDropped + "gia' connessi a una sessione: invito non applicato");
+                ModLog.Warn(MarkerJoinDropped + "already connected to a session: invite not applied");
                 _joinReady = false;
-                Notify("Steam: sei gia' connesso, invito ignorato");
+                Notify("Steam: already connected, invite ignored");
             }
 
-            // Una lobby d'host senza sessione host avviata annuncerebbe una porta chiusa.
             if (_hostLobbyReady && !HostSession.IsRunning)
             {
                 _hostLobbyReady = false;
@@ -590,14 +416,13 @@ internal static class SteamLobbyImpl
         }
     }
 
-    // ─── CALLBACK ────────────────────────────────────────────────────────────────────────────────
+    // === Callbacks ===
 
     /// <summary>
-    /// `LobbyCreated_t` — la risposta a `CreateLobby`. ⭐ E' QUI che l'host pubblica i dati e apre
-    /// l'overlay degli inviti: prima non c'e' nessuna lobby in cui invitare.
-    ///
-    /// ⚠️ `ActivateGameOverlayInviteDialog` SOLO con `k_EResultOK`: su un errore l'overlay si aprirebbe
-    /// con una lista amici vuota (o con un errore), cioe' un dialogo che non porta a niente.
+    /// LobbyCreated_t: publishes the four lobby data keys and opens the invite overlay. Does NOT
+    /// read data (a GetLobbyData right after SetLobbyData returns empty until the back end
+    /// replicates). The overlay is opened only on OK - a failed create with the overlay would show
+    /// an empty friend list.
     /// </summary>
     private static void OnLobbyCreated(LobbyCreated_t result)
     {
@@ -619,16 +444,8 @@ internal static class SteamLobbyImpl
 
             ModLog.Info(MarkerHostCreated + _hostLobby.m_SteamID);
 
-            // ⭐ I TRE DATI DELL'HOST — l'IP LAN e' quello che il peer scriverebbe a mano nel campo
-            // "Server IP", la porta e' quella della sessione host (`Protocol.DEFAULT_PORT`, 27051).
-            // `HostSession.LanAddress` e' lo stesso indirizzo che il marker `[Host] indirizzo locale=`
-            // gia' stampa: non se ne calcola un secondo, cosi' i due non possono divergere.
             string ip = HostSession.LanAddress;
             int port = Protocol.DEFAULT_PORT;
-
-            // ⭐⭐ E IL QUARTO: CHI OSPITA. Vedi `KEY_STEAM`: la proprieta' della lobby cambia se l'host
-            // esce, ma questo dato no — ed e' quello che il trasporto P2P del peer legge per sapere a
-            // chi mandare l'hello.
             ulong hostSteamId = SteamUser.GetSteamID().m_SteamID;
 
             bool okIp = SteamMatchmaking.SetLobbyData(_hostLobby, KEY_IP, ip);
@@ -642,16 +459,12 @@ internal static class SteamLobbyImpl
                         " esiti=" + (okIp ? "1" : "0") + (okPort ? "1" : "0") + (okName ? "1" : "0") +
                         (okSteam ? "1" : "0"));
 
-            if (string.IsNullOrEmpty(ip) || ip == "sconosciuto")
-                ModLog.Warn(MarkerHostData + "attenzione: l'IP LAN non e' stato risolto (" +
-                            (ip ?? "(vuoto)") + "): la lobby non porta un indirizzo utile");
-
-            // 🔴 QUI NON SI LEGGE NIENTE: `GetLobbyData` adesso tornerebbe vuota. La lettura la fa
-            // l'ospite dentro `LobbyDataUpdate_t` (vedi `OnLobbyDataUpdate`).
+            if (string.IsNullOrEmpty(ip) || ip == "unknown")
+                ModLog.Warn(MarkerHostData + "warning: LAN IP was not resolved (" +
+                            (ip ?? "(vuoto)") + "): the lobby carries no useful address");
 
             OpenInviteOverlay("creazione");
 
-            // ⭐ E ADESSO LA UI PUO' AVVIARE L'HOST (percorso del bottone "Host session").
             _hostLobbyReady = true;
         }
         catch (Exception e)
@@ -662,10 +475,8 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// `GameLobbyJoinRequested_t` — il caso **"gioco acceso"**: un amico ha accettato l'invito mentre
-    /// il gioco era aperto, e Steam lo dice a QUESTO processo. La callback dice che l'invito e' stato
-    /// accettato: non e' un ingresso (quello e' `LobbyEnter_t`), quindi qui si chiama `JoinLobby` e si
-    /// aspetta, come per il caso "gioco spento".
+    /// GameLobbyJoinRequested_t: the game-is-already-open case. The callback only says the invite
+    /// was accepted; JoinLobby is issued here and the actual entry arrives in LobbyEnter_t.
     /// </summary>
     private static void OnJoinRequested(GameLobbyJoinRequested_t request)
     {
@@ -685,25 +496,11 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// `LobbyEnter_t` — "sono dentro o no". 🔴 `m_EChatRoomEnterResponse`: `1` (`Success`) e' l'unico
-    /// valore che significa lobby nostra; ogni altro va detto **col suo motivo** (sessione sparita,
-    /// non amici, piena, bannati...), non con un "errore" generico, perche' il motivo e' esattamente
-    /// quello che l'utente deve correggere.
-    ///
-    /// ⭐⭐ POI SI LEGGE **SUBITO**, DALLA CACHE. Questa e' la correzione che ha sostituito la regola
-    /// "aspetta `LobbyDataUpdate_t`", e la ragione e' concreta: **Steam non manda `LobbyDataUpdate_t`
-    /// se i dati sono gia' in cache** — `RequestLobbyData` su una lobby con metadati identici salta la
-    /// rete, e il callback non arriva mai. Aspettarlo sempre vorrebbe dire appendere il join per
-    /// sempre, col sintomo identico a un click a vuoto. Quindi:
-    ///
-    ///   · `GetLobbyData` **qui**, adesso: se `hostIp`/`hostPort` ci sono, si connette subito;
-    ///   · **solo se sono vuoti** (lobby appena creata, dati non ancora replicati) si chiede
-    ///     `RequestLobbyData` e **allora** si aspetta `LobbyDataUpdate_t`.
-    ///
-    /// ⚠️ E resta vera l'altra regola: dopo un **`SetLobbyData` dell'host** non si legge "nello stesso
-    /// istante" (li' il valore non e' ancora replicato). Le due cose non si contraddicono: qui il join
-    /// e' un `GetLobbyData` su una lobby di cui Steam ha appena confermato l'ingresso, e la cache o ha
-    /// i dati o e' vuota — e se e' vuota c'e' la strada del `RequestLobbyData`.
+    /// LobbyEnter_t: "did we enter?". Only <c>m_EChatRoomEnterResponse == 1</c> means success;
+    /// every other code is reported with its reason. Data is read IMMEDIATELY from the cache -
+    /// Steam does not emit LobbyDataUpdate_t when the data is already cached, so waiting always
+    /// would hang the join; only when the cache is empty is RequestLobbyData issued and the update
+    /// awaited.
     /// </summary>
     private static void OnLobbyEnter(LobbyEnter_t enter)
     {
@@ -716,20 +513,19 @@ internal static class SteamLobbyImpl
             string reason = EnterReason(response);
 
             ModLog.Info(MarkerJoinEnter + lobby.m_SteamID + " risposta=" + response +
-                        (response == ENTER_SUCCESS ? " (successo)" : " (" + reason + ")"));
+                        (response == ENTER_SUCCESS ? " (success)" : " (" + reason + ")"));
 
-            // ⚠️ La NOSTRA lobby: se Steam manda un `LobbyEnter_t` anche all'host (varia per SDK),
-            // non e' un join e non si deve leggere niente: si ignora.
+            // Our own lobby (SDK-dependent): no join, do not read.
             if (lobby.m_SteamID == _hostLobby.m_SteamID && _hostLobby.m_SteamID != 0UL)
             {
-                ModLog.Info(MarkerJoinEnter + "e' la lobby che ospitiamo noi: nessun join da fare");
+                ModLog.Info(MarkerJoinEnter + "is our own lobby: no join needed");
                 return;
             }
 
             if (response != ENTER_SUCCESS)
             {
                 ModLog.Error(MarkerJoinRefused + reason + " (risposta=" + response + ", lobby=" + lobby.m_SteamID + ")");
-                Notify("Steam: invito non accettato - " + reason);
+                Notify("Steam: invite not accepted - " + reason);
                 ResetJoinState();
                 return;
             }
@@ -742,15 +538,11 @@ internal static class SteamLobbyImpl
             _joinDataDone = false;
             _hostLeftReported = false;
 
-            // ⭐ E LA MEMORIA: questa e' la lobby in cui siamo DAVVERO entrati. Resta anche quando
-            // `_joinLobby` viene azzerato da una caduta (vedi `ResetJoinAfterLinkLost`).
             _lastJoinLobby = lobby;
 
-            // ⭐ PRIMO TENTATIVO: la cache, subito, senza nessuna attesa.
             if (TryReadJoinData("cache"))
                 return;
 
-            // ⭐ RIPIEGO (caso raro: dati non ancora replicati): si chiede e si aspetta l'update.
             RequestJoinData();
         }
         catch (Exception e)
@@ -760,15 +552,8 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// `LobbyDataUpdate_t` — il ripiego: arriva quando i dati sono stati replicati dopo un
-    /// `RequestLobbyData`. Il primo tentativo (la cache, dentro `LobbyEnter_t`) e' gia' stato fatto.
-    ///
-    /// `m_bSuccess` a zero = la richiesta non e' andata a buon fine (lobby sparita, dati non
-    /// disponibili): non si legge niente, si dice.
-    ///
-    /// Se i dati sono ancora vuoti si ritenta `RequestLobbyData` (al massimo `MAX_DATA_RETRIES` volte,
-    /// una per frame): l'update puo' riferirsi a un altro dato della lobby. **Bounded**: nessun ciclo
-    /// infinito, e dopo il limite si scrive un marker d'errore invece di aspettare per sempre.
+    /// LobbyDataUpdate_t: the fallback after RequestLobbyData. Bounded retries (MAX_DATA_RETRIES);
+    /// m_bSuccess == 0 is reported instead of being treated as empty data.
     /// </summary>
     private static void OnLobbyDataUpdate(LobbyDataUpdate_t update)
     {
@@ -778,7 +563,6 @@ internal static class SteamLobbyImpl
         {
             CSteamID lobby = new CSteamID(update.m_ulSteamIDLobby);
 
-            // Non e' la lobby che stiamo entrando (puo' essere la nostra, da host): non e' affar nostro.
             if (_joinLobby.m_SteamID == 0UL || lobby.m_SteamID != _joinLobby.m_SteamID)
                 return;
 
@@ -801,7 +585,7 @@ internal static class SteamLobbyImpl
             if (TryReadJoinData("update"))
                 return;
 
-            ModLog.Warn(MarkerJoinNoData + "hostIp/hostPort non leggibili ancora (ip='" +
+            ModLog.Warn(MarkerJoinNoData + "hostIp/hostPort not readable yet (ip='" +
                         (ip ?? string.Empty) + "' porta='" + (portText ?? string.Empty) + "')");
             RetryJoinData();
         }
@@ -812,17 +596,10 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐⭐ "L'HOST HA CHIUSO LA SESSIONE" — `LobbyChatUpdate_t`.
-    ///
-    /// LA LOBBY NON MUORE CON L'HOST: quando il proprietario esce, la proprieta' **passa al membro
-    /// successivo**, quindi la lobby resta viva e — senza questa intercettazione — l'ospite
-    /// resterebbe dentro una sessione morta senza nessun avviso (ne' una disconnessione, perche' il
-    /// TCP l'ha gia' persa in silenzio o la perdera' al prossimo invio).
-    ///
-    /// IL SEGNALE: qualcuno se n'e' andato (`Left`/`Disconnected`) **e** il proprietario ora sono io.
-    /// Le due condizioni insieme dicono "il padrone di prima non c'e' piu'" senza doverlo sapere per
-    /// nome. Una volta sola (`_hostLeftReported`), e solo se ero davvero un ospite (`_joinEntered`):
-    /// all'host che vede uscire un amico non si dice che "l'host ha chiuso".
+    /// LobbyChatUpdate_t: detects the host leaving. When the owner leaves, ownership transfers to
+    /// the next member - so "someone left AND I am owner now" means the previous host is gone.
+    /// Fires once (<c>_hostLeftReported</c>) and only for a guest, not for the host watching a
+    /// friend leave.
     /// </summary>
     private static void OnLobbyChatUpdate(LobbyChatUpdate_t update)
     {
@@ -859,20 +636,18 @@ internal static class SteamLobbyImpl
             _hostLeftReported = true;
 
             ModLog.Warn(MarkerHostLeft + " lobby=" + lobby.m_SteamID +
-                        ": il proprietario della lobby ora sono io, quindi il vecchio host e' uscito");
+                        ": the lobby owner is now me, so the previous host left");
 
             Notify("Steam: l'host ha chiuso la sessione");
 
-            // ⚠️ La disconnessione si chiama SOLO se c'e' davvero una connessione: `NetworkManager.
-            // Disconnect` non controlla che il trasporto esista, e da qui (dentro una callback) non
-            // si deve poter far esplodere il gioco per una lobby lasciata a meta'.
+            // Disconnect only if a connection actually exists: NetworkManager.Disconnect does not
+            // guard against a null transport, and this runs from a Steam callback.
             if (Main.Multiplayer != null && Main.Multiplayer.NetworkManager != null &&
                 Main.Multiplayer.NetworkManager.IsConnected)
             {
                 Main.Multiplayer.NetworkManager.Disconnect();
             }
 
-            // E la lobby si lascia: non e' piu' la sessione di nessuno.
             LeaveLobby();
         }
         catch (Exception e)
@@ -882,13 +657,10 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ LA LETTURA DEI DATI, in un posto solo (la usano la cache di `LobbyEnter_t` e
-    /// `LobbyDataUpdate_t`). Ritorna `true` se `hostIp`/`hostPort` sono leggibili e validi; in quel
-    /// caso i campi sono pronti per la UI.
-    ///
-    /// `where` finisce nel log e dice **da dove** sono arrivati (`cache` = subito dopo l'ingresso,
-    /// `update` = dopo `LobbyDataUpdate_t`): e' la riga che permette di distinguere i due percorsi
-    /// nel test.
+    /// Reads hostIp/hostPort from the joined lobby - the single path used by both LobbyEnter_t
+    /// (cache) and LobbyDataUpdate_t (fallback). Returns false if the fields are absent or invalid.
+    /// <paramref name="where"/> labels the source in the log. The join notification fires only on
+    /// the first read (<c>_joinDataDone</c>) because both paths may find the data.
     /// </summary>
     private static bool TryReadJoinData(string where)
     {
@@ -906,12 +678,6 @@ internal static class SteamLobbyImpl
                 !int.TryParse(portText, out port) || port <= 0 || port > 65535)
                 return false;
 
-            // ⭐⭐ FIX ⑤ — LA NOTIFICA UNA VOLTA SOLA. Questa funzione viene chiamata **due** volte per
-            // un invito: subito dalla cache (`LobbyEnter_t`) e poi dal ripiego (`LobbyDataUpdate_t`) —
-            // che arriva lo stesso, anche quando la cache aveva già i dati. Il risultato era la doppia
-            // notifica identica a schermo (`da=cache` + `da=update`). `_joinDataDone` e' il fatto "i
-            // dati sono gia' arrivati": se e' gia' true, questa e' la seconda lettura e la notifica
-            // l'ha gia' data la prima. Il resto (i campi, il marker) si riscrive come prima.
             bool firstRead = !_joinDataDone;
 
             _joinIp = ip;
@@ -922,14 +688,9 @@ internal static class SteamLobbyImpl
             ModLog.Info(MarkerJoinReady + ip + " porta=" + port +
                         " host=" + (hostName ?? string.Empty) + " da=" + where);
 
-            // ⚠️ LA NOTIFICA NON DICE L'IP, e non e' cosmesi: l'invito entra in **P2P**
-            // (`ConnectionDisplay.ApplySteamJoin` scrive il token `p2p` nel campo "Server IP"), quindi
-            // un indirizzo qui annuncerebbe una connessione che non e' quella che parte — ed e' la
-            // riga che nella prova hotspot diceva `connessione a 192.168.147.1:27051` mentre il P2P
-            // era gia' disponibile. L'IP resta **nel log** due righe sopra (`MarkerJoinReady`), dove
-            // serve: e' la diagnostica di quale host ha invitato.
-            //
-            // ⭐ E UNA VOLTA SOLA per invito: vedi `firstRead` (fix ⑤).
+            // The notification does not name an IP: invites travel P2P (ConnectionDisplay writes
+            // the "p2p" token into the Server IP field), so printing an address here would
+            // announce a connection that is not the one being made. The IP stays in the log above.
             if (firstRead)
                 Notify("Steam: invito accettato, connessione P2P");
 
@@ -942,50 +703,46 @@ internal static class SteamLobbyImpl
         }
     }
 
-    /// <summary>
-    /// Il motivo di un `EChatRoomEnterResponse`, in una frase leggibile. I valori sono quelli
-    /// dell'enum di questa build (`EChatRoomEnterResponse`); ogni motivo dice **cosa fare**, perche'
-    /// "errore" non e' un'informazione.
-    /// </summary>
+    /// <summary>Human-readable reason for an EChatRoomEnterResponse; each reason says what to fix.</summary>
     private static string EnterReason(uint response)
     {
         switch ((EChatRoomEnterResponse)response)
         {
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseSuccess:
-                return "successo";
+                return "success";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseDoesntExist:
-                return "la sessione non esiste piu' (invito vecchio)";
+                return "the session no longer exists (stale invite)";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseNotAllowed:
-                return "non hai i permessi: controlla di essere amico su Steam";
+                return "no permission: check that you are friends on Steam";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseFull:
-                return "la sessione e' piena";
+                return "the session is full";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseBanned:
-                return "sei stato bannato da questa lobby";
+                return "you have been banned from this lobby";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseLimited:
-                return "lobby in modalita' limitata";
+                return "lobby in limited mode";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseMemberBlockedYou:
-                return "l'altro giocatore ti ha bloccato su Steam";
+                return "the other player has blocked you on Steam";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseYouBlockedMember:
-                return "hai bloccato l'altro giocatore su Steam";
+                return "you have blocked the other player on Steam";
 
             case EChatRoomEnterResponse.k_EChatRoomEnterResponseError:
-                return "errore generico della lobby";
+                return "generic lobby error";
 
             default:
-                return "risposta sconosciuta (" + response + ")";
+                return "unknown response (" + response + ")";
         }
     }
 
-    // ─── AIUTANTI ────────────────────────────────────────────────────────────────────────────────
+    // === Helpers ===
 
-    /// <summary>Entra in una lobby. Un solo punto, per entrambi i casi (cmdline e callback).</summary>
+    /// <summary>Enters a lobby - single entry point for both the cmdline and the callback case.</summary>
     private static void StartJoin(CSteamID lobby, string origin)
     {
         try
@@ -993,28 +750,22 @@ internal static class SteamLobbyImpl
             if (lobby.m_SteamID == 0UL)
                 return;
 
-            // ⚠️ Gia' dentro una sessione TCP: l'invito non si applica, e lo si dice. Senza questo
-            // controllo l'invito verrebbe "lavorato" e poi buttato via dalla UI, lasciando nel log una
-            // sequenza di join che sembra andata a buon fine.
+            // Already connected to a TCP session: discard the invite and say so.
             if (IsConnectedNow())
             {
-                ModLog.Warn(MarkerJoinDropped + "gia' connessi a una sessione: lobby=" + lobby.m_SteamID +
+                ModLog.Warn(MarkerJoinDropped + "already connected to a session: lobby=" + lobby.m_SteamID +
                             " origine=" + origin);
-                Notify("Steam: sei gia' connesso, invito ignorato");
+                Notify("Steam: already connected, invite ignored");
                 return;
             }
 
-            // Un ingresso gia' in corso non si duplica.
+            // A join in progress does not start a second one; the rejection is visible on screen,
+            // not only in the log.
             if (_joinLobby.m_SteamID != 0UL)
             {
-                ModLog.Info(MarkerJoinRequest + lobby.m_SteamID + " ignorata: c'e' gia' un ingresso in corso (id=" +
+                ModLog.Info(MarkerJoinRequest + lobby.m_SteamID + " ignored: a join is already in progress (id=" +
                             _joinLobby.m_SteamID + ")");
-
-                // ⭐⭐ FIX ④ — E LO SI DICE ANCHE A SCHERMO. L'host questo messaggio ce l'ha gia' (ramo
-                // `IsConnectedNow()`, sotto); qui no, e il rifiuto era **muto**: nel log si leggeva
-                // `ignorata: c'e' gia' un ingresso in corso`, ma a schermo non succedeva niente e
-                // l'invito sembrava un tasto rotto. Una notifica per invito scartato, non una per frame.
-                Notify("Steam: invito ignorato, c'e' gia' un ingresso in corso");
+                Notify("Steam: invite ignored, a join is already in progress");
                 return;
             }
 
@@ -1040,10 +791,7 @@ internal static class SteamLobbyImpl
         }
     }
 
-    /// <summary>
-    /// "C'e' una sessione aperta adesso?" — letto dal `NetworkManager`, senza toccarlo. Serve a non
-    /// applicare un invito a chi sta gia' giocando (e a non far partire un dial sopra una connessione).
-    /// </summary>
+    /// <summary>Is a session open right now? Reads NetworkManager without touching it.</summary>
     private static bool IsConnectedNow()
     {
         try
@@ -1075,16 +823,16 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// Un altro `RequestLobbyData`, se ne restano. Non si chiama dentro la callback (sarebbe una
-    /// raffica nella stessa pila): si alza una bandierina e la spende `Tick()`, una volta per frame.
+    /// Schedules another RequestLobbyData via Tick (not from inside the callback, to avoid a
+    /// re-entrant burst). Bounded by MAX_DATA_RETRIES.
     /// </summary>
     private static void RetryJoinData()
     {
         if (_joinDataRetries >= MAX_DATA_RETRIES)
         {
-            ModLog.Error(MarkerJoinNoData + "dopo " + MAX_DATA_RETRIES + " tentativi: la lobby " +
-                        _joinLobby.m_SteamID + " non porta " + KEY_IP + "/" + KEY_PORT +
-                        " (host che non ha pubblicato i dati, o dati non replicati)");
+            ModLog.Error(MarkerJoinNoData + "after " + MAX_DATA_RETRIES + " attempts: lobby " +
+                        _joinLobby.m_SteamID + " does not carry " + KEY_IP + "/" + KEY_PORT +
+                        " (host did not publish, or data did not replicate)");
             return;
         }
 
@@ -1093,28 +841,25 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐ L'OVERLAY DEGLI INVITI, aperto con due righe di log PRIMA della chiamata.
-    ///
-    /// PERCHE' DUE RIGHE: se l'overlay e' **disattivato** nelle impostazioni di Steam, la chiamata
-    /// **fallisce in silenzio** — nessuna eccezione, nessun codice di ritorno. Il sintomo e' "clicco e
-    /// non succede niente", e senza queste due righe nel log quel sintomo non si distingue da "il
-    /// codice non ci e' mai arrivato". Con `[Steam] overlay abilitato=no` il test ha la risposta.
+    /// Opens the invite overlay. The overlay-enabled state is logged BEFORE the call: if the
+    /// overlay is disabled in Steam settings, the call fails silently (no exception, no return
+    /// code) and would otherwise look like a dead button.
     /// </summary>
     private static void OpenInviteOverlay(string reason)
     {
         try
         {
             bool enabled = SteamUtils.IsOverlayEnabled();
-            ModLog.Info(MarkerOverlayState + (enabled ? "si" : "no") + " (motivo=" + reason + ")");
+            ModLog.Info(MarkerOverlayState + (enabled ? "yes" : "no") + " (motivo=" + reason + ")");
             ModLog.Info(MarkerOverlayOpen + _hostLobby.m_SteamID + " motivo=" + reason);
 
             SteamFriends.ActivateGameOverlayInviteDialog(_hostLobby);
 
             if (!enabled)
             {
-                ModLog.Warn(MarkerOverlayState + "no: gli inviti non si apriranno. Impostazioni di Steam -> " +
-                            "In gioco -> 'Abilita l'overlay di Steam'");
-                Notify("Steam: l'overlay e' disattivato, l'invito non si apre (vedi log)");
+                ModLog.Warn(MarkerOverlayState + "no: invites will not open. Steam settings -> " +
+                            "In-Game -> 'Enable the Steam Overlay'");
+                Notify("Steam: the overlay is off, the invite cannot open (see log)");
             }
         }
         catch (Exception e)
@@ -1124,13 +869,9 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// Le scadenze. Servono a una cosa sola: **dire** che qualcosa non e' arrivato. Senza, un
-    /// `CreateLobby` senza risposta o un `JoinLobby` senza `LobbyEnter_t` sarebbero un bottone che non
-    /// fa niente e nessuna riga che lo spiega.
-    ///
-    /// ⭐ E c'e' la terza: **"join in attesa da Ns: dati lobby vuoti"** (dopo `JOIN_DATA_WAIT_WARN_S`).
-    /// E' la riga che rende visibile un blocco invece di lasciarlo sembrare un click a vuoto — che e'
-    /// esattamente il sintomo con cui un join appeso si presenta.
+    /// Detects missing callbacks: LobbyCreated_t after CreateLobby, LobbyEnter_t/LobbyDataUpdate_t
+    /// after JoinLobby, and a "join in attesa" warning after JOIN_DATA_WAIT_WARN_S. Without these,
+    /// a stalled callback is a silent dead button.
     /// </summary>
     private static void CheckTimeouts()
     {
@@ -1139,8 +880,8 @@ internal static class SteamLobbyImpl
         if (_creatingLobby && now - _creatingSince >= HOST_CALLBACK_TIMEOUT_S)
         {
             _creatingLobby = false;
-            ModLog.Error(MarkerTimeout + "nessuna LobbyCreated_t entro " + HOST_CALLBACK_TIMEOUT_S +
-                         " s da CreateLobby: le callback non stanno arrivando (pump fermo?)");
+            ModLog.Error(MarkerTimeout + "no LobbyCreated_t within " + HOST_CALLBACK_TIMEOUT_S +
+                         " s from CreateLobby: callbacks are not arriving (pump stalled?)");
             Notify("Steam: nessuna risposta da Steam per la lobby (vedi log)");
         }
 
@@ -1149,30 +890,28 @@ internal static class SteamLobbyImpl
 
         float waited = now - (_joinEntered ? _joinDataSince : _joinSince);
 
-        // "join in attesa": una riga sola, con i secondi veri.
         if (_joinEntered && !_joinWaitingLogged && waited >= JOIN_DATA_WAIT_WARN_S)
         {
             _joinWaitingLogged = true;
-            ModLog.Warn(MarkerJoinWaiting + (int)waited + " s: dati lobby vuoti (lobby=" +
-                        _joinLobby.m_SteamID + "): l'host non ha ancora pubblicato " + KEY_IP + "/" +
-                        KEY_PORT + ", oppure la replica non e' arrivata");
+            ModLog.Warn(MarkerJoinWaiting + (int)waited + " s: lobby data empty (lobby=" +
+                        _joinLobby.m_SteamID + "): host has not published " + KEY_IP + "/" +
+                        KEY_PORT + " yet, or replication did not arrive");
         }
 
         if (waited >= JOIN_CALLBACK_TIMEOUT_S)
         {
-            ModLog.Error(MarkerTimeout + (_joinEntered ? "nessuna LobbyDataUpdate_t" : "nessun LobbyEnter_t") +
-                         " entro " + JOIN_CALLBACK_TIMEOUT_S + " s per la lobby " + _joinLobby.m_SteamID +
-                         ": le callback non stanno arrivando (pump fermo?)");
+            ModLog.Error(MarkerTimeout + (_joinEntered ? "no LobbyDataUpdate_t" : "no LobbyEnter_t") +
+                         " within " + JOIN_CALLBACK_TIMEOUT_S + " s for lobby " + _joinLobby.m_SteamID +
+                         ": callbacks are not arriving (pump stalled?)");
             Notify("Steam: nessuna risposta da Steam per l'invito (vedi log)");
             ResetJoinState();
         }
     }
 
     /// <summary>
-    /// Registra i quattro `Callback&lt;T&gt;` (una volta sola) e scrive il marker di disponibilita'.
-    ///
-    /// ⚠️ Si registra SOLO se Steam e' pronto: `Callback&lt;T&gt;.Create` parla con l'API nativa, e
-    /// registrare prima dell'`Init` del gioco sarebbe un guasto in un punto che non controlliamo.
+    /// Registers the five Callback&lt;T&gt; once, and logs availability. Only registers when Steam
+    /// is ready - Callback.Create talks to native API and registering before the game's Init would
+    /// fail where we do not control.
     /// </summary>
     private static bool EnsureCallbacks()
     {
@@ -1207,12 +946,9 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// "Steam c'e' e si puo' usare?" — `IsSteamRunning` (il client e' acceso), `BLoggedOn` (c'e' un
-    /// account) e uno SteamID valido. Una volta vero **resta vero** (non si spegne il bottone a metà
-    /// partita se il client fa i capricci); finche' e' falso si riprova ogni `RECHECK_SECONDS`.
-    ///
-    /// ⚠️ Il costo e' una chiamata nativa ogni due secondi SOLO finche' la risposta e' no: quando la
-    /// mod parte col gioco, Steam e' gia' inizializzato e la prima risposta e' quasi sempre si.
+    /// Steam-present probe: IsSteamRunning + BLoggedOn + valid SteamID. Sticky once true; while
+    /// false it re-probes every RECHECK_SECONDS. Cost is one native call per interval, only while
+    /// the answer is "no".
     /// </summary>
     private static void CheckAvailability()
     {
@@ -1236,7 +972,7 @@ internal static class SteamLobbyImpl
             {
                 _availabilityLogged = true;
                 ModLog.Info(MarkerUnavailable + ": " + e.GetType().Name + ": " + e.Message +
-                            " (bottone Steam disabilitato, i bottoni IP restano identici)");
+                            " (Steam button disabled, IP buttons unchanged)");
             }
             return;
         }
@@ -1246,12 +982,12 @@ internal static class SteamLobbyImpl
             _availabilityLogged = true;
 
             if (!_available)
-                ModLog.Info(MarkerUnavailable + ": SteamAPI.IsSteamRunning()=no oppure nessun account loggato " +
-                            "(bottone Steam disabilitato, i bottoni IP restano identici)");
+                ModLog.Info(MarkerUnavailable + ": SteamAPI.IsSteamRunning()=no or no account logged in " +
+                            "(Steam button disabled, IP buttons unchanged)");
         }
     }
 
-    /// <summary>La prima callback che arriva lo dice: e' la prova che il pump funziona.</summary>
+    /// <summary>Logs the first callback received - proof the callback pump is running.</summary>
     private static void NoteCallback(string type)
     {
         if (_firstCallbackLogged)
@@ -1269,33 +1005,11 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// ⭐⭐ FIX ① — IL LINK P2P È MORTO: L'INGRESSO IN LOBBY NON VALE PIÙ, e va azzerato **qui**, non
-    /// alla chiusura del gioco.
-    ///
-    /// 🔴 IL DIFETTO, misurato: dopo il timeout del battito `_joinLobby` restava valorizzato (il
-    /// timeout non passa da `LeaveLobby` — quello gira solo al ritorno al menu). Quindi `StartJoin`
-    /// lo leggeva come "c'è già un ingresso in corso" e **scartava ogni invito**:
-    ///
-    ///   `[Steam] join: richiesta lobby=… ignorata: c'e' gia' un ingresso in corso (id=…)`
-    ///
-    /// e il campo moriva solo al `Dispose`: la sessione non tornava, e l'invito successivo non
-    /// partiva nemmeno (nessun trasporto, nessun hello, nessuna riga a schermo).
-    ///
-    /// ✅ IL RESET PASSA DAL PERCORSO CHE ESISTE GIÀ (`ResetJoinState`), e **non** da
-    /// `SteamMatchmaking.LeaveLobby`: la lobby è dell'host ed è ancora viva, e uscirne renderebbe
-    /// questo giocatore un **non-membro** — l'host gli rifiuterebbe la prossima sessione P2P
-    /// (`IsLobbyMember`, docs\STEAM_INVITES.md §9). Si azzera il **cancello**, non la lobby.
-    ///
-    /// ⚠️ E LA MEMORIA RESTA (`_lastJoinLobby`): dopo l'azzeramento `CurrentLobby` continua a
-    /// nominarla, quindi un **Connect manuale** (`p2p`) rientra senza aspettare un invito nuovo, e
-    /// `IsLobbyMember` riconosce l'host quando la sessione di ritorno arriva. Senza questa riga il
-    /// fix ① spegnerebbe il rientro manuale del fix precedente.
-    ///
-    /// ⚠️ E LA LOBBY D'HOST NON SI TOCCA: se stiamo ospitando, `_joinLobby` **è** la lobby nostra e
-    /// il link che è morto è quello del peer — l'host resta in piedi e in ascolto (fix ②).
-    ///
-    /// Non fa niente (e non stampa niente) se non c'era nessun ingresso in corso: il percorso che
-    /// non usa Steam non paga nemmeno un confronto.
+    /// Link-loss reset: clears the pending join so the next invite is not rejected by
+    /// <c>StartJoin</c> as "a join is already in progress". Does NOT call LeaveLobby - the host's
+    /// lobby is still alive, and leaving would make this player a non-member that the host would
+    /// reject on P2P accept. <c>_lastJoinLobby</c> keeps the lobby nameable for a manual Connect
+    /// and for <c>IsLobbyMember</c>. No-op (and no log) when no join is in progress.
     /// </summary>
     internal static void ResetJoinAfterLinkLost(string reason)
     {
@@ -1306,17 +1020,15 @@ internal static class SteamLobbyImpl
             if (join.m_SteamID == 0UL)
                 return;
 
-            // La lobby che ospitiamo noi non è un "ingresso": quella resta.
+            // The lobby we host is not a "join": keep it.
             if (_hostLobby.m_SteamID != 0UL && join.m_SteamID == _hostLobby.m_SteamID)
                 return;
 
-            // La memoria si scrive prima del reset: se per qualche ragione non era stata scritta
-            // all'ingresso, questo è l'ultimo momento utile per non perdere l'unico modo di rientrare.
             _lastJoinLobby = join;
 
-            ModLog.Warn(MarkerJoinReset + join.m_SteamID + " motivo=" + (reason ?? "(non detto)") +
-                        ": il prossimo invito non trova piu' il cancello chiuso (la lobby resta: la " +
-                        "memoria serve al Connect manuale)");
+            ModLog.Warn(MarkerJoinReset + join.m_SteamID + " motivo=" + (reason ?? "(not stated)") +
+                        ": the next invite will not find the gate closed (the lobby stays: the " +
+                        "memory is used by the manual Connect)");
 
             ResetJoinState();
         }
@@ -1327,8 +1039,8 @@ internal static class SteamLobbyImpl
     }
 
     /// <summary>
-    /// Azzera lo stato dell'INGRESSO. ⚠️ NON azzera `_lastJoinLobby`: quella è una **memoria**, e la
-    /// butta via solo l'uscita voluta (`LeaveLobby`). Vedi `ResetJoinAfterLinkLost`.
+    /// Clears the join state. Does NOT clear <c>_lastJoinLobby</c>: that is a memory that only a
+    /// voluntary <c>LeaveLobby</c> drops.
     /// </summary>
     private static void ResetJoinState()
     {
@@ -1345,10 +1057,7 @@ internal static class SteamLobbyImpl
         _joinPort = 0;
     }
 
-    /// <summary>
-    /// Una notifica a schermo, con il `try/catch` addosso: la UI della mod puo' non esistere ancora
-    /// (prima che `Multiplayer` sia inizializzato), e una notifica persa non e' un guasto.
-    /// </summary>
+    /// <summary>Notifies the player, guarded because the mod's UI may not exist yet.</summary>
     private static void Notify(string message)
     {
         try
@@ -1358,7 +1067,7 @@ internal static class SteamLobbyImpl
         }
         catch (Exception)
         {
-            // Niente: la riga di log c'e' gia', e la notifica e' un di piu'.
+            // The log line already exists; the notification is a bonus.
         }
     }
 }

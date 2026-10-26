@@ -7,71 +7,52 @@ using System;
 namespace Blasphemous.Multiplayer.Client.Host
 {
     /// <summary>
-    /// ⭐⭐ L'ADAPTER P2P DEL SERVER — il secondo filo del composito, accanto al TCP.
+    /// P2P adapter for the server: receives peer P2P packets and injects them into the server
+    /// through the same <c>IServerTransport</c> events used by TCP, so the server does not change.
+    /// The host remains a TCP client on loopback; this adapter only adds the remote-peer wire.
     ///
-    /// COSA FA: riceve i pacchetti P2P dei peer e li **inietta** nel server con gli **stessi tre eventi**
-    /// del `IServerTransport` (`PeerConnected`, `FrameReceived`, `PeerDisconnected`), e manda le risposte
-    /// con `SendP2PPacket`. Il server **non cambia una riga**: non sa che esiste un secondo filo, non sa
-    /// che esiste Steam, e `Server.Receive` legge i byte esattamente come li legge dal TCP.
+    /// Two classes (<c>P2PServerTransport</c> + <c>P2PServerTransportImpl</c>): only the Impl names
+    /// <c>Steamworks</c>, because on a non-Steam copy those types may be missing and
+    /// <c>TypeLoadException</c> surfaces at the call site. <see cref="Prepare"/> is the gate.
     ///
-    /// ⚠️ E L'HOST RESTA UN CLIENT **TCP** SUL LOOPBACK. Questo adapter non tocca il percorso dell'host:
-    /// il suo client continua a connettersi a `127.0.0.1:27051` con `TcpTransport`, che e' l'unico dei 42
-    /// frame. `SendP2PPacket(proprioSteamID)` sarebbe loopback UDP e negoziazione con se stessi: non si fa.
-    ///
-    /// 🔴 PERCHE' DUE CLASSI (`P2PServerTransport` + `P2PServerTransportImpl`) E NON UNA — la stessa
-    /// regola di `SteamP2PTransport`: **solo le `*Impl` nominano `Steamworks`**, perche' su una copia
-    /// non-Steam quei tipi possono mancare e la `TypeLoadException` arriva **al punto di chiamata**.
-    /// Questa classe non nomina nessun tipo `Steamworks`; ogni chiamata all'implementazione sta in un
-    /// metodo suo, dentro un `try/catch`, dopo il cancello `SteamLobby.Available`. Se Steam non c'e',
-    /// <see cref="Prepare"/> risponde `false` e il composito resta con **il solo TCP** — cioe' esattamente
-    /// com'era in C1b-1.
-    ///
-    /// ⚠️ IL THREAD: i packet P2P si leggono in un ciclo per frame (`Tick`, sul main thread), e le
-    /// `Send` possono arrivare **anche dal thread di lettura del TCP** (una posizione dell'host inoltrata
-    /// al peer). Per questo `Send` **non chiama Steam**: costruisce il pacchetto e lo accoda, e il flush
-    /// avviene in `Tick`. Una chiamata nativa di Steam dal thread sbagliato e' il tipo di guasto che non
-    /// si vede finche' non si vede.
+    /// <c>Send</c> does not call Steam directly: the TCP reader thread may call it, and a native
+    /// Steam call from the wrong thread is a failure that stays hidden until it does not. Packets
+    /// are queued and flushed in <see cref="Tick"/> on the main thread.
     /// </summary>
     internal sealed class P2PServerTransport : IServerTransport
     {
-        /// <summary>Per il log: il marker dell'ascolto P2P nel composito.</summary>
+        /// <summary>Log marker: P2P listen line in the composite.</summary>
         internal const string MarkerListen = "[Net] p2p ascolto: ";
 
-        /// <summary>Il marker dell'annuncio di un peer (l'equivalente di "Client connected at").</summary>
+        /// <summary>Log marker: peer announcement.</summary>
         internal const string MarkerPeerConnected = "[Net] p2p peer connesso: ";
 
-        /// <summary>Il marker della disconnessione.</summary>
+        /// <summary>Log marker: peer disconnection.</summary>
         internal const string MarkerPeerDisconnected = "[Net] p2p peer disconnesso: ";
 
-        /// <summary>Il marker dell'iniezione di un frame nel server.</summary>
+        /// <summary>Log marker: frame injection into the server.</summary>
         internal const string MarkerFrame = "[Net] p2p frame: ";
 
-        /// <summary>Il marker di un guasto catturato al confine.</summary>
-        internal const string MarkerError = "[Net] p2p errore: ";
+        /// <summary>Log marker: failure caught at the boundary.</summary>
+        internal const string MarkerError = "[Net] p2p error: ";
 
         private static bool _failureLogged;
 
         /// <summary>
-        /// "QUESTO FILO SI PUO' AGGIUNGERE?" — chiesto da `HostSession` **prima** di `Add`, cosi' su una
-        /// copia non-Steam il composito resta a **un** trasporto (identico a C1b-1) invece di avere un
-        /// figlio che non fa niente. Non lancia.
+        /// Asked before <c>Add</c>: on a non-Steam copy the composite keeps a single transport.
+        /// Does not throw.
         /// </summary>
         internal static bool Prepare()
         {
             if (!SteamLobby.Available)
             {
-                ModLog.Info(MarkerListen + "non aggiunto: Steam non disponibile (solo TCP)");
+                ModLog.Info(MarkerListen + "not added: Steam unavailable (TCP only)");
                 return false;
             }
 
             return true;
         }
 
-        /// <summary>
-        /// Collega gli eventi dell'implementazione a quelli di **questa** istanza (il composito si
-        /// sottoscrive all'istanza). Una sola istanza per sessione host: una nuova `HostSession` la
-        /// sostituisce, e la precedente e' gia' stata fermata.
-        /// </summary>
         internal P2PServerTransport()
         {
             if (!SteamLobby.Available)
@@ -92,16 +73,14 @@ namespace Blasphemous.Multiplayer.Client.Host
         public event Action<PeerId, byte[]> FrameReceived;
 
         /// <summary>
-        /// La porta **non si usa**: il P2P non ha un listener, non c'e' nessuno che bussa. Le sessioni si
-        /// accettano per peer (`AcceptP2PSessionWithUser` nella callback). Ritorna `true` anche quando
-        /// Steam non c'e': fermare l'host perche' un'aggiunta non e' disponibile sarebbe la coda che
-        /// scodinzola il cane — il TCP e' la BASE, e deve partire lo stesso.
+        /// The port is unused: P2P has no listener, sessions are accepted per peer. Returns true
+        /// even without Steam, so the TCP base still starts.
         /// </summary>
         public bool Start(int port)
         {
             if (!SteamLobby.Available)
             {
-                ModLog.Info(MarkerListen + "Steam non disponibile: l'adapter resta inerte, il TCP ascolta");
+                ModLog.Info(MarkerListen + "Steam unavailable: adapter inert, TCP listening");
                 return true;
             }
 
@@ -132,20 +111,19 @@ namespace Blasphemous.Multiplayer.Client.Host
         }
 
         /// <summary>
-        /// Invia un frame **gia' impacchettato** a un peer Steam. Lancia se il peer non e' Steam o non e'
-        /// piu' annunciato: e' lo stesso contratto del TCP, dove `SimpleTcpServer.Send` lancia su un
-        /// destinatario che non c'e' e `Server.Send` lo traduce in `"Couldn't send data to X!"`.
+        /// Sends an already-framed message to a Steam peer. Throws if the peer is not a Steam peer
+        /// or is no longer announced.
         /// </summary>
         public void Send(PeerId peer, byte[] framed)
         {
             if (peer.Kind != PeerKind.Steam)
-                throw new InvalidOperationException("P2PServerTransport non conosce il peer " + peer.ToString());
+                throw new InvalidOperationException("P2PServerTransport does not know peer " + peer.ToString());
 
             if (framed == null || framed.Length == 0)
                 return;
 
             if (!SteamLobby.Available)
-                throw new InvalidOperationException("Steam non disponibile");
+                throw new InvalidOperationException("Steam unavailable");
 
             bool accepted;
             try
@@ -159,14 +137,14 @@ namespace Blasphemous.Multiplayer.Client.Host
             }
 
             if (!accepted)
-                throw new InvalidOperationException("peer " + peer.ToString() + " non annunciato");
+                throw new InvalidOperationException("peer " + peer.ToString() + " not announced");
         }
 
-        /// <summary>Quali indirizzi si stanno ascoltando: il P2P non ne ha, dice quanti peer ha.</summary>
+        /// <summary>Listening addresses string: P2P has no listener.</summary>
         public string ListeningAddresses()
         {
             if (!SteamLobby.Available)
-                return "p2p (Steam non disponibile)";
+                return "p2p (Steam unavailable)";
 
             try
             {
@@ -174,11 +152,11 @@ namespace Blasphemous.Multiplayer.Client.Host
             }
             catch (Exception e)
             {
-                return "p2p (illeggibile: " + e.GetType().Name + ")";
+                return "p2p (unreadable: " + e.GetType().Name + ")";
             }
         }
 
-        /// <summary>Il delay di invio non esiste in un trasporto a messaggi: la proprieta' c'e' e basta.</summary>
+        /// <summary>Message transports have no send delay; the property exists for the interface.</summary>
         public bool DelayDisabled
         {
             get { return true; }
@@ -186,11 +164,9 @@ namespace Blasphemous.Multiplayer.Client.Host
         }
 
         /// <summary>
-        /// ⭐ IL CICLO PER FRAME: svuota i tre canali e inietta i frame nel server, poi manda quello che e'
-        /// stato accodato dalle `Send`. Chiamato da `Multiplayer.OnLateUpdate`.
-        ///
-        /// ⚠️ `try/catch` **qui** (e' per frame, e gira nel late update della mod): un guasto di Steam non
-        /// deve fermare il resto del ciclo. Si logga una volta sola.
+        /// Per-frame cycle: drains the three channels, injects frames into the server, flushes
+        /// queued sends. Called from <c>Multiplayer.OnLateUpdate</c>. Logged once on failure so a
+        /// per-frame Steam error cannot flood.
         /// </summary>
         internal static void Tick()
         {
@@ -208,8 +184,8 @@ namespace Blasphemous.Multiplayer.Client.Host
         }
 
         /// <summary>
-        /// "L'adapter sta ascoltando?" — per il log e per il referto: senza callback registrata il P2P
-        /// scarta tutto in silenzio, e questa riga lo direbbe.
+        /// True when the adapter is listening. Without a registered callback, P2P discards
+        /// silently.
         /// </summary>
         internal static bool Listening()
         {
@@ -227,7 +203,7 @@ namespace Blasphemous.Multiplayer.Client.Host
             }
         }
 
-        // ─── GLI EVENTI VERSO IL COMPOSITO (sul thread di `Tick` = main thread) ────────────────────
+        // === Events toward the composite (main thread) ===
 
         private void RaisePeerConnected(PeerId peer)
         {
@@ -256,11 +232,10 @@ namespace Blasphemous.Multiplayer.Client.Host
             catch (Exception e) { Report("FrameReceived", e, true); }
         }
 
-        // ─── I GUSCI VERSO L'IMPLEMENTAZIONE ─────────────────────────────────────────────────────────
+        // === Wrappers toward the implementation ===
         //
-        // ⚠️ UN METODO PER CHIAMATA, come in `SteamLobby`: e' **qui** che nasce la `TypeLoadException`
-        // (la JIT compila questo corpo quando viene invocato), quindi e' qui che il `try/catch` del
-        // chiamante la cattura.
+        // One method per call, as in SteamLobby: TypeLoadException surfaces here (the JIT compiles
+        // this body when it is invoked), so this is where the caller's try/catch catches it.
 
         private static void CallSetSink(Action<PeerId> onConnected, Action<PeerId> onDisconnected,
                                         Action<PeerId, byte[]> onFrame)
@@ -314,7 +289,7 @@ namespace Blasphemous.Multiplayer.Client.Host
             }
             catch (Exception)
             {
-                // Niente: se anche il log esplode, il gioco deve continuare.
+                // Nothing: if the log itself fails, the game must continue.
             }
         }
     }

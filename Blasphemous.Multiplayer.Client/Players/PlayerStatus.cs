@@ -4,6 +4,12 @@ using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client.Players
 {
+    /// <summary>
+    /// State of another player as seen by this machine: name (used as unique id), current and
+    /// last map scene, team, special animation, ping, skin, and the "down" flag. The <c>IsDead</c>
+    /// state cannot be queried from the game (only one Penitent exists; remotes are not Penitents),
+    /// so it is fed exclusively by the peer's announcements.
+    /// </summary>
     public class PlayerStatus
     {
         // Name of this player.  Used as unique id
@@ -42,20 +48,13 @@ namespace Blasphemous.Multiplayer.Client.Players
         // Determines whether to set player objects skin texture in an update cycle
         public SkinStatus SkinUpdateStatus { get; set; }
 
-        // Whether this player is currently down.
-        //
-        // It is state the game does not have and cannot be asked for: there is exactly one Penitent, and
-        // the other player is not one - OtherPlayerManager builds them as a bare GameObject with a script
-        // and no Penitent at all, so nothing on this machine can inspect whether they are alive. The only
-        // source is what they tell us, which is what the pdead/palive announcements are for.
-        //
-        // It matters because two things depend on it: the count of who is still standing, which decides
-        // when a spectator state may end, and the boss, which has to hand over to someone who can fight it.
-        //
-        // Reset is deliberately silent about a player it does not know. Network messages can arrive before
-        // the connection entry exists, and FindConnectedPlayer also LOGS A WARNING when it misses - so the
-        // noisy lookup is the wrong tool here: a legitimate message for a not-yet-known player would fill
-        // the log with warnings that mean nothing.
+        /// <summary>
+        /// True when this player is currently down. The game cannot answer this: there is one
+        /// Penitent, and the other player is a bare GameObject, not a Penitent. The only source is
+        /// the peer's pdead/palive announcements. Two consumers depend on it: the count of
+        /// standing players (which ends the spectator state) and the boss handover (which must
+        /// target a player who can still fight).
+        /// </summary>
         public bool IsDead { get; private set; }
 
         /// <summary>Records that this player is down, or back up.</summary>
@@ -135,47 +134,24 @@ namespace Blasphemous.Multiplayer.Client.Players
             NoUpdate = 2,
         }
 
-        // ============================================================================================
-        // LA MORTE E' UN'ANIMAZIONE, E QUESTA E' LA SUA TABELLA.
-        // ============================================================================================
-        //
-        // ⭐⭐ PERCHE' STA QUI, e non su una delle due sponde. Il byte di morte ha DUE lettori che non si
-        // parlano mai: chi lo SPEDE (`MainPlayerManager`, la macchina del morto) e chi lo RICEVE
-        // (`OtherPlayerScript`, la macchina che guarda). Se la tabella vivesse su una delle due, l'altra
-        // dovrebbe conoscerne i numeri a memoria - ed e' esattamente il modo in cui "spedisco una cosa e
-        // l'altro ne riconosce un'altra" diventa un guasto che nessuna delle due parti vede.
-        //
-        // ⭐ I NOMI SONO QUELLI VERI, letti in `Data/AnimationStates.cs:64-66` e non inventati:
-        // "Death" (**47**), "Death Spike" (**48**), "Death Fall" (**49**). ⚠️ L'indice e' la POSIZIONE nella
-        // tabella `AnimationStates.animations`, NON il numero di riga del file: la prima stesura scriveva
-        // 55/56/57 (le righe), e il difetto e' vissuto per giorni dentro quel numero sbagliato.
-        //
-        // ⭐ E SONO GLI STESSI CHE L'AVATAR GIA' GUARDA PER CONTO SUO: `OtherPlayerScript.Update` riconosce
-        // il proprio cadavere con `state.IsName("Death") | "Death Spike" | "Death Fall" | "Grounding Over"`.
-        // Cioe': la mod non deve INVENTARE una posa di morte, l'Animator dell'avatar ce l'ha gia'.
-        //
-        // ⚠️ E "Grounding Over" E' NELLA LISTA DELL'AVATAR MA **NON** QUI, e la differenza e' voluta:
-        // "Grounding Over" e' anche il rialzarsi da una caduta, quindi non e' una prova che qualcuno sia
-        // morto - infatti nel gioco la morte lo PRECEDE (`PlayerDeathAnimationBehaviour.OnStateEnter` fa
-        // `animator.Play("Death Fall")` per il penitent spiaccicato). Spedirlo come morte riporterebbe a
-        // terra un avatar solo perche' e' caduto.
-        //
-        // ⚠️ LA FINE DELLA SEQUENZA E' GIA' SCRITTA NEL GIOCO, e sta in `PlayerDeathAnimationBehaviour.cs:33-36`:
-        // `if (stateInfo.normalizedTime >= 0.95f && _penitent.Status.Dead) animator.enabled = false;`
-        // ⇒ il gioco **spegne l'Animator del Penitent sulla posa FINALE di "Death"**, e quella e' la posa a
-        // terra del cadavere. L'avatar del peer fa lo stesso per via sua (`SetDeathStatus(true)`), quindi la
-        // posa che si vede di la' e' la STESSA che si vede di qua: nessuno sprite nuovo, nessuna posa
-        // indovinata.
+        /// <summary>
+        /// The three death states, by the same names the avatar already checks in
+        /// <c>OtherPlayerScript.Update</c>. Lives here because two sides that never talk - the
+        /// sender (MainPlayerManager) and the receiver (OtherPlayerScript) - must agree on the
+        /// names; if the table lived on one side, the other would need the numbers memorised.
+        /// Indices in AnimationStates.animations are 47, 48, 49: the array POSITION, not the file
+        /// line number. "Grounding Over" is deliberately excluded: the avatar also treats it as a
+        /// death pose, but the game itself uses it for the fall recovery too, so it does not prove
+        /// a death. The final death pose comes from the game (PlayerDeathAnimationBehaviour
+        /// disables the Animator at normalizedTime >= 0.95).
+        /// </summary>
         private static readonly string[] DeathStates = { "Death", "Death Spike", "Death Fall" };
 
         /// <summary>
-        /// L'indice di <see cref="AnimationStates.animations"/> che corrisponde a uno degli stati di morte,
-        /// oppure -1 se nessuno degli stati passati e' una morte.
-        ///
-        /// ⚠️ PRENDE GLI STATI, NON LI LEGGE. Entrambe le sponde hanno gia' in mano il proprio
-        /// `AnimatorStateInfo` (il mandante legge il Penitent, il ricevente legge l'avatar), e farlo leggere
-        /// qui significherebbe scegliere una delle due - cioe' esattamente il disallineamento che questa
-        /// tabella esiste per rendere impossibile.
+        /// The AnimationStates.animations index matching one of the passed state names, or -1 if
+        /// none is a death. Takes the states rather than reading them: both sides already have
+        /// their own AnimatorStateInfo, and reading here would pick one side - the exact
+        /// misalignment this table exists to prevent.
         /// </summary>
         public static int DeathAnimationIndexOf(params string[] stateNames)
         {
@@ -195,20 +171,18 @@ namespace Blasphemous.Multiplayer.Client.Players
             return -1;
         }
 
-        /// <summary>True quando questo byte e' una delle tre morti - cioe' "il peer e' a terra".</summary>
+        /// <summary>
+        /// True when this byte is one of the three deaths, i.e. "the peer is on the ground".
+        /// Compares the byte's state name against <see cref="DeathStates"/> by name, not through
+        /// <c>DeathAnimationIndexOf</c> - the previous version asked that function whether a name
+        /// taken from the table appeared IN the table, which was always true.
+        /// </summary>
         public static bool IsDeathAnimation(byte animation)
         {
             Data.PlayerAnimState[] all = Data.AnimationStates.animations;
             if (animation >= all.Length)
                 return false;
 
-            // ⚠️ SI CONFRONTA COL NOME DELLO STATO **DI MORTE** (`DeathStates`), NON CON LA TABELLA DELLE
-            // ANIMAZIONI. La versione precedente chiedeva a `DeathAnimationIndexOf` se il nome letto DALLA
-            // TABELLA (es. "Run", "Healing") comparisse NELLA TABELLA: quel nome viene da li', quindi la
-            // risposta era **sempre si'** e questa funzione diceva `true` per OGNI byte 0..85 (86 voci).
-            // Provato nei log, non dedotto: `morto a terra (animazione di morte ricevuta: byte 81=Healing)`
-            // e `byte 6=Run`. La domanda vera e' "questa animazione e' una morte?", e l'elenco delle morti
-            // e' `DeathStates` - non "questo nome esiste?".
             string stateName = all[animation].name;
             for (int i = 0; i < DeathStates.Length; i++)
             {
@@ -220,8 +194,8 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// L'indice di morte usato come RIPIEGO quando l'Animator del Penitent non e' (ancora) in uno stato
-        /// di morte: "Death", il caso normale. Vedi il fusibile in <c>MainPlayerManager.CorpsePeerTick</c>.
+        /// The death index used as fallback when the Penitent's Animator is not (yet) in a death
+        /// state: "Death", the common case. See the fuse in <c>MainPlayerManager.CorpsePeerTick</c>.
         /// </summary>
         public static readonly byte DefaultDeathAnimation =
             (byte)DeathAnimationIndexOf(DeathStates);

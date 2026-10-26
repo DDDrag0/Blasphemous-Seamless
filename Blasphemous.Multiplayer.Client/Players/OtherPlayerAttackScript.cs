@@ -1,23 +1,16 @@
 using Blasphemous.ModdingAPI;
-using Blasphemous.Multiplayer.Client;              // UnityReferences (il ripiego di A6)
+using Blasphemous.Multiplayer.Client;
 using Blasphemous.Multiplayer.Client.PvP.Models;
 using Framework.Managers;
-using Gameplay.GameControllers.Combat;             // EntityExecution (il ripiego di A6)
+using Gameplay.GameControllers.Combat;
 using Gameplay.GameControllers.Enemies.Projectiles;
 using Gameplay.GameControllers.Entities;
-// A5.1 - `EntityAudio`: le etichette dei 14 parametri FMOD del materiale del terreno, i campi che ne
-// tengono i valori, e `SetPanning(EventInstance, Vector3)`.
 using Gameplay.GameControllers.Entities.Audio;
-// A5 - le `public const string` dei suoni del penitent (PenitentFootStep, PenitentAttack1, PenitentDash,
-// ...). Il namespace e' `Gameplay.GameControllers.Penitent.Audio`: la classe e'
-// `Gameplay.GameControllers.Penitent.Audio.PenitentAudio` e deriva da
-// `Gameplay.GameControllers.Entities.Audio.EntityAudio`. NON e' lo stesso namespace di
-// `Gameplay.GameControllers.Entities` che e' gia' importato sopra.
 using Gameplay.GameControllers.Penitent.Audio;
 using System.Collections;
 using UnityEngine;
-using Framework.Util;                                  // AnimatorEvent (il predicato del fantasma)
-using Tools.Level;                                     // Interactable (il campo interactorAnimator)
+using Framework.Util;
+using Tools.Level;
 
 namespace Blasphemous.Multiplayer.Client.Players
 {
@@ -26,17 +19,10 @@ namespace Blasphemous.Multiplayer.Client.Players
         private const float DEBLA_DURATION = 1.2f;
         private const float VERDIALES_DURATION = 2f;
 
-        // A5 - i due prefab della polvere del dash (DashDustGenerator.startDashDustPrefab e
-        // stopDashDustPrefab). Sono `private [SerializeField]` e NON esiste alcun accessore pubblico:
-        // l'elenco COMPLETO dei membri pubblici di DashDustGenerator e' StopDustSpawnOffsetPos,
-        // GetStartDashDust, i due GetStopDashDust e GetDashDustPosition (verificato nella metadata).
-        // Quindi si leggono per RIFLESSIONE, una volta sola e tenuti da parte: GetField e' una ricerca per
-        // stringa e questo codice gira sul percorso degli effetti. E' la stessa tecnica che
-        // EnemySyncManager usa gia' per i campi privati del gioco.
-        //
-        // Se la ricerca restituisce null l'effetto degrada a "nessuna polvere" e lo dice, invece di
-        // lanciare: questo codice gira DENTRO il gestore dei pacchetti, dove un'eccezione fa ri-presentare
-        // lo stesso pacchetto a ogni frame e ferma l'aggiornamento della mod.
+        // DashDustGenerator's start/stop prefab fields are private [SerializeField] with no accessor,
+        // so they are read reflectively once and cached. GetField is a string lookup and this runs on
+        // the effect path; if the lookup fails the effect degrades to "no dust" instead of throwing
+        // (this is inside the packet handler, where an exception would re-present the packet).
         private static readonly System.Reflection.FieldInfo StartDashDustField =
             typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator).GetField(
                 "startDashDustPrefab",
@@ -80,46 +66,23 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// Replays an effect on the avatar. The position is only read by the effects that happen SOMEWHERE -
-        /// the ground impact and the slide's dust (A4) - and hasPosition says whether it means anything.
+        /// Replays an effect on the avatar. <paramref name="hasPosition"/> says whether <paramref name="position"/>
+        /// is meaningful; only effects that happen at a specific place (ground impact, slide dust) use it.
         /// </summary>
         public void PlayEffectAnimation(EffectType effect, bool facingRight, bool hasPosition, Vector2 position)
         {
             SwordRenderer.flipX = !facingRight;
 
-            // A5 - LA SCADENZA DELLA SCIVOLATA, ed e' l'unico pezzo di A5 che gira su OGNI effetto.
-            //
-            // PERCHE' QUI. Questo metodo e' gia' chiamato per ogni effetto che arriva, quindi la scadenza
-            // non aggiunge ne' un `Update` ne' un `MonoBehaviour`: e' un confronto di float che costa nulla
-            // e viene valutato solo mentre `dashSoundInstance` e' valida (cioe' solo durante un dash del
-            // peer). Il caso "nessuna scivolata accesa" esce alla prima riga.
-            //
-            // Se scatta, lo DICE: uno STOP perso e' una cosa che si vuole sapere, non una da nascondere
-            // dietro una scadenza silenziosa.
+            // Dash sound expiry: a lost STOP would leave a latched event on forever. Only checked while
+            // the instance is valid, i.e. during a peer dash.
             if (dashSoundInstance.isValid() &&
                 Time.unscaledTime - dashSoundStartedAt > DASH_SOUND_TIMEOUT)
             {
-                ModLog.Warn("[Sound] la scivolata del peer non ha ricevuto lo STOP entro " +
+                ModLog.Warn("[Sound] the peer's slide did not get the STOP within " +
                             DASH_SOUND_TIMEOUT + "s: la spengo io (pacchetto perso?)");
                 StopPeerDashSound();
             }
 
-            // ⭐ ②b - QUI C'ERA IL FUSIBILE DEL CLANG, ED E' STATO RIMOSSO INSIEME AL SUO STATO.
-            //
-            // Diceva: se `parryHitInstance.isValid()` e sono passati piu' di `PARRY_HIT_TIMEOUT` (4 s) dallo
-            // `start()`, il clang non ha ricevuto lo STOP -> "lo spengo io (pacchetto perso?)" e
-            // `StopPeerParryHitSound()`.
-            //
-            //   ⚠️ PERCHE' NON PUO' PIU' SCATTARE: la condizione era `parryHitInstance.isValid()`, e quel
-            //   campo non esiste piu' (lo assegnava solo la `CreateCatalogEvent` di A7-bis, che e' stata
-            //   rimossa). Il clang ora passa da `EventOneShotPanned`, che fa `start()` E `release()` da sola:
-            //   non c'e' nessun evento sostenuto che possa "restare acceso", quindi non c'e' nessun pacchetto
-            //   perso da coprire. Lasciarlo qui con un campo sempre invalido sarebbe stato codice morto
-            //   TRACCIATO - la forma peggiore, perche' si legge come una rete di sicurezza che non esiste.
-            //
-            // ⚠️ E IL FUSIBILE DELLA SCIVOLATA, SOPRA, RESTA: quello e' vero. `PlayPeerDashSound` usa ancora
-            // `PlayEventWithCatalog` + `dashSoundInstance` + `stop()`, quindi una scivolata puo' davvero
-            // restare accesa senza lo STOP. Non si tocca.
             switch (effect)
             {
                 case EffectType.SidewaysGrounded:
@@ -137,14 +100,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.Crouch:
                     SwordAnim.Play("Crouch_Lv1");
                     break;
-                //case EffectType.Ranged:
-                //    Main.Multiplayer.LogError("Spawning range attack effect!");
-                //    break;
                 case EffectType.Debla:
                     StartCoroutine(DisplayDebla());
                     break;
-                // A3: the ghost trail belongs to the avatar, not to the sword, so this reaches up to it.
-                // Both cases share the body because the only difference is the flag passed on.
+                // The ghost trail belongs to the avatar, not to the sword.
                 case EffectType.TrailOn:
                 case EffectType.TrailOff:
                 {
@@ -153,29 +112,15 @@ namespace Blasphemous.Multiplayer.Client.Players
                         owner.SetGhostTrail(effect == EffectType.TrailOn);
                     break;
                 }
-                // A4 - the slide's dust and its sound, at the place the sender slid.
-                //
-                // hasPosition is CHECKED rather than assumed. A build of this mod from before the position, or
-                // a server that still relays a single byte, sends the effect with no place attached - and the
-                // origin is a legitimate coordinate in this game, so drawing it there would put the dust at the
-                // far end of the level instead of at the player.
+                // Slide dust and its sound, at the place the sender slid. hasPosition is checked rather
+                // than assumed: a payload without coordinates would put the effect at world origin.
                 case EffectType.SlideDust:
                 {
                     if (hasPosition)
                         PlaySlideDust(position, facingRight);
                     break;
                 }
-                // A5 - la polvere della SCIVOLATA DI MOVIMENTO (Dash), nel punto in cui il mittente e'
-                // scivolato.
-                //
-                // DUE case e non uno perche' il gioco ha DUE prefab: quello di PARTENZA
-                // (startDashDustPrefab, sulla trasform del penitent) e quello di ARRESTO
-                // (stopDashDustPrefab, a terra davanti o dietro di loro). Il ricevente non puo' dedurre
-                // quale dei due serve, quindi lo dice il byte.
-                //
-                // hasPosition e' CONTROLLATO e non dato per scontato, come per SlideDust: un byte senza
-                // posizione disegnerebbe la polvere nell'origine, che in questo gioco e' una coordinata
-                // legittima - cioe' dall'altra parte del livello.
+                // Dash dust (movement dash). Two prefabs in the game (start / stop), so two bytes.
                 case EffectType.DashDustStart:
                 case EffectType.DashDustStop:
                 {
@@ -183,9 +128,8 @@ namespace Blasphemous.Multiplayer.Client.Players
                         PlayDashDust(effect == EffectType.DashDustStart, position, facingRight);
                     break;
                 }
-                // A4 - the ground impact: the dust, the beam and the landing sound. The five members are the
-                // five shapes VerticalAttack.InstantiateExplosion can take, and the sender is the machine that
-                // decided which one it was (it is the one that saw the fall height and its own skill).
+                // Ground impact: dust, beam and landing sound. Five shapes because the sender saw the
+                // fall height and its own skill.
                 case EffectType.LandingImpactBase:
                 case EffectType.LandingImpact1:
                 case EffectType.LandingImpact2:
@@ -196,33 +140,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                         PlayLandingImpact(effect, position);
                     break;
                 }
-                // A5 - I SUONI che il peer non sente: i PASSI A TERRA e i FENDENTI A VUOTO.
-                //
-                // PERCHE' QUESTI SEI STANNO IN UN CASE SOLO E LA SCIVOLATA NO. Questi sei sono one-shot
-                // PURI: il suono parte e finisce da solo. La scivolata e' un evento di catalogo SOSTENUTO
-                // (LATCHED) e ha bisogno di ricordarsi un'istanza fra un pacchetto e l'altro: sta in un
-                // case suo, con lo stato in un campo suo, perche' e' l'unico pezzo di A5 che puo'
-                // "restare acceso".
-                //
-                // PERCHE' IL SUONO NON SI PUO' SUONARE CHIAMANDO IL METODO DEL GIOCO. La strada "sicura"
-                // di A4 - chiamare il metodo locale - QUI NON ESISTE: `PenitentAudio.PlayBasicAttack1()`
-                // e `PlayFootStep()` passano da `EntityAudio.PlayOneShotEvent`, che prende il PANNELLO
-                // dall'`Owner` del componente, cioe' dal PENITENT LOCALE. Chiamarle qui farebbe uscire il
-                // fendente del peer DALLA TUA POSIZIONE, che e' esattamente il difetto che A4 ha dovuto
-                // correggere per la polvere. E l'avatar non ha comunque un `EntityAudio` su cui
-                // chiamarle: `OtherPlayerScript.SetupPlayer` aggiunge solo SpriteRenderer, Animator,
-                // OtherPlayerAttackScript e GhostTrailGenerator. E' un GUSCIO.
-                //
-                // ⭐ E ALLORA COSA SI CHIAMA. `FMODAudioManager.PlayOneShotFromCatalog(string eventKey,
-                // Vector3 position)`: l'unico one-shot POSIZIONALE che risolve una CHIAVE DI CATALOGO.
-                // Verificato nel suo corpo IL: fa `FindSfxInCatalogs(eventKey)`, prende il `FMODKey` della
-                // clip e chiama `EventOneShotPanned(clip.FMODKey, position)` - cioe' passa a FMOD il
-                // PERCORSO e calcola il panning con `GetPanningValueByPosition(position)`, che legge SOLO
-                // `Camera.main`: non tocca il penitent.
-                //
-                // ⚠️ `EventOneShotPanned(chiave, pos)` NON si usa: pretende un PERCORSO DI BANCA e con una
-                // chiave di catalogo fa LANCiARE FMOD. E' l'errore che ha gia' causato danno-zero + mod
-                // congelata, e queste sette sono tutte chiavi di catalogo.
+                // One-shot peer sounds: footsteps and attack swings. The avatar has no EntityAudio, and
+                // PlayOneShotEvent reads the Owner (local Penitent) for panning - so this goes through
+                // PlayOneShotFromCatalog (positional, catalog key). EventOneShotPanned takes a bank path
+                // and would throw on a catalog key.
                 case EffectType.FootStep:
                 case EffectType.Attack1:
                 case EffectType.Attack2:
@@ -230,34 +151,14 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.AirAttack2:
                 case EffectType.HeavyAttack:
                 case EffectType.ChargedRelease:
-                // A5.2 - i suoni confermati dalle probe: il quarto colpo di una combo, lo sguaino, e i due
-                // suoni dell'attacco aereo-a-terra (l'inizio e la caduta: il TONFO era gia' coperto da A4).
                 case EffectType.ComboHit:
                 case EffectType.IdleSword:
                 case EffectType.VerticalStart:
                 case EffectType.VerticalFalling:
-                // A7 - la guardia del peer (suono #2), che `SoundKeyFor` risolve in "PenitentStartParry".
                 case EffectType.ParryStart:
                     PlayPeerSound(effect, position);
                     break;
-                // A5 - IL SUONO DELLA SCIVOLATA, l'UNICO evento SOSTENUTO (LATCHED) di A5, e l'unico che ha
-                // bisogno di DUE casi.
-                //
-                // PERCHE' DUE CASI E NON UNO. `PenitentDash` non e' un one-shot: resta ACCESO finche'
-                // qualcuno non lo spegne - il gioco usa `PlayEvent(ref _dashEventInstance, "PenitentDash")`
-                // e poi `StopDashSound()`. Un byte solo non puo' dire "accendi" e "spegni", quindi START e
-                // STOP sono due membri dell'enum (95 e 96).
-                //
-                // ⭐ PERCHE' `PlayEventWithCatalog(ref ...)` E NON `PlayOneShotFromCatalog`. Quest'ultimo
-                // chiama `release()` subito dopo `start()`: l'istanza e' liberata mentre l'evento sta ancora
-                // suonando, e un evento SOSTENUTO trattato cosi' non si puo' piu' fermare. Firme verificate
-                // in IL: `PlayEventWithCatalog(ref EventInstance, string key, Vector3)` e
-                // `StopEvent(ref EventInstance)`.
-                //
-                // ⚠️ E NON SI PASSA DAL `PenitentAudio` LOCALE. `PlayDashSound()` scriverebbe
-                // `_dashEventInstance` del PENITENT LOCALE: il dash del peer uscirebbe dalla TUA posizione e -
-                // peggio - il TUO dash successivo troverebbe l'istanza occupata e la fermerebbe al posto tuo.
-                // L'istanza dev'essere NOSTRA, una per avatar.
+                // Dash sound: latched event, needs START/STOP.
                 case EffectType.DashSoundStart:
                 {
                     if (hasPosition)
@@ -265,18 +166,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                     break;
                 }
                 case EffectType.DashSoundStop:
-                    // ⚠️ NIENTE guardia su `hasPosition` QUI: lo STOP non porta posizione, e non deve
-                    // farne una condizione. Fermare qualcosa che non c'e' non fa nulla.
+                    // No hasPosition guard: STOP carries no position.
                     StopPeerDashSound();
                     break;
-                // A7 - IL CLANG DELLA PARATA DEL PEER. Due casi, come la scivolata, e per la stessa
-                // ragione: `PenitentParryHit` e' un evento SOSTENUTO. Il gioco lo spegne alla fine della
-                // parata (`Parry.StopParry` -> `Audio.StopParryFx`); senza il secondo byte il clang
-                // resterebbe acceso per sempre.
-                //
-                // ⚠️ hasPosition e' CONTROLLATO e non dato per scontato: il clang deve uscire DA DOVE E'
-                // SUCCESSO. Un byte senza coordinate lo metterebbe nell'origine, che in questo gioco e' una
-                // coordinata legittima - cioe' dall'altra parte del livello.
+                // Parry clang: one-shot through EventOneShotPanned.
                 case EffectType.ParryHit:
                 {
                     if (hasPosition)
@@ -284,86 +177,28 @@ namespace Blasphemous.Multiplayer.Client.Players
                     break;
                 }
                 case EffectType.ParryHitStop:
-                    // ⚠️ NIENTE guardia su `hasPosition`: lo STOP non porta posizione e non deve farne una
-                    // condizione. Fermare qualcosa che non c'e' non fa nulla.
                     StopPeerParryHitSound();
                     break;
-                // A7-bis - IL SUONO DELLA PARATA RIUSCITA, CIOE' IL PEZZO CHE MANCAVA.
-                //
-                // ⚠️⚠️ QUESTO `case` NON C'ERA, E IL SUONO NON SI SENTIVA PER QUESTA RAGIONE - non per la
-                // rete, e non perche' la chiave fosse sbagliata. Il mittente il byte lo manda da A7-bis
-                // (`AnimationFixes.PenitentParryAttackSound_Patch`, postfix su `PenitentAudio.PlayParryAttack`),
-                // e il log del RICEVENTE lo prova, riga per riga:
-                //     [Effect] ParryAttack per G2 (-541.6,10.0)    <- ARRIVATO (riga di AttackManager.ReceiveEffect)
-                // e sotto NON c'era NESSUNA riga di suono: ne' `[Sound] chiave "PenitentParry" -> percorso ...`,
-                // ne' `[Sound RX]`. Il byte arrivava e lo `switch` lo lasciava cadere nel vuoto, perche' uno
-                // `switch` senza `case` e senza `default` non fa nulla E NON LO DICE.
-                //   ⭐ E `SoundKeyFor` la chiave la conosceva gia' (`case EffectType.ParryAttack: return
-                //   PenitentAudio.ParryEventKey`): ma `SoundKeyFor` viene chiamata SOLO da `PlayPeerSound`, e
-                //   senza questo `case` nessuno la chiamava. Mezzo fix gia' scritto, e irraggiungibile.
-                //
-                // ⭐ ED E' IL SUONO DEL FLASH, per quanto l'IL puo' dire - e l'IL qui e' esplicito. E' l'unico
-                // suono che il gioco accende NEL PUNTO ESATTO della parata riuscita, dal CODICE e non da un
-                // evento di clip:
-                //     Penitent.Damage(Hit) -> Parry.CheckParry(hit) -> Parry.ParrySuccess(true)   (Parry.cs:166-178)
-                //         -> EntityOwner.GetComponentInChildren<PenitentAudio>().PlayParryAttack()
-                //         -> PenitentAudio.PlayParryAttack() -> PlaySfxOnCatalog("PenitentParry")
-                // cioe' nella STESSA chiamata che porta `SuccessParry` a true, che fa partire il flash, e che
-                // avvia il fermo-immagine del gioco (`Core.Logic.ScreenFreeze.Freeze`, Parry.cs:137-141).
-                //   ⚠️ E NON E' UN DOPPIONE: `PenitentParry` non e' ne' `ParryStart` (la guardia, 109) ne'
-                //   `ParryHit` (il clang, 107) ne' `PenitentStartParry` (111). E' un TERZO evento, e sul
-                //   ricevente non lo suonava nessuno.
-                //
-                // ⚠️ LA NATURA: UNA CHIAVE DI CATALOGO PURA (`PlaySfxOnCatalog`, come i sei fendenti di A5).
-                // One-shot: nessuna istanza da ricordare, nessuno STOP, nessun fusibile, niente da distruggere.
-                // `PlayPeerSound` la risolve nel PROPRIO catalogo (`ResolveCatalogPath` -> `EventOneShotPanned`),
-                // quindi la riga `[Sound] chiave "PenitentParry" -> percorso ...` e' il marker del ricevente.
-                //
-                // ⚠️ E LA POSIZIONE SI CONTROLLA, come per `ParryHit`: il fendente del parry deve uscire DA
-                // DOVE E' SUCCESSO, e l'origine del mondo e' una coordinata legittima di questo gioco - cioe'
-                // dall'altra parte del livello. Senza posizione NON si suona, e la riga lo DICE, invece di
-                // lasciare indistinguibili "non arrivato" e "arrivato senza coordinate".
+                // Successful parry flash sound: this case was missing, so the byte was dropped in
+                // silence. It is a one-shot catalog key, resolved on the local catalog.
                 case EffectType.ParryAttack:
                 {
                     if (!hasPosition)
                     {
-                        ModLog.Info("[Sound RX] parry riuscito del peer, ma il pacchetto non porta una " +
-                                    "posizione: non lo suono (non lo metto nell'origine)");
+                        ModLog.Info("[Sound RX] peer parry succeeded, but the packet carries no " +
+                                    "position: not playing it (not putting it at the origin)");
                         break;
                     }
 
-                    // PROVA LATO RICEVENTE, obbligatoria come per ogni altro effetto: la riga `[Effect]` dice
-                    // che il byte e' ARRIVATO, questa dice che e' stato ESEGUITO. Senza di essa "arrivato e
-                    // scartato" e "arrivato e suonato" restano indistinguibili - che e' esattamente il guasto
-                    // che questo `case` chiude, e che nei log era invisibile per costruzione.
                     ModLog.Info($"[Sound RX] parry riuscito del peer ({position.x:F1},{position.y:F1})");
                     PlayPeerSound(effect, position);
                     break;
                 }
-                // ⚠️ E `ParryStartCatalog` (111) RESTA SENZA `case` DI PROPOSITO, e non e' una dimenticanza
-                // come quella qui sopra. Il mittente lo manda a OGNI guardia alzata, INSIEME a `ParryStart`
-                // (109): nel log del ricevente i due arrivano appaiati, 6 e 6 in una sessione. E le due
-                // chiavi finiscono sullo STESSO evento - `ParryStart` legge `Parry.ParryGuardFx`, il cui
-                // valore risolto e' `event:/SFX/Penitent/Attack/PenitentStartParry`, e `ParryStartCatalog`
-                // risolve `PenitentAudio.StartParryEventKey` = "PenitentStartParry".
-                //   ⇒ Accendere anche 111 farebbe suonare LA STESSA GUARDIA DUE VOLTE sul peer. La guardia
-                //   gia' si sente (confermato dall'utente), quindi la riga giusta e' NON aggiungerla: un fix
-                //   che raddoppia un suono e' peggio di un byte inerte. Se un giorno si volesse la fedelta'
-                //   totale (sul MITTENTE il gioco li accende entrambi), basta aggiungere
-                //   `case EffectType.ParryStartCatalog:` accanto a `ParryStart`, nell'elenco dei one-shot.
-                // A6 - L'ESECUZIONE. Il primo dei due byte ACCENDE l'animazione sull'avatar, il secondo la
-                // SPEGNE. Nessuna posizione: l'animazione si suona dove l'avatar e', e dove l'avatar e' lo
-                // decide gia' il canale Position, che gira da sempre.
-                //
-                // ⚠️ E NON SI PASSA DA `hasPosition`: come per lo STOP della scivolata, non e' una
-                // condizione - questi due byte non portano coordinate, e pretenderle li scarterebbe tutti.
-                //
-                // ⚠️ L'AVATAR SI RISALE DAL PADRE, e non si riceve: `PlayEffectAnimation` e' un metodo di
-                // questo script, che vive sul GameObject "Sword", FIGLIO dell'avatar. E' la stessa tecnica
-                // gia' usata in questo stesso metodo per la scia. Ed e' per questo che lo STATO
-                // dell'esecuzione sta su `OtherPlayerScript` e non qui: un avatar per istanza, uno stato per
-                // avatar. Uno stato statico condiviso farebbe sovrascrivere a vicenda due esecuzioni - che in
-                // co-op sono il caso NORMALE.
+                // ParryStartCatalog is deliberately caseless: the sender emits it alongside ParryStart
+                // (109) on every guard, and both resolve to the same event - playing both would double
+                // the peer's guard sound.
+                // Execution: start/stop the execution animation on the avatar. State lives on
+                // OtherPlayerScript (per-avatar), not here (this script is on the Sword child).
                 case EffectType.ExecutionStart:
                 case EffectType.ExecutionEnd:
                 {
@@ -372,44 +207,16 @@ namespace Blasphemous.Multiplayer.Client.Players
                         executionOwner.PlayExecutionAnimation(effect == EffectType.ExecutionStart);
                     break;
                 }
-                    //case EffectType.Verdiales:
-                    //    StartCoroutine(DisplayVerdiales());
-                    //    break;
             }
         }
 
         /// <summary>
-        /// La CHIAVE DI CATALOGO del suono che questo `EffectType` rappresenta.
+        /// The catalog key for an effect. The value is not written here and does not travel on the
+        /// wire: it comes from PenitentAudio's public const strings, so a game update is followed by
+        /// reading the constant instead of freezing a transmitted string.
         ///
-        /// ⚠️ IL VALORE NON E' SCRITTO QUI E NON VIAGGIA SUL FILO: e' letto dalle `public const string`
-        /// di `PenitentAudio`. Non e' pignoleria - e' la ragione per cui il payload e' UN BYTE. Se il
-        /// gioco cambiasse una chiave in una build futura, la mod la seguirebbe leggendo la costante,
-        /// mentre una stringa trasmessa la congelerebbe a quella vecchia.
-        ///
-        /// I valori attesi, verificati in IL sui campi `Literal`:
-        ///     FootStep       -> "PenitentFootStep"
-        ///     Attack1        -> "PenitentAttack1"
-        ///     Attack2        -> "PenitentAttack2"
-        ///     AirAttack1     -> "PenitentAirAttack1"
-        ///     AirAttack2     -> "PenitentAttack2"       <-- vedi sotto, NON e' un refuso
-        ///     HeavyAttack    -> "PenitentHeavyAttack"
-        ///     ChargedRelease -> "PenitentReleaseChargedAttack"
-        ///
-        /// ⚠️ `AirAttack2` USA `BasicAttack2EventKey`, E NON `BasicAirAttack2EventKey`. La costante
-        /// `PenitentAudio.BasicAirAttack2EventKey` vale "PenitentAirAttack2" e NON E' MAI USATA da nessun
-        /// metodo dell'assembly: in `PenitentAudio` non esiste alcun `PlayAirAttack2`, e il metodo del gioco
-        /// `PenitentAttackAnimations.PlayAirAttack2()` chiama `PlayBasicAttack2()` - cioe' suona
-        /// "PenitentAttack2" (verificato in IL: l'unico `call` nel suo corpo e' `PlayBasicAttack2`).
-        ///
-        ///   ⇒ La domanda giusta non e' "quale costante descrive meglio il colpo", ma "quale chiave suona
-        ///   DAVVERO quando il penitent fa quel colpo". Se qui si mettesse "PenitentAirAttack2", il
-        ///   `ResolveCatalogPath` non la troverebbe nel catalogo e il fendente in aria 2 del peer NON
-        ///   uscirebbe - con una riga di WARN che accusa il catalogo per una scelta sbagliata fatta qui.
-        ///
-        /// ⚠️ Questo NON cambia il byte trasmesso: `AirAttack2` (92) resta un membro distinto da `Attack2`
-        /// (90) e il mittente resta agganciato a `PenitentAttackAnimations.PlayAirAttack2`, che e' l'evento
-        /// giusto. Cambia solo QUALE suono il ricevente riproduce - ed e' lo stesso che ha suonato il
-        /// mittente. Se una build futura separasse davvero i due suoni, questa e' la riga da cambiare.
+        /// AirAttack2 uses BasicAttack2EventKey because PenitentAttackAnimations.PlayAirAttack2 calls
+        /// PlayBasicAttack2 - PenitentAudio.BasicAirAttack2EventKey exists but no method consumes it.
         /// </summary>
         private static string SoundKeyFor(EffectType effect)
         {
@@ -422,35 +229,21 @@ namespace Blasphemous.Multiplayer.Client.Players
                 case EffectType.AirAttack2: return PenitentAudio.BasicAttack2EventKey;
                 case EffectType.HeavyAttack: return PenitentAudio.PenitentHeavyAttackEventKey;
                 case EffectType.ChargedRelease: return PenitentAudio.ReleaseChargedAttackEventKey;
-                case EffectType.ComboHit: return PenitentAudio.ComboHit;                  // "PenitentComboHit"
-                case EffectType.IdleSword: return PenitentAudio.IdleModeSword;            // "PenitentIdleSword"
-                case EffectType.VerticalStart: return PenitentAudio.VerticalAttackStart;  // "PenitentVerticalAttackStart"
+                case EffectType.ComboHit: return PenitentAudio.ComboHit;
+                case EffectType.IdleSword: return PenitentAudio.IdleModeSword;
+                case EffectType.VerticalStart: return PenitentAudio.VerticalAttackStart;
                 case EffectType.VerticalFalling: return PenitentAudio.VerticalAttackFalling;
-                // A7-bis - GLI ALTRI DUE DELLA CATENA. Chiavi lette dalle `public const string` di
-                // `PenitentAudio`: non viaggiano sul filo, ogni macchina le risolve nel PROPRIO catalogo.
                 case EffectType.ParryAttack: return PenitentAudio.ParryEventKey;
                 case EffectType.ParryStartCatalog: return PenitentAudio.StartParryEventKey;
-                // A7 - LA GUARDIA: chiave letta dalla `public const string` di `PenitentAudio`.
-                // ⚠️ La categoria NON e' Motion: `PlayStartParry` fa `PlaySfxOnCatalog`, che non imposta un
                 default: return null;
             }
         }
 
         /// <summary>
-        /// La spia: la chiave esiste in uno dei cataloghi che QUESTA macchina ha caricato?
-        ///
-        /// PERCHE' ESISTE, e perche' non e' un lusso. `PlayOneShotFromCatalog` tace quando non trova la
-        /// chiave: non lancia, non logga, non fa NULLA. Un suono che non si sente perche' la chiave non
-        /// c'e' e un suono che non si sente perche' il pacchetto non e' arrivato sarebbero di nuovo
-        /// INDISTINGUIBILI - e distinguerli e' meta' del lavoro fatto finora.
-        ///
-        /// `FMODAudioCatalog.GetSfx(string id)` e' PUBLIC e fa `_sfxDictionary.TryGetValue`. `_audioCatalogs`
-        /// e' PRIVATO, quindi la lettura passa dalla riflessione: la stessa tecnica che questo file usa gia'
-        /// per i due prefab di `DashDustGenerator`, che sono `private [SerializeField]` senza accessore.
-        ///
-        /// ⚠️ Si legge UNA VOLTA per chiave e si tiene da parte: e' una ricerca per stringa, e questo codice
-        /// gira sul percorso degli effetti. `null` in cache significa "non ancora deciso", la lista vuota
-        /// "deciso: non c'e'".
+        /// Probes whether the catalog key exists on this machine. PlayOneShotFromCatalog is silent
+        /// when the key is missing, and "missing key" versus "missing packet" would then be
+        /// indistinguishable. FMODAudioCatalog.GetSfx is public; _audioCatalogs is private and read
+        /// via reflection. Results are cached, including nulls, so the probe runs once per key.
         /// </summary>
         private static readonly System.Collections.Generic.Dictionary<string, string> SoundPathCache =
             new System.Collections.Generic.Dictionary<string, string>();
@@ -461,15 +254,13 @@ namespace Blasphemous.Multiplayer.Client.Players
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 
         /// <summary>
-        /// Il PERCORSO DI BANCA della chiave, se questa macchina ce l'ha; `null` se la chiave non esiste
-        /// (e in quel caso lo DICE, una volta per chiave). Vedi `PlayPeerSound` per l'uso.
+        /// The bank path of a key if this machine has it, null otherwise (with a one-shot warning).
+        /// Cached nulls are meaningful: they suppress the warn on subsequent calls.
         /// </summary>
         private static string ResolveCatalogPath(string key)
         {
-            // ⚠️ IL VALORE IN CACHE PUO' ESSERE LEGITTIMAMENTE `null`, quindi non basta `TryGetValue`:
-            // quando `null` significa "gia' deciso: non c'e'", restituirlo e basta. Senza la seconda riga
-            // il fallimento verrebbe riprovato - e RI-LOGGATO - a ogni singolo passo del peer, che e' il
-            // modo piu' rapido di rendere inutile la riga che serve a diagnosticare il guasto.
+            // A cached value can legitimately be null, so TryGetValue alone is not enough - returning
+            // null here is "already decided: not present" and must not retry or re-log.
             string cached;
             if (SoundPathCache.TryGetValue(key, out cached))
                 return cached;
@@ -478,8 +269,8 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (audio == null)
                 return null;
 
-            // ⚠️ `AudioCatalogsField` puo' essere null se una build futura rinomina il campo: in quel caso
-            // si degrada a "nessuna spia" e NON si blocca il suono. La spia e' un di piu', non una guardia.
+            // If a future build renames the private field, the probe degrades to "silent" and does
+            // not block sound. The probe is a bonus, not a guard.
             Framework.Audio.FMODAudioCatalog[] catalogs = null;
             if (AudioCatalogsField != null)
                 catalogs = AudioCatalogsField.GetValue(audio) as Framework.Audio.FMODAudioCatalog[];
@@ -496,12 +287,9 @@ namespace Blasphemous.Multiplayer.Client.Players
                     if (clip == null)
                         continue;
 
-                    // ⚠️ SI COPIA IL VALORE COSI' COM'E', senza "normalizzarlo". E' il PERCORSO che il
-                    // gioco passa a `RuntimeManager.CreateInstance` quando suona lo stesso suono: la
-                    // costante `[EventRef]` scritta a mano che a volte porta uno slash davanti e' un
-                    // dettaglio dell'inspector, e nulla nel percorso del gioco lo toglie - quindi toglierlo
-                    // qui sarebbe una differenza inventata, cioe' esattamente il modo in cui un suono
-                    // "quasi giusto" smette di suonare senza che nessuno possa dire perche'.
+                    // Copy the value as-is: this is the path the game itself passes to
+                    // RuntimeManager.CreateInstance, and normalizing it here would be an invented
+                    // difference.
                     path = clip.FMODKey;
                     break;
                 }
@@ -509,11 +297,8 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             if (path == null)
             {
-                // ⚠️ Questa riga NON e' rumore: senza di essa la chiave assente e il pacchetto mancato
-                // restano identici nei log. Il fallimento viene memorizzato (`null` in cache), quindi la
-                // riga esce UNA VOLTA per chiave e non a ogni passo.
-                ModLog.Warn($"[Sound] la chiave di catalogo \"{key}\" non esiste su questa macchina: " +
-                            "il suono del peer NON uscira' (e non e' un problema di rete)");
+                ModLog.Warn($"[Sound] catalogue key \"{key}\" does not exist on this machine: " +
+                            "the peer's sound will NOT play (and it is not a network problem)");
                 SoundPathCache[key] = null;
                 return null;
             }
@@ -523,78 +308,37 @@ namespace Blasphemous.Multiplayer.Client.Players
             return path;
         }
 
-        // ============================================================================================
-        // A5.1 - IL PASSO: PERCHE' NON BASTAVA `EventOneShotPanned`, E COSA SI FA INVECE.
-        // ============================================================================================
-        //
-        // IL DIFETTO, IN UNA RIGA DI IL. Il gioco suona il passo con
-        //     EntityAudio.PlayOneShotEvent("PenitentFootStep", FxSoundCategory.Motion)
-        // e quella categoria e' L'UNICA che chiama `SetFloorMaterialParams`, che imposta QUATTORDICI
-        // parametri FMOD (Dirt, Water, Snow, Stone, Wood, Marble, Flesh, Metal, Mud, SecretFloor, Grass,
-        // Demake, Palio, Snake). Verificato nel corpo IL di `PenitentAudio.PlayFootStep`: @IL_0007 e' un
-        // `call EntityAudio::PlayOneShotEvent`, mentre `PlayBasicAttack1/2`, `PlayHeavyAttack`,
-        // `PlayAirAttack1/2` e `PlayReleaseChargedAttack` fanno @IL_0022 `callvirt PlaySfxOnCatalog(String)`,
-        // che NON imposta un solo parametro. => I FENDENTI SI SENTONO PERCHE' NON DIPENDONO DA NULLA;
-        // IL PASSO E' MUTO PERCHE' DIPENDE DAI MATERIALI, E NOI NON NE IMPOSTAVAMO NESSUNO.
-        //
-        // ⚠️ NON BASTAVA `PlayOneShotFromCatalog`, ed e' un punto importante perche' era la scorciatoia
-        // "ovvia": quella chiama `EventOneShotPanned`, che nel suo corpo IL imposta SOLO `Spanish` e
-        // `Panning`. E' la stessa strada che avevamo, con un nome piu' corto.
-        //
-        // LA STRADA GIUSTA E' RIPRODURRE LA CATENA LOCALE, che ha TRE passi e non uno:
-        //     1. `CreateCatalogEvent(chiave, pos)`  -> risolve la chiave, applica set3DAttributes e Spanish;
-        //     2. i MATERIALI + il PANNING, PRIMA di start();
-        //     3. `start()` e `release()`.
-        // Il punto 2 e' l'unico che mancava. `release()` subito dopo `start()` e' esattamente cio' che fa
-        // anche il gioco in `PlayOneShotEvent`: non e' una differenza introdotta qui.
-        //
-        // ⭐ E IL PANNING SI FA CON `EntityAudio.SetPanning(EventInstance, Vector3)`, che e' PUBLIC STATIC.
-        // Non esisteva nel piano precedente, e risparmia di scrivere a mano il getParameter("Panning"): fa
-        // esattamente la stessa cosa con la stessa formula.
-        //
-        // ⚠️ PERCHE' NON SI CHIAMA `EntityAudio.SetFloorMaterialParams`, CHE ESISTE E FA PROPRIO QUESTO.
-        // Perche' e' PRIVATO. L'alternativa era la riflessione su un metodo privato: si e' preferito
-        // scrivere i 14 `getParameter` per esteso, che sono piu' righe ma non dipendono da un nome privato
-        // che una build futura puo' rinominare.
-        //
-        // ⚠️ E I 14 VALORI DA DOVE VENGONO. Nel gioco vengono dai campi `DirtValue`, `SnowValue`, ... di
-        // `EntityAudio`, aggiornati da `PenitentAudio.FloorSensorEmitterOnEnter`/`OnStay` leggendo il TAG
-        // del collider su cui il penitent sta camminando (`Material:Dirt`, `Material:Stone`, ...).
-        // Quei campi sono `Family` (= protected), quindi NON si leggono da fuori: si leggono per
-        // RIFLESSIONE dal penitent LOCALE.
-        //   E' la scelta giusta e non un ripiego: in co-op i due giocatori stanno quasi sempre sullo stesso
-        // terreno, quindi il materiale locale E' il materiale giusto. E quando non lo fosse, il passo esce
-        // col materiale SBAGLIATO invece che MUTO - che e' il difetto che stiamo togliendo.
-        //   Se la riflessione fallisce (build futura che rinomina i campi) si usano i DEFAULT del gioco e
-        // il passo esce come oggi: DEGRADA, NON BLOCCA. La spia lo dice una volta sola.
+        // --- Footstep audio: PlayOneShotEvent(Motion) sets 14 FMOD floor-material parameters, which
+        // EventOneShotPanned does not. So the step reproduces the game's three-step chain: create,
+        // set materials + panning, then start and release. Materials are read from the local penitent
+        // via reflection (EntityAudio's fields are protected); failure degrades to default materials,
+        // not silence.
 
         /// <summary>
-        /// I nomi dei parametri FMOD del materiale del terreno, NELL'ORDINE E NELLA GRAFIA del corpo IL di
-        /// `EntityAudio.SetFloorMaterialParams`. La grafia conta: `getParameter` cerca per NOME, e
-        /// `"SecretFloor"` NON e' `"Secret"` (il campo si chiama `SecretValue` e il label e' diverso).
+        /// The 14 FMOD floor-material parameter names, matching EntityAudio.SetFloorMaterialParams.
+        /// The exact spelling matters (getParameter is by name; "SecretFloor" is not "Secret").
         /// </summary>
         private static readonly string[] FloorMaterialParams =
         {
-            EntityAudio.LabelParamDirt,        // "Dirt"
-            EntityAudio.LabelParamWater,       // "Water"
-            EntityAudio.LabelParamSnow,        // "Snow"
-            EntityAudio.LabelParamStone,       // "Stone"
-            EntityAudio.LabelParamWood,        // "Wood"
-            EntityAudio.LabelParamMarble,      // "Marble"
-            EntityAudio.LabelParamFlesh,       // "Flesh"
-            EntityAudio.LabelParamMetal,       // "Metal"
-            EntityAudio.LabelParamMud,         // "Mud"
-            EntityAudio.LabelParamSecret,      // "SecretFloor"
-            EntityAudio.LabelParamGrass,       // "Grass"
-            EntityAudio.LabelParamDemake,      // "Demake"
-            EntityAudio.LabelParamPalio,       // "Palio"
-            EntityAudio.LabelParamSnake,       // "Snake"
+            EntityAudio.LabelParamDirt,
+            EntityAudio.LabelParamWater,
+            EntityAudio.LabelParamSnow,
+            EntityAudio.LabelParamStone,
+            EntityAudio.LabelParamWood,
+            EntityAudio.LabelParamMarble,
+            EntityAudio.LabelParamFlesh,
+            EntityAudio.LabelParamMetal,
+            EntityAudio.LabelParamMud,
+            EntityAudio.LabelParamSecret,
+            EntityAudio.LabelParamGrass,
+            EntityAudio.LabelParamDemake,
+            EntityAudio.LabelParamPalio,
+            EntityAudio.LabelParamSnake,
         };
 
         /// <summary>
-        /// I campi `protected float` di `EntityAudio` che tengono i valori, NELLO STESSO ORDINE di
-        /// `FloorMaterialParams`. Sono `Family`, quindi si leggono per riflessione. Si risolvono UNA VOLTA:
-        /// `FieldInfo` risolti a ogni passo sarebbero 14 `GetField` per suono.
+        /// EntityAudio's protected float fields holding the values, in the same order. Resolved once
+        /// (14 GetField per sound would be wasteful); a miss degrades to default materials.
         /// </summary>
         private static readonly System.Reflection.FieldInfo[] FloorMaterialFields = ResolveFloorMaterialFields();
 
@@ -617,17 +361,11 @@ namespace Blasphemous.Multiplayer.Client.Players
             return fields;
         }
 
-        /// <summary>
-        /// Una volta sola, la PRIMA volta che si prova a suonare un passo: la riflessione ha trovato i 14
-        /// campi, o no? Si logga in ogni caso, e in caso di fallimento si dice anche cosa succede (i
-        /// materiali restano ai default del gioco). Una riga per sessione, non una per passo.
-        /// </summary>
         private static bool floorMaterialReflectionChecked;
 
         /// <summary>
-        /// Imposta i 14 parametri del materiale del terreno sull'istanza, copiandoli dal penitent LOCALE.
-        /// Se la riflessione non e' disponibile NON imposta nulla e NON e' un errore: l'istanza resta coi
-        /// default del banco, che e' esattamente lo stato in cui si trova oggi.
+        /// Sets the 14 floor-material parameters on the instance from the LOCAL Penitent's audio. If
+        /// reflection failed, nothing is set (event keeps its defaults, which is the pre-fix state).
         /// </summary>
         private static void ApplyLocalFloorMaterialParams(FMOD.Studio.EventInstance instance)
         {
@@ -639,13 +377,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 ModLog.Info("[Sound] materiale del terreno per i passi del peer: " +
                             (ok
                                 ? "letto dal penitent locale (14 parametri)"
-                                : "NON DISPONIBILE (la riflessione non trova i campi di EntityAudio): " +
+                                : "NOT AVAILABLE (reflection does not find the EntityAudio fields): " +
                                   "il passo esce coi materiali di default del banco"));
             }
 
-            // ⚠️ `Core.Logic.Penitent` (o il suo Audio) puo' mancare in cambio scena: in quel caso si esce
-            // senza toccare nulla. Non si mette una guardia sul `null` del penitent PIU' SOPRA perche' il
-            // passo deve poter arrivare anche quando il penitent locale non c'e' piu'.
             Gameplay.GameControllers.Penitent.Penitent penitent = Core.Logic.Penitent;
             if (penitent == null || penitent.Audio == null)
                 return;
@@ -661,38 +396,20 @@ namespace Blasphemous.Multiplayer.Client.Players
                 FMOD.Studio.ParameterInstance parameter;
                 instance.getParameter(FloorMaterialParams[i], out parameter);
 
-                // ⚠️ `isValid()` NON e' una formalita': `getParameter` restituisce un'istanza NON valida
-                // quando l'evento non HA quel parametro, e chiamare `setValue` su un'istanza non valida e'
-                // il modo di far lanciare FMOD dentro il percorso degli effetti. Si imposta solo se c'e'.
+                // getParameter returns an invalid instance when the event has no such parameter;
+                // setValue on an invalid instance would throw inside FMOD.
                 if (parameter.isValid())
                     parameter.setValue((float)field.GetValue(localAudio));
             }
         }
 
         /// <summary>
-        /// Il PASSO del peer, riprodotto dalla CATENA LOCALE e non da `EventOneShotPanned`.
-        ///
-        /// PERCHE' UN METODO SUO E NON UN `case` IN PIU' IN `PlayPeerSound`: perche' e' l'unico dei sette
-        /// suoni che ha bisogno dei parametri di materiale. `PlayPeerSound` resta per i sei fendenti, che
-        /// sono chiavi pure e non hanno un solo parametro da impostare - e' la stessa distinzione che il
-        /// piano fa fra i passi (con fusibile) e i fendenti (senza), per la stessa ragione: chi ha una
-        /// proprieta' in piu' ha un posto suo, altrimenti quella proprieta' si perde nel codice condiviso.
+        /// Reproduces the footstep sound through the game's local chain, so the 14 floor-material
+        /// parameters are applied. PlayOneShotFromCatalog would skip them and the step would be
+        /// silent.
         /// </summary>
         private static void PlayPeerMotionSound(string key, Vector2 position)
         {
-
-            // La spia (una volta per chiave): dice se la chiave non esiste su QUESTA macchina, che e' una
-            // cosa diversa da "il pacchetto non e' arrivato". Si usa SOLO come guardia diagnostica.
-            //
-            // ⚠️⚠️ E IL SUO VALORE DI RITORNO NON SI PASSA A `CreateCatalogEvent`. Quest'ultima NON prende
-            // un PERCORSO: prende una CHIAVE DI CATALOGO, e dentro fa `FindSfxInCatalogs(key)` e poi
-            // `RuntimeManager.CreateInstance(clip.FMODKey)`. Verificato nel corpo IL.
-            //   ⇒ passarle `event:/SFX/Penitent/Motion/PenitentFootStep` la farebbe cercare NEL CATALOGO
-            //   come se fosse un Id: `FindSfxInCatalogs` non troverebbe nulla, `FMODKey` sarebbe null,
-            //   `RuntimeManager.CreateInstance(null)` lancerebbe `ArgumentNullException` (o tornerebbe
-            //   un'istanza non valida), e il passo resterebbe MUTO **con una riga di log che dice che va
-            //   tutto bene**. E' l'errore piu' facile da commettere in questo fix: la variabile si chiama
-            //   `path` e sembra la cosa da passare.
             string path = ResolveCatalogPath(key);
             if (string.IsNullOrEmpty(path))
                 return;
@@ -703,91 +420,37 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             UnityEngine.Vector3 world = EffectWorldPosition(position);
 
-            // 1. come il gioco: `CreateCatalogEvent(CHIAVE, pos)` risolve la chiave, applica set3DAttributes
-            //    e `Spanish` (UpdateEventInstanceParam). ⚠️ `key`, NON `path`.
+            // CreateCatalogEvent takes a KEY, not a path (it resolves via FindSfxInCatalogs). Passing
+            // the resolved path here would look up nothing and produce an invalid instance with no
+            // warning.
             FMOD.Studio.EventInstance instance = audio.CreateCatalogEvent(key, world);
 
-            // ⚠️ `CreateCatalogEvent` NON dice niente quando la chiave non e' nel catalogo: restituisce
-            // un'istanza NON valida. `ResolveCatalogPath` l'ha gia' detto (una volta per chiave), quindi
-            // qui basta uscire senza chiamare `start` su un'istanza morta.
             if (!instance.isValid())
                 return;
 
-            // 2. i MATERIALI DEL TERRENO, e il PANNING dalla posizione del PEER (non del penitent locale:
-            //    `SetPanning(EventInstance, Vector3)` e' la variante che prende la posizione, ed e'
-            //    public static - l'altra, `SetPanning(EventInstance)`, leggerebbe `Owner.transform.position`,
-            //    cioe' la posizione del SUONATORE LOCALE, e il passo uscirebbe dal lato sbagliato).
             ApplyLocalFloorMaterialParams(instance);
             EntityAudio.SetPanning(instance, world);
 
-            // 3. come il gioco, e nello stesso ordine: `start()` e poi `release()`. Il `release()` subito
-            //    dopo `start()` e' quello che fa anche `EntityAudio.PlayOneShotEvent`, riga per riga.
             instance.start();
             instance.release();
         }
 
-        /// <summary>
-        /// Suona uno dei sei SUONI non sostenuti di A5 nel punto in cui e' successo.
-        ///
-        /// ⚠️ PERCHE' NON `PlayOneShotFromCatalog`, che sarebbe la riga piu' corta.
-        /// Perche' quel metodo NON dice niente quando la chiave non c'e'. Con `ResolveCatalogPath` +
-        /// `EventOneShotPanned` si ottiene la stessa identica cosa - percorso risolto nel catalogo, panning
-        /// dalla posizione - con in piu' la riga che distingue "chiave assente" da "pacchetto mancato".
-        /// `EventOneShotPanned` prende il PERCORSO, che e' esattamente quello che `ResolveCatalogPath`
-        /// restituisce: nessun rischio di passargli una chiave.
-        /// </summary>
-        /// <summary>
-        /// L'istanza dell'evento SOSTENUTO della scivolata, una per avatar.
-        ///
-        /// ⚠️ PERCHE' UN CAMPO E NON UNA VARIABILE LOCALE. L'ACCENSIONE e lo SPEGNIMENTO arrivano in due
-        /// pacchetti DIVERSI, a distanza di un dash: fra i due non c'e' alcuna pila che li tenga insieme.
-        /// L'istanza e' l'unico filo che li lega, e per questo vive qui.
-        ///
-        /// ⚠️ È IL PRIMO PEZZO DI A5 CON UNO STATO, e va guardato come tale: se qualcosa di A5 puo'
-        /// "restare acceso", e' questo. Le tre vie di uscita sono: lo STOP (il caso normale), OnDestroy
-        /// (la disconnessione), e la SCADENZA (il caso in cui lo STOP non arriva mai).
-        /// </summary>
+        /// <summary>Latched event instance for the peer's dash sound. One per avatar: START and STOP
+        /// arrive in separate packets and this field is the only link between them.</summary>
         private FMOD.Studio.EventInstance dashSoundInstance;
 
-        /// <summary>
-        /// Da quando l'istanza della scivolata sta suonando, in `Time.unscaledTime`. Serve alla scadenza.
-        /// </summary>
+        /// <summary>When the dash instance started playing, in Time.unscaledTime.</summary>
         private float dashSoundStartedAt;
 
         /// <summary>
-        /// Oltre questo tempo la scivolata si spegne da sola, e lo DICE.
-        ///
-        /// PERCHE' UNA SCADENZA E NON SOLO LO STOP. Lo STOP arriva da `Dash.OnCastEnd` sull'altra macchina
-        /// e in condizioni normali c'e' sempre. Ma un evento sostenuto che non viene mai fermato non si
-        /// "sente male": RESTA ACCESO PER SEMPRE, e l'unico modo di farlo smettere e' riavviare il gioco.
-        /// Le due condizioni che lo producono sono note e non rare: un pacchetto perso, e una
-        /// disconnessione nel mezzo di un dash. La prima non si puo' escludere, la seconda la copre
-        /// OnDestroy - ma solo se l'oggetto viene distrutto, e una disconnessione con la scena che si
-        /// ricarica non e' l'unico percorso.
-        ///
-        /// 5 secondi perche' il dash piu' lungo del gioco non arriva a un terzo di questo: e' un fusibile,
-        /// non una durata. Se scatta, il log lo dice - e vuol dire che si e' perso uno STOP, non che il
-        /// dash e' durato tanto.
+        /// Fuse for the peer's dash sound. A latched event that loses its STOP stays on until the game
+        /// restarts; 5s is well past any real dash and only says the STOP was lost.
         /// </summary>
         private const float DASH_SOUND_TIMEOUT = 5f;
 
-        // ⭐ ②b - QUI C'ERANO `parryHitInstance`, `parryHitStartedAt` E `PARRY_HIT_TIMEOUT`, E SONO STATI
-        // RIMOSSI. Erano il fusibile del clang: un `EventInstance` creato a mano, l'ora del suo `start()`, e
-        // una scadenza di 4 s per spegnerlo se lo STOP fosse andato perso.
-        //   ⚠️ PERCHE' RIMOSSI E NON LASCIATI INERTI: `EventOneShotPanned` fa `start()` E `release()` da
-        //   sola, quindi "lo STOP e' perso e l'evento resta acceso per sempre" non e' piu' uno stato
-        //   raggiungibile. Un fusibile che non puo' piu' scattare e' una bugia che qualcuno leggera' fra sei
-        //   mesi - e `parryHitInstance` sarebbe stato un campo chiamato "istanza del clang" che vale sempre
-        //   "nessuna", cioe' la stessa bugia in forma di campo. Vedi il commento in
-        //   `PlayPeerParryHitSound`, che e' dove la decisione e' argomentata.
-
         /// <summary>
-        /// Accende il suono della scivolata del peer nel punto in cui e' scivolato.
-        ///
-        /// La sequenza e' quella del gioco, non una inventata: `PenitentAudio.PlayDashSound()` fa
-        /// `StopDashSound(); PlayEvent(ref _dashEventInstance, "PenitentDash");` - PRIMA spegne, POI
-        /// accende. Serve per il dash concatenato (due dash di fila: il secondo accende mentre il primo e'
-        /// ancora acceso), e replicarla e' l'unico modo di non trovarsi due istanze vive.
+        /// Starts the peer's dash sound at the peer's position. Same order as the game's PlayDashSound:
+        /// stop whatever is playing, then start the new one.
         /// </summary>
         private void PlayPeerDashSound(Vector2 position)
         {
@@ -795,19 +458,12 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (audio == null)
                 return;
 
-            string key = PenitentAudio.DashEventKey;   // "PenitentDash", const verificata in IL
+            string key = PenitentAudio.DashEventKey;
 
-            // ⚠️⚠️ LA SPIA SI CONSULTA, MA IL SUO VALORE DI RITORNO NON SI PASSA A `PlayEventWithCatalog`.
-            // Quest'ultima prende una CHIAVE DI CATALOGO: dentro fa `CreateCatalogEvent(eventKey, position)`,
-            // che a sua volta fa `FindSfxInCatalogs(key)` e `RuntimeManager.CreateInstance(clip.FMODKey)`.
-            // Passandole il PERCORSO la ricerca fallirebbe, `FMODKey` sarebbe null, e la scivola resterebbe
-            // MUTA **con un log che dice che va tutto bene**.
-            //   ⚠️ E' la stessa trappola dei passi, ed e' per questo che la riga e' scritta cosi': il metodo
-            //   si chiama "WithCatalog" e sembra volere il percorso risolto, mentre vuole l'Id.
+            // PlayEventWithCatalog takes the KEY, not the resolved path.
             if (string.IsNullOrEmpty(ResolveCatalogPath(key)))
                 return;
 
-            // Come il gioco: prima si spegne quello che c'e'.
             StopPeerDashSound();
 
             audio.PlayEventWithCatalog(
@@ -815,22 +471,13 @@ namespace Blasphemous.Multiplayer.Client.Players
                 key,
                 EffectWorldPosition(position));
 
-            // ⚠️ Il controllo NON e' decorativo: se la chiave non e' nel catalogo, `PlayEventWithCatalog`
-            // lascia l'istanza NON VALIDA e non lo dice. Registrare l'ora su un'istanza invalida farebbe
-            // scattare la scadenza su un suono che non c'e' mai stato, con una riga di avviso che accusa
-            // la rete per un problema di catalogo.
             if (dashSoundInstance.isValid())
                 dashSoundStartedAt = Time.unscaledTime;
         }
 
         /// <summary>
-        /// Spegne il suono della scivolata. SICURA DA CHIAMARE SEMPRE, anche a vuoto: `StopEvent` del gioco
-        /// comincia con `if (eventInstance.isValid())`, e un'istanza mai accesa non e' valida.
-        ///
-        /// ⚠️ `clearHandle()` e' dentro `StopEvent` (verificato), e senza di essa l'istanza resterebbe
-        /// "valida" dopo `release()`: la scadenza la troverebbe valida e la fermerebbe una seconda volta.
-        /// Un `EventInstance` e' uno STRUCT, quindi azzerarlo e' comunque l'unico stato sicuro in cui
-        /// lasciarlo.
+        /// Stops the peer's dash sound. Safe to call at any time: StopEvent starts with an isValid
+        /// check. clearHandle inside StopEvent ensures the instance is not left "valid" after release.
         /// </summary>
         private void StopPeerDashSound()
         {
@@ -846,18 +493,12 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// A7 - IL CLANG DELLA PARATA DEL PEER, alla catena del gioco.
-        ///
-        /// ⭐ ②b - E' UN ONE-SHOT, E SI SUONA SU UNA STRADA SOLA: `EventOneShotPanned`. Vedi il corpo del
-        /// metodo per cosa e' stato rimosso e perche' (`CreateCatalogEvent` + `start()` era il residuo di
-        /// A7-bis, raddoppiava lo `start()` e non era il suono che mancava).
-        ///
-        /// ⚠️ E NON C'E' PIU' UNA GESTIONE A ISTANZA DA QUI. Il commento che stava qui diceva il contrario -
-        /// che questo evento e' SOSTENUTO e che `EventOneShotPanned`, facendo `start()` e `release()`, lo
-        /// lascerebbe "partito e senza piu' un manico per fermarlo". Nei fatti `EventOneShotPanned` e' la
-        /// strada che SUONA (confermato dall'utente, ed e' quella della guardia), quindi la scelta e'
-        /// quella. `StopPeerParryHitSound()` resta come via di pulizia dello STOP ed e' INERTE, dichiarato:
-        /// senza un `EventInstance` non c'e' nulla da fermare, e non lo si finge.
+        /// Plays the parry clang via EventOneShotPanned. Previously this method had two call sites
+        /// (CreateCatalogEvent + start, and EventOneShotPanned): the first was the residue of an
+        /// experiment, doubled the start, and was not the missing sound. Only EventOneShotPanned
+        /// remains. The clang fuse, its instance field and its timeout were removed: with a
+        /// one-shot that releases itself, "event stuck on" is no longer reachable, and a fuse that
+        /// can never fire is a lie.
         /// </summary>
         private void PlayPeerParryHitSound(Vector2 position)
         {
@@ -865,152 +506,53 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (audio == null)
                 return;
 
-            string key = PenitentAudio.ParryHitEventKey;   // "PenitentParryHit"
+            string key = PenitentAudio.ParryHitEventKey;
 
-            // La spia di A5: dice se la chiave non esiste su QUESTA macchina. Si consulta - e il suo valore
-            // di ritorno NON si passa a `PlayEventWithCatalog`, che vuole l'Id e non il percorso.
             string path = ResolveCatalogPath(key);
             if (string.IsNullOrEmpty(path))
                 return;
 
-            // Come il gioco: PRIMA si spegne quello che c'e', POI si accende.
-            // ⚠️ MA CON `EventOneShotPanned` QUESTA RIGA NON SPEGNE PIU' NULLA, ed e' voluto: il clang e' un
-            // one-shot (fa `start()` e `release()` da sola) e non esiste piu' un `EventInstance` da fermare
-            // qui. La riga resta come nel gioco - l'ordine "prima spegni, poi accendi" - e perche' questo e'
-            // il punto in cui rimettere una gestione a istanza se un giorno il suono tornasse SOSTENUTO.
-            // Vedi `StopPeerParryHitSound` per la decisione completa.
             StopPeerParryHitSound();
 
-            // ⚠️ LA POSIZIONE E' UNA SCELTA DICHIARATA, NON UNA COPIA DEL GIOCO. `EntityAudio.PlayEvent`
-            // chiama `CreateCatalogEvent(eventKey)` SENZA posizione, quindi il gioco crea questo evento
-            // nell'origine. Passare la posizione del PEER lo spazializza dove la parata e' avvenuta, che e'
-            // lo scopo del fix. Se all'orecchio suonasse sbagliato, per essere fedeli al gioco basta passare
-            // `Vector3.zero`: e' l'unica riga da cambiare.
             Vector3 at = EffectWorldPosition(position);
 
-            // ============================================================================================
-            // ⭐⭐ ②b - UNA SOLA STRADA, E QUESTA E' QUELLA CHE FUNZIONA (`EventOneShotPanned`).
-            // ============================================================================================
-            //
-            // COS'ERA. Fino a ieri questo metodo faceva ENTRAMBE le cose: `audio.CreateCatalogEvent(key, at)`
-            // + `parryHitInstance.start()` (col marker "[Sound RX] clang acceso") E POI
-            // `audio.EventOneShotPanned(path, at)`. Era il residuo dell'esperimento A7-bis, scritto per
-            // separare due variabili ("se ora si sente, il problema era la STRADA").
-            //
-            // ⭐ LA MISURA, E SCIOGLIE L'ESPERIMENTO. Nei log G1 il marker c'e' - riga 1846,
-            // "[Sound RX] clang acceso (-545.6,10.0)", quindi la prima strada PARTIVA DAVVERO - ma il clang
-            // NON era il suono che mancava: quello era `PenitentParry` (il flash della parata riuscita), e
-            // A7-ter l'ha chiuso col suo `case EffectType.ParryAttack`. Il clang suonava, e suonava due
-            // volte: due `start()` dello stesso evento a un frame di distanza.
-            //
-            //   ⇒ SI TIENE `EventOneShotPanned`, che e' la strada della GUARDIA (gia' confermata
-            //   dall'utente) e che nel suo IL fa `start()` E `release()` da sola.
-            //
-            // ⚠️ E IL FUSIBILE DEL CLANG (`PARRY_HIT_TIMEOUT`), IL CAMPO `parryHitInstance`, IL CAMPO
-            // `parryHitStartedAt` E LA SUA SCADENZA IN `PlayEffectAnimation` SONO STATI RIMOSSI, NON LASCIATI
-            // INERTI. Erano un fusibile su un EVENTO SOSTENUTO: esistevano per il caso "lo STOP e' perso e
-            // l'evento resta acceso per sempre". `EventOneShotPanned` fa `release()` da sola, quindi quel
-            // caso NON PUO' PIU' ESISTERE - e un fusibile che non puo' piu' scattare e' una bugia che
-            // qualcuno leggera' fra sei mesi, leggendo un log che non comparira' mai.
-            //   ⚠️ `parryHitInstance` sarebbe rimasto un default per sempre (nessuno gliela assegnava piu'),
-            //   e un campo che si chiama "istanza del clang" e vale sempre "nessuna" e' la stessa bugia in
-            //   forma di campo.
-            //
-            // ⚠️ E COSA RIMANE DELLO STOP, che e' la parte del vincolo da rispettare. `case
-            // EffectType.ParryHitStop` e `StopPeerParryHitSound()` RESTANO, e NON sono un fusibile: sono la
-            // via di pulizia dello STOP, che continua ad arrivare dal mittente.
-            //   ⚠️ E `StopPeerParryHitSound()` e' OGGI INERTE, DICHIARATAMENTE: con la sola
-            //   `EventOneShotPanned` non esiste piu' un `EventInstance` da fermare, quindi non c'e' nulla da
-            //   pulire. Non si finge che serva: la sua intestazione lo dice. Le due chiamate restano perche'
-            //   il caso e' riconosciuto e osservato (la riga `[Effect] ParryHitStop` continua a dire che il
-            //   byte e' arrivato), e perche' rimettere qui una gestione a istanza, un giorno, e' una riga -
-            //   non una ricostruzione.
-            //
-            // ⚠️ E NON SI USA `CreateCatalogEvent` DA SOLO PER "NON PERDERE IL MARKER": il marker serve a
-            // distinguere "il byte e' arrivato e non ha suonato" da "e' arrivato e ha suonato", e la riga
-            // `[Effect] ParryHit` dice gia' che il byte e' arrivato. Il marker che si scrive qui sotto dice
-            // che il suono e' partito, ed e' sulla strada che SUONA.
             audio.EventOneShotPanned(path, at);
             ModLog.Info($"[Sound RX] clang acceso ({at.x:F1},{at.y:F1}) via EventOneShotPanned " +
-                        $"(unico start: niente istanza da fermare, nessun fusibile)");
+                        $"(single start: no instance to stop, no fuse)");
         }
 
         /// <summary>
-        /// Spegne il clang. SICURA DA CHIAMARE SEMPRE, anche a vuoto - ⚠️ MA OGGI NON HA NULLA DA FARE, E LO
-        /// DICE INVECE DI FINGERE.
-        ///
-        /// ⭐ ②b - L'HA RESA INERTE LA SCELTA DI UNA STRADA SOLA. Il clang si suona con
-        /// `EventOneShotPanned`, che fa `start()` E `release()` da sola: non esiste piu' un `EventInstance`
-        /// tenuto da questo script, quindi non c'e' un manico da fermare. Prima questa riga fermava e
-        /// azzerava `parryHitInstance` con `FMODAudioManager.StopEvent` (che e' anche l'unico posto in cui
-        /// `clearHandle()` viene chiamato, e per questo il campo non restava "valido" dopo il `release()`).
-        ///
-        /// ⚠️ PERCHE' IL METODO RESTA, ALLORA: e' la via di pulizia dello STOP, e lo STOP continua ad
-        /// arrivare dal mittente (`case EffectType.ParryHitStop`, chiamato anche da `OnDestroy`). Il caso
-        /// resta riconosciuto e osservato - la riga `[Effect] ParryHitStop` dice che il byte e' arrivato - e
-        /// rimettere qui una gestione a istanza, un giorno, e' una riga: non una ricostruzione. Se il clang
-        /// tornasse a essere un evento SOSTENUTO, questo e' il posto in cui rimettere lo stop, e il commento
-        /// in `PlayPeerParryHitSound` dice esattamente cosa rimetterci.
+        /// Stops the peer's parry clang. Currently inert: the clang is a one-shot via
+        /// EventOneShotPanned and holds no EventInstance. Kept as the STOP cleanup path (STOP still
+        /// arrives from the sender) and as the place to re-add instance management if the clang
+        /// ever becomes latched again.
         /// </summary>
         private void StopPeerParryHitSound()
         {
-            // NIENTE DA FARE, DI PROPOSITO. Non si tiene un `EventInstance` per il clang: vedi sopra.
+            // No-op by design.
         }
 
         /// <summary>
-        /// LA PULIZIA SU DISCONNESSIONE, ed e' la ragione per cui questa riga esiste.
-        ///
-        /// ⚠️ COSA SUCCEDE SE IL PEER SI DISCONNETTE MENTRE LA SCIVOLATA E' ACCESA. L'istanza dell'evento
-        /// NON appartiene all'avatar: e' registrata dentro FMOD, e distruggere un GameObject non ferma
-        /// nulla di cio' che FMOD sta suonando. Senza questa riga il `PenitentDash` del peer resterebbe
-        /// acceso per sempre, e nessun pacchetto successivo potrebbe piu' spegnerlo - perche' il suo
-        /// mittente non c'e' piu'.
-        ///
-        /// ⚠️ E' UN PUNTO DI PULIZIA GARANTITO, e non per caso: `OtherPlayerManager.RemoveAllActivePlayers`
-        /// e `RemoveActivePlayer` distruggono il GameObject in OGNI percorso - `Multiplayer.OnDisconnect`,
-        /// il cambio scena (`LevelLoaded`), e il `ReceiveLeaveScene`. `OnDestroy` li copre tutti.
-        ///
-        /// La scadenza in `PlayEffectAnimation` copre il caso che `OnDestroy` NON copre: un pacchetto di
-        /// STOP perso mentre la connessione e' ancora viva.
+        /// Cleanup on disconnect / scene change. FMOD events are registered inside FMOD and outlive
+        /// GameObject destruction, so without this the peer's dash sound would play forever.
+        /// OnDestroy is a guaranteed cleanup path: OtherPlayerManager destroys the GameObject on
+        /// every removal path.
         /// </summary>
         private void OnDestroy()
         {
             StopPeerDashSound();
-            // A7 - E LA STESSA PULIZIA PER IL CLANG. La ragione e' quella della scivolata, parola per parola:
-            // l'istanza NON appartiene all'avatar, e' registrata dentro FMOD, e distruggere un GameObject non
-            // ferma nulla di cio' che FMOD sta suonando.
             StopPeerParryHitSound();
         }
 
-        /// ⚠️ IL DIFETTO DELLA VERSIONE PRECEDENTE NON ERA "IL PRIMO E' SBAGLIATO": era che il controller che
-        /// recita l'esecuzione non e' raggiungibile chiedendo `HasState(0,"USED")` agli `<Animator>` del
-        /// prefab. Il log lo ha dimostrato su TUTTI (non solo sul primo): nessuno risponde `true`.
+        /// <summary>
+        /// Resolves the execution prop prefab (for OtherPlayerScript to spawn a real ghost).
         ///
-        /// ⭐ LA SCELTA GIUSTA NON E' UNA SCELTA: e' il campo che il GIOCO usa per recitare.
-        ///    `Tools.Level.Interactables.Interactable` dichiara:
-        ///        protected Animator interactableAnimator;   // la prop
-        ///        protected Animator interactorAnimator;     // il fantasma (il penitent clonato)
-        ///    ed e' su `interactorAnimator` che il gioco esegue
-        ///        Execution.cs:166   interactorAnimator.SetTrigger("USED");
-        ///    Quindi non si indovina fra N Animator: si prende quello che il gioco usa.
-        ///    ⚠️ Il valore e' nell'asset, ma la SCELTA no: questo e' l'unico punto che non dipende dall'asset.
-        ///
-        /// ⚠️ NON SI CERCA `FindObjectOfType<Execution>()`: la prop NON ESISTE finche' qualcuno non esegue
-        /// qualcosa, e quando esiste e' a meta' cutscene. Il prefab invece e' sempre raggiungibile dal nemico,
-        /// che il ricevente HA GIA' risolto.
+        /// The prefab is cached because resolution depends on the enemy, and the enemy's death
+        /// packet may arrive right after ExecutionStart and destroy it. The prefab is an asset and
+        /// never changes, so caching it once closes that race.
         /// </summary>
         public static GameObject ResolveExecutionPrefab()
         {
-            // ⚠️⚠️ LA CACHE NON E' UN'OTTIMIZZAZIONE: E' LA CURA DI UNA CORSA VERA.
-            //
-            // Questa risoluzione dipende dal NEMICO: `LastExecutedEnemy` e il suo `EntityExecution`. Ma la
-            // morte del nemico viaggia PER CONTO SUO, e il ricevente la applica entro ~50 ms - con
-            // `SetActive(false)` e, nel caso peggiore, con un `Destroy`.
-            //   ⇒ Fra l'arrivo di `ExecutionStart` e l'arrivo della MORTE c'e' una corsa, e se la morte
-            //   vince il nemico e' gia' un oggetto morto: `enemy == null` e' VERO per un oggetto Unity
-            //   distrutto, e la risoluzione fallirebbe su un'esecuzione che sta andando benissimo.
-            //   ⭐ E il PREFAB non cambia mai durante la sessione: e' un asset. Una volta risolto, resta
-            //   valido per sempre - quindi la corsa si chiude CHIEDENDOLO UNA VOLTA SOLA.
             if (cachedExecutionPrefab != null)
                 return cachedExecutionPrefab;
 
@@ -1018,8 +560,7 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (enemy == null || enemy.gameObject == null)
                 return null;
 
-            // `includeInactive: true` perche' il prefab e' quasi certamente inattivo finche' la prop non e'
-            // in uso: senza il flag la ricerca non lo troverebbe e il ripiego fallirebbe in silenzio.
+            // includeInactive: true because the prefab is almost certainly inactive until used.
             EntityExecution entityExecution = enemy.GetComponentInChildren<EntityExecution>(true);
             if (entityExecution == null || entityExecution.ExecutionPrefab == null)
                 return null;
@@ -1029,10 +570,13 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// Il CONTROLLER del fantasma dal prefab. SOPRAVVIVE come ripiego dichiarato: la strada del fantasma
-        /// vero lo rende inutile (l'animazione la recita l'Animator del fantasma, che ha il SUO controller),
-        /// non lo rende sbagliato - e resta l'unico modo di chiedere "esiste un controller che recita USED?"
-        /// a una macchina su cui il fantasma non e' ancora nato.
+        /// Returns the ghost's RuntimeAnimatorController from the prefab, trying three sources.
+        ///
+        /// Path 1 uses Interactable.interactorAnimator (the field the game uses to play USED) via
+        /// reflection. Path 2 finds the Animator carrying an AnimatorEvent (the predicate
+        /// Interactable.CheckAnimationEvents uses). Path 3 falls back to HasState("USED"). Path 3 is
+        /// a safety net only; path 1 is the correct answer because it is the field the game plays
+        /// with.
         /// </summary>
         public static RuntimeAnimatorController ResolveExecutionController()
         {
@@ -1040,7 +584,6 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (prefab == null)
                 return null;
 
-            // VIA 1 - il campo del gioco, su TUTTE le Interactable del prefab.
             Interactable[] interactables = prefab.GetComponentsInChildren<Interactable>(true);
             for (int i = 0; i < interactables.Length; i++)
             {
@@ -1059,9 +602,6 @@ namespace Blasphemous.Multiplayer.Client.Players
                 return interactor.runtimeAnimatorController;
             }
 
-            // VIA 2 (ripiego) - l'Animator che porta un `AnimatorEvent`: e' il predicato che
-            // `Interactable.CheckAnimationEvents` usa per riconoscere il fantasma. Non e' una scommessa
-            // sull'ordine: e' la stessa domanda che si fa il gioco.
             Animator[] animators = prefab.GetComponentsInChildren<Animator>(true);
             for (int i = 0; i < animators.Length; i++)
             {
@@ -1075,7 +615,6 @@ namespace Blasphemous.Multiplayer.Client.Players
                 return animators[i].runtimeAnimatorController;
             }
 
-            // VIA 3 - l'ultima spiaggia, tenuta SOLO come rete di sicurezza e DICHIARATA come tale.
             int executionState = Animator.StringToHash("USED");
             for (int i = 0; i < animators.Length; i++)
             {
@@ -1090,45 +629,28 @@ namespace Blasphemous.Multiplayer.Client.Players
                 }
             }
 
-            ModLog.Warn($"[ExecAnim RX] nessuna delle {interactables.Length} Interactable e dei " +
-                        $"{animators.Length} Animator del prefab espone il fantasma: l'animazione non esiste");
+            ModLog.Warn($"[ExecAnim RX] none of the {interactables.Length} Interactable nor of the " +
+                        $"{animators.Length} Animator of the prefab exposes the ghost: the animation does not exist");
             return null;
         }
 
         /// <summary>
-        /// `Interactable.interactorAnimator` per riflessione: e' `protected`, e prenderlo per riflessione e'
-        /// la stessa tecnica che questo file usa gia' per `_audioCatalogs`, `DashDustGenerator` e
-        /// `GuardSlide`.
-        ///
-        /// ⚠️ E' `public` PERCHE' ORA LO USA `OtherPlayerScript`, che e' l'unico posto in cui il fantasma
-        /// esiste: li' non si prende un controller, si prende IL GameObject del fantasma per staccarlo dalla
-        /// prop e distruggere il resto.
+        /// Interactable.interactorAnimator via reflection: it is protected, and reflection is the same
+        /// technique used for _audioCatalogs, DashDustGenerator and GuardSlide. Public because
+        /// OtherPlayerScript uses it to detach the ghost from the prop.
         /// </summary>
         public static readonly System.Reflection.FieldInfo InteractorAnimatorField =
             typeof(Tools.Level.Interactable).GetField(
                 "interactorAnimator",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 
-        /// <summary>
-        /// Il prefab della prop dell'esecuzione, risolto UNA VOLTA e tenuto. Vedi `ResolveExecutionPrefab`:
-        /// la cache e' la cura della corsa con la morte del nemico, non un'ottimizzazione.
-        ///
-        /// ⚠️ NON E' UN CONTROLLER. Fino a ieri questa via serviva a prendere il `RuntimeAnimatorController`
-        /// del fantasma per installarlo sull'avatar - ed e' la strada che il referto dichiara SBAGLIATA:
-        /// quella clip e' disegnata per STARE AL POSTO del penitent, non per essere su di lui, e sull'avatar
-        /// produce "un flash e poi l'invisibile". Adesso si prende il PREFAB, e da li' si istanzia IL
-        /// FANTASMA VERO.
-        /// </summary>
+        /// <summary>Execution prop prefab, resolved once. See ResolveExecutionPrefab.</summary>
         private static GameObject cachedExecutionPrefab;
 
         /// <summary>
-        /// A7 - LA GUARDIA DEL PEER. Il percorso lo legge dal PENITENT LOCALE, perche' il valore vive
-        /// nell'asset e non viaggia sul filo: un byte (109) dice "guardia", e ogni macchina risolve il
-        /// PROPRIO percorso.
-        ///
-        /// ⚠️ E SI USA `EventOneShotPanned`, non la catena del motion: questo suono NON passa da
-        /// `PlayOneShotEvent`, quindi non ha una `FxSoundCategory` e non imposta i 14 parametri del terreno.
-        /// Pretendere quelli (come per i passi) non servirebbe a nulla.
+        /// Peer's guard sound. Reads the path from the LOCAL Parry component (the value lives in the
+        /// asset and does not travel). PlayOneShotEvent is not used: this sound has no FxSoundCategory,
+        /// so it does not set the 14 floor parameters.
         /// </summary>
         private static void PlayPeerGuardSound(Vector2 position)
         {
@@ -1143,8 +665,8 @@ namespace Blasphemous.Multiplayer.Client.Players
             string path = parry.ParryGuardFx;
             if (string.IsNullOrEmpty(path))
             {
-                ModLog.Warn("[Sound] `Parry.ParryGuardFx` e' vuoto su questa macchina: " +
-                            "la guardia del peer non esce (e NON e' un problema di rete)");
+                ModLog.Warn("[Sound] `Parry.ParryGuardFx` is empty on this machine: " +
+                            "the peer's guard does not play (and it is NOT a network problem)");
                 return;
             }
 
@@ -1152,42 +674,29 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (audio == null)
                 return;
 
-            // La spia dice una volta sola PERCORSO e origine, cosi' "il pacchetto non e' arrivato" e
-            // "il percorso non c'e'" restano distinguibili.
             ModLog.Info($"[Sound] guardia del peer -> percorso \"{path}\"");
             audio.EventOneShotPanned(path, EffectWorldPosition(position));
         }
 
         private static void PlayPeerSound(EffectType effect, Vector2 position)
         {
-            // A5.1 - IL PASSO HA UNA STRADA SUA. E' l'unico dei sette suoni che il gioco suona con
-            // `EntityAudio.PlayOneShotEvent(..., FxSoundCategory.Motion)`, e quella categoria imposta i 14
-            // parametri del materiale del terreno. `EventOneShotPanned` non ne imposta nessuno, ed e' per
-            // questo che il passo arrivava, si risolveva nel catalogo, e NON si sentiva.
+            // Footstep goes through PlayPeerMotionSound because of the floor-material parameters.
             if (effect == EffectType.FootStep)
             {
                 PlayPeerMotionSound(PenitentAudio.FootStepEventKey, position);
                 return;
             }
 
-            // ⚠️ Anche `IdleSword` e' categoria MOTION: il gioco lo suona con
-            // `PlayOneShotEvent("PenitentIdleSword", Motion)`, quindi soffre ESATTAMENTE del guasto dei
-            // passi e ha bisogno degli stessi 14 parametri del terreno. Cambia solo la chiave.
+            // IdleSword is also a Motion category sound: same material-parameter requirement.
             if (effect == EffectType.IdleSword)
             {
                 PlayPeerMotionSound(PenitentAudio.IdleModeSword, position);
                 return;
             }
 
-            // A7 - LA GUARDIA HA UNA STRADA SUA, e non passa da `SoundKeyFor`.
-            //
-            // ⚠️ PERCHE'. La chiave che il gioco usa per questo suono NON e' una costante leggibile dal
-            // codice: e' `Parry.ParryGuardFx`, un campo `[EventRef]` il cui valore vive nell'ASSET. La
-            // costante `PenitentAudio.StartParryEventKey` esiste, ma il metodo che la consuma
-            // (`PlayStartParry`) non ha alcun chiamante C# in tutto l'assembly: sarebbe la chiave di un
-            // suono che il gioco non suona mai.
-            //   ⇒ Si legge il campo dal componente LOCALE (entrambe le macchine hanno il penitent, quindi
-            //   la stessa stringa), esattamente come A4 fa per `GuardSlide.GuardSlideSoundFx`.
+            // Guard sound has a distinct path: its key lives in the asset (Parry.ParryGuardFx), not
+            // in a readable constant. StartParryEventKey exists but its consumer (PlayStartParry) has
+            // no C# caller in the assembly.
             if (effect == EffectType.ParryStart)
             {
                 PlayPeerGuardSound(position);
@@ -1206,18 +715,14 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (audio == null)
                 return;
 
-            // La z arriva dal penitent LOCALE, come per la polvere di A4: vedere EffectWorldPosition.
+            // z comes from the local penitent, matching how the game's own effects are placed.
             audio.EventOneShotPanned(path, EffectWorldPosition(position));
         }
 
         /// <summary>
-        /// The world place an effect that arrived over the network belongs at.
-        ///
-        /// The payload carries two floats (x, y), because that is all a spot in this game needs, and z is taken
-        /// from the LOCAL penitent: ObjectInstance.Reuse applies the z of the Vector3 it is handed, and the
-        /// game's own effects are placed at the penitent's position and inherit its z. Rebuilding one at a
-        /// different depth than the player's own dust could sort it wrongly. Zero when there is no penitent,
-        /// which is the same z the remote avatar itself is drawn at.
+        /// The world place an effect from the network belongs at. The payload carries (x, y); z
+        /// comes from the local penitent because ObjectInstance.Reuse applies the z of the Vector3
+        /// it is handed, and the game's effects inherit the penitent's z.
         /// </summary>
         private static Vector3 EffectWorldPosition(Vector2 position)
         {
@@ -1226,17 +731,10 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// The slide's impact: the dust puff and the sound (A4).
-        ///
-        /// Reproduced from the LOCAL GuardSlide, never from a transmitted string. GuardSlideImpactEffect and
-        /// GuardSlideSoundFx are prefab/[EventRef] fields whose values live in the asset and are NOT readable
-        /// from the code, so the only correct source is the component itself - the same component
-        /// GuardSlide.OnCastStart reads on the machine that slid, and the same one that exists on this one.
-        ///
-        /// What we do NOT reproduce is the particle system: GuardSlide.EnableParticleSystem drives
-        /// Core.Logic.Penitent.ParticleSystem, which is the LOCAL player's emitter. Turning that on while the
-        /// PEER slides would raise dust on the wrong, motionless character. The avatar has no particle system
-        /// of its own, so the slide's dust trail is deliberately not part of this.
+        /// Reproduces the slide's impact dust and sound from the LOCAL GuardSlide. GuardSlideImpactEffect
+        /// and GuardSlideSoundFx are prefab/[EventRef] values that live in the asset. The particle
+        /// system (Core.Logic.Penitent.ParticleSystem) is deliberately not touched: it is the local
+        /// player's emitter.
         /// </summary>
         private static void PlaySlideDust(Vector2 position, bool facingRight)
         {
@@ -1253,25 +751,10 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             Vector3 world = EffectWorldPosition(position);
 
-            // createPoolIfNeeded stays FALSE and poolSize stays 1, exactly as GuardSlide.OnCastStart calls it:
-            // GuardSlide.OnStart already ran CreatePool(GuardSlideImpactEffect, 1) on this machine - both
-            // machines have their own penitent - so the pool is there. Passing true would be harmless, but it
-            // would be a difference from the game invented here rather than needed.
-            //
-            // ⚠️ The null check is NOT decorative: PoolManager.ReuseObject starts with prefab.GetInstanceID(),
-            // so a null prefab throws inside the pool instead of quietly drawing nothing.
-            // ⚠️ Anche qui il prefab si specchia da solo leggendo il penitent LOCALE (GuardSlideImpact
-            // ::OnObjectReuse) ⇒ la scivolata di guardia del peer aveva LO STESSO VERSO SBAGLIATO.
-            // Il ritorno si cattura per riapplicare la faccia del peer e per non perdere in silenzio il
-            // caso "pool assente".
             if (slide.GuardSlideImpactEffect != null)
             {
-                // ⭐ P1 - L'ANCORA DEL CANALE ESISTENTE. Questo effetto l'ha istanziato il canale
-                // `EffectType`, non il relay del pool; ma se un domani anche il relay lo portasse
-                // (perche' il filtro si e' allargato, o perche' il prefab acquista una `Weapon`), il
-                // secondo arrivato deve SAPERE che il primo c'e' gia'. La chiave e' la stessa
-                // (`prefab + posizione arrotondata`), quindi la tabella del dedup copre **entrambe le
-                // vie** e vince chi arriva prima.
+                // Pool is already created on this machine; the anchor is registered for dedup with
+                // any future relay path that might also spawn it.
                 EffectRelay.NoteLocalSpawn(slide.GuardSlideImpactEffect, world);
 
                 PoolManager.ObjectInstance instance =
@@ -1286,21 +769,9 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// La polvere della SCIVOLATA DI MOVIMENTO (Dash), presa dal DashDustGenerator LOCALE.
-        ///
-        /// ⚠️ NON e' la scivolata qui sopra. GuardSlide e' la scivolata che esce dalla guardia; questa e'
-        /// il dash. Sono due componenti diversi con due prefab diversi.
-        ///
-        /// ⚠️ I DUE PREFAB SONO CAMPI PRIVATI, al contrario del GuardSlideImpactEffect pubblico di
-        /// GuardSlide, e non c'e' modo di raggiungerli se non per riflessione: l'elenco COMPLETO dei membri
-        /// pubblici di DashDustGenerator e' StopDustSpawnOffsetPos, GetStartDashDust, i due
-        /// GetStopDashDust e GetDashDustPosition.
-        ///
-        /// ⚠️ GetStartDashDust/GetStopDashDust del gioco NON vengono chiamate, per due motivi distinti.
-        /// Primo: mettono la polvere sul penitent LOCALE - GetStartDashDust legge _penitent.transform.position
-        /// e GetStopDashDust legge GetDashDustPosition(), che legge _penitent.DamageArea e
-        /// _penitent.Status - quindi alzerebbero polvere sul TUO personaggio invece che su quello del peer.
-        /// Secondo: sono i due metodi che il MITTENTE patcha, quindi chiamarli qui ri-trasmetterebbe.
+        /// Reproduces the dash dust from the LOCAL DashDustGenerator. Its prefab fields are private
+        /// with no public accessor, so reflection is the only way. GetStartDashDust / GetStopDashDust
+        /// are not used: they place the dust on the LOCAL penitent and re-transmit on the sender.
         /// </summary>
         private static void PlayDashDust(bool isStart, Vector2 position, bool facingRight)
         {
@@ -1311,8 +782,7 @@ namespace Blasphemous.Multiplayer.Client.Players
                 Core.Logic.Penitent.DashDustGenerator;
             if (generator == null)
             {
-                // Penitent.DashDustGenerator e' riempito da GetComponentInChildren: puo' essere null.
-                ModLog.Warn("[DashDust] il penitent locale non ha un DashDustGenerator");
+                ModLog.Warn("[DashDust] the local penitent has no DashDustGenerator");
                 return;
             }
 
@@ -1323,38 +793,22 @@ namespace Blasphemous.Multiplayer.Client.Players
             System.Reflection.FieldInfo field = isStart ? StartDashDustField : StopDashDustField;
             if (field == null)
             {
-                // Il nome vive nei dati serializzati dell'asset: se una build futura rinomina il campo la
-                // ricerca restituisce null. Dirlo una volta, invece di lanciare o di non disegnare nulla
-                // in silenzio.
-                ModLog.Warn("[DashDust] campo prefab non trovato in DashDustGenerator");
+                ModLog.Warn("[DashDust] prefab field not found in DashDustGenerator");
                 return;
             }
 
             GameObject prefab = field.GetValue(generator) as GameObject;
             if (prefab == null)
             {
-                // ⚠️ Il controllo NON e' decorativo: PoolManager.ReuseObject inizia con
-                // prefab.GetInstanceID(), quindi un prefab null lancia DENTRO il pool invece di non
-                // disegnare nulla. E il caso e' previsto dal gioco stesso: DashDustGenerator.OnStart
-                // guarda entrambi i prefab con `if (prefab)` prima di creare il pool.
-                ModLog.Warn("[DashDust] prefab della polvere del dash non assegnato su questa build");
+                // ReuseObject starts with prefab.GetInstanceID(); a null prefab would throw inside the
+                // pool. The game itself guards the same way in DashDustGenerator.OnStart.
+                ModLog.Warn("[DashDust] dash dust prefab not assigned in this build");
                 return;
             }
 
-            // La z arriva dal penitent LOCALE, come in PlaySlideDust: ObjectInstance.Reuse applica la z
-            // del Vector3 che riceve, e gli effetti del gioco nascono sulla posizione del penitent e ne
-            // ereditano la z. Ricostruirne una diversa potrebbe ordinarli male rispetto alla polvere
-            // del giocatore locale.
             Vector3 world = EffectWorldPosition(position);
 
-            // createPoolIfNeeded resta FALSE e poolSize resta 1, come in PlaySlideDust e come nelle
-            // chiamate del gioco: l'OnStart del DashDustGenerator di QUESTA macchina ha gia' eseguito
-            // CreatePool(prefab, 5) per entrambi i prefab.
-            //
-            // ⚠️ Il ritorno si CATTURA ora, per due motivi: orientare l'effetto (vedi OrientEffect) e
-            // smettere di perdere in silenzio il caso "pool assente", in cui ReuseObject restituisce null
-            // senza dire nulla.
-            // ⭐ P1 - e si REGISTRA nella tabella del dedup del relay: vedi PlaySlideDust.
+            // Pool already exists on this machine (DashDustGenerator.OnStart ran CreatePool).
             EffectRelay.NoteLocalSpawn(prefab, world);
 
             PoolManager.ObjectInstance instance =
@@ -1362,7 +816,7 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             if (instance == null)
             {
-                ModLog.Warn("[DashDust] ReuseObject non ha restituito l'istanza (pool assente?)");
+                ModLog.Warn("[DashDust] ReuseObject returned no instance (missing pool?)");
                 return;
             }
 
@@ -1370,21 +824,11 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// Re-applies the peer's facing to an effect we just spawned on their behalf.
-        ///
-        /// ⚠️ THE GAME FLIPS THE PREFAB ITSELF, AND IT FLIPS IT BY LOOKING AT THE WRONG PLAYER.
-        ///
-        /// The spawn methods pass Quaternion.identity and never touch scale or flip, and PoolObject.OnObjectReuse
-        /// - which ObjectInstance.Reuse calls right after setting the position - is where the direction is
-        /// actually decided. The only two implementations that read an orientation both go through
-        /// Core.Logic.Penitent, the LOCAL player. On the machine that performed the action that is correct,
-        /// because the local penitent IS the one who slid; on the machine that merely watches, the peer's dust
-        /// mirrors according to YOUR face. That is the whole bug, and it is the same one the ghost trail had.
-        ///
-        /// The fix costs nothing: AttackManager already hands us the peer's facing. It is re-applied through the
-        /// prefab's OWN component so that ITS flags choose the mechanism - SimpleVFX flips with localScale when
-        /// useScaleToFlip is set and with flipX otherwise, so doing flipX ourselves on such a prefab would ADD
-        /// to the scale flip instead of replacing it.
+        /// Re-applies the peer's facing to an effect we spawned for them. The game's prefab flips
+        /// itself by reading Core.Logic.Penitent - the LOCAL player - which is correct on the sending
+        /// machine and mirrored on the receiving one. Re-applying through the prefab's own component
+        /// preserves its flip mechanism (SimpleVFX uses localScale when useScaleToFlip is set, else
+        /// flipX).
         /// </summary>
         private static void OrientEffect(
             PoolManager.ObjectInstance instance, bool facingRight, string what, GameObject prefab)
@@ -1414,24 +858,15 @@ namespace Blasphemous.Multiplayer.Client.Players
                 return;
             }
 
-            // Neither component: the effect is drawn, but its facing is unknown. Said rather than guessed - a
-            // wrong flip is more visible than none, and this line names the prefab so the next session knows
-            // which asset to look at.
-            ModLog.Warn($"[{what}] prefab senza componente di orientamento: " +
+            ModLog.Warn($"[{what}] prefab with no orientation component: " +
                         (prefab == null ? "n/d" : prefab.name));
         }
 
         /// <summary>
-        /// The ground impact: the dust, the beam and the landing sound (A4).
-        ///
-        /// This reproduces what VerticalAttack.InstantiateExplosion does - the choice of prefab, the beam and
-        /// the sound - WITHOUT calling it, because that method reads the local penitent's position and the
-        /// local skill, and here both would be the wrong ones. The prefabs and the three landing sounds come
-        /// from the LOCAL VerticalAttack's own serialized fields, for the same reason as the slide: their
-        /// values live in the prefab.
-        ///
-        /// The landing sound is NOT read through VerticalAttack.GetLandingFxEventKey: that property selects on
-        /// LastUnlockedSkillId, which is THIS machine's skill. The level travelled in the effect byte instead.
+        /// Reproduces the ground impact - dust, beam and landing sound - from the LOCAL VerticalAttack's
+        /// serialized fields, without calling InstantiateExplosion (which would read the local
+        /// penitent's position and skill). The landing sound is looked up here rather than via
+        /// GetLandingFxEventKey, which selects on the local skill.
         /// </summary>
         private static void PlayLandingImpact(EffectType effect, Vector2 position)
         {
@@ -1448,17 +883,16 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             Vector3 world = EffectWorldPosition(position);
 
-            // `isVertical3 && BeamRequiredHeightReached` is the pair InstantiateExplosion branches on, and the
-            // sender is the only machine that knows it: it saw the fall height. Hence the two members.
+            // Whether the beam should appear is decided by the sender (it saw the fall height); that
+            // is why the effect byte already encodes it.
             bool beam = effect == EffectType.LandingImpact3Beam;
 
             if (beam
                 && vertical.VerticalAttackBeamEffectPrefab != null
                 && Core.Logic.Penitent.DamageArea != null)
             {
-                // The game puts the beam at the TOP of the penitent's damage area. The avatar is somewhere
-                // else, so the offset is taken from the local penitent (its top minus its own feet) and added
-                // to the place the impact was reported at.
+                // The game places the beam at the TOP of the penitent's damage area. The avatar is
+                // elsewhere, so the offset is the local penitent's top minus its own feet.
                 Vector3 offset =
                     Core.Logic.Penitent.DamageArea.TopCenter - Core.Logic.Penitent.transform.position;
 
@@ -1472,12 +906,11 @@ namespace Blasphemous.Multiplayer.Client.Players
                     1);
             }
 
-            // InstantiateExplosion returns WITHOUT doing anything when HardLandingEffectPrefab is null, so the
-            // same guard belongs here - and it is load-bearing: ReuseObject dereferences the prefab.
+            // InstantiateExplosion returns early when HardLandingEffectPrefab is null; the same
+            // guard belongs here because ReuseObject dereferences the prefab.
             GameObject prefab = beam ? vertical.HardLandingEffectUpgradedPrefab : vertical.HardLandingEffectPrefab;
             if (prefab != null)
             {
-                // ⭐ P1 - l'ancora del dedup anche per l'impatto a terra: vedi PlaySlideDust.
                 EffectRelay.NoteLocalSpawn(prefab, world);
                 pool.ReuseObject(prefab, world, Quaternion.identity, false, 1);
             }
@@ -1488,13 +921,10 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// The landing sound for the shape the sender reported, taken from the LOCAL VerticalAttack. Its
-        /// VerticalLandingFxLevel* fields are exactly what get_GetLandingFxEventKey selects between, and they
-        /// hold the same bank paths on this machine (same build, same prefab).
-        ///
-        /// LandingImpactBase has no sound on purpose: when the selected skill is not one of the VERTICAL_* the
-        /// game's own get_GetLandingFxEventKey returns an empty string, so that landing is silent on the
-        /// machine that produced it as well.
+        /// Landing sound for the shape the sender reported, from the LOCAL VerticalAttack's
+        /// VerticalLandingFxLevel* fields. LandingImpactBase is silent on purpose: when the selected
+        /// skill is not one of the VERTICAL_* levels, the game's own get_GetLandingFxEventKey returns
+        /// empty.
         /// </summary>
         private static string LandingSound(
             Gameplay.GameControllers.Penitent.Abilities.VerticalAttack vertical,
@@ -1554,7 +984,7 @@ namespace Blasphemous.Multiplayer.Client.Players
 
             yield return new WaitForSecondsRealtime(VERDIALES_DURATION);
             Destroy(crawlerright);
-            Destroy(crawlerleft); // Will probably have to leave colliders active to detect walls, maybe just change layermask to exlude enemy layer ?
+            Destroy(crawlerleft);
         }
     }
 }

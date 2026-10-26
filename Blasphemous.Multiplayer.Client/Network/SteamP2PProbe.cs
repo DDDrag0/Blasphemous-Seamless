@@ -4,36 +4,22 @@ using System;
 namespace Blasphemous.Multiplayer.Client.Network;
 
 /// <summary>
-/// ⭐ LA FACCIATA DELLA SONDA P2P — l'unica classe che la UI nomina.
+/// Facade over the P2P probe - the only class the UI names. Names no Steamworks type: on a
+/// non-Steam copy those types may be missing and TypeLoadException surfaces at the call site,
+/// not inside the callee. Every method gates on <see cref="SteamLobby.Available"/> first, then
+/// calls the implementation through a dedicated wrapper in a try/catch, so a missing or failing
+/// Steam never escapes this class.
 ///
-/// QUESTA CLASSE NON NOMINA NESSUN TIPO `Steamworks`: né un campo, né un parametro, né una variabile
-/// locale. Vale la stessa regola di `SteamLobby` (vedi il commento in testa a quel file), e per la
-/// stessa ragione concreta: su una copia **non-Steam** (GOG &amp; co.) `Assembly-CSharp-firstpass` può
-/// non avere affatto i tipi `Steamworks`. Un tipo assente non produce "una funzione che non c'è":
-/// produce una **`TypeLoadException`** lanciata **quando la JIT compila il metodo che nomina quel
-/// tipo** — cioè al **punto di chiamata**. Ecco perché:
-///
-///   · ogni metodo qui dentro, **prima** di toccare `SteamP2PProbeImpl`, chiede a `SteamLobby.Available`
-///     se i tipi ci sono davvero (è la sonda per riflessione che `SteamLobby` fa già): se non ci sono,
-///     l'implementazione non viene **mai** nominata, la sua JIT non parte, e niente eccezione;
-///   · la chiamata sta in **un metodo suo**, dentro un `try/catch`: è lì che la `TypeLoadException`
-///     nasce, quindi è lì che si cattura. Un `try/catch` scritto *dentro* l'implementazione non
-///     verrebbe mai raggiunto.
-///
-/// ⛔ E NON È UN TRASPORTO: nessun metodo di questa classe manda un byte di gioco. `Start`/`Stop`
-/// accendono una **misura**; `Tick` la fa avanzare; `Status` restituisce una riga di testo. La sonda
-/// non chiede mai se il TCP è connesso: deve funzionare proprio quando il TCP fallisce (secondo PC su
-/// un hotspot). Vedi `SteamP2PProbeImpl`.
-///
-/// ⚠️ SE STEAM NON C'È: `Available` è `false`, il bottone è **disabilitato** (non nascosto: nasconderlo
-/// farebbe credere che la funzione non esista) e nessun metodo qui sotto tocca l'implementazione.
+/// Not a transport: no game byte is sent by this class. Start/Stop toggle a measurement, Tick
+/// advances it, Status returns a text line. The probe does not check whether the TCP session is
+/// connected - it must work exactly when TCP fails.
 /// </summary>
 internal static class SteamP2PProbe
 {
-    /// <summary>Un guasto per frame non deve inondare il log: si scrive una volta sola.</summary>
+    /// <summary>Per-frame failures must not flood the log: written once.</summary>
     private static bool _failureLogged;
 
-    /// <summary>"La sonda sta misurando adesso?" — usato dalla UI per la parola del bottone.</summary>
+    /// <summary>True while the probe is measuring. Used by the UI for the button label.</summary>
     internal static bool Active
     {
         get
@@ -54,12 +40,9 @@ internal static class SteamP2PProbe
     }
 
     /// <summary>
-    /// "PROBE P2P" — accende la sonda. `false` = non si è potuto nemmeno chiedere (Steam non c'è):
-    /// la UI lo dice con una notifica, e non succede nient'altro.
-    ///
-    /// ⚠️ NON SI CHIEDE "SONO CONNESSO AL GIOCO?": la sonda deve misurare anche — e soprattutto —
-    /// quando il TCP non arriva. L'unico requisito è una lobby Steam, e se non c'è la sonda resta accesa
-    /// e comincia da sola appena si entra (vedi `SteamP2PProbeImpl.RequireLobby`).
+    /// Probe P2P: turns the probe on. Returns false when Steam is not available; the UI reports
+    /// that. Does not check the game session - the probe must work when TCP fails. If no lobby is
+    /// present it stays armed and starts on its own as soon as one appears.
     /// </summary>
     internal static bool Start()
     {
@@ -77,7 +60,7 @@ internal static class SteamP2PProbe
         }
     }
 
-    /// <summary>Spegne la sonda (e chiude le sessioni P2P che aveva aperto). Idempotente, non lancia.</summary>
+    /// <summary>Stops the probe (and closes any P2P sessions it opened). Idempotent, never throws.</summary>
     internal static void Stop()
     {
         if (!SteamLobby.Available)
@@ -94,11 +77,8 @@ internal static class SteamP2PProbe
     }
 
     /// <summary>
-    /// Il ciclo per frame (ricezione a canale 0, battito ogni secondo, misura ogni 3). Chiamato da
-    /// `SteamLobby.Tick()`, che è già dentro l'`OnLateUpdate` della mod: **zero bersagli Harmony nuovi,
-    /// zero MonoBehaviour nuovi**.
-    ///
-    /// ⚠️ Il guasto si logga **una volta sola**: questo metodo è per frame.
+    /// Per-frame cycle (channel 0 receive, per-second heartbeat, per-3-seconds measurement).
+    /// Called from SteamLobby.Tick, which is already on the mod's OnLateUpdate.
     /// </summary>
     internal static void Tick()
     {
@@ -115,10 +95,7 @@ internal static class SteamP2PProbe
         }
     }
 
-    /// <summary>
-    /// La riga breve per la schermata (vuota a sonda ferma). Restituisce una **stringa**, quindi
-    /// nessun tipo `Steamworks` attraversa questa facciata — e nessuno può trattenerla per sbaglio.
-    /// </summary>
+    /// <summary>Short line for the screen (empty while stopped). Returns a string, so no Steamworks type crosses the facade.</summary>
     internal static string Status()
     {
         if (!SteamLobby.Available)
@@ -136,9 +113,9 @@ internal static class SteamP2PProbe
     }
 
     /// <summary>
-    /// Registra la callback `P2PSessionRequest_t` (quella che accetta le sessioni) all'avvio della mod,
-    /// se Steam è già pronto. Se non lo è, `Tick` ci riprova ogni frame: registrarla tardi va bene,
-    /// **non** registrarla mai no (senza, ogni pacchetto del peer viene scartato in silenzio).
+    /// Registers the P2PSessionRequest_t callback (the one that accepts sessions) at mod init, if
+    /// Steam is ready. If not, Tick retries every frame: registering late is fine, never
+    /// registering means every peer packet is silently discarded.
     /// </summary>
     internal static void Arm()
     {
@@ -155,12 +132,10 @@ internal static class SteamP2PProbe
         }
     }
 
-    // ─── I GUSCI VERSO L'IMPLEMENTAZIONE ─────────────────────────────────────────────────────────
+    // === Wrappers to the implementation ===
     //
-    // ⚠️ UN METODO PER CHIAMATA, come in `SteamLobby`: è qui che la `TypeLoadException` nasce (la JIT
-    // compila questo corpo quando viene invocato), quindi è qui che il `try/catch` del chiamante la
-    // cattura. Se queste righe stessero dentro `Start`/`Tick`/..., la JIT caricherebbe l'implementazione
-    // compilando QUEI metodi, cioè prima del `try`: un `catch` che non cattura mai niente.
+    // One method per call: the JIT compiles this body when it is invoked, so a TypeLoadException
+    // from the implementation surfaces inside the caller's try, not before it.
 
     private static bool QueryActive()
     {
@@ -193,8 +168,8 @@ internal static class SteamP2PProbe
     }
 
     /// <summary>
-    /// Una riga di log per un guasto catturato al confine. `once` è per i metodi per frame: un guasto
-    /// che si ripete 60 volte al secondo non deve diventare 60 righe al secondo.
+    /// One log line for a failure caught at the boundary. `once` is for per-frame methods: a
+    /// repeating failure must not become a repeating line.
     /// </summary>
     private static void Report(string operation, Exception error, bool once)
     {
@@ -208,12 +183,12 @@ internal static class SteamP2PProbe
                 _failureLogged = true;
             }
 
-            ModLog.Error("[P2P] errore: " + operation + ": " + error.GetType().Name + ": " +
+            ModLog.Error("[P2P] error: " + operation + ": " + error.GetType().Name + ": " +
                          error.Message);
         }
         catch (Exception)
         {
-            // Niente: se anche il log esplode, il gioco deve continuare.
+            // Nothing: if the log itself fails, the game must continue.
         }
     }
 }

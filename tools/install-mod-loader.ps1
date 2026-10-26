@@ -3,19 +3,15 @@
     Installs the verified mod loader stack for Blasphemous (BepInEx 5 + Modding API + Cheat Console).
 
 .DESCRIPTION
-    The multiplayer mod needs three runtime components that are NOT on this machine, which is why the
-    mod has never been able to load. This script installs them from official GitHub releases and
-    verifies every download against a SHA256 hash taken from the GitHub release manifest, so the bytes
-    are provably the published ones and not something substituted in transit.
-
-    It backs up anything it is about to overwrite, and prints the exact commands to undo everything.
+    Installs the three runtime components the multiplayer mod needs from official GitHub releases,
+    verifying every download against a SHA256 hash taken from the release manifest. Backs up any
+    file it is about to overwrite and prints the commands to undo everything.
 
 .PARAMETER GamePath
-    The Blasphemous installation to install into. Defaults to the real install (D:). The C: path holds
-    only a leftover Modding folder with no game in it, so it is not the default.
+    The Blasphemous installation to install into. Defaults to the real install (D:).
 
 .PARAMETER CachePath
-    Where the verified zips are downloaded and kept. Re-running reuses them.
+    Where verified zips are downloaded and kept. Re-running reuses them.
 
 .PARAMETER WhatIf
     Print the plan without changing anything.
@@ -64,9 +60,9 @@ function Write-Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
 function Write-Ok($text)   { Write-Host "    $text" -ForegroundColor Green }
 function Write-Warn($text) { Write-Host "    $text" -ForegroundColor Yellow }
 
-# Copies a directory tree into an existing tree, backing up individual files it replaces.
-# Merging (rather than replacing whole folders) matters: several components contribute to
-# BepInEx\plugins, and moving that folder aside would delete the plugins installed before it.
+# Copies a directory tree into an existing tree, backing up files it replaces. Merging (not
+# replacing whole folders) matters: several components contribute to BepInEx\plugins, and moving
+# that folder aside would delete previously installed plugins.
 function Install-Tree {
     param([string]$Source, [string]$Destination, [string]$BackupRoot, [string]$Stamp)
 
@@ -158,11 +154,8 @@ New-Item -ItemType Directory -Force -Path $CachePath | Out-Null
 $backupRoot = Join-Path $CachePath ("backup-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
-# Where the multiplayer mod's solution lives, for the "next steps" message.
-# Anche qui la solution si CERCA sotto la radice (<repo>\tools\..) invece di scrivere la doppia cartella
-# 'Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main': quel nome e' un dettaglio di ADESSO, e
-# l'appiattimento (solution direttamente nella radice) lo cancellerebbe — lasciando qui un percorso
-# sbagliato in un messaggio, che e' il tipo di errore che non fa fallire niente e confonde dopo.
+# Solution path for the "next steps" message: searched under $PSScriptRoot's parent, so it
+# survives both nested and flattened layouts.
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $slnItem  = Get-ChildItem -LiteralPath $RepoRoot -Filter 'Blasphemous.Multiplayer.sln' -File -ErrorAction SilentlyContinue |
             Select-Object -First 1
@@ -170,8 +163,8 @@ if (-not $slnItem) {
     $slnItem = Get-ChildItem -LiteralPath $RepoRoot -Filter 'Blasphemous.Multiplayer.sln' -File -Recurse -ErrorAction SilentlyContinue |
                Select-Object -First 1
 }
-# Se non c'e' (installazione del solo loader, repo incompleto) il messaggio resta onesto: si nomina la radice.
-$SolutionPath = if ($slnItem) { $slnItem.FullName } else { Join-Path $RepoRoot '<repo>\Blasphemous.Multiplayer.sln (non trovata)' }
+# When absent (loader-only install, incomplete repo) name the root instead of guessing.
+$SolutionPath = if ($slnItem) { $slnItem.FullName } else { Join-Path $RepoRoot '<repo>\Blasphemous.Multiplayer.sln (not found)' }
 
 Write-Step "Downloading and verifying"
 foreach ($c in $components) {
@@ -199,10 +192,9 @@ foreach ($c in $components) {
     Write-Ok "$($c.Name) -> $dir"
 }
 
-# Which top-level entries each component contributes, and where inside the game they belong.
-# The BepInEx zip is already laid out for the game root. The mod zips, however, contain a bare
-# "plugins" folder that belongs under BepInEx\, not at the game root - installing it as-is would place
-# the plugins where the loader never looks.
+# Where each component's top-level entries belong. The BepInEx zip already targets the game root;
+# the mod zips contain a bare "plugins" folder that must go under BepInEx\, not at the game root,
+# or the loader never looks at it.
 $plan = @(
     @{ Sub = 'bepinex';      Desc = 'BepInEx loader';      Dest = '' }
     @{ Sub = 'moddingapi';   Desc = 'Modding API plugin';  Dest = 'BepInEx' }

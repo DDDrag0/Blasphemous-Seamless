@@ -1,21 +1,14 @@
-# Verifica di CONTENUTO (non di hash) dei marker dentro una DLL .NET.
-# I letterali stringa .NET vivono nell'heap #US in UTF-16LE; i nomi in #Strings in UTF-8.
-# Cerco quindi ENTRAMBE le codifiche sui byte grezzi: se il marker compare, il letterale
-# e' nella DLL per davvero. Nessuna fiducia negli hash, nessuna fiducia in verify-deploy.ps1.
+# Content-based verification of markers inside a .NET DLL (no hash check).
+# .NET string literals live in the #US heap as UTF-16LE, identifiers in #Strings as UTF-8; both
+# encodings are searched on the raw bytes, so "found" means the literal is really in the DLL.
 #
-# ⚠️ PERCORSI — questo file ora vive in `tools\`, VERSIONATO, un livello SOTTO la radice del
-# repo. Prima stava in `scratch\` (gitignored), che e' un livello SOPRA: la base dei percorsi
-# relativi era un'altra, e il check non era un gate — era una cosa che qualcuno si ricordava
-# di lanciare. Un `-Dll` RELATIVO viene risolto, in quest'ordine, su: cartella corrente,
-# radice del repo, cartella di gioco. Un `-Dll` assoluto resta com'e'.
+# A relative -Dll is resolved, in order, against: current directory, repo root ($PSScriptRoot\..),
+# game folder. An absolute -Dll is used as-is.
 #
-# Come si usa — le DUE DLL che contano (i parametri sono gli stessi di prima: -Dll e -Marker):
-#   # 1) la DLL DEPLOYATA nel gioco (quella che il gioco esegue davvero)
+# Usage:
 #   & '.\tools\marker-check.ps1' -Dll 'Modding\plugins\BlasClient.dll' -Marker '[Pausa]','[Map]'
-#   # 2) la DLL di bin\Debug (quella che deploy-local.ps1 copia), per confrontare gli sha256
-#   & '.\tools\marker-check.ps1' -Dll 'Blasphemous.Multiplayer-main\Blasphemous.Multiplayer-main\Blasphemous.Multiplayer.Client\bin\Debug\BlasClient.dll' -Marker '[Pausa]'
-# ⚠️ Con `-File` (processo nuovo) `-Marker` prende UN SOLO valore per volta: l'array di marker
-#    passa solo col call operator `&`, come qui sopra e come lo si e' sempre lanciato.
+#   & '.\tools\marker-check.ps1' -Dll '...\bin\Debug\BlasClient.dll'   -Marker '[Pausa]'
+# With -File (new process) -Marker only takes one value; the array passes only via the & operator.
 param(
   [Parameter(Mandatory=$true)][string]$Dll,
   [Parameter(Mandatory=$true)][string[]]$Marker
@@ -23,9 +16,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# --- CORREZIONE DEI PERCORSI (l'unica differenza rispetto alla copia in scratch\) --------
-# `tools\` sta un livello sotto la radice del repo: `$PSScriptRoot\..` e' la radice. La
-# cartella di gioco e' quella che deploy-local.ps1 usa di default (una sola, scritta a mano).
+# tools\ is one level below the repo root; the game folder is the default used by deploy-local.ps1.
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $GameRoot = 'D:\SteamLibrary\steamapps\common\Blasphemous'
 if (-not [System.IO.Path]::IsPathRooted($Dll)) {
@@ -35,7 +26,7 @@ if (-not [System.IO.Path]::IsPathRooted($Dll)) {
   }
 }
 if (-not (Test-Path -LiteralPath $Dll)) {
-  throw "DLL non trovata: '$Dll' (cercata anche in '$RepoRoot' e in '$GameRoot')"
+  throw "DLL not found: '$Dll' (also looked in '$RepoRoot' and '$GameRoot')"
 }
 $Dll = (Resolve-Path -LiteralPath $Dll).ProviderPath
 

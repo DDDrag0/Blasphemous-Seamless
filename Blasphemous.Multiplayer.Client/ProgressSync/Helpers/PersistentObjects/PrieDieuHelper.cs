@@ -6,35 +6,18 @@ using Tools.Level.Interactables;
 namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
 {
     /// <summary>
-    /// Announces a bonfire, so the other machines can replicate what it does to the WORLD.
+    /// Announces a bonfire so other machines can replicate what it does to the WORLD.
     ///
-    /// A bonfire is LOCAL in this game and stays local: it respawns the dead enemies and brings back the
-    /// broken scenery on the machine that sat down, and on that one only. Measured, not assumed: every
-    /// "[Falo''] RespawnDeadEnemies" line in a test session was preceded - on the same machine - by that
-    /// machine's own "Used PrieDieu", with a constant 24-25 line gap, and a fourth bonfire on one side had
-    /// no counterpart on the other and left no trace there at all.
-    ///
-    /// The player's own benefits are a separate matter and are deliberately NOT propagated: the flask, the
-    /// fervour and the save belong to whoever sat down.
-    ///
-    /// WHY THE ANNOUNCEMENT IS SENT FROM HERE. PrieDieu.OnUse only builds the coroutine and returns - its
-    /// caller starts it afterwards - so a postfix on it runs BEFORE the body does anything. For a signal of
-    /// intent that is exactly right, and it is what this needs: we want to say "a bonfire is being used
-    /// here", not "the respawn has already happened".
-    ///
-    /// WHY NOT FROM THE RESPAWN HOOK. EnemySpawner.RespawnDeadEnemies has THREE callers, not two, and the
-    /// third is Framework.Penitences.PenitencePE02.OnLevelLoaded: while that penitence is active, ANY level
-    /// load calls it. A broadcast placed in that hook would fire on every room change for a player using
-    /// that penitence. This entry point cannot, because it is the bonfire and nothing else.
+    /// A bonfire is local: it respawns dead enemies and brings back broken scenery only on the
+    /// machine that sat down. The player's own benefits (flask, fervour, save) are deliberately
+    /// NOT propagated. Sent from <c>PrieDieu.OnUse</c> because <c>EnemySpawner.RespawnDeadEnemies</c>
+    /// has a third caller (<c>PenitencePE02.OnLevelLoaded</c>) that fires on every level load. The
+    /// prefix rides the enemy-death channel, which the server relays to every peer but the sender
+    /// with no deduplication, so no protocol bump is needed.
     /// </summary>
     public static class BonfireSync
     {
-        /// <summary>
-        /// Marks a bonfire announcement. It travels on the enemy-death channel, whose only other
-        /// conventions are "sp|" for spawn points and "brk|" for a broken vase, and which the server relays
-        /// to everyone but the sender with no dictionary and no deduplication - so a third prefix costs
-        /// nothing and needs no protocol bump.
-        /// </summary>
+        /// <summary>Marker on the enemy-death channel; a third prefix there is free.</summary>
         public const string Prefix = "falo|";
 
         /// <summary>True when this id is a bonfire announcement rather than a death or a break.</summary>
@@ -43,10 +26,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             return !string.IsNullOrEmpty(id) && id.StartsWith(Prefix, System.StringComparison.Ordinal);
         }
 
-        /// <summary>
-        /// Reads the scene out of a bonfire id. Returns null for anything malformed, so a rogue id cannot
-        /// be mistaken for a bonfire.
-        /// </summary>
+        /// <summary>Scene embedded in a bonfire id, or null for anything malformed.</summary>
         public static string SceneOf(string id)
         {
             if (!IsBonfireId(id))
@@ -63,7 +43,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                 return;
 
             if (!Main.Multiplayer.NetworkManager.IsConnected)
-                return; // single player: nobody to tell
+                return;
 
             Main.Multiplayer.SendEnemyDeathGlobal(Prefix + scene);
             ModLog.Info($"[Falo''] annuncio inviato: scena={scene}");
@@ -81,10 +61,8 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             ModLog.Info($"Used PrieDieu: {persistentId}");
             Main.Multiplayer.ProgressManager.UsePersistentObject(persistentId);
 
-            // The bonfire's effect on the world travels separately from its record in the progress list.
-            //
-            // This is the local player sitting down, and the guard above keeps a relayed interaction from
-            // being announced back - the same rule the rest of the progress helpers use.
+            // Bonfire's world effect travels separately from its progress record. The guard above
+            // prevents a relayed interaction from being announced back.
             BonfireSync.Broadcast(Core.LevelManager.currentLevel == null
                 ? null
                 : Core.LevelManager.currentLevel.LevelName);
@@ -98,7 +76,6 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         {
             if (dataPath != "use") return true;
 
-            // Maybe play activation animation
             __instance.Ligthed = true;
             return false;
         }
@@ -111,7 +88,6 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         {
             if (data != null)
             {
-                // This method is being called normally - only execute if object hasn't been interacted with
                 return !Main.Multiplayer.ProgressManager.IsObjectInteracted(__instance.GetPersistenID());
             }
 

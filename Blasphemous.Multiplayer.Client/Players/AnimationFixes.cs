@@ -11,8 +11,6 @@ using Gameplay.GameControllers.AnimationBehaviours.Player.Prayer;
 using Gameplay.GameControllers.AnimationBehaviours.Player.RangeAttack;
 using Gameplay.GameControllers.AnimationBehaviours.Player.Run;
 using Gameplay.GameControllers.AnimationBehaviours.Player.SubStatesBehaviours;
-// A5 - i due punti di aggancio dei SUONI: `PenitentMoveAnimations.PlayFootStep()` (i passi) e i sei
-// `PenitentAttackAnimations.Play*` (i fendenti). Namespace letto dall'assembly, non indovinato.
 using Gameplay.GameControllers.Penitent.Animator;
 using HarmonyLib;
 using UnityEngine;
@@ -116,13 +114,6 @@ namespace Blasphemous.Multiplayer.Client
         {
             if (animator.name == "Body")
             {
-                // A2: this state used to return true and tell the other machine NOTHING, so the charged attack
-                // existed only on the machine that performed it - the remote avatar simply stood there. Every
-                // other attack already announces itself on this channel; these four were the ones left out.
-                //
-                // The line below is what makes it PROVABLE. The effect type is one the ground attacks already
-                // used, so the effect arriving tells us nothing about whether THIS patch sent it - and that is
-                // a gap in the verification, not in the code. One line, and the attribution is unambiguous.
                 Blasphemous.ModdingAPI.ModLog.Info("[Invia] Carica");
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
                 return true;
@@ -148,7 +139,6 @@ namespace Blasphemous.Multiplayer.Client
         {
             if (animator.name == "Body")
             {
-                // A2: the charged attack's own effect state, which is where the swing is actually visible.
                 Blasphemous.ModdingAPI.ModLog.Info("[Invia] Carica (effetto)");
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.UpwardsGrounded);
                 return true;
@@ -253,14 +243,10 @@ namespace Blasphemous.Multiplayer.Client
         {
             if (animator.name == "Body")
             {
-                // A2: the lunge, which is the attack that carries the penitent forward - the one whose absence
-                // is most obvious on the other screen, because the avatar stays put while the player lunges.
                 Blasphemous.ModdingAPI.ModLog.Info("[Invia] Lunge");
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.SidewaysGrounded);
 
-                // A3: and the trail, which on this attack comes from the same state. Two sends rather than one
-                // because the packet carries a single byte - doubling a byte on the wire is cheaper than
-                // widening a payload for the sake of tidiness.
+                // Lunge also drives the ghost trail; sends two bytes rather than widening the payload.
                 Main.Multiplayer.NetworkManager.SendEffect(EffectType.TrailOn);
                 return true;
             }
@@ -278,21 +264,13 @@ namespace Blasphemous.Multiplayer.Client
                 return true;
             }
 
-            // ⚠️ NOT the body animator: return FALSE, which is what the original one-liner did and what every
-            // other patch in this file does. Returning true unconditionally - which is what a careless rewrite
-            // of `=> animator.name == "Body"` produces - lets the game's real OnStateExit run for the SWORD
-            // animator too, and it throws a NullReferenceException there. That is a patch that reads correctly
-            // and behaves differently from the line it replaced: the whole point of the one-liner was the
-            // return VALUE, not the guard.
+            // Return false for non-body: this is a one-liner whose return VALUE matters, and returning
+            // true unconditionally would let the sword animator run the game's real OnStateExit and NRE.
             return false;
         }
     }
 
-    // A3 - the other three places that turn the penitent's ghost trail on and off.
-    //
-    // Each is patched where the GAME itself decides, rather than in one place of our own, so the receiving
-    // machine follows the same decisions instead of a guess about them. They fire only for the LOCAL penitent:
-    // the remote avatar is a bare GameObject and carries none of these components, so nothing echoes back.
+    // Trail on/off from the game's own decisions, at the three places the penitent changes it.
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastStart")]
     class DashGhostTrailEnter_Patch
     {
@@ -312,8 +290,6 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack), "ShowGhostTrail")]
     class VerticalAttackGhostTrail_Patch
     {
-        // The game calls this with the state it wants, so the flag is passed straight through: no need to
-        // infer when the plunge's trail starts or ends.
         public static void Postfix(bool show)
         {
             Main.Multiplayer.NetworkManager.SendEffect(show ? EffectType.TrailOn : EffectType.TrailOff);
@@ -322,16 +298,8 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(Framework.Inventory.IncreaseSpeedSwordHeartEffect), "ApplyGhostingEffect")]
     class IncreaseSpeedSwordHeartEffectGhosting_Patch
     {
-        // ⚠️ THE PARAMETER NAME MUST MATCH THE GAME'S, CHARACTER FOR CHARACTER.
-        //
-        // Harmony binds a Postfix's arguments BY NAME, and the game's parameter here is called `apply`. This
-        // was first written as `enable` - a name that reads better and exists nowhere in the method - and
-        // Harmony threw "Parameter enable not found" while patching. That throw happens during patch
-        // APPLICATION, so it took the whole mod down: initialisation never finished, and everything after it
-        // reported a NullReferenceException. One parameter name, no mod at all.
-        //
-        // The deploy's target check cannot catch this: it verifies that the TYPE and the METHOD exist, not
-        // that the patch's own arguments line up. So the name is read off the assembly, not chosen.
+        // Parameter name MUST match the game's (`apply`): Harmony binds postfix args by name, and a
+        // mismatch throws during patch application, taking the whole mod down.
         public static void Postfix(bool apply)
         {
             Main.Multiplayer.NetworkManager.SendEffect(apply ? EffectType.TrailOn : EffectType.TrailOff);
@@ -339,31 +307,16 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// Il mittente condiviso dei SEI fendenti di A5 (base 1 e 2, aria 1 e 2, pesante, rilascio della
-    /// carica). Uno solo perche' i sei corpi sarebbero stati identici a meno di due parole, e sei copie
-    /// di una stessa riga sono sei posti in cui una puo' divergere.
-    ///
-    /// ⚠️ PERCHE' DUE DEGLI OTTO SUONI DI A5 NON PASSANO DA QUI. I passi hanno il loro blocco perche'
-    /// hanno un FUSIBILE DI FREQUENZA che gli altri non hanno; la scivolata ha il suo perche' e' un
-    /// evento SOSTENUTO con uno START e uno STOP separati. Gli altri sei sono one-shot puri: accendono,
-    /// suonano e si rilasciano da soli (`EventOneShotPanned` chiama `release()` subito dopo `start()`).
-    ///
-    /// ⚠️ E NON C'E' NESSUN FUSIBILE QUI, ed e' voluto: un fendente e' un'azione DELIBERATA del
-    /// giocatore, non un evento di animazione che si ripete da solo. Il massimo che un umano produce e'
-    /// la raffica di una combo, e ogni fendente della combo ha un suono DIVERSO: sopprimerne uno
-    /// significherebbe far sentire al peer una combo che non e' quella che sta guardando.
+    /// Shared sender for the six one-shot slash sounds. Two sounds of the eight do not go through
+    /// here: footsteps (rate fuse) and dash (start/stop pair). These six are pure one-shots.
     /// </summary>
     static class LocalSoundSender
     {
         private static int sentCount;
 
         /// <summary>
-        /// Spedisce il suono del fendente appena suonato DAL GIOCO su questa macchina, con la posizione
-        /// del penitent (che e' dove il gioco prende il panning: `EntityAudio.SetPanning` legge
-        /// `Owner.transform.position`).
-        ///
-        /// `what` serve SOLO al log: il payload e' un byte, e il nome del suono lo risolve il ricevente
-        /// dalla propria copia dei `const`. Non e' un dato trasmesso.
+        /// Sends the just-played slash sound with the penitent position. <paramref name="what"/> is
+        /// for the log only - the payload is a byte.
         /// </summary>
         public static void SendLocalSound(EffectType effect, string what)
         {
@@ -372,9 +325,8 @@ namespace Blasphemous.Multiplayer.Client
 
             UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
 
-            // PROVA LATO MITTENTE, con lo stesso filtro dei passi e per la stessa ragione: la riga
-            // `[Effect]` la scrive il RICEVENTE, e `QueueMesssage` esce in silenzio da disconnesso.
-            // Il primo e poi uno ogni dieci: un fendente e' raro, ma una combo lunga no.
+            // Sender-side proof: the receiver's line is written on the OTHER machine, so without this
+            // "postfix never ran" and "packet never arrived" are indistinguishable.
             sentCount++;
             if (sentCount == 1 || sentCount % 10 == 0)
             {
@@ -418,67 +370,30 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
-    // ============================================================================================
-    // A5 - I PASSI A TERRA DEI PEER.
-    // ============================================================================================
-    //
-    // PERCHE' QUESTO METODO, E NON UN `Behaviour`. La catena del passo, verificata con una ricerca dei
-    // chiamanti su TUTTO l'assembly, e' questa - e ha UN SOLO punto in cui il gioco suona:
-    //
-    //     [evento di animazione dentro il clip]      <- non ha chiamanti nel IL: vive nei dati del clip
-    //       -> PenitentMoveAnimations.PlayFootStep()  <- QUESTO metodo, public, ZERO argomenti
-    //           -> _penitentAudio.PlayFootStep()
-    //               -> EntityAudio.PlayOneShotEvent("PenitentFootStep", FxSoundCategory.Motion)
-    //                   -> FMODAudioManager.CreateCatalogEvent("PenitentFootStep")
-    //
-    // Nessun Behaviour lo chiama e nessun input lo innesca: e' l'evento di animazione, e basta. Patchare
-    // QUI da' un mittente 1:1 con il suono che il gioco suona, senza inventare una condizione di
-    // movimento che il gioco non usa.
-    //
-    // ⭐ ED E' ANCHE LA FIRMA PIU' SICURA CHE ESISTA: `PlayFootStep()` non ha argomenti. Harmony lega i
-    // parametri dei patch PER NOME, e un nome sbagliato ha gia' IMPEDITO ALLA MOD DI AVVIARSI: con zero
-    // argomenti quel rischio non esiste.
-    //
-    // PERCHE' UN FUSIBILE. I passi sono l'effetto piu' frequente di tutto il canale Effect, e la loro
-    // cadenza non e' leggibile da qui: sta negli eventi dentro i clip di animazione, cioe' negli asset.
-    // La costante sotto e' un TETTO, non una limatura: a 0.08 s sono 12.5 al secondo, mentre la falcata
-    // del gioco emette un passo circa ogni 0.2 s (5/s), quindi in condizioni normali NON si scarta nulla.
-    // Se un giorno la cadenza crescesse, il fusibile tiene il traffico a ~250 byte/s invece di lasciarlo
-    // crescere in silenzio. Non si mette una taratura fine su una cosa che non si puo' misurare.
-    //
-    // ⚠️ SI SPEDISCE SOLO SE IL PENITENT E' A TERRA. Il clip della scala e quello dell'idle possono
-    // contenere lo stesso evento, e un passo su una scala non e' un passo a terra. La proprieta' e' letta
-    // dove vive davvero: `Penitent.Status` e' un CAMPO PUBLIC di `Entity` (base di `Penitent`) di tipo
-    // `Framework.FrameworkCore.EntityStatus`, e `IsGrounded` e' una sua PROPERTY public.
-    //
-    // ⚠️ E IL VALORE DI RITORNO NON SI TOCCA. Questa classe non ha `Prefix`: il suono del gioco resta
-    // esattamente quello di prima. I `Prefix` di questo file - il cui VALORE DI RITORNO e' il punto, e la
-    // cui riscrittura ha gia' causato 12 NRE - non vengono sfiorati.
+
+    // Footsteps: hooked on PenitentMoveAnimations.PlayFootStep, the only call site, so 1:1 with the
+    // sound the game plays. Zero-arg signature means no parameter name to mismatch. Sends only when
+    // grounded (ladder/idle clips can carry the same event). Rate fuse: cap on frequency, not tuning.
     [HarmonyPatch(typeof(PenitentMoveAnimations), "PlayFootStep")]
     class PenitentFootStep_Patch
     {
-        /// <summary>
-        /// Tetto di frequenza verso il peer. Vedi il commento sopra: e' un fusibile, non una taratura.
-        /// </summary>
+        /// <summary>Frequency cap toward the peer. Fuse, not tuning.</summary>
         private const float MIN_INTERVAL = 0.08f;
 
         private static float lastSent = float.NegativeInfinity;
         private static int sentCount;
 
-        // Postfix, e senza argomenti: il metodo del gioco gira per primo e resta INTATTO.
         public static void Postfix()
         {
             if (Framework.Managers.Core.Logic.Penitent == null)
                 return;
 
-            // Solo a terra: il clip della scala e quello dell'idle possono contenere lo stesso evento, e un
-            // passo su una scala non e' un passo a terra.
+            // Grounded only: ladder and idle clips can carry the same event.
             if (Framework.Managers.Core.Logic.Penitent.Status == null ||
                 !Framework.Managers.Core.Logic.Penitent.Status.IsGrounded)
                 return;
 
-            // `Time.unscaledTime` e non `Time.time`: i suoni di FMOD non si fermano quando il gioco mette
-            // in pausa, quindi il metro di paragone dev'essere lo stesso orologio.
+            // unscaledTime: FMOD sound does not stop on pause, use the same clock.
             if (UnityEngine.Time.unscaledTime - lastSent < MIN_INTERVAL)
                 return;
 
@@ -486,15 +401,7 @@ namespace Blasphemous.Multiplayer.Client
 
             UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
 
-            // PROVA LATO MITTENTE, e ragione per cui esiste: la riga `[Effect]` e' scritta SOLO dal
-            // RICEVENTE (AttackManager.ReceiveEffect) e `NetworkManager.QueueMesssage` esce in silenzio
-            // mentre e' disconnesso, quindi senza questa riga "il Postfix non e' mai girato" e "il
-            // pacchetto non e' mai arrivato" restano INDISTINGUIBILI in entrambi i log.
-            //
-            // ⚠️ E QUI C'E' UN SECONDO FILTRO, che gli altri effetti non hanno: i passi arrivano a
-            // raffica, e una riga ciascuno affogherebbe il log. Si stampa il PRIMO (che e' quello che
-            // dice "il canale e' acceso") e poi uno ogni dieci (che e' quello che dice "sta ancora
-            // andando"). Se il contatore si ferma su un numero, si sa che si e' fermato DOPO quel passo.
+            // Sender-side proof; footsteps fire fast, so log the first and every tenth.
             sentCount++;
             if (sentCount == 1 || sentCount % 10 == 0)
             {
@@ -506,39 +413,8 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
-    // ============================================================================================
-    // A5 - I SUONI DEGLI ATTACCHI A VUOTO (il fendente).
-    // ============================================================================================
-    //
-    // COS'E' UN "ATTACCO A VUOTO". E' un fendente che non incontra nulla. E il suono che esce e' LO STESSO
-    // di un fendente che colpisce, perche' NON dipende dal colpo: e' un EVENTO DI ANIMAZIONE dentro il
-    // clip. Verificato: il corpo di `PenitentAttackAnimations.PlayBasicAttack1()` e' una sola chiamata a
-    // `_penitent.Audio.PlayBasicAttack1()`, e non legge ne' l'area d'attacco ne' `IsEnemyHit` (quelle le
-    // legge `ComboCameraShake`, che e' un evento diverso e ha un'altra guardia).
-    //   ⇒ Non serve sapere se il colpo e' andato a segno. Non serve un flag nel payload.
-    //
-    // CHI SUONA, PER OGNI UNO DEI SEI (ognuno con UN SOLO chiamante nel gioco, oltre all'evento di clip):
-    //     PenitentAttackAnimations.PlayBasicAttack1()      -> PenitentAudio.PlayBasicAttack1()
-    //     PenitentAttackAnimations.PlayBasicAttack2()      -> PenitentAudio.PlayBasicAttack2()
-    //     PenitentAttackAnimations.PlayAirAttack1()        -> PenitentAudio.PlayAirAttack1()
-    //     PenitentAttackAnimations.PlayAirAttack2()        -> PenitentAudio.PlayBasicAttack2()   <-- !
-    //     PenitentAttackAnimations.PlayHeavyAttack()       -> PenitentAudio.PlayHeavyAttack()
-    //     PenitentAttackAnimations.PlayReleaseChargeAttack()-> PenitentAudio.PlayReleaseChargedAttack()
-    //   ⚠️ `PlayAirAttack2` NON esiste in PenitentAudio: l'evento in aria 2 riusa `PlayBasicAttack2`, e
-    //   la costante `BasicAirAttack2EventKey` ("PenitentAirAttack2") non e' letta da NESSUN metodo
-    //   dell'assembly. ⇒ Il mittente e' comunque quello giusto (l'evento di clip esiste ed e' distinto),
-    //   e il byte trasmesso e' distinto (92); e' solo il RICEVENTE che deve risolvere sulla chiave che
-    //   suona davvero.
-    //
-    // LA NATURA DEL SUONO, ed e' la cosa che decide il METODO del ricevente: sono TUTTI E SEI chiavi di
-    // catalogo, con il valore in una `public const string` di `PenitentAudio`. NON sono campi `[EventRef]`
-    // di un prefab e NON sono percorsi di banca. ⇒ NON si trasmette alcuna stringa e NON si legge alcun
-    // campo serializzato: viaggia il solo byte, e il ricevente risolve la chiave nel PROPRIO catalogo.
-    //
-    // PERCHE' POSTFIX E SENZA ARGOMENTI. I sei metodi non hanno parametri. Col Postfix il suono del gioco
-    // parte comunque e resta intatto; senza argomenti non c'e' alcun nome di parametro da sbagliare. E
-    // sono tutti `public` su `PenitentAttackAnimations`, che e' un MonoBehaviour del penitent: l'avatar
-    // remoto non lo porta.
+    // Attack swing sounds from PenitentAttackAnimations.Play*: no parameter, so no name to mismatch.
+    // Six catalog keys, one-shot; only the byte travels, the receiver resolves the key locally.
     [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayBasicAttack1")]
     class AttackSound1_Patch
     {
@@ -593,8 +469,6 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
-    // A5.2 - I SUONI CONFERMATI DALLE PROBE (zero-argomenti, one-shot, tutti `PlaySfxOnCatalog` tranne
-    // `IdleSword` che e' categoria Motion -> sul ricevente passa dai 14 materiali del terreno).
     [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHit")]
     class ComboHitSound_Patch
     {
@@ -631,45 +505,13 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
-    // ============================================================================================
-    // ============================================================================================
-    // A5 - IL SUONO DELLA SCIVOLATA (Dash).
-    // ============================================================================================
-    //
-    // PERCHE' DUE PATCH E UN SOLO EVENTO. `PenitentDash` e' un evento di catalogo SOSTENUTO (LATCHED):
-    // `PenitentAudio.PlayDashSound()` fa `StopDashSound(); PlayEvent(ref _dashEventInstance, "PenitentDash");`
-    // e il gioco lo spegne da `DashBehaviour.OnStateExit -> StopDashSound()`. Un suono che va ACCESO e
-    // SPENTO ha bisogno di DUE messaggi: uno solo lascerebbe la scivolata accesa per sempre.
-    //
-    // PERCHE' `Dash.OnCastStart`/`OnCastEnd` E NON `DashBehaviour.OnStateEnter`/`OnStateExit`.
-    //   (1) `DashBehaviour.OnStateExit` porta GIA' il `Prefix => animator.name == "Body"` scritto piu'
-    //       sotto in questo file. In HarmonyX un Postfix viene eseguito ANCHE quando un Prefix restituisce
-    //       false: un mio `Postfix(Animator animator)` su quel metodo girerebbe anche per l'animator
-    //       "Slash" e manderebbe uno STOP mai preceduto da uno START. E un mio Prefix NON si puo'
-    //       aggiungere: sarebbe il TERZO Prefix sullo stesso metodo, e la semantica dei due esistenti e'
-    //       quella che ha gia' bruciato 12 NRE. Regola: i Prefix di questo file non si toccano.
-    //   (2) `Dash.OnCastStart()` e `Dash.OnCastEnd(System.Single castingTime)` sono GIA' patchati da A3
-    //       (ghost trail) con dei Postfix SENZA ARGOMENTI: aggiungere classi sorelle con `Postfix()` e'
-    //       la forma piu' sicura che esista, perche' NON C'E' NESSUN NOME DI PARAMETRO DA INDOVINARE.
-    //   (3) E' la STESSA coppia START/STOP che A3 usa per il ghost trail: un solo meccanismo da collaudare,
-    //       e se A3 si accende e si spegne bene, A5 pure.
-    //
-    // ⚠️ NON SI PATCHA `PenitentMoveAnimations.PlayDash()`, che e' il punto in cui il GIOCO suona. Il
-    // motivo e' al punto (1): il suo unico chiamante e' `DashBehaviour.OnStateEnter`, gia' coperto da un
-    // Prefix, e un Postfix non richiamabile con sicurezza non vale il rischio.
-    //
-    // ⚠️ E IL DASH IN ARIA E' MUTO ANCHE NEL GIOCO: verificato in IL, `AirDashBehaviour` non chiama
-    // `PlayDash` e `PlayDashSound` ha UN SOLO chiamante in tutto l'assembly. Non si inventa un suono che
-    // il gioco non ha.
-    //
-    // ⚠️ SCATTANO SOLO PER IL PENITENT LOCALE: l'avatar remoto e' un GameObject nudo costruito da
-    // OtherPlayerManager.AddActivePlayer e non porta alcuna `Dash`, quindi nulla torna indietro.
+    // Dash sound: a latched catalog event (start/stop pair). Hooked on Dash.OnCastStart/OnCastEnd,
+    // not DashBehaviour.OnStateEnter/Exit - those already carry Prefixes and a Postfix there runs
+    // even for non-body animators. Zero-arg postfix, no parameter name to mismatch. Air dash has no
+    // sound in the game (verified in IL), so it is not invented here.
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastStart")]
     class DashSoundStart_Patch
     {
-        // La posizione e' quella del penitent, che e' dove il gioco prende la sua: PlayDashSound non
-        // prende posizione e il panning lo decide `SetPanning` a partire da `Owner.transform.position`.
-        // E' la stessa scelta che fa il postfix del ghost trail due classi piu' in alto.
         public static void Postfix()
         {
             if (Framework.Managers.Core.Logic.Penitent == null)
@@ -677,7 +519,6 @@ namespace Blasphemous.Multiplayer.Client
 
             UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
 
-            // PROVA LATO MITTENTE. Vedi il passo 2 per la ragione: la riga `[Effect]` e' del RICEVENTE.
             Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] DashSoundStart ({at.x:F1},{at.y:F1})");
 
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashSoundStart, at);
@@ -687,66 +528,26 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Dash), "OnCastEnd")]
     class DashSoundStop_Patch
     {
-        // ⚠️ SENZA ARGOMENTI, come il Postfix di A3 sullo stesso metodo. Il parametro del gioco si chiama
-        // `castingTime`, ma non nominarlo e' la scelta: un Postfix senza parametri non puo' avere un nome
-        // sbagliato, e un nome sbagliato e' cio' che ha impedito alla mod di avviarsi.
+        // No null check on Penitent on purpose: the stop must be delivered even after death or a
+        // scene change; the receiver handles "nothing to stop" idempotently.
         public static void Postfix()
         {
-            // ⚠️ NIENTE `Core.Logic.Penitent == null` QUI, ed e' voluto: lo STOP deve poter arrivare anche
-            // quando il penitent non c'e' piu' (morte, cambio scena). E' un messaggio idempotente: se non
-            // c'e' nulla da fermare, il ricevente non fa nulla.
             Blasphemous.ModdingAPI.ModLog.Info("[Sound TX] DashSoundStop");
 
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashSoundStop);
         }
     }
 
-    // ============================================================================================
-    // A7 - I SUONI DELLA PARATA DEL PENITENT: IL CLANG E LA GUARDIA.
-    // ============================================================================================
-    //
-    // PERCHE' QUESTI METODI, E NON UN `Behaviour`. Il suono non lo decide un Behaviour: lo decide un
-    // EVENTO DENTRO IL CLIP. I due eventi sono `PlayParryHit` e `StartParry`, e il loro unico punto di
-    // atterraggio in C# e' `PenitentAttackAnimations.PlayParryHit()` / `.StartParry()`, che a loro volta
-    // chiamano UN SOLO metodo di `PenitentAudio`.
-    //   ⇒ Si patcha il metodo di `PenitentAudio`: e' il punto in cui il suono STA PER PARTIRE, e' 1:1 con
-    //   esso, ed e' `public` e SENZA ARGOMENTI. Chi lo chiama non conta.
-    //
-    // ⭐ ED E' ANCHE LA FIRMA PIU' SICURA CHE ESISTA: zero argomenti ⇒ nessun nome di parametro da
-    // sbagliare, ed e' la stessa scelta dei sei fendenti di A5.
-    //
-    // ⚠️ PERCHE' NON SI PATCHA `ParrySuccessBehaviour.OnStateEnter`, che sarebbe il posto "ovvio".
-    // Perche' porta GIA' un `Prefix` (`=> animator.name == "Body"`) scritto in questo stesso file, e in
-    // HarmonyX un Postfix viene eseguito ANCHE quando un Prefix restituisce false: il mio Postfix girerebbe
-    // anche per l'animator "Slash" e manderebbe un clang che nessuno ha suonato.
-    //
-    // ⚠️ LE DUE NATURE SONO DIVERSE, e il ricevente lo sa:
-    //   · `PenitentParryHit` e' una CHIAVE DI CATALOGO consumata da `EntityAudio.PlayEvent` ed e' SOSTENUTA
-    //     ⇒ sul ricevente si usa `PlayEventWithCatalog`, perche' `PlayOneShotFromCatalog` farebbe
-    //     `release()` subito, lasciandola accesa per sempre e impossibile da fermare.
-    //   · `PenitentStartParry` e' una chiave di catalogo PURA (`PlaySfxOnCatalog`), one-shot.
-    //   · NESSUNA delle due passa da `PlayOneShotEvent` ⇒ NESSUNA ha una `FxSoundCategory` ⇒ NON imposta i
-    //     14 parametri del terreno ⇒ NON si usa `PlayPeerMotionSound`.
-    //
-    // ⚠️ NIENTE FUSIBILE QUI. Una parata e' un'azione DELIBERATA: il massimo che un umano produce e' una
-    // parata al secondo. Il fusibile dei passi esiste per la cadenza della falcata; qui non c'e' nulla da
-    // limare.
+    /// <summary>
+    /// Shared sender for the parry sounds. `PenitentParryHit` is a latched catalog event; one stop
+    /// must be sent per start, so a guard prevents orphan stops when the parry fails
+    /// (`StopParryFx` is called even on failure).
+    /// </summary>
     static class ParrySoundSender
     {
-        /// <summary>
-        /// Vero fra lo START e lo STOP. Serve a UNA cosa sola: non spedire uno STOP che non ha mai avuto
-        /// il suo START.
-        ///
-        /// ⚠️ PERCHE' SERVE, E NON E' PIGNOLERIA. `PenitentAudio.PlayParryHit()` comincia con
-        /// `StopParryFx()`, e `Parry.StopParry()` chiama lo stesso metodo anche quando la parata FALLISCE.
-        /// Senza questa guardia, ogni parata a vuoto manderebbe un `ParryHitStop` al peer: un pacchetto che
-        /// non corrisponde a nulla, e una riga di log che accusa la rete per una parata che non c'e' mai stata.
-        /// </summary>
         private static bool armed;
 
-        /// <summary>
-        /// Spedisce il CLANG con la posizione del penitent - che e' dove il suono nasce.
-        /// </summary>
+        /// <summary>Sends the clang with the penitent position.</summary>
         public static void SendParryHit()
         {
             if (Framework.Managers.Core.Logic.Penitent == null)
@@ -754,21 +555,15 @@ namespace Blasphemous.Multiplayer.Client
 
             UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
 
-            // PROVA LATO MITTENTE, e la ragione e' quella dei passi: la riga `[Effect]` la scrive SOLO il
-            // RICEVENTE e `QueueMesssage` esce in silenzio da disconnesso. Senza questa riga, "il Postfix
-            // non e' mai girato" e "il pacchetto non e' mai arrivato" restano INDISTINGUIBILI.
             Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryHit ({at.x:F1},{at.y:F1})");
 
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryHit, at);
             armed = true;
         }
 
-        /// <summary>
-        /// Spedisce lo STOP del clang. Senza posizione: fermare qualcosa non ha bisogno di sapere dove sta.
-        /// </summary>
+        /// <summary>Sends the clang stop only when a start was sent.</summary>
         public static void SendParryHitStop()
         {
-            // Vedi `armed`: senza questa riga una parata FALLITA manderebbe uno STOP orfano.
             if (!armed)
                 return;
 
@@ -778,10 +573,7 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 
-    /// <summary>
-    /// IL CLANG DELLA PARATA RIUSCITA. Postfix, e senza argomenti: il suono del gioco parte comunque e resta
-    /// INTATTO, e non c'e' alcun nome di parametro da sbagliare.
-    /// </summary>
+    /// <summary>Parry clang start; postfix, zero args.</summary>
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "PlayParryHit")]
     class PenitentParryHitSound_Patch
     {
@@ -792,9 +584,8 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// LA FINE DEL CLANG. `Parry.StopParry()` chiama questo metodo alla fine della parata e
-    /// `PlayParryHit()` lo chiama come prima riga: entrambe le chiamate arrivano qui, e la guardia in
-    /// `SendParryHitStop` scarta quelle che non hanno un clang acceso da fermare.
+    /// Parry clang stop. Called both at the end of the parry and as the first line of PlayParryHit;
+    /// the armed guard discards stops with no active start.
     /// </summary>
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "StopParryFx")]
     class PenitentParryHitStop_Patch
@@ -806,23 +597,11 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// LA GUARDIA (suono #2).
-    ///
-    /// ⚠️⚠️ IL BERSAGLIO E' CAMBIATO, e la ragione e' in IL. `PenitentAudio.PlayStartParry` esiste, e'
-    /// `public`, ma il suo UNICO riferimento in tutto Assembly-CSharp e' `PenitentAttackAnimations.StartParry`
-    /// - cioe' un AnimationEvent. Se la clip non lo porta, il postfix non scatta MAI: **0 `[Sound TX] ParryStart`
-    /// su entrambi i log, con 4 parate reali**. Un patch su un metodo che nessuno chiama e' un patch muto.
-    ///
-    ///   ⭐ E IL SUONO DELLA GUARDIA E' UN ALTRO: `Parry.StartParry()` chiama
-    ///      `Core.Audio.EventOneShotPanned(this.ParryGuardFx, EntityOwner.transform.position)`.
-    ///      `ParryGuardFx` e' un campo `[EventRef] public string` sul componente LOCALE - la STESSA tecnica
-    ///      che A4 usa gia' per `GuardSlide.GuardSlideSoundFx`. E il valore vive nell'asset: l'unico modo di
-    ///      averlo e' leggerlo dal componente, non scriverlo a mano.
-    ///
-    /// ⚠️ E QUESTO SUONO NON E' "LA PARATA FALLITA": `StartParry` e' chiamato da `OnCastStart`, cioe' a OGNI
-    /// tentativo, riuscito o no. E' il suono della GUARDIA CHE SALE, ed e' esattamente cio' che rende il
-    /// tentativo del peer VISIBILE. L'unico caso in cui un colpo viene davvero ASSORBITO e' la GuardSlide,
-    /// gia' coperta da A4 - non si duplica.
+    /// Guard sound. Hooked on Parry.OnCastStart (which always fires on a guard attempt, hit or
+    /// not), not on PlayStartParry - that method has no C# callers. The path comes from the local
+    /// `ParryGuardFx` field, which is what the game just played; the byte sent carries the effect,
+    /// the path is logged only. Both `ParryStart` and `ParryStartCatalog` are sent so the listener
+    /// resolves which key actually plays on the receiver.
     /// </summary>
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.Parry), "OnCastStart")]
     class ParryGuardSound_Patch
@@ -832,13 +611,11 @@ namespace Blasphemous.Multiplayer.Client
             if (__instance == null || Framework.Managers.Core.Logic.Penitent == null)
                 return;
 
-            // ⚠️ La chiave NON e' piu' `PenitentStartParry` (una costante senza consumatori reali): si legge
-            // il campo dal componente LOCALE, ed e' il PERCORSO che il gioco ha appena suonato qui.
             string path = __instance.ParryGuardFx;
             if (string.IsNullOrEmpty(path))
             {
-                Blasphemous.ModdingAPI.ModLog.Warn("[Sound TX] ParryStart: `Parry.ParryGuardFx` e' vuoto su " +
-                                                   "questa macchina - la guardia del peer non uscira'");
+                Blasphemous.ModdingAPI.ModLog.Warn("[Sound TX] ParryStart: `Parry.ParryGuardFx` is empty " +
+                                                   "on this machine - the peer's guard will not sound");
                 return;
             }
 
@@ -847,30 +624,12 @@ namespace Blasphemous.Multiplayer.Client
             Blasphemous.ModdingAPI.ModLog.Info($"[Sound TX] ParryStart ({at.x:F1},{at.y:F1}) path={path}");
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryStart, at);
 
-            // A7-bis - E SI MANDA ANCHE LA CHIAVE DEL METODO SENZA CHIAMANTI C# (`PenitentStartParry`).
-            // Non si patcha quel metodo (non lo chiama nessuno): si manda la SUA chiave da qui, che e'
-            // l'unico punto in cui sappiamo che una guardia e' appena salita. Cosi' l'utente sente TUTTI
-            // i suoni della catena e il dubbio si chiude con l'orecchio invece che con una deduzione.
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.ParryStartCatalog, at);
         }
     }
 
-    // A5 - LE PROBE SONO STATE RIMOSSE. Avevano un solo scopo: dire QUALE suono il gioco suona
-    // davvero per il quarto colpo, per lo sguaino e per l'attacco aereo-a-terra, invece di
-    // scommettere su tre fix. Hanno risposto (`ComboHit` si', `ComboHitUp/Down` mai, `IdleSword`
-    // raro, `LoadingCharged` si'), i fix sono al loro posto, e il test ha confermato.
-    //
-    // Se servisse di nuovo una di quelle risposte, sono cinque righe:
-    //     [HarmonyPatch(typeof(PenitentAttackAnimations), "PlayComboHit")]
-    //     class X { public static void Postfix() { ModLog.Info("[Probe] ComboHit"); } }
-
-    // A4 - the slide's dust and its sound.
-    //
-    // Sent from the place the game performs the slide, and as a POSTFIX so the ability itself is untouched. The
-    // position is the penitent's own, which is where the game takes it from too.
-    //
-    // ⚠️ The receiving machine must NOT call OnCastStart: that would CAST THE ABILITY there. This end only says
-    // WHERE it happened; the other end reads GuardSlide's two public fields and reproduces the effect itself.
+    // Slide dust: hooked at the ability's OnCastStart (where the game performs the slide), postfix,
+    // so the ability is untouched. Receiver must not call OnCastStart (would cast the ability).
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.GuardSlide), "OnCastStart")]
     class GuardSlideEffect_Patch
     {
@@ -881,51 +640,23 @@ namespace Blasphemous.Multiplayer.Client
 
             UnityEngine.Vector3 at = Framework.Managers.Core.Logic.Penitent.transform.position;
 
-            // SENDER-SIDE PROOF, and the reason this line exists at all: the [Effect] line is written ONLY on
-            // ARRIVAL (AttackManager.ReceiveEffect) and NetworkManager.QueueMesssage returns silently while
-            // disconnected, so today "this Postfix never ran" and "the packet never arrived" are
-            // INDISTINGUISHABLE in both logs. This is the only line that tells them apart.
-            // ModLog is written out in full because this file has no `using Blasphemous.ModdingAPI;` - the
-            // other ModLog calls in it do the same.
+            // Sender-side proof: the [Effect] line is written on the receiver only.
             Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] SlideDust ({at.x:F1},{at.y:F1})");
 
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.SlideDust, at);
         }
     }
 
-    // A4 - the ground impact: the dust, the beam and the landing sound.
-    //
-    // WHY THIS METHOD. VerticalAttack.TriggerVerticalAttack(bool) is where a plunge finishes, and it is reached
-    // exactly ONCE per plunge: OnUpdate latches its private _instantiateExplosion to true immediately before
-    // calling it with true, and it only does so while the animator sits in VerticalAttackLanding. Its only two
-    // callers are VerticalAttack.OnUpdate (true) and PenitentAttackAnimations.PrayerUseAttack (FALSE) - and
-    // that false is the whole reason the argument is checked below. Without the check this patch would also
-    // fire every time a prayer is used, and the peer would watch a ground impact that never happened.
-    //
-    // ⚠️ THE RECEIVING MACHINE MUST NOT CALL THIS METHOD. TriggerVerticalAttack also runs
-    // AttackDamageableEntities on the hard-landing Hit and disables the attack collider: calling it on the
-    // other end would DEAL THE LANDING DAMAGE A SECOND TIME. This end only says WHERE it happened and WHICH
-    // of the five shapes it was, so the other end can draw it without running any of it.
-    //
-    // ⚠️ And it is a POSTFIX, so the ability runs untouched - the same rule as the slide above.
+    // Ground impact at plunge completion (TriggerVerticalAttack). PrayerUseAttack calls this with
+    // false - the argument check skips that. Receiver must not call this (would re-deal damage).
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack), "TriggerVerticalAttack")]
     class VerticalAttackLandingEffect_Patch
     {
-        // The skill is read through the PUBLIC LastUnlockedSkillId, which Ability fills from
-        // GetLastUnlockedSkill().id in OnUpdate just before the plunge begins, so at landing it is the same
-        // value the landing itself uses. These three strings are the ones the game compares against in
-        // get_GetLandingFxEventKey - not invented.
         private const string Vertical1 = "VERTICAL_1";
         private const string Vertical2 = "VERTICAL_2";
         private const string Vertical3 = "VERTICAL_3";
 
-        /// <summary>
-        /// VerticalAttack.BeamRequiredHeightReached is PRIVATE (verified in IL: `P Boolean
-        /// BeamRequiredHeightReached` with `M private Boolean get_BeamRequiredHeightReached()`), and it is the
-        /// only thing that separates the upgraded impact - the beam included - from the plain one on a
-        /// VERTICAL_3 plunge. It is looked up once, here, and cached. If the name ever stops existing the
-        /// lookup yields null and the impact degrades to the plain one instead of throwing.
-        /// </summary>
+        // BeamRequiredHeightReached is private; reflection with caching, degrades to plain impact on miss.
         private static readonly System.Reflection.PropertyInfo BeamReached =
             typeof(Gameplay.GameControllers.Penitent.Abilities.VerticalAttack).GetProperty(
                 "BeamRequiredHeightReached",
@@ -935,7 +666,7 @@ namespace Blasphemous.Multiplayer.Client
             Gameplay.GameControllers.Penitent.Abilities.VerticalAttack __instance,
             bool instantiateExplosion)
         {
-            // PrayerUseAttack calls this with false. Sending here would invent an impact.
+            // PrayerUseAttack calls this with false; sending here would invent an impact.
             if (!instantiateExplosion)
                 return;
 
@@ -954,12 +685,6 @@ namespace Blasphemous.Multiplayer.Client
             else
                 effect = EffectType.LandingImpactBase;
 
-            // The position is the penitent's own, which is where the game takes it from too: both
-            // InstantiateExplosion and the landing audio read the penitent's transform.
-            //
-            // [Effect TX] for the same reason as the slide above: the arrival line is written on the OTHER
-            // machine, so without this one "the Postfix never ran" and "the packet never arrived" cannot be
-            // told apart - and the plunge has two gates of its own that can stop it before this point.
             Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] {effect} " +
                 $"({Framework.Managers.Core.Logic.Penitent.transform.position.x:F1}," +
                 $"{Framework.Managers.Core.Logic.Penitent.transform.position.y:F1})");
@@ -981,41 +706,13 @@ namespace Blasphemous.Multiplayer.Client
             return (bool)value;
         }
     }
-    // A5 - la polvere della SCIVOLATA DI MOVIMENTO (Dash), sull'ALTRA macchina.
-    //
-    // PERCHE' QUI E NON SU Dash.OnCastStart / Dash.OnCastEnd. Quei due sono GIA' patchati da A3 per il
-    // ghost trail, e questa funzione non deve dipendere da quella patch ne' disturbarla. I due metodi
-    // patchati sotto sono i punti in cui il GIOCO crea la polvere del dash, e sono raggiunti da OGNI
-    // percorso che la crea (verificato nel IL di Assembly-CSharp.dll):
-    //
-    //   GetStartDashDust()    - UN SOLO chiamante in tutto l'assembly: Dash.OnCastStart.
-    //   GetDashDustPosition() - UN SOLO chiamante in tutto l'assembly: GetStopDashDust(), che a sua
-    //                           volta e' raggiunto da PenitentMoveAnimations.RaiseStopDust (un EVENTO DI
-    //                           ANIMAZIONE, che quindi non ha alcun chiamante nel IL) e dai QUATTRO punti
-    //                           con GetStopDashDust(float) di DashBehaviour (tre in OnStateUpdate, uno in
-    //                           Crouch) attraverso DelayStopDash.
-    //                           Una sola patch copre quindi TUTTE E CINQUE le emissioni di arresto.
-    //
-    // ⚠️ GetStopDashDust NON si patcha: e' SOVRACCARICO (esistono GetStopDashDust() e
-    // GetStopDashDust(System.Single)). Un [HarmonyPatch(typeof(X), "GetStopDashDust")] senza lista di
-    // argomenti e' una ricerca PER SOLO NOME che deve scegliere fra due metodi - e il verificatore dei
-    // bersagli non lo vedrebbe, perche' indicizza i metodi per nome. GetDashDustPosition non e'
-    // sovraccarico, ha un solo chiamante, e il suo VALORE DI RITORNO e' la posizione esatta che il gioco
-    // passa a PoolManager.ReuseObject: cosi' non va riscritto un solo carattere dell'aritmetica del
-    // gioco, compresa la mutazione `StopDustSpawnOffsetPos *= +-1` che quel metodo compie.
-    //
-    // ⚠️ Sono POSTFIX: il metodo del gioco gira per primo e resta INTATTO. Nessun valore di ritorno
-    // toccato, nessun effetto collaterale cambiato: i Prefix di questo file - il cui VALORE DI RITORNO
-    // e' il punto, e la cui riscrittura ha gia' causato 12 NRE - non vengono sfiorati.
-    //
-    // ⚠️ Scattano SOLO per il penitent LOCALE: l'avatar remoto e' un GameObject nudo costruito da
-    // OtherPlayerManager.AddActivePlayer e non porta alcun DashDustGenerator, quindi nulla torna indietro.
+
+    // Dash dust: hooked on the generator's two factories, which are the game's own points of dust
+    // creation (start: OnCastStart only; stop: every stop path through GetDashDustPosition).
+    // GetStopDashDust is overloaded and is deliberately not patched; GetDashDustPosition is not.
     [HarmonyPatch(typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator), "GetStartDashDust")]
     class DashDustStart_Patch
     {
-        // La posizione NON e' inventata: GetStartDashDust restituisce l'istanza appena riusata dal pool,
-        // e ObjectInstance.Reuse(position, rotation) le ha appena assegnato ESATTAMENTE
-        // `_penitent.transform.position`, che e' il valore che il gioco legge dentro quel metodo.
         public static void Postfix(UnityEngine.GameObject __result)
         {
             if (__result == null)
@@ -1023,12 +720,6 @@ namespace Blasphemous.Multiplayer.Client
 
             UnityEngine.Vector3 at = __result.transform.position;
 
-            // PROVA LATO MITTENTE, e ragione per cui questa riga esiste: la riga [Effect] e' scritta SOLO
-            // dal RICEVENTE (AttackManager.ReceiveEffect) e NetworkManager.QueueMesssage esce in silenzio
-            // mentre e' disconnesso, quindi oggi "questo Postfix non e' mai girato" e "il pacchetto non e'
-            // mai arrivato" sono INDISTINGUIBILI in entrambi i log. Questa e' l'unica riga che li separa.
-            // ModLog e' scritto per esteso perche' questo file non ha `using Blasphemous.ModdingAPI;`:
-            // le altre chiamate a ModLog che contiene fanno lo stesso.
             Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] DashDustStart ({at.x:F1},{at.y:F1})");
 
             Main.Multiplayer.NetworkManager.SendEffect(EffectType.DashDustStart, at);
@@ -1038,8 +729,6 @@ namespace Blasphemous.Multiplayer.Client
     [HarmonyPatch(typeof(Gameplay.GameControllers.Effects.Player.Dash.DashDustGenerator), "GetDashDustPosition")]
     class DashDustStop_Patch
     {
-        // __result E' la posizione: GetStopDashDust() passa questo valore di ritorno diritto a
-        // PoolManager.ReuseObject, quindi e' il punto esatto in cui la polvere di arresto del gioco nasce.
         public static void Postfix(UnityEngine.Vector3 __result)
         {
             Blasphemous.ModdingAPI.ModLog.Info($"[Effect TX] DashDustStop ({__result.x:F1},{__result.y:F1})");
@@ -1065,7 +754,6 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
     
-
     // Climb cliff
     [HarmonyPatch(typeof(ClimbCliffLedeBehaviour), "OnStateEnter")]
     class ClimbCliffLedeBehaviourEnter_Patch
@@ -1098,7 +786,6 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
-
 
     // Grab ladder up
     [HarmonyPatch(typeof(GrabLadderBehaviour), "OnStateEnter")]
@@ -1203,7 +890,6 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
 
-
     // Crouch attack
     [HarmonyPatch(typeof(CrouchAttackBehaviour), "OnStateEnter")]
     class CrouchAttackBehaviourEnter_Patch
@@ -1256,7 +942,6 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
 
-
     // Dashing
     [HarmonyPatch(typeof(DashBehaviour), "OnStateEnter")]
     class DashBehaviourEnter_Patch
@@ -1301,7 +986,6 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
 
-
     // Death
     [HarmonyPatch(typeof(PlayerDeathAnimationBehaviour), "OnStateEnter")]
     class PlayerDeathAnimationBehaviourEnter_Patch
@@ -1325,7 +1009,6 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
-
 
     // Healing
     [HarmonyPatch(typeof(HealingBehaviour), "OnStateEnter")]
@@ -1392,7 +1075,6 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
-
 
     // Jump
     [HarmonyPatch(typeof(JumpBehaviour), "OnStateEnter")]
@@ -1504,7 +1186,6 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
 
-
     // Aura transform
     [HarmonyPatch(typeof(AuraTransformBehaviour), "OnStateEnter")]
     class AuraTransformBehaviourEnter_Patch
@@ -1538,7 +1219,6 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
-
 
     // Ground range attack
     [HarmonyPatch(typeof(GroundRangeAttackBehaviour), "OnStateEnter")]
@@ -1589,7 +1269,6 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
 
-
     // Idle
     [HarmonyPatch(typeof(IdleAnimatonBehaviour), "OnStateEnter")]
     class IdleAnimatonBehaviourEnter_Patch
@@ -1614,9 +1293,7 @@ namespace Blasphemous.Multiplayer.Client
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
 
-
     // Sub states
-
 
     // Crouch
     [HarmonyPatch(typeof(CrouchSubStateBehaviour), "OnStateUpdate")]
@@ -1699,14 +1376,11 @@ namespace Blasphemous.Multiplayer.Client
     {
         public static bool Prefix(Animator animator) => animator.name == "Body";
     }
+
     /// <summary>
-    /// A7-bis - IL CONTRATTACCO (`PenitentParry`), il secondo candidato al titolo di "clang".
-    ///
-    /// ⚠️ SI SUONA ANCHE SE IL PIANO LO AVEVA ESCLUSO, e la ragione e' onesta: su una parata riuscita
-    /// si accendono DUE eventi del penitent, e l'IL non puo' dire quale dei due sia il clang, perche'
-    /// la differenza sta in QUALE CLIP contiene QUALE AnimationEvent - e i clip sono negli asset.
-    ///   ⇒ Si suonano entrambi. Se ne senti UNO solo, quello e' il clang. Se ne senti due, il clang e'
-    ///   quello piu' forte. Se non ne senti nessuno dei due, il problema non e' il nome: e' la strada.
+    /// Counter-attack (PenitentParry). Also sent alongside the clang because the IL cannot say
+    /// which of the two events on a successful parry is the actual clang; the player's ear
+    /// decides.
     /// </summary>
     [HarmonyPatch(typeof(Gameplay.GameControllers.Penitent.Audio.PenitentAudio), "PlayParryAttack")]
     class PenitentParryAttackSound_Patch
@@ -1722,4 +1396,3 @@ namespace Blasphemous.Multiplayer.Client
         }
     }
 }
-

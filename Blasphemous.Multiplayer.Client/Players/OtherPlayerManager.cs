@@ -78,12 +78,10 @@ namespace Blasphemous.Multiplayer.Client.Players
                 PlayerStatus.SkinStatus currentSkinStatus = player.SkinUpdateStatus;
                 if (currentSkinStatus == PlayerStatus.SkinStatus.NoUpdate)
                 {
-                    // Set that one update cycle has passed
                     player.SkinUpdateStatus = PlayerStatus.SkinStatus.YesUpdate;
                 }
                 else if (currentSkinStatus == PlayerStatus.SkinStatus.YesUpdate)
                 {
-                    // Set the player texture
                     ApplySkinTexture(player.Name);
                     player.SkinUpdateStatus = PlayerStatus.SkinStatus.Updated;
                 }
@@ -95,7 +93,6 @@ namespace Blasphemous.Multiplayer.Client.Players
                 RectTransform nametag = nametags[i].rectTransform;
                 string name = nametags[i].name;
 
-                // Get player with this name
                 Vector3 position;
                 if (name == Main.Multiplayer.PlayerName)
                 {
@@ -120,7 +117,6 @@ namespace Blasphemous.Multiplayer.Client.Players
         // Sets the skin texture of a player's object - must be delayed until after object creation
         private void ApplySkinTexture(string playerName)
         {
-            // Get player object with this name
             OtherPlayerScript activePlayer = FindActivePlayer(playerName);
             if (activePlayer == null) return;
 
@@ -130,10 +126,7 @@ namespace Blasphemous.Multiplayer.Client.Players
 
         #region Connected players
 
-        /// <summary>
-        /// Names whose absence has already been reported, so the warning of FindConnectedPlayer is written
-        /// once per name per session instead of once per packet. See that method.
-        /// </summary>
+        /// <summary>Names already warned about, so FindConnectedPlayer logs the miss once per name per session.</summary>
         private readonly HashSet<string> _missingPlayersReported = new HashSet<string>();
 
         // Finds a specified player connected to the server
@@ -145,39 +138,20 @@ namespace Blasphemous.Multiplayer.Client.Players
                     return connectedPlayers[i];
             }
 
-            // THE MISS IS WORTH ONE LINE, NOT ONE PER PACKET.
-            //
-            // Measured: 309 identical "Couldn't find connected player: *" lines in one session, and the
-            // count is not a coincidence - the log holds exactly 309 "Received new game progress" lines,
-            // one for each, because ReceiveProgress asks ProcessRecievedStat about the sender for EVERY
-            // progress entry, and ProcessRecievedStat asks this lookup.
-            //
-            // The name is the literal "*", and that is a SENTINEL, not a player who has not registered yet:
-            // the server stamps the whole initial sync with it (Server.cs, getProgressPacket("*", ...)),
-            // because those entries are TEAM data that nobody performed. No player is ever called "*", so
-            // this lookup could not have succeeded however long anyone waited. The caller knows it, too:
-            // ProcessRecievedStat returns on the null and the progress itself is applied on the line above,
-            // by ProgressManager.ReceiveProgress, which never asks this question. Nothing is discarded here.
-            //
-            // So the case is noise - the loudest kind, a warning that fires 309 times for one event that is
-            // expected - and it is silenced by repetition rather than by level: the first occurrence keeps
-            // its name, its wording and its timestamp, which is what a reader needs in order to tell "the
-            // registry is behind" from "no such player". Only the 308 copies go away, and the line says so,
-            // so nobody later mistakes the single line for a single call.
+            // Misses are throttled per name: the whole initial sync uses the sentinel "*", which is
+            // never a real player, so an unthrottled warning would flood on every progress entry.
+            // Only the first miss per name is logged, so "registry behind" and "no such player" stay
+            // distinguishable without burying the log.
             if (_missingPlayersReported.Add(name))
                 ModLog.Warn("Couldn't find connected player: " + name +
-                            " (una sola volta per nome in questa sessione)");
+                            " (only once per name in this session)");
 
             return null;
         }
 
         /// <summary>
-        /// Records that a player is down, or back up, without complaining if they are not known yet.
-        ///
-        /// Deliberately NOT built on FindConnectedPlayer: that one logs a warning whenever it misses, and
-        /// here a miss is ordinary rather than surprising - an announcement can arrive before the server's
-        /// connection packet that creates the entry. Using the noisy lookup would fill the log with warnings
-        /// that mean nothing, which is how a log stops being read.
+        /// Records that a player is down or back up, without warning when unknown: an announcement can
+        /// arrive before the connection packet creates the entry, so a miss here is ordinary.
         /// </summary>
         public void SetPlayerDead(string name, bool dead)
         {
@@ -187,15 +161,9 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// Whether every player we know about is down, this one included.
-        ///
-        /// This is ours to answer because the game cannot: there is one Penitent and the remote players are
-        /// not Penitents, so nothing in the game keeps a count of who is still standing. What depends on it
-        /// is the end of the spectator state - a dead player waiting to be released has to know when there
-        /// is nobody left to watch.
-        ///
-        /// With nobody else connected the answer is false: being alone is not "everybody is down", and
-        /// treating it as such would release the state the instant the player died in single player.
+        /// True when every connected player is down (this one included). The game cannot answer this
+        /// (one Penitent; remotes are not Penitents), and it is what closes the spectator state.
+        /// Returns false when alone: being alone is not "everybody dead".
         /// </summary>
         public bool AreAllPlayersDead(bool localPlayerDead)
         {
@@ -214,7 +182,7 @@ namespace Blasphemous.Multiplayer.Client.Players
             return true;
         }
 
-        /// <summary>Same search as FindConnectedPlayer, without the warning. See SetPlayerDead.</summary>
+        /// <summary>Same search as FindConnectedPlayer, without the warning.</summary>
         public PlayerStatus FindConnectedPlayerQuietly(string name)
         {
             for (int i = 0; i < connectedPlayers.Count; i++)
@@ -265,14 +233,9 @@ namespace Blasphemous.Multiplayer.Client.Players
         // Finds a specified player in the scene
         public OtherPlayerScript FindActivePlayer(string name)
         {
-            // A DESTROYED Unity object is not C# null: it compares equal to null, and touching it throws.
-            //
-            // This is the second half of the same defect the FMOD storm exposed. A scene change destroys the
-            // player objects while callers keep asking for them, and reading .name on a destroyed one throws
-            // from inside the packet handler - which is the worst possible place, because ProcessQueue clears
-            // its queue only after the loop, so the same packet is handed to it again on the next frame and
-            // the mod stops updating altogether. The guard costs one comparison and the purge keeps the list
-            // from filling up with corpses.
+            // A destroyed Unity object is not C# null: reading .name on it throws, and this runs inside
+            // the packet handler, where an exception prevents ProcessQueue from clearing its queue and
+            // the same packet is replayed. The purge keeps the list from filling with corpses.
             for (int i = activePlayers.Count - 1; i >= 0; i--)
             {
                 if (activePlayers[i] == null)
@@ -297,7 +260,6 @@ namespace Blasphemous.Multiplayer.Client.Players
             PlayerStatus player = FindConnectedPlayer(name);
             if (player == null) return;
 
-            // Create & setup new penitent object
             GameObject playerObject = new GameObject("_" + name);
             OtherPlayerScript activePlayer = playerObject.AddComponent<OtherPlayerScript>();
             activePlayer.SetupPlayer(player);
@@ -307,7 +269,6 @@ namespace Blasphemous.Multiplayer.Client.Players
             if (Core.LevelManager.currentLevel.LevelName == "D17Z01S01")
                 playerObject.AddComponent<FakePenitentIntro>();
 
-            // Set up name tag
             AddNametag(name, Main.Multiplayer.PlayerTeam == player.Team);
 
             ModLog.Info("Created new player object for " + name);
@@ -370,7 +331,6 @@ namespace Blasphemous.Multiplayer.Client.Players
                 return;
             }
 
-            // Could probably use the UI framework for this...
             Text nametag = Object.Instantiate(text, parent).GetComponent<Text>();
             nametag.rectTransform.sizeDelta = new Vector2(100, 50);
             nametag.rectTransform.SetAsFirstSibling();
@@ -435,9 +395,9 @@ namespace Blasphemous.Multiplayer.Client.Players
         {
             if (!Main.Multiplayer.CurrentlyInLevel) return;
 
-            // Feed the enemy-sync ownership rule directly. That rule needs to know which player is closest
-            // to an enemy, and this is the only place where the other player's position is known to be
-            // right - reading it back off the scene object gave the local player's coordinates instead.
+            // Feeds the enemy ownership rule directly: this is the only place where the other player's
+            // position is known to be correct (reading it back off the scene object returned the local
+            // player's coordinates).
             EnemySyncManager.NoteRemotePlayerPosition(playerName, position);
 
             OtherPlayerScript player = FindActivePlayer(playerName);
@@ -470,17 +430,10 @@ namespace Blasphemous.Multiplayer.Client.Players
         }
 
         /// <summary>
-        /// The level this machine is in, or null when there is no level yet.
-        ///
-        /// Both readers below run from ProcessQueue, which Multiplayer calls BEFORE its own
-        /// "if (CurrentlyInLevel)" gate - so they run on the frames where no level exists, including the
-        /// main menu. Reading currentLevel.LevelName straight through there is the same
-        /// NullReferenceException that once threw 192 times in a single session out of the deferred
-        /// breakable pass, and it is worth remembering why that one was so hard to read: the exception came
-        /// out of a Harmony postfix, so it also suppressed whatever other postfix had not run yet.
-        ///
-        /// Returning null rather than a sentinel is deliberate: the callers compare it against a scene name,
-        /// and null equals no scene, which is exactly true when there is no level.
+        /// The level this machine is in, or null when there is no level yet. Both readers below run
+        /// from ProcessQueue, before Multiplayer's CurrentlyInLevel gate - so they run on frames with
+        /// no level (main menu). Reading currentLevel.LevelName directly there NREs; null means "no
+        /// scene", which is exactly true when there is no level.
         /// </summary>
         private static string CurrentLevelNameOrNull()
         {

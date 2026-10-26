@@ -18,38 +18,22 @@
     <RepositoryUrl>https://github.com/BrandenEK/Blasphemous.Multiplayer</RepositoryUrl>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 
-    <!-- Interruttore del deploy nella cartella di gioco. FALSE per default: la build non tocca il gioco.
-         Per una copia voluta:  dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true -->
+    <!-- Deploy to game folder toggle. Default FALSE: build does not touch the game.
+         For an explicit copy: dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true -->
     <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
 
-    <!-- ⭐ LA "HOST SESSION" — IL SERVER DENTRO IL CLIENT.
-         `COOP_HOST` e' il simbolo che dice ai file del server (compilati QUI, vedi l'ItemGroup piu'
-         sotto) che stanno girando DENTRO IL GIOCO invece che in una finestra console:
-           · niente `Console.*` (lancia `IOException` senza console, cioe' sempre, nel gioco);
-           · niente `Main`, `Console.Title`, `Console.ReadKey`, `Environment.Exit`;
-           · niente argomenti CLI (`Basalt.CommandParser` + `ServerArguments`);
-           · niente `ServerLog`/`ServerOutput.log`: il log va in `ModLog`.
-         Lo standalone (`Blasphemous.Multiplayer.Server.csproj`, net8.0) non lo definisce e resta
-         esattamente com'era: stessa console, stessi argomenti, stesso `ServerOutput.log`. -->
+    <!-- COOP_HOST: tells the server sources (compiled into this project) they run inside the game
+         process instead of a console window - no Console.* (throws IOException without a console),
+         no Main/Console.ReadKey/Environment.Exit, no CLI args (Basalt), no ServerLog/ServerOutput.log:
+         log goes through ModLog. The standalone server build does not define it and stays unchanged. -->
     <DefineConstants>$(DefineConstants);COOP_HOST</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- ⭐⭐ IL SERVER DENTRO IL CLIENT: GLI STESSI SORGENTI, NON UNA COPIA.
-         Questi otto file sono `Compile` di QUESTO progetto e vivono nel progetto del server: la
-         logica del server resta UNA sola, in un posto solo, e ogni sua modifica arriva a entrambe le
-         build. Le poche righe che non possono essere comuni stanno dentro `#if COOP_HOST` e sono
-         elencate una per una in `scratch\REFERTO-SERVER-NEL-CLIENT.md`.
-         · `Server.cs`   l'engine (porta 27051, smistamento, host, squadre)
-         · `Logger.cs`   una porta sola per le sue righe -> console (standalone) / `ModLog` (client)
-         · `Core.cs`     i dati di squadra; il `Main` della console e' `#if !COOP_HOST`
-         · `Models\*.cs` lo stato in RAM (giocatori, progresso di squadra)
-         · `IServerTransport.cs`         (C1b-1) il seam del filo, lato SERVER: un'interfaccia, niente socket
-         · `TcpServerTransport.cs`       (C1b-1) l'unica implementazione: avvolge `SimpleTCP`, righe di prima
-         · `CompositeServerTransport.cs` (C1b-1) il registro dei fili: oggi UNO (TCP), domani TCP + P2P
-         ⚠️ NON compilati qui, di proposito:
-         · `ServerArguments.cs` -> sono gli argomenti della riga di comando (Basalt), non esistono nel gioco;
-         · `ServerLog.cs`       -> il file `ServerOutput.log` accanto all'exe; nel gioco il log e' quello della mod. -->
+    <!-- Server embedded in the client: same sources as the server project, not a copy. Anything
+         that cannot be shared is guarded by #if COOP_HOST inside the files themselves.
+         Not compiled here on purpose: ServerArguments.cs (CLI args, no game equivalent) and
+         ServerLog.cs (writes ServerOutput.log, replaced by ModLog inside the game). -->
     <Compile Include="..\Blasphemous.Multiplayer.Server\Server.cs" Link="Host\Server.cs" />
     <Compile Include="..\Blasphemous.Multiplayer.Server\Logger.cs" Link="Host\Logger.cs" />
     <Compile Include="..\Blasphemous.Multiplayer.Server\Core.cs" Link="Host\Core.cs" />
@@ -88,21 +72,16 @@
       <Resources Include="$(SolutionDir)\resources\**\*.*" />
     </ItemGroup>
 
-    <!-- Get export directories -->
     <PropertyGroup>
-      <!-- La cartella di gioco. Il percorso è ASSOLUTO e resta, ma NON è più un bersaglio della build:
-           lo era, e ogni `dotnet build` — in qualunque worktree — ci copiava la sua DLL, annullando
-           in silenzio il deploy di HEAD (per giorni si è creduto di testare una versione mentre il
-           gioco ne eseguiva un'altra). Ora le due Copy verso questa cartella sono spente per default
-           (vedi <DeployToGame> in cima al file): l'unico modo di mettere qualcosa in gioco è
-           tools\deploy-local.ps1 — così una build di prova non può più sovrascrivere il deploy. -->
+      <!-- DevFolder is NOT a build target: the Copy into it runs only with -p:DeployToGame=true.
+           Deployments go through tools\deploy-local.ps1 so that a stray build in any worktree
+           cannot silently overwrite the deployed plugin. -->
       <DevFolder>D:\SteamLibrary\steamapps\common\Blasphemous\Modding\</DevFolder>
       <PublishFolder>$(SolutionDir)\publish\$(TargetName)</PublishFolder>
     </PropertyGroup>
 
-    <!-- Export to dev folder — SOLO se richiesto con -p:DeployToGame=true.
-         Senza SkipUnchangedFiles di proposito: una copia voluta deve aggiornare anche il timestamp,
-         altrimenti un deploy identico sembra non essere avvenuto. -->
+    <!-- Export to dev folder, only when explicitly requested with -p:DeployToGame=true.
+         No SkipUnchangedFiles on purpose: a deliberate deploy must update timestamps too. -->
     <Copy SourceFiles="@(Resources)" DestinationFolder="$(DevFolder)\%(RecursiveDir)" Condition="'$(DeployToGame)' == 'true'" />
     <Copy SourceFiles="@(PluginDll)" DestinationFolder="$(DevFolder)\plugins" Condition="'$(DeployToGame)' == 'true'" />
 
@@ -134,4 +113,3 @@
   </Target>
   
 </Project>
-

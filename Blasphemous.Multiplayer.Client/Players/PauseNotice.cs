@@ -7,99 +7,49 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client
 {
     /// <summary>
-    /// ⭐ L'AVVISO "IL TUO COMPAGNO E' IN PAUSA" — e **nient'altro**. Questa classe **mostra** una riga a
-    /// schermo e **non agisce sul gioco**: non chiama `Core.Logic.PauseGame()` ne' `ResumeGame()`, non apre
-    /// e non chiude nessun menu', non scrive `Time.timeScale`, non simula input. Legge un booleano
-    /// (`Core.Logic.IsPaused`), lo manda come **flag**, e dall'altra parte accende o spegne una riga.
-    ///
-    /// 🔴 LA CAUSA (misurata, `scratch\DIAGNOSI-PAUSA-BUG.md`). La V2 di questa classe **condivideva** la
-    /// pausa: chi andava in pausa la faceva applicare all'altro con `Core.Logic.PauseGame()`, e l'altro la
-    /// toglieva al "riprendi". Ma le pause del gioco **non sono tutte una scelta**: tutorial, dialoghi e
-    /// cutscene mettono in pausa da se' (`input blocker` di sistema), e quella non e' una decisione del
-    /// giocatore. Trasmessa come comando, produceva questo:
-    ///   · il peer applicava `PauseGame()` e restava fermo **senza nessun menu' aperto**;
-    ///   · al "riprendi" la chiusura passava dal ramo ③ di `CloseAndResume`, protetto da
-    ///     `Core.Input.InputBlocked` — vero per un blocker di sistema (`IntroBlock`, `CINEMATIC`) che
-    ///     nessuno spegneva;
-    ///   · ⇒ **123 tentativi in 2 s**, poi il tetto: "ripresa FRENATA", il flag cadeva, `RetryClose`
-    ///     azzerava la coda e **nessun percorso ritentava piu'** (`G1:1050…G1:1059`);
-    ///   · ⇒ ⭐ **gioco fermo per sempre** (`timeScale = 0`, nessuno riporta `IsPaused` a false).
-    /// 📌 La condivisione era **strutturalmente sbagliata**: propagava una cosa che **non e' una scelta**.
-    ///
-    /// ✅ IL FIX — CINQUE COSE, e sono tutte qui dentro:
-    ///   ① **non si propaga la pausa locale come comando**: sul filo non esce nessun "metti in pausa";
-    ///   ② **non si applica nessuna pausa remota**: `Core.Logic.PauseGame()` **non si chiama piu'**, e con
-    ///      lui se ne vanno l'apertura della mappa che lo camuffava (`TryOpenMapOntoPassive`) e la
-    ///      chiusura (`CloseAndResume`);
-    ///   ③ **con quelle spariscono le guardie**: `InputBlocked`, il retry con il tetto, il
-    ///      "dichiara e dimentica" (`RetryClose` → "ripresa FRENATA"), `StepRemotePauseGuards` e il flag
-    ///      `_pausedByRemote`: **rimossi**, non commentati;
-    ///   ④ **l'avviso resta**, ma il "saperlo" **non passa da un comando**: nel **battito** viaggia un
-    ///      **flag** `pausa locale: si'/no`. La mod **mostra**, non agisce. Quando il compagno riprende il
-    ///      flag torna "no" e **l'avviso sparisce da solo** (stessa riga persistente della V2:
-    ///      `DisplayStickyNotification` / `ClearStickyNotification`);
-    ///   ⑤ **IL CANCELLO — solo con un server** (host o peer): tutto questo vale **solo** con una
-    ///      connessione viva, letto dal predicato che usano gia' la morte trasparente e la Colpa
-    ///      (`CoopGate.IsMultiplayerActive()`). ⛔ **In single player non cambia niente**: nessun flag
-    ///      mandato, nessun avviso mostrato, nessuna pausa toccata — e il gioco pausa per se' come ha
-    ///      sempre fatto (non c'e' nessuno da avvisare).
-    ///
-    /// ⭐ IL FILO **NON CAMBIA DI UNA VIRGOLA**, ed e' voluto: canale `AttackType.PauseRelay = 203`
-    /// (il quinto verso del canale Attack), payload di **un byte**, battito ogni 3 s, timeout 8 s, classe
-    /// di trasporto `Reliable` (la decide `NetworkManager.IsReliableAttackPayload` dal primo byte).
-    /// Cambia **il significato** del byte, non la sua forma: era un *comando* ("metti/leva la pausa"),
-    /// ora e' uno *stato* ("in pausa: 1 / no: 0") che il battito **rimanda** finche' dura. Zero righe di
-    /// protocollo (resta 11), zero righe di server, zero righe di adapter: il server inoltra il canale
-    /// Attack ai peer della stessa scena escludendo il mittente, come faceva prima.
-    ///
-    /// ⚠️ GLI OROLOGI SONO `Time.unscaledTime`: con `timeScale = 0` `Time.time` si ferma e `Time.deltaTime`
-    /// vale 0, quindi un battito o un timeout scritti su quelli non scatterebbero mai proprio quando
-    /// servono. E `OnLateUpdate` gira anche a `timeScale = 0` (e' il frame in cui questa classe deve
-    /// vedere la pausa **locale**, che il gioco ha appena messo).
-    ///
-    /// ⚠️ TUTTO E' DENTRO `try/catch`: un avviso non deve mai rompere la partita. Nessun errore esce mai
-    /// da questa classe.
+    /// Displays "YOUR TEAMMATE IS PAUSED" on screen and does nothing else. Reads
+    /// <c>Core.Logic.IsPaused</c> locally and sends a FLAG (not a command) on the Attack channel
+    /// with <c>AttackType.PauseRelay = 203</c>, one byte payload, Reliable, heartbeat every 3s.
+    /// The receiver shows or clears a sticky notification - it never pauses, resumes, opens or
+    /// closes any menu, or writes TimeScale. The previous version shared pause as a command and
+    /// could freeze the game permanently when a system input blocker blocked the resume; that is
+    /// why the whole state machine became a flag. Co-op only: with no server nothing is sent and
+    /// nothing is shown.
     /// </summary>
     internal static class PauseNotice
     {
-        /// <summary>Marker di ESITO, obbligatorio su ogni riga: si conta da solo nel log.</summary>
+        /// <summary>Marker on every line of this class.</summary>
         private const string MARK = "[Pausa]";
 
         /// <summary>
-        /// L'INTERRUTTORE: `false` spegne TUTTA la funzione (non manda il flag, non mostra l'avviso).
-        /// `static readonly` e non `const` per la stessa ragione di `BossFightDeathWarning.cs:79`: con un
-        /// `const true` il ramo `if (!X)` diventa irraggiungibile e il compilatore emette CS0162.
+        /// Function toggle. static readonly (not const) so <c>if (!X)</c> stays reachable and the
+        /// compiler does not emit CS0162.
         /// </summary>
         private static readonly bool NOTICE_ON_TEAMMATE_PAUSED = true;
 
-        /// <summary>Il testo della notifica: inglese, ASCII puro, una riga sola.</summary>
+        /// <summary>Notification text: English, ASCII, one line.</summary>
         private const string TEXT = "YOUR TEAMMATE IS PAUSED";
 
-        // ---- il FLAG sul canale Attack: [AttackType.PauseRelay][pausa locale]. Un byte, e NON e' un
-        //      comando: chi lo riceve accende o spegne una riga, e basta. 1 = in pausa, 0 = no.
+        // PauseRelay payload: [PauseRelay][local pause]. 1 = paused, 0 = running.
         private const byte FLAG_PAUSED = 1;
         private const byte FLAG_RUNNING = 0;
 
-        // ---- il battito e la scadenza, in SECONDI NON SCALATI (vedi il commento di classe).
-        //      Il battito e' il canale del FLAG: finche' il compagno e' in pausa il "si'" si rimanda ogni
-        //      3 s, e se smette di arrivare (gioco chiuso, rete morta) l'avviso cade dopo 8 s — due
-        //      battiti persi di fila non bastano a far cadere una riga vera.
+        // Unscaled seconds. Heartbeat is the flag carrier; timeout = 8s (two lost beats tolerated).
         private const float HEARTBEAT_SECONDS = 3f;
         private const float TIMEOUT_SECONDS = 8f;
 
-        // ---- il flag LOCALE: l'ultimo `IsPaused` osservato e l'ultimo flag SPEDITO (per non ripeterlo a
-        //      ogni frame: si manda al cambio, e poi a battito solo mentre il flag dice "si'").
+        // Local flag state.
         private static bool _wasPaused;
         private static bool _lastSentFlag;
         private static bool _lastSentKnown;
         private static float _nextTxAt;
 
-        // ---- il flag REMOTO: l'avviso e' a schermo, da chi, e fino a quando.
+        // Remote flag state.
         private static bool _remotePaused;
         private static float _remoteDeadline;
         private static string _remoteFrom = "?";
 
-        // ---- diagnostica: i contatori che il referto cita, e i due "una volta sola".
+        // Diagnostics.
         private static int _edges;
         private static int _sent;
         private static int _received;
@@ -108,19 +58,14 @@ namespace Blasphemous.Multiplayer.Client
         private static string _lastNotSent = "";
         private static bool _toggleOffReported;
 
-        // ---- il CANCELLO (⑤): 0 = mai guardato, 1 = coop (connesso), 2 = single player. Serve solo a
-        //      scrivere UNA riga quando lo stato cambia, invece di una per frame.
+        // Coop gate state: 0 = never observed, 1 = coop, 2 = single player. Used to write one line
+        // per transition instead of per frame.
         private static int _gateState;
 
         /// <summary>
-        /// UN GIRO PER FRAME, da `Multiplayer.OnLateUpdate`, **dopo** `NetworkManager.ProcessQueue()`
-        /// (un flag che arriva dal filo si applica prima di essere guardato) e **dopo**
-        /// `NotificationManager.Update()`.
-        /// L'ORDINE DEI TRE PASSI E' SIGNIFICATIVO:
-        ///   ① il cancello (⑤) — senza un server non si fa **niente**, e un avviso rimasto appeso cade;
-        ///   ② il flag locale (④) — cosi' la ripresa parte nello stesso frame in cui il gioco riprende;
-        ///   ③ le uscite del flag remoto (timeout, disconnessione, stanza) — che possono far cadere
-        ///      l'avviso **senza toccare il gioco**.
+        /// Per frame, called from <c>Multiplayer.OnLateUpdate</c> after ProcessQueue (so a wire
+        /// flag applies before it is read) and after NotificationManager.Update. Order matters:
+        /// gate first, local flag, then remote-timeout checks - none of them touch the game.
         /// </summary>
         internal static void Tick()
         {
@@ -134,22 +79,22 @@ namespace Blasphemous.Multiplayer.Client
                     if (!_toggleOffReported)
                     {
                         _toggleOffReported = true;
-                        ModLog.Info(MARK + " avviso SPENTO dall'interruttore (NOTICE_ON_TEAMMATE_PAUSED=false): " +
-                                    "nessun flag, nessuna riga a schermo, nessuna pausa condivisa");
+                        ModLog.Info(MARK + " warning OFF by the toggle (NOTICE_ON_TEAMMATE_PAUSED=false): " +
+                                    "no flag, no on-screen line, no shared pause");
                     }
                     return;
                 }
 
                 if (!CoopGate.IsMultiplayerActive())
                 {
-                    SinglePlayer();            // ⑤ il cancello: senza server non esiste questa funzione
+                    SinglePlayer();
                     return;
                 }
 
-                GateOpened();                  // ⑤ la riga del cancello, una per ingresso in co-op
+                GateOpened();
 
-                ObserveLocalFlag();            // ④ il flag locale + il battito
-                CheckRemoteStillPaused();      // le uscite dell'avviso
+                ObserveLocalFlag();
+                CheckRemoteStillPaused();
             }
             catch (Exception e)
             {
@@ -157,22 +102,18 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        // ============================================================================================
-        // ⑤ IL CANCELLO — solo con un server (host o peer). In single player **non cambia niente**: il
-        // gioco pausa per se' (e non c'e' nessun peer da avvisare), quindi la mod tace del tutto.
-        // Il predicato e' lo STESSO della morte trasparente e della Colpa (`CoopGate`): una definizione
-        // sola di "sto giocando in co-op", e se un giorno cambia, cambia per tutte e tre.
-        // ============================================================================================
+        /// <summary>
+        /// Coop gate closed: no peer to notify, so nothing is sent. If a sticky notice was showing,
+        /// it is cleared here without touching the game. Local flag is realigned silently so a
+        /// later coop entry sends the true state once.
+        /// </summary>
         private static void SinglePlayer()
         {
             try
             {
-                // L'avviso non ha senso senza un peer: se era a schermo cade qui, senza toccare il gioco.
                 if (_remotePaused)
-                    Clear("nessun server (il cancello e' chiuso): l'avviso non puo' restare acceso");
+                    Clear("no server (the gate is closed): the notice cannot stay on");
 
-                // Il flag locale si riallinea in silenzio: in single player **non si trasmette niente**, e
-                // quando si entra in co-op si manda lo stato vero una volta sola (vedi `GateOpened`).
                 _wasPaused = IsLocalPaused();
                 _lastSentKnown = false;
                 _nextTxAt = 0f;
@@ -181,10 +122,10 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     bool prima = _gateState == 1;
                     _gateState = 2;
-                    ModLog.Info(MARK + " cancello CHIUSO (nessun server): questa funzione tace del tutto - " +
-                                "nessun flag mandato, nessun avviso a schermo, NESSUNA pausa toccata (il gioco " +
-                                "pausa per se', come ha sempre fatto: in single player non c'e' nessun peer " +
-                                "da avvisare)" + (prima ? " · la connessione e' caduta in questo istante" : ""));
+                    ModLog.Info(MARK + " gate CLOSED (no server): this feature is silent - " +
+                                "no flag sent, no on-screen notice, NO pause touched (the game " +
+                                "pauses by itself, as it always did: in single player there is no peer " +
+                                "to warn)" + (prima ? " · the connection dropped just now" : ""));
                 }
             }
             catch (Exception e)
@@ -193,6 +134,7 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
+        /// <summary>Coop gate opened: realign state so the first tick sends the true flag.</summary>
         private static void GateOpened()
         {
             try
@@ -201,11 +143,11 @@ namespace Blasphemous.Multiplayer.Client
                     return;
 
                 _gateState = 1;
-                _lastSentKnown = false;   // ⇒ il primo giro manda lo stato VERO (anche "sono gia' in pausa")
+                _lastSentKnown = false;
                 _nextTxAt = 0f;
 
-                ModLog.Info(MARK + " cancello APERTO (server connesso: host o peer): da qui vale l'avviso - " +
-                            "la mod legge `Core.Logic.IsPaused` e manda il FLAG, non un comando · stato locale=" +
+                ModLog.Info(MARK + " gate OPEN (server connected: host or peer): the notice applies from here - " +
+                            "the mod reads `Core.Logic.IsPaused` and sends the FLAG, not a command · local state=" +
                             (IsLocalPaused() ? "pausa" : "in gioco"));
             }
             catch (Exception e)
@@ -215,13 +157,9 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// ⭐ ④ IL FLAG LOCALE. Si legge `IsPaused` (polling, una volta per frame: le vie di pausa sono
-        /// SETTE e le riprese DODICI, non c'e' una porta sola da patchare ⇒ **zero patch Harmony nuove**) e
-        /// si manda il **flag** del momento:
-        ///   · **al cambio** (`false→true` e `true→false`) — subito, senza aspettare il battito;
-        ///   · **a battito** (ogni `HEARTBEAT_SECONDS`) mentre il flag dice "si'" — e' cio' che tiene viva
-        ///     la riga sull'altra macchina e che la lascia cadere per timeout se il peer sparisce.
-        /// ⛔ Qui **non si decide niente del gioco**: nessuna pausa da applicare, nessuna da togliere.
+        /// Reads IsPaused every frame (seven pause paths, twelve resume paths - no single Harmony
+        /// target). Sends the flag on change immediately, then at heartbeat while paused. Does not
+        /// decide anything about the game.
         /// </summary>
         private static void ObserveLocalFlag()
         {
@@ -233,18 +171,16 @@ namespace Blasphemous.Multiplayer.Client
                 {
                     _wasPaused = paused;
                     _edges++;
-                    _nextTxAt = 0f;                 // il cambio parte subito
+                    _nextTxAt = 0f;
                 }
 
-                // ⚠️ UN TENTATIVO PER BATTITO, non uno per frame: un flag che non passa (fuori livello,
-                // peer in un'altra stanza) e' un **rinvio**, e un rinvio non e' una raffica.
+                // One attempt per heartbeat, not per frame: a flag that cannot go out (out of
+                // level, peer elsewhere) is a postponement, not a burst.
                 if (Now() < _nextTxAt)
                     return;
 
                 bool pending = !_lastSentKnown || _lastSentFlag != paused;
 
-                // A regime, col flag "no" gia' spedito, non si manda piu' niente: si riprende solo quando
-                // lo stato cambia (o quando si torna in pausa, che e' di nuovo un cambio).
                 if (!pending && !paused)
                     return;
 
@@ -263,12 +199,10 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// MANDA IL FLAG, se le guardie lo permettono, e scrive SEMPRE il perche'. Le guardie sono quelle
-        /// di sempre, su predicati che esistono gia': `CurrentlyInLevel` (fuori livello `CurrentLevelConfig`
-        /// puo' essere null), `IsConnected`, `ConnectedPlayersCount() > 0`, e — **solo per il flag "si'"** —
-        /// `AnyOtherPlayerHereAndAlive()` (se il peer e' a terra o in un'altra stanza il server non gli
-        /// consegnerebbe il pacchetto: mandarlo sarebbe rumore).
-        /// ⚠️ Il flag "no" **non** chiede "sono vivo": spegnere un avviso e' sempre lecito.
+        /// Sends the flag when the guards allow it, always logging the reason. Guards use existing
+        /// predicates: CurrentlyInLevel, IsConnected, ConnectedPlayersCount > 0, and - only for the
+        /// "paused" flag - AnyOtherPlayerHereAndAlive (if the peer is down or elsewhere the server
+        /// would drop it). The "running" flag has no such guard: clearing a notice is always valid.
         /// </summary>
         private static bool TrySendFlag(bool paused)
         {
@@ -280,10 +214,10 @@ namespace Blasphemous.Multiplayer.Client
                 if (_lastNotSent != motivo + "|" + paused)
                 {
                     _lastNotSent = motivo + "|" + paused;
-                    ModLog.Info(MARK + " flag=" + tipo + " NON inviato · motivo=" + motivo +
+                    ModLog.Info(MARK + " flag=" + tipo + " NOT sent · motivo=" + motivo +
                                 " · io=" + Me() + " · peerInScena=" + (EnemySyncManager.AnyOtherPlayerInMyScene() ? 1 : 0) +
                                 "/" + EnemySyncManager.ConnectedPlayersCount() + " · fronti n." + _edges +
-                                " · il tentativo riparte al prossimo battito (" + HEARTBEAT_SECONDS + "s): e' un rinvio, non una rinuncia");
+                                " · retried at the next heartbeat (" + HEARTBEAT_SECONDS + "s): a postponement, not a surrender");
                 }
                 return false;
             }
@@ -298,45 +232,38 @@ namespace Blasphemous.Multiplayer.Client
                         " · peerInScena=" + (EnemySyncManager.AnyOtherPlayerInMyScene() ? 1 : 0) +
                         "/" + EnemySyncManager.ConnectedPlayersCount() +
                         " · inviati=" + _sent + " · fronti n." + _edges +
-                        " · NON e' un comando: il peer ACCENDE o SPEGNE una riga e non ferma niente " +
-                        "(nessun PauseGame, nessun menu' aperto o chiuso)" +
-                        (paused ? " · il battito lo rimanda ogni " + HEARTBEAT_SECONDS + "s finche' dura" : ""));
+                        " · it is NOT a command: the peer TURNS a line on or off and stops nothing " +
+                        "(no PauseGame, no menu opened or closed)" +
+                        (paused ? " · the heartbeat resends it every " + HEARTBEAT_SECONDS + "s while it lasts" : ""));
 
             return true;
         }
 
-        /// <summary>
-        /// LE GUARDIE DEL FLAG, in ordine di costo: chi non passa riceve una ragione in chiaro, cosi' "non e'
-        /// partito" non e' mai un silenzio. `null` = si puo' mandare.
-        /// </summary>
+        /// <summary>Flag guards in cost order. null = sendable; otherwise a reason.</summary>
         private static string GateReason(bool paused)
         {
             if (Main.Multiplayer.NetworkManager == null)
                 return "network-manager-assente";
             if (!Main.Multiplayer.CurrentlyInLevel)
-                return "fuori-livello";
+                return "out-of-level";
             if (!Main.Multiplayer.NetworkManager.IsConnected)
-                return "non-connesso";
+                return "not-connected";
             if (EnemySyncManager.ConnectedPlayersCount() <= 0)
-                return "nessun-peer-connesso";
+                return "no-peer-connected";
             if (!paused)
                 return null;
 
             if (!EnemySyncManager.AnyOtherPlayerHereAndAlive())
-                return "peer-non-qui-o-a-terra";
+                return "peer-not-here-or-down";
 
             return null;
         }
 
         /// <summary>
-        /// ⭐ LA RICEZIONE, chiamata da `NetworkManager.ReceiveAttack` **prima** del ramo PvP. Il payload e'
-        /// `[attackType][flag]` e il nome del mittente lo mette il server davanti, quindi `startIdx` punta
-        /// gia' oltre il nome.
-        ///
-        /// `pausa locale: si'` ⇒ **si accende l'avviso** (`Arm`). `pausa locale: no` ⇒ **si spegne**
-        /// (`Clear`). ⛔ Nessuna delle due strade tocca il gioco: qui non si mette e non si toglie una pausa,
-        /// non si apre e non si chiude un menu'. Se il flag arriva mentre il cancello e' chiuso, si scarta:
-        /// senza un server questa funzione non esiste.
+        /// Wire receive. Called from NetworkManager.ReceiveAttack before the PvP branch. Payload
+        /// is [attackType][flag] after the server-prefixed sender name. FLAG_PAUSED arms the
+        /// notice; FLAG_RUNNING clears it. Never touches the game. Dropped when the coop gate is
+        /// closed.
         /// </summary>
         internal static void ApplyFromWire(string from, byte[] data, int startIdx)
         {
@@ -344,8 +271,8 @@ namespace Blasphemous.Multiplayer.Client
             {
                 if (!CoopGate.IsMultiplayerActive())
                 {
-                    ModLog.Info(MARK + " RX flag da " + Show(from) + " SCARTATO · motivo=cancello-chiuso " +
-                                "(nessun server: la mod non mostra niente)");
+                    ModLog.Info(MARK + " RX flag from " + Show(from) + " DISCARDED · motivo=gate-closed " +
+                                "(no server: the mod shows nothing)");
                     return;
                 }
 
@@ -367,12 +294,12 @@ namespace Blasphemous.Multiplayer.Client
                 else if (flag == FLAG_RUNNING)
                 {
                     Clear("flag=pausa locale: no da " + Show(from) +
-                          " (il compagno ha ripreso: l'avviso sparisce subito, non si aspetta il timeout)");
+                          " (the teammate resumed: the notice disappears at once, the timeout is not awaited)");
                 }
                 else
                 {
                     ModLog.Info(MARK + " RX con flag IGNOTO (" + flag + ") da " + Show(from) +
-                                ": un valore che questa build non conosce - ignorato");
+                                ": a value this build does not know - ignored");
                 }
             }
             catch (Exception e)
@@ -382,9 +309,8 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// ⭐ ACCENDE L'AVVISO (o lo rinnova, se e' un battito). E' l'unica azione che questa classe fa sul
-        /// mondo: una riga di testo persistente. Il testo e' fisso: con due soli giocatori "il compagno" e'
-        /// gia' una risposta.
+        /// Arms (or refreshes) the sticky notice. Only action this class performs on the world is a
+        /// text line. Text is fixed: with two players, "teammate" is enough.
         /// </summary>
         private static void Arm(string from)
         {
@@ -399,21 +325,21 @@ namespace Blasphemous.Multiplayer.Client
                 if (Main.Multiplayer.NotificationManager == null)
                 {
                     ModLog.Error(MARK + " RX flag=pausa locale: si' da " + _remoteFrom + " ma NotificationManager " +
-                                 "non e' disponibile: nessuna riga a schermo (lo stato resta acceso lo stesso)");
+                                 "is unavailable: no on-screen line (the state stays on anyway)");
                     return;
                 }
 
-                // Idempotente sullo stesso testo: chiamarla a ogni battito non crea righe in piu'.
+                // Idempotent on the same text: called every heartbeat without adding lines.
                 Main.Multiplayer.NotificationManager.DisplayStickyNotification(TEXT);
 
                 if (gia)
-                    return;   // battito di conferma: si rinnova la scadenza e basta, senza sporcare il log
+                    return;
 
                 _shown++;
-                ModLog.Info(MARK + " RX flag=pausa locale: si' da=" + _remoteFrom + " · avviso A SCHERMO \"" +
-                            TEXT + "\" · resta finche' il flag non torna \"no\" o non scade il timeout di " +
-                            TIMEOUT_SECONDS + "s (battito ogni " + HEARTBEAT_SECONDS + "s) · ricevuti=" + _received +
-                            " · io=" + Me() + " · la mod MOSTRA e non agisce: nessun PauseGame, nessun menu', " +
+                ModLog.Info(MARK + " RX flag=local pause: yes from=" + _remoteFrom + " · notice ON SCREEN \"" +
+                            TEXT + "\" · stays until the flag returns \"no\" or the timeout expires: " +
+                            TIMEOUT_SECONDS + "s (heartbeat every " + HEARTBEAT_SECONDS + "s) · received=" + _received +
+                            " · io=" + Me() + " · the mod SHOWS and does not act: no PauseGame, no menu, " +
                             "nessuna pausa condivisa (il mio gioco continua a girare)");
             }
             catch (Exception e)
@@ -423,10 +349,9 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// ⭐ SPEGNE L'AVVISO, se c'e'. Due strade ci arrivano, e sono la stessa cosa dal punto di vista del
-        /// gioco: il flag del peer torna "no", oppure il flag smette di arrivare (timeout, disconnessione,
-        /// peer in un'altra stanza o a terra). ⛔ In nessuno dei due casi si tocca la pausa locale: il mio
-        /// menu', se e' aperto, resta aperto — un menu' aperto dal giocatore non e' affare della rete.
+        /// Clears the notice if present. Two paths converge here: FLAG_RUNNING from the peer, or
+        /// any of the local exits in CheckRemoteStillPaused. In neither case is the local pause
+        /// touched - a menu opened by the player is not the network's business.
         /// </summary>
         private static void Clear(string reason)
         {
@@ -438,8 +363,8 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (!cEra)
                 {
-                    ModLog.Info(MARK + " avviso gia' spento · motivo=" + reason + " · ricevuti=" + _received +
-                                " (idempotente: non c'era niente da togliere)");
+                    ModLog.Info(MARK + " notice already off · motivo=" + reason + " · received=" + _received +
+                                " (idempotent: there was nothing to remove)");
                     return;
                 }
 
@@ -450,13 +375,13 @@ namespace Blasphemous.Multiplayer.Client
                 }
                 catch (Exception)
                 {
-                    // Se la UI non si toglie, il testo sparisce al prossimo `LevelLoaded()`: non si rilancia.
+                    // If the UI cannot be cleared, the text disappears at the next LevelLoaded.
                 }
 
                 _cleared++;
-                ModLog.Info(MARK + " NOTIFICA TOLTA · motivo=" + reason + " · da=" + _remoteFrom +
+                ModLog.Info(MARK + " NOTICE REMOVED · motivo=" + reason + " · from=" + _remoteFrom +
                             " · ricevuti=" + _received + " · spenta=" + _cleared +
-                            " · la pausa locale NON e' stata toccata (la mod non ha mai messo in pausa niente)");
+                            " · the local pause was NOT touched (the mod never paused anything)");
             }
             catch (Exception e)
             {
@@ -465,15 +390,10 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// LE USCITE DELL'AVVISO, e sono **tutte locali**: il flag del peer smette di essere vero quando
-        ///  · **non arriva piu'** (timeout di 8 s: gioco chiuso, rete morta, build diversa — la seconda
-        ///    lettura del flag e' l'unica cosa che il protocollo non distingue);
-        ///  · **la connessione cade** (`IsConnected`, istantaneo);
-        ///  · **torno al menu' principale** (`CurrentlyInLevel` falso);
-        ///  · **non c'e' piu' nessun peer connesso**;
-        ///  · **il peer non e' piu' in questa stanza, o e' a terra** (`AnyOtherPlayerHereAndAlive()`).
-        /// Ogni uscita spegne la riga e **non tocca il gioco**: e' la differenza con la V2, dove ogni uscita
-        /// portava con se' una chiusura di menu' e un `ResumeGame` che poteva essere rifiutato.
+        /// Local exits of the notice: timeout (no beat within 8s), disconnect, back to main menu,
+        /// no more connected peers, peer no longer in this room or down. Each clears the line
+        /// without touching the game - the difference with the previous version, where every exit
+        /// involved closing a menu and calling ResumeGame.
         /// </summary>
         private static void CheckRemoteStillPaused()
         {
@@ -484,9 +404,9 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (Now() > _remoteDeadline)
                 {
-                    Clear("TIMEOUT di " + TIMEOUT_SECONDS + "s scaduto: nessun battito del flag da " + _remoteFrom +
-                          " (gioco chiuso, rete morta o build diversa: il protocollo non distingue le build, " +
-                          "quindi il timeout e' l'unica difesa)");
+                    Clear("TIMEOUT of " + TIMEOUT_SECONDS + "s expired: no heartbeat of the flag from " + _remoteFrom +
+                          " (game closed, dead network or a different build: the protocol does not tell builds apart, " +
+                          "so the timeout is the only defence)");
                     return;
                 }
 
@@ -498,19 +418,19 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (!Main.Multiplayer.CurrentlyInLevel)
                 {
-                    Clear("io sono tornato al menu principale");
+                    Clear("I am back at the main menu");
                     return;
                 }
 
                 if (EnemySyncManager.ConnectedPlayersCount() <= 0)
                 {
-                    Clear("nessun peer piu' connesso");
+                    Clear("no peer connected any more");
                     return;
                 }
 
                 if (!EnemySyncManager.AnyOtherPlayerHereAndAlive())
                 {
-                    Clear("il peer non e' piu' in questa stanza o e' a terra");
+                    Clear("the peer is no longer in this room or is down");
                 }
             }
             catch (Exception e)
@@ -519,12 +439,7 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        // ============================================================================================
-        // LE LETTURE. Tutte con `try/catch`: sono il punto in cui un avviso potrebbe rompere la partita,
-        // e ogni predicato e' PUBBLICO e usato dal gioco per se' stesso.
-        // ============================================================================================
-
-        /// <summary>Lo stato del gioco locale, senza mai lanciare. ⚠️ Si **legge** e basta: non si scrive.</summary>
+        /// <summary>Local pause state, never throwing. Read-only.</summary>
         private static bool IsLocalPaused()
         {
             try
@@ -537,7 +452,7 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        /// <summary>L'orologio di TUTTA questa classe: non scalato, quindi vivo a `timeScale = 0`.</summary>
+        /// <summary>Unscaled time: the only clock that keeps running at timeScale = 0.</summary>
         private static float Now()
         {
             return Time.unscaledTime;
@@ -548,7 +463,7 @@ namespace Blasphemous.Multiplayer.Client
             try
             {
                 string name = Main.Multiplayer == null ? null : Main.Multiplayer.PlayerName;
-                return string.IsNullOrEmpty(name) ? "(senza-nome)" : name;
+                return string.IsNullOrEmpty(name) ? "(no-name)" : name;
             }
             catch (Exception)
             {
@@ -561,17 +476,17 @@ namespace Blasphemous.Multiplayer.Client
             return string.IsNullOrEmpty(name) ? "?" : name;
         }
 
-        /// <summary>L'ultimo `catch` prima del ciclo per frame: non rilancia mai.</summary>
+        /// <summary>Last catch before the mod's per-frame cycle: never rethrows.</summary>
         private static void Fail(string where, Exception e)
         {
             try
             {
                 ModLog.Error(MARK + " ECCEZIONE in " + where + ": " + e.GetType().Name + " - " + e.Message +
-                             " (l'avviso di pausa non ha interrotto niente: la partita e' proseguita)");
+                             " (the pause notice interrupted nothing: the match went on)");
             }
             catch (Exception)
             {
-                // Se anche il log fallisce non c'e' un secondo posto dove dirlo.
+                // No second place to report if the log itself fails.
             }
         }
     }

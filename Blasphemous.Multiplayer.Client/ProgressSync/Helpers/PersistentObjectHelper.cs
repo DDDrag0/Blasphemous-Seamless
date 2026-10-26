@@ -13,14 +13,10 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers
     {
         public void ApplyProgress(ProgressUpdate progress)
         {
-            // Two id formats travel on this channel, and which one it is cannot be guessed from the
-            // separator alone: both are "scene<separator>payload". They are told apart by the payload -
-            // an index is a number, a breakable's GUID is not - so the test lives in BreakSyncMemory.
-            //
-            // The distinction matters because this method used to read sections[1] as an integer
-            // unconditionally, and a bare GUID would not merely have been ignored: it would have thrown
-            // IndexOutOfRange, and ProgressManager.Update drains the queue in a single loop with no
-            // try/catch, so every progress update queued behind it would have been lost.
+            // Two id formats travel on this channel, both "scene<sep>payload": an index (a number)
+            // for table objects, and a GUID for breakables. BreakSyncMemory tells them apart from
+            // the payload, because a GUID parsed as int.Parse would throw IndexOutOfRange/FormatException
+            // and take the rest of the queue down with it.
             if (!BreakSyncMemory.IsTableId(progress.Id))
             {
                 ApplyBreak(progress.Id);
@@ -36,14 +32,14 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers
             if (Core.LevelManager.currentLevel.LevelName != objectScene || objectPersistentId == null)
                 return;
 
-            // Player just received a pers. object in the same scene - find it and set value immediately
+            // The player just received a pers. object in the same scene: apply it immediately.
             foreach (PersistentObject persistentObject in Object.FindObjectsOfType<PersistentObject>())
             {
                 try
                 {
                     if (persistentObject.GetPersistenID() == objectPersistentId)
                     {
-                        // Calling getPersistence() with "use" means to play used animation
+                        // Passing "use" to GetCurrentPersistentState plays the used animation.
                         persistentObject.GetCurrentPersistentState("use", false);
                         break;
                     }
@@ -56,19 +52,17 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers
         }
 
         /// <summary>
-        /// Routes an announced break: applied now if its room is loaded, remembered if it is not.
-        ///
-        /// The remembered case is the one the first version got wrong, and it is not an edge case: the
-        /// server relays progress to the whole team rather than per scene, so a break announced from a room
-        /// the receiver has not entered arrives perfectly well - and finds nothing to act on. Dropping it
-        /// there is what left a lamp intact for the player who walked in afterwards.
+        /// Routes an announced break: applied now if the room is loaded, remembered otherwise.
+        /// Remembering matters because the server relays progress to the whole team, not per
+        /// scene - a break can arrive while the receiver is elsewhere, and dropping it would
+        /// leave a lamp intact for the player who walks in afterwards.
         /// </summary>
         private static void ApplyBreak(string id)
         {
             int separator = id.IndexOf(BreakSyncMemory.IdSeparator);
 
-            // No separator means an older sender that sent the bare GUID. It still works - the object is
-            // simply looked for in the current scene - so the format change is backward compatible.
+            // No separator: an older sender sent the bare GUID. The object is looked for in the
+            // current scene, so this path stays backward compatible.
             if (separator < 0)
             {
                 BreakSyncMemory.Apply(id);

@@ -8,81 +8,25 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.Network;
 
 /// <summary>
-/// ⭐⭐ LA SONDA P2P — MISURA IL LEGACY `SteamNetworking`, NON LO USA COME TRASPORTO.
-///
-/// COSA FA, IN UNA RIGA: manda **1 byte** ai peer della lobby Steam ogni secondo su canale 0, li
-/// riceve, e ogni 3 secondi **chiede a Steam** com'e' andata la sessione con ciascuno: attiva? in
-/// relay? con che IP? È una **misura**, non un trasporto: nessun `ICoopTransport`, nessun protocollo,
-/// nessun byte di gioco. I byte che questa classe manda non arrivano a `NetworkManager` e non
-/// significano niente per la mod.
-///
-/// PERCHÉ ESISTE (e non è una curiosità): `docs\STEAM_INVITES.md` §8 lascia aperta **una** domanda, ed
-/// è quella che decide se la mod può funzionare fuori da una LAN — *il relay di Steam funziona sotto
-/// l'AppID del gioco (`774361`), che non è il nostro?* Le due macchine su due reti diverse, senza
-/// port forwarding, sono l'unico modo di rispondere. Questa sonda produce le tre righe che servono:
-///
-///   `[P2P] peer=&lt;id&gt; attiva=&lt;0|1&gt; relay=&lt;0|1&gt; via=diretto|relay ip=&lt;a.b.c.d|n/d&gt; err=&lt;n&gt; rx=&lt;byte&gt;`
-///
-/// e il loro significato, nell'ordine in cui vanno lette:
-///   · **`attiva=0`** — la sessione P2P non è mai salita: il byte non è passato (o il peer non ha
-///     accettato la sessione). È l'esito "non comunicano";
-///   · **`attiva=1 relay=0`** — **diretto**: i due client si parlano senza passare dai server di
-///     Steam. È il caso buono, quello che non costa banda a Valve e non dipende dal relay;
-///   · **`attiva=1 relay=1`** — **in relay**: i pacchetti passano dai server di Steam. Funziona, ma
-///     dipende dal relay (e dalla sua disponibilità sotto l'AppID del gioco).
-///
-/// ─────────────────────────────────────────────────────────────────────────────────────────────
-/// PERCHÉ NON DIPENDE DAL TCP (ed è il punto del test): il test vero è **il secondo PC su un hotspot**,
-/// dove il TCP della mod **non può** arrivare (NAT, nessun port forwarding). Se questa sonda avesse
-/// bisogno di "sono connesso al gioco" per partire, misurerebbe zero proprio nel caso in cui serve.
-/// Quindi qui non si guarda **mai** `NetworkManager`: l'unico requisito è essere **dentro una lobby
-/// Steam** (che passa dal back end di Steam, non dal TCP). Vedi `RequireLobby`.
-///
-/// ⚠️ L'ACCETTAZIONE È OBBLIGATORIA, E SI FA IN UNA CALLBACK. Il legacy P2P non ha un handshake
-/// automatico: se il ricevente non risponde a **`P2PSessionRequest_t`** con
-/// **`AcceptP2PSessionWithUser`**, *ogni* pacchetto di quel peer viene **scartato in silenzio** — il
-/// sintomo sarebbe `rx=0` per sempre, senza un errore da nessuna parte. Quindi la callback si registra
-/// appena Steam è pronto (`Arm`/`Tick`) e **non** solo quando si preme il bottone: il peer può
-/// cominciare a mandare prima che l'altro abbia premuto.
-///
-/// ⚠️ E SI ACCETTA SOLO CHI È NELLA LOBBY (`SteamLobbyImpl.IsLobbyMember`): senza quel cancello
-/// chiunque conosca il nostro SteamID potrebbe farci aprire una sessione P2P, cioè consumare banda e
-/// (in un trasporto vero) farci accettare pacchetti da uno sconosciuto.
-///
-/// ⚠️ `SendP2PPacket` PUÒ TORNARE `false` — buffer di invio pieno — **senza eccezione e senza
-/// callback**: un `false` buttato via è un byte che nessuno saprà mai di aver perso. Qui il valore di
-/// ritorno si controlla **sempre** (`Send`), e il primo `false` per peer finisce nel log.
-///
-/// ⚠️ `GetP2PSessionState` È SINCRONA (interroga il client Steam): si chiama **ogni 3 secondi**, non
-/// per frame (`Measure`).
-///
-/// ─────────────────────────────────────────────────────────────────────────────────────────────
-/// 🔴 PERCHÉ UNA CLASSE `*Impl` SORELLA E NON UN PEZZO DI `SteamLobbyImpl`. La regola della mod è che
-/// **solo una classe `*Impl` nomina `Steamworks`** (vedi `SteamLobby.cs`): su una copia non-Steam i
-/// tipi mancano e la `TypeLoadException` arriva al punto di chiamata, che deve stare dentro il
-/// `try/catch` della facciata. Questa classe nomina `CSteamID`, `Callback&lt;T&gt;`,
-/// `P2PSessionState_t`...
-/// quindi è una `*Impl`, e chi la chiama è **`SteamP2PProbe`** (facciata, zero tipi `Steamworks`),
-/// un metodo per chiamata, esattamente come `SteamLobby` fa con `SteamLobbyImpl`.
-///
-/// ⛔ COSA NON C'È, DI PROPOSITO: nessun `ICoopTransport`, nessuna coda, nessuna ritrasmissione,
-/// nessun framing, nessuna chiamata a `NetworkManager`, al server o al gioco. E nessun
-/// `AllowP2PPacketRelay(false)`: il relay **deve** restare permesso, perché è esattamente uno dei due
-/// esiti che stiamo misurando.
+/// P2P probe: sends 1 byte per second on channel 0 to lobby peers, receives them, and asks Steam
+/// every 3 seconds whether the session is active, direct or relayed. A measurement, not a
+/// transport: no <c>ICoopTransport</c>, no game byte, no <c>NetworkManager</c> involvement.
+/// Independently of the TCP session - it must work exactly when TCP fails. Accepts sessions only
+/// for lobby members (<c>P2PSessionRequest_t</c>); without that, every peer packet is silently
+/// dropped. Named *Impl because it names Steamworks types; the only caller is the
+/// reflection-gated <c>SteamP2PProbe</c> facade.
 /// </summary>
 internal static class SteamP2PProbeImpl
 {
-    // ⭐ I MARKER — tutti col prefisso `[P2P]`, e sono il prodotto della sonda: `tools\marker-check.ps1`
-    //    li cerca nella DLL deployata, e il referto dice quali guardare e in che ordine.
     internal const string MarkerStart = "[P2P] sonda avviata";
     internal const string MarkerStop = "[P2P] sonda fermata";
     internal const string MarkerState = "[P2P] peer=";
 
     /// <summary>
-    /// ⭐ LA RIGA DISCRIMINANTE della sessione, accanto a quella storica: aggiunge `connecting` e `tx`, che
-    /// sono le due cose che la riga `[P2P] peer=` non diceva — e sono esattamente quelle che distinguono
-    /// "l'handshake non si completa" da "il tunnel e' sano e il blocco e' nel nostro codice". La tabella di
-    /// lettura e' in `scratch\REFERTO-TIMEOUT-E-UI.md`.
+    /// Session line distinguishing "handshake did not complete" (active=0 connecting=1) from
+    /// "tunnel is healthy, block is in our code" (active=1 connecting=0). <c>tx</c> is bytes
+    /// queued for send, the only number telling "sent and lost" from "sent and still in the
+    /// buffer".
     /// </summary>
     internal const string MarkerSession = "[Sonda P2P] ";
     internal const string MarkerSend = "[P2P] invio: ";
@@ -93,59 +37,43 @@ internal static class SteamP2PProbeImpl
     internal const string MarkerSessionRefuse = "[P2P] sessione rifiutata: ";
     internal const string MarkerCallback = "[P2P] callback registrata: ";
     internal const string MarkerNoLobby = "[P2P] nessuna lobby: ";
-    internal const string MarkerError = "[P2P] errore: ";
+    internal const string MarkerError = "[P2P] error: ";
 
-    /// <summary>Il canale della misura: **0**, lo stesso che il piano (§9) assegna al gameplay.</summary>
+    /// <summary>Channel of the measurement: 0, the same channel the plan assigns to gameplay.</summary>
     private const int CHANNEL = 0;
 
-    /// <summary>Un byte, sempre lo stesso. Non è un messaggio: è un battito.</summary>
+    /// <summary>A single byte. Not a message: a heartbeat.</summary>
     private static readonly byte[] _payload = new byte[1] { 0x01 };
 
-    /// <summary>Ogni quanto si manda il byte (§9: un battito, non un flusso).</summary>
+    /// <summary>How often the byte is sent.</summary>
     private const float SEND_INTERVAL_S = 1f;
 
-    /// <summary>Ogni quanto si chiede lo stato a Steam. NON per frame: la chiamata è sincrona.</summary>
+    /// <summary>How often state is queried. Not per frame - GetP2PSessionState is synchronous.</summary>
     private const float MEASURE_INTERVAL_S = 3f;
 
-    /// <summary>
-    /// Ogni quanto si ritenta la registrazione della callback se è fallita. E' il freno che impedisce
-    /// a `Tick` (per frame) di trasformare un guasto di Steam in un log inondato.
-    /// </summary>
+    /// <summary>Retry interval for the P2PSessionRequest_t registration when it failed.</summary>
     private const float REGISTER_RETRY_S = 2f;
 
-    /// <summary>
-    /// Quanti pacchetti si leggono al massimo per frame. Il ciclo di lettura è `while` (ci può essere
-    /// più di un pacchetto pronto), e un tetto lo rende **limitato**: nessun frame che si allunga per
-    /// una coda anomala. Con un byte al secondo da un peer non ci si arriva mai; con 64 ci si ferma e
-    /// si riprende al frame dopo, senza perdere niente.
-    /// </summary>
+    /// <summary>Max packets read per frame; bounds a possible backlog to a single frame.</summary>
     private const int MAX_PACKETS_PER_FRAME = 64;
 
-    /// <summary>
-    /// Il tetto del buffer di lettura. I nostri pacchetti sono da 1 byte; il tetto serve solo a non
-    /// allocare una dimensione assurda se un domani un peer mandasse qualcosa di grosso (o se la
-    /// lettura restituisse una dimensione corrotta). Oltre, il pacchetto si legge troncato: non è un
-    /// dato che ci interessa, ci interessa **che sia arrivato**.
-    /// </summary>
+    /// <summary>Max read buffer. Our packets are 1 byte; the cap guards against a corrupt length.</summary>
     private const uint MAX_PACKET_BYTES = 64u * 1024u;
 
-    // ─── I CALLBACK COME CAMPI (⚠️ NON LOCALI: il GC li ucciderebbe) ─────────────────────────────
-    // Stessa ragione di `SteamLobbyImpl`: `Callback<T>.Create` registra il delegato in un registro
-    // GLOBALE del processo e tiene un `GCHandle` sull'oggetto. Una variabile locale sparirebbe dopo il
-    // ritorno, il GC potrebbe raccoglierla, e le callback smetterebbero di arrivare **in silenzio**.
+    // Callback<T>.Create pins the delegate in a global registry via GCHandle; a local would be
+    // collected and callbacks would silently stop. Field keeps it alive.
     private static Callback<P2PSessionRequest_t> _cbSessionRequest;
 
-    // ─── STATO ────────────────────────────────────────────────────────────────────────────────────
-    private static bool _registered;        // la callback P2PSessionRequest_t è registrata
-    private static bool _registerLogged;    // il marker "callback registrata" esce una volta sola
-    private static bool _registerFailed;    // il guasto della registrazione esce una volta sola
-    private static float _nextRegisterTry;  // e non si ritenta a ogni frame (sarebbe un log inondato)
-    private static bool _active;            // la sonda sta misurando (bottone premuto)
-    private static float _nextSend;         // prossimo battito
-    private static float _nextMeasure;      // prossima misura
+    private static bool _registered;
+    private static bool _registerLogged;
+    private static bool _registerFailed;
+    private static float _nextRegisterTry;
+    private static bool _active;
+    private static float _nextSend;
+    private static float _nextMeasure;
     private static byte[] _rxBuffer = new byte[1024];
 
-    private static long _rxTotal;                                  // byte ricevuti in totale
+    private static long _rxTotal;
     private static readonly Dictionary<ulong, long> _rxByPeer = new Dictionary<ulong, long>();
     private static readonly HashSet<ulong> _peersSeen = new HashSet<ulong>();
     private static readonly HashSet<ulong> _sendOkLogged = new HashSet<ulong>();
@@ -154,33 +82,25 @@ internal static class SteamP2PProbeImpl
     private static readonly HashSet<ulong> _acceptLogged = new HashSet<ulong>();
     private static readonly HashSet<ulong> _stateFailLogged = new HashSet<ulong>();
 
-    private static bool _noLobbyLogged;     // "nessuna lobby" una volta per silenzio, non per frame
-    private static bool _measured;          // almeno una misura fatta (per la riga a schermo)
+    private static bool _noLobbyLogged;
+    private static bool _measured;
     private static int _lastPeers;
     private static int _lastActive;
     private static int _lastDirect;
     private static int _lastRelay;
-    private static string _summary = string.Empty;  // la riga breve per la schermata (vedi `Status`)
+    private static string _summary = string.Empty;
 
-    /// <summary>
-    /// `true` se la sonda sta misurando adesso. Letto dalla UI per la parola del bottone
-    /// ("Probe P2P" / "Stop probe").
-    /// </summary>
+    /// <summary>True while the probe is measuring. Read by the UI for the button label.</summary>
     internal static bool Active
     {
         get { return _active; }
     }
 
     /// <summary>
-    /// ⭐ REGISTRA LA CALLBACK DI ACCETTAZIONE. Idempotente, e non lancia.
-    ///
-    /// Sta in una funzione sua perché ha **due** occasioni d'ingresso: `Arm` (l'avvio della mod, se
-    /// Steam è già pronto) e `Tick` (ogni frame, finché non riesce). Se il gioco inizializza Steam dopo
-    /// la mod, la prima occasione non basta — e senza questa callback il P2P non funziona **affatto**,
-    /// quindi non è una cosa che si può lasciare al caso.
-    ///
-    /// ⚠️ Si registra **anche a sonda ferma**: il peer può cominciare a mandare quando vuole, e una
-    /// richiesta di sessione scartata perché "non avevo ancora premuto" sarebbe un `rx=0` inspiegabile.
+    /// Registers the accept-session callback. Idempotent, never throws. Called from Arm (mod init)
+    /// and from Tick (per frame until it succeeds), because a mod that starts before Steam would
+    /// otherwise never register it - and without this callback every peer packet is silently
+    /// dropped.
     /// </summary>
     internal static void Arm()
     {
@@ -195,10 +115,8 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// ⭐ "PROBE P2P" — comincia a misurare. `false` = non si può (Steam non disponibile), e la UI lo
-    /// dice. Con Steam disponibile ritorna `true` anche **senza lobby**: la sonda resta in attesa e
-    /// comincia da sola appena si entra in una lobby (`RequireLobby`), che è quello che serve per poter
-    /// premere il bottone *prima* di accettare l'invito.
+    /// Probe P2P: starts measuring. Returns false when Steam is not available. With Steam present
+    /// returns true even without a lobby: the probe waits and starts on its own once inside one.
     /// </summary>
     internal static bool Start()
     {
@@ -206,7 +124,7 @@ internal static class SteamP2PProbeImpl
         {
             if (!SteamLobbyImpl.Available)
             {
-                ModLog.Warn(MarkerNoLobby + "Steam non e' disponibile: la sonda non parte");
+                ModLog.Warn(MarkerNoLobby + "Steam is unavailable: the probe does not start");
                 return false;
             }
 
@@ -233,14 +151,14 @@ internal static class SteamP2PProbeImpl
             _stateFailLogged.Clear();
 
             float now = Time.realtimeSinceStartup;
-            _nextSend = now;                                  // il primo battito subito
-            _nextMeasure = now + MEASURE_INTERVAL_S;          // la prima misura fra 3 s (c'e' qualcosa da misurare)
+            _nextSend = now;
+            _nextMeasure = now + MEASURE_INTERVAL_S;
 
             _summary = "P2P: in ascolto...";
 
             CSteamID lobby = SteamLobbyImpl.CurrentLobby;
             ModLog.Info(MarkerStart + " canale=" + CHANNEL + " byte=1 ogni " + SEND_INTERVAL_S +
-                        " s, misura ogni " + MEASURE_INTERVAL_S + " s, lobby=" +
+                        " s, measures every " + MEASURE_INTERVAL_S + " s, lobby=" +
                         (lobby.m_SteamID == 0UL ? "nessuna (si aspetta)" : lobby.m_SteamID.ToString()));
             return true;
         }
@@ -252,9 +170,8 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// Ferma la sonda e **chiude le sessioni** che aveva aperto (`CloseP2PSessionWithUser`): una
-    /// sessione P2P lasciata aperta è uno stato che nessuno vede e che resta fino alla chiusura del
-    /// gioco. Idempotente, non lancia, e non stampa niente se non stava misurando.
+    /// Stops the probe and closes the P2P sessions it opened (an open session is invisible and
+    /// survives until process exit). Idempotent, never throws, silent if not measuring.
     /// </summary>
     internal static void Stop()
     {
@@ -276,7 +193,7 @@ internal static class SteamP2PProbeImpl
                 }
                 catch (Exception)
                 {
-                    // Una sessione che non si chiude non deve impedire di fermare la sonda.
+                    // A session that will not close must not prevent stopping the probe.
                 }
             }
 
@@ -290,17 +207,9 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// ⭐⭐ IL CICLO PER FRAME. Chiamato da `SteamLobby.Tick()` (che a sua volta è dentro il
-    /// `OnLateUpdate` della mod): **zero bersagli Harmony nuovi, zero MonoBehaviour nuovi**.
-    ///
-    /// Fa tre cose, e la prima è quella che rende possibile tutto il resto:
-    ///   ① **riceve** (`DrainChannel`): finché `IsP2PPacketAvailable(canale 0)` è vero, legge e **conta
-    ///      i byte** per peer. È per frame perché il buffer va svuotato, altrimenti si riempie;
-    ///   ② **manda** un byte ogni `SEND_INTERVAL_S`;
-    ///   ③ **misura** ogni `MEASURE_INTERVAL_S` (`Measure`).
-    ///
-    /// ⚠️ A sonda FERMA non fa niente oltre a un `if`: la callback resta registrata (vedi `Arm`), ma
-    /// nessun byte parte, nessun byte si legge e nessuno stato si interroga.
+    /// Per-frame cycle: drains channel 0 (must be drained or the buffer fills), sends a byte every
+    /// SEND_INTERVAL_S, measures every MEASURE_INTERVAL_S. When stopped, nothing but an if runs;
+    /// the callback stays registered.
     /// </summary>
     internal static void Tick()
     {
@@ -335,30 +244,20 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// ⭐ LA RIGA BREVE PER LA SCHERMATA (`ConnectionDisplay`), costruita nell'ultima misura. Vuota a
-    /// sonda ferma: chi non preme il bottone non vede **nessuna riga in piu'**, e la schermata resta
-    /// identica a prima.
-    ///
-    /// PERCHÉ ESISTE, visto che la misura vera è nel log: chi fa il test può non avere il log aperto
-    /// davanti, ma la schermata di connessione ce l'ha sempre. Questa riga dice **quanti** peer e
-    /// **quanti in relay**, cioè la stessa risposta in forma breve. Il dettaglio per peer (id, ip, err,
-    /// rx) resta nel log, che è dove va cercato se questa riga non basta.
+    /// Short line for the connection screen, built on the last measurement. Empty while stopped:
+    /// users who do not press the button see no extra line.
     /// </summary>
     internal static string Status()
     {
         return _active ? _summary : string.Empty;
     }
 
-    // ─── LE TRE AZIONI ───────────────────────────────────────────────────────────────────────────
+    // === Actions ===
 
     /// <summary>
-    /// ③ IL BATTITO: un byte a **ogni peer della lobby escluso me stesso**, canale 0,
-    /// `k_EP2PSendReliable`. ⚠️ Il valore di ritorno si controlla **sempre**: `false` = buffer di
-    /// invio pieno, e il pacchetto è perso in silenzio.
-    ///
-    /// La lista dei peer si rilegge **ogni volta** (`GetNumLobbyMembers`/`GetLobbyMemberByIndex`) e non
-    /// si tiene in cache: un amico che entra o esce dalla lobby deve comparire/sparire senza dover
-    /// fermare e riavviare la sonda.
+    /// Heartbeat: one byte to every lobby peer except self, channel 0, k_EP2PSendReliable. Return
+    /// value is checked: false means send buffer full and the byte is silently lost. Peer list is
+    /// re-read every time so friends joining or leaving appear without restarting the probe.
     /// </summary>
     private static void Send()
     {
@@ -378,7 +277,7 @@ internal static class SteamP2PProbeImpl
         {
             CSteamID peer = SteamMatchmaking.GetLobbyMemberByIndex(lobby, i);
             if (peer.m_SteamID == 0UL || peer.m_SteamID == me.m_SteamID)
-                continue;   // me stesso non e' un peer: il P2P non e' un loopback
+                continue;
 
             ulong id = peer.m_SteamID;
             _peersSeen.Add(id);
@@ -397,8 +296,6 @@ internal static class SteamP2PProbeImpl
 
             if (sent)
             {
-                // Il primo invio riuscito per peer lo si dice: e' la prova che la sonda sta provando
-                // davvero, e distingue "non ho mandato niente" da "ho mandato e non e' tornato niente".
                 if (_sendOkLogged.Add(id))
                     ModLog.Info(MarkerSend + "peer=" + id + " byte=" + _payload.Length +
                                 " canale=" + CHANNEL + " esito=ok");
@@ -406,8 +303,8 @@ internal static class SteamP2PProbeImpl
             }
             else if (_sendFailLogged.Add(id))
             {
-                // ⚠️ `false` NON e' un'eccezione e non arriva nessuna callback: senza questa riga sarebbe
-                // un byte perso che nessuno nomina mai. Una riga per peer (non una al secondo).
+                // false is not an exception and no callback fires: without this line the byte is
+                // lost and nobody names it. One line per peer, not per second.
                 ModLog.Warn(MarkerSendFail + "peer=" + id + " (SendP2PPacket ha risposto false: buffer di " +
                             "invio pieno) - il byte si e' perso, la sonda continua");
             }
@@ -415,14 +312,9 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// ④ LA RICEZIONE: svuota il canale 0. `ReadP2PPacket` restituisce chi ha mandato e quanti byte,
-    /// e il conteggio è **per peer** (il numero che finisce in `rx=` nella misura).
-    ///
-    /// ⚠️ Se `ReadP2PPacket` risponde `false` si **esce dal ciclo** invece di insistere: al frame dopo
-    /// si riprova. Insistere dentro lo stesso frame sarebbe un ciclo che non consuma niente.
-    ///
-    /// ⚠️ E il ciclo è **limitato** (`MAX_PACKETS_PER_FRAME`): un eventuale arretrato non deve poter
-    /// allungare il frame.
+    /// Receive: drains channel 0. Reads sender and length, counts bytes per peer (the number in
+    /// <c>rx=</c>). ReadP2PPacket returning false exits the loop instead of retrying within the
+    /// same frame; the per-frame cap prevents a backlog from stretching the frame.
     /// </summary>
     private static void DrainChannel()
     {
@@ -436,7 +328,7 @@ internal static class SteamP2PProbeImpl
 
             uint capacity = available;
             if (capacity == 0u)
-                capacity = 1u;              // ci sono byte "disponibili" ma dimensione 0: si prova lo stesso, senza allocare zero
+                capacity = 1u;
             if (capacity > MAX_PACKET_BYTES)
                 capacity = MAX_PACKET_BYTES;
 
@@ -458,30 +350,19 @@ internal static class SteamP2PProbeImpl
             _rxByPeer[id] = previous + read;
             _rxTotal += read;
 
-            // Il primo pacchetto da un peer lo si dice: e' la prova che l'accettazione ha funzionato e
-            // che la strada (diretta o relay) porta davvero i byte. Una riga per peer, non una per byte.
             if (_rxLogged.Add(id))
                 ModLog.Info(MarkerReceive + "peer=" + id + " byte=" + read + " canale=" + CHANNEL);
         }
     }
 
     /// <summary>
-    /// ⑤ LA MISURA — **è lo scopo della sonda**. Per ogni peer della lobby, una riga:
+    /// Measurement, one line per lobby peer:
+    ///   [P2P] peer=&lt;id&gt; attiva=&lt;0|1&gt; relay=&lt;0|1&gt; via=diretto|relay ip=&lt;a.b.c.d|n/d&gt; err=&lt;n&gt; rx=&lt;byte&gt;
     ///
-    ///   `[P2P] peer=&lt;id&gt; attiva=&lt;0|1&gt; relay=&lt;0|1&gt; via=diretto|relay ip=&lt;a.b.c.d|n/d&gt; err=&lt;n&gt; rx=&lt;byte&gt;`
-    ///
-    /// ⚠️ `GetP2PSessionState` è **sincrona** (interroga il client Steam): si chiama qui, ogni 3
-    /// secondi, e **mai** per frame.
-    ///
-    /// ⚠️ La lettura della riga, nell'ordine giusto: **`attiva` prima di tutto**. `attiva=0` significa
-    /// "non c'è sessione" — e in quel caso `relay=0`/`via=diretto` **non** vogliono dire "diretto":
-    /// vogliono dire che non c'è niente da misurare. Solo con `attiva=1` la coppia `relay`/`via` ha un
-    /// significato (`0` = diretto, `1` = in relay). Il referto lo dice anche a parole.
-    ///
-    /// ⚠️ Se `GetP2PSessionState` risponde `false` la struttura resta a zero: si stampa lo stesso la
-    /// riga, che quindi dice `attiva=0` — cioè "con quel peer non c'è una sessione", che è la verità.
-    /// Una riga in piu' (una per peer) dice che è stata la **chiamata** a fallire, così l'esito non si
-    /// confonde con "il peer non ha mai accettato".
+    /// Read <c>attiva</c> first: with attiva=0 the relay/via pair has no meaning. GetP2PSessionState
+    /// is synchronous (queries the Steam client) and only runs every 3 seconds. If it returns false
+    /// the row is still printed with attiva=0 (no session) plus a one-shot per-peer note that the
+    /// call failed, so a failed query is not confused with a peer that never accepted.
     /// </summary>
     private static void Measure()
     {
@@ -531,11 +412,9 @@ internal static class SteamP2PProbeImpl
             int isActive = state.m_bConnectionActive != 0 ? 1 : 0;
             int isRelay = state.m_bUsingRelay != 0 ? 1 : 0;
 
-            // ⚠️ LA REGOLA, in una riga: `m_bUsingRelay == 0` => diretto, `== 1` => relay.
             string via = isRelay == 0 ? "diretto" : "relay";
 
-            // ⚠️ `m_nRemoteIP` vale 0 quando la sessione non e' ancora salita: "n/d" e' la verita',
-            // non un errore.
+            // m_nRemoteIP is 0 before the session is up: "n/d" is the truth, not an error.
             string ip = state.m_nRemoteIP == 0u ? "n/d" : FormatIp(state.m_nRemoteIP);
 
             long rx;
@@ -554,20 +433,11 @@ internal static class SteamP2PProbeImpl
                         " via=" + via + " ip=" + ip + " err=" + state.m_eP2PSessionError +
                         " rx=" + rx);
 
-            // ⭐⭐ LA RIGA DISCRIMINANTE — `active` **e** `connecting`, le due colonne che dividono i tre
-            // casi che si confondono fra loro (la tabella completa e' in `scratch\REFERTO-TIMEOUT-E-UI.md`):
-            //
-            //   active=0 connecting=1  ⇒ l'handshake di basso livello **non si completa**: o il doppio
-            //     `Accept` non e' scattato, o (dopo ~10-15 s, con `err=4`) e' firewall/ISP che taglia
-            //     l'UDP. **Non** e' un problema di canali o di lettura.
-            //   active=1 connecting=0  ⇒ ⭐ il tunnel e' **sano** e la rete e' innocente: se i byte non
-            //     arrivano lo stesso, il blocco e' **nel nostro codice** (canali o lettura) — e in quel
-            //     caso la riga `rx canale=... da=...` del trasporto dice su quale canale si legge.
-            //   active=0 connecting=0  ⇒ nessuna sessione: l'`Accept` non e' mai avvenuto.
-            //
-            // ⚠️ `tx` = `m_nBytesQueuedForSend`: se sale e non scende, il pacchetto e' **fermo nel buffer
-            // di invio di Valve** (e' esattamente il sintomo "spedito ma mai arrivato"). E' l'unico numero
-            // che distingue "l'ho mandato e si e' perso" da "l'ho mandato ed e' ancora li'".
+            // active=0 connecting=1  -> low-level handshake did not complete.
+            // active=1 connecting=0  -> tunnel is healthy, block is in our code.
+            // active=0 connecting=0  -> no session, Accept never happened.
+            // tx = m_nBytesQueuedForSend: if it grows and never drains, the packet is stuck in
+            // Valve's send buffer.
             int connecting = state.m_bConnecting != 0 ? 1 : 0;
 
             ModLog.Info(MarkerSession + "peer=" + id + " active=" + isActive +
@@ -584,27 +454,20 @@ internal static class SteamP2PProbeImpl
         _summary = BuildSummary();
     }
 
-    /// <summary>
-    /// La riga breve della schermata, costruita dai numeri dell'ultima misura. È l'unica cosa che la UI
-    /// legge della sonda (una stringa: la facciata non ha nessun tipo `Steamworks` da maneggiare).
-    /// </summary>
+    /// <summary>Short screen line built from the last measurement.</summary>
     private static string BuildSummary()
     {
         if (!_measured)
             return "P2P: in ascolto...";
 
         if (_lastPeers == 0)
-            return "P2P: nessun peer in lobby";
+            return "P2P: no peer in the lobby";
 
         return "P2P: peer=" + _lastPeers + " attive=" + _lastActive +
                " diretto=" + _lastDirect + " relay=" + _lastRelay + " rx=" + _rxTotal + "B";
     }
 
-    /// <summary>
-    /// "Non c'è una lobby adesso" — una riga sola per volta, non una ogni 3 secondi. È il caso di chi
-    /// preme il bottone **prima** di ospitare o di accettare l'invito: la sonda resta accesa e comincia
-    /// da sola quando la lobby c'è (la riga lo dice, così non sembra che non funzioni).
-    /// </summary>
+    /// <summary>One-shot "no lobby" line; the probe stays active and starts on its own later.</summary>
     private static void RequireLobby(string phase)
     {
         if (_noLobbyLogged)
@@ -617,14 +480,10 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// ⭐ LA CALLBACK CHE RENDE POSSIBILE TUTTO: `P2PSessionRequest_t` => `AcceptP2PSessionWithUser`.
-    ///
-    /// Senza questa, **ogni** pacchetto del peer viene scartato in silenzio (nessuna eccezione, nessun
-    /// callback d'errore): il sintomo sarebbe `rx=0` per sempre. Vedi il commento in testa alla classe.
-    ///
-    /// 🔴 E SI ACCETTA SOLO CHI È NELLA LOBBY (`IsLobbyMember`): è la regola d'igiene del piano (§9).
-    /// Chi non è nella lobby viene rifiutato **e lo si dice**, perché un rifiuto silenzioso è
-    /// indistinguibile da una sonda che non riceve.
+    /// P2PSessionRequest_t -> AcceptP2PSessionWithUser. Only for lobby members: without that,
+    /// anyone knowing the SteamID could open a session. Acceptance is refused (and reported once
+    /// per peer) for non-members - a silent refusal is indistinguishable from a probe that
+    /// receives nothing.
     /// </summary>
     private static void OnSessionRequest(P2PSessionRequest_t request)
     {
@@ -638,8 +497,8 @@ internal static class SteamP2PProbeImpl
             if (id == 0UL || !SteamLobbyImpl.IsLobbyMember(remote))
             {
                 if (_acceptLogged.Add(id))
-                    ModLog.Warn(MarkerSessionRefuse + "peer=" + id + " (non e' un membro della lobby: " +
-                                "sessione NON accettata)");
+                    ModLog.Warn(MarkerSessionRefuse + "peer=" + id + " (not a lobby member: " +
+                                "session NOT accepted)");
                 return;
             }
 
@@ -663,9 +522,9 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// Registra `Callback&lt;P2PSessionRequest_t&gt;` una volta sola, e solo quando Steam è pronto
-    /// (registrare prima dell'`Init` del gioco parlerebbe con l'API nativa in un punto che non
-    /// controlliamo). Ritorna `true` se è registrata.
+    /// Registers Callback&lt;P2PSessionRequest_t&gt; once, only when Steam is ready. Tick retries
+    /// per frame, gated by REGISTER_RETRY_S and a one-shot failure log so a persistent failure
+    /// does not become sixty lines per second.
     /// </summary>
     private static bool EnsureRegistered()
     {
@@ -675,9 +534,6 @@ internal static class SteamP2PProbeImpl
         if (!SteamLobbyImpl.Available)
             return false;
 
-        // ⚠️ `Tick` chiama questa funzione ogni frame finché non riesce: se la registrazione fallisse
-        // di continuo, senza questo cancello e senza il log "una volta sola" il log diventerebbe
-        // 60 righe al secondo, che è il modo peggiore di segnalare un guasto.
         float now = Time.realtimeSinceStartup;
         if (now < _nextRegisterTry)
             return false;
@@ -693,7 +549,7 @@ internal static class SteamP2PProbeImpl
             if (!_registerLogged)
             {
                 _registerLogged = true;
-                ModLog.Info(MarkerCallback + "P2PSessionRequest_t (accettazione delle sessioni P2P)");
+                ModLog.Info(MarkerCallback + "P2PSessionRequest_t (P2P session acceptance)");
             }
 
             return true;
@@ -707,8 +563,8 @@ internal static class SteamP2PProbeImpl
             {
                 _registerFailed = true;
                 ModLog.Error(MarkerError + e.GetType().Name + ": " + e.Message +
-                             " (Callback<P2PSessionRequest_t>.Create) - si ritenta ogni " +
-                             REGISTER_RETRY_S + " s, il log non si ripete");
+                             " (Callback<P2PSessionRequest_t>.Create) - retried every " +
+                             REGISTER_RETRY_S + " s, the log does not repeat");
             }
 
             return false;
@@ -716,13 +572,9 @@ internal static class SteamP2PProbeImpl
     }
 
     /// <summary>
-    /// L'IP remoto della sessione, in forma `a.b.c.d`.
-    ///
-    /// `m_nRemoteIP` è documentato in **host byte order** (`192.168.1.5` = `0xC0A80105`), quindi gli
-    /// ottetti si leggono dai bit alti. ⚠️ C'è un ripiego: se l'interpretazione diretta darebbe
-    /// `0.0.0.x` (mai un indirizzo remoto valido) si prova quella inversa, così un valore letto
-    /// "al contrario" non diventa un IP che sembra rotto. La sonda stampa il numero che usa, quindi non
-    /// c'è niente da indovinare: se l'IP sembra strano, la riga dice **cosa** ha visto.
+    /// Remote session IP as a.b.c.d. m_nRemoteIP is documented in host byte order, so octets are
+    /// read from the high bits; if that yields 0.0.0.x, the reverse is tried so an address read
+    /// the other way round does not look broken.
     /// </summary>
     private static string FormatIp(uint ip)
     {

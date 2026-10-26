@@ -12,45 +12,20 @@ using UnityEngine;
 namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
 {
     /// <summary>
-    /// Synchronises BreakableObject: the scenery a player smashes - lanterns, hanged skeletons, twisted
-    /// symbols. They are the objects that break and come BACK, and that is why they are worth synchronising:
-    /// everything that stays broken for good is already handled by the older helpers.
-    ///
-    /// WHY THE IDENTITY IS THE GUID, AND NOT THE USUAL SCENE~INDEX
-    ///
-    /// Every other persistent object travels as "scene~index", where the index is a position in a
-    /// hand-written table (PersistentStates, 371 entries). That table contains ZERO BreakableObject GUIDs -
-    /// measured against a real save file, not deduced - and ProgressManager.UsePersistentObject returns
-    /// silently when the lookup fails, so with the table as it is the sender would never send anything.
-    ///
-    /// Completing the table was rejected: the indices are positional and end up inside the player's save as
-    /// "scene~index", so inserting entries can shift everything after them and make old saves point at the
-    /// wrong object. The GUID travels as the id instead - ProgressUpdate.Id is already a free-form string, so
-    /// the packet, the server and the protocol are untouched.
-    ///
-    /// WHY THERE IS NO BONFIRE HOOK TO FIGHT
-    ///
-    /// BreakableObject.Start subscribes to Core.Logic.OnUsePrieDieu, and on every PrieDieu use the game runs
-    /// Restore() on every breakable in the scene: destroyed = false, collider and renderer back on, idle
-    /// animation playing. The broken state is transient BY DESIGN and the game clears it by itself, on every
-    /// machine. So this sync only has to cover the window between two bonfires, and when the bonfire itself
-    /// is synchronised later the vases will line up for free.
+    /// Synchronises <see cref="BreakableObject"/> (lanterns, hanged skeletons, twisted symbols) -
+    /// the objects that break and come BACK after a bonfire. Identity is the object's GUID, not the
+    /// usual "scene~index", because the hand-written <c>PersistentStates</c> table contains zero
+    /// BreakableObject GUIDs and completing it would shift positional indices in existing saves.
+    /// The scene rides with the GUID on the wire because the receiver may be in another room.
     /// </summary>
     [HarmonyPatch(typeof(BreakableObject), "Damage")]
     class BreakableObjectUse_Patch
     {
         /// <summary>
-        /// Remembers whether the object was ALREADY broken when Damage was entered - read before the game
-        /// can touch the field, and the only moment at which that question still has an answer.
-        ///
-        /// This is what stops an applied break from being announced back. Damage returns early when the
-        /// object is already broken, leaving the destroyed field true, so a postfix alone cannot tell
-        /// "this hit broke it" from "it was already broken and the call did nothing". Read in a prefix, the
-        /// two are distinguishable, and the distinction is the whole fix for the echo.
-        ///
-        /// The consequence of getting it wrong was measured and it was severe: every announcement the peer
-        /// sent was applied here, re-announced as if it were a swing, applied there, re-announced again -
-        /// two lamps produced 187 and 34 announcements on one machine.
+        /// Records whether the object was ALREADY broken when Damage was entered. Read before the
+        /// game can touch the field; needed so an applied break (from the wire) is not announced
+        /// back as if it were a local swing - Damage returns early when already broken, leaving
+        /// the same observable state as a real break.
         /// </summary>
         private static readonly Dictionary<BreakableObject, bool> alreadyBroken =
             new Dictionary<BreakableObject, bool>();
@@ -61,24 +36,18 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             alreadyBroken[__instance] = ___destroyed;
         }
 
-        /// <summary>Called when a level loads: the entries refer to objects that no longer exist.</summary>
+        /// <summary>Called on level load: the entries refer to objects that no longer exist.</summary>
         public static void ForgetTrackedObjects()
         {
             alreadyBroken.Clear();
         }
 
         /// <summary>
-        /// The sender. The guards are load-bearing.
-        ///
-        /// ___destroyed is Harmony's way of reading a PRIVATE field, and a POSTFIX is the only place it is
-        /// meaningful: Damage returns early when the object is already broken, so by the time this runs the
-        /// flag is true - but it is ALSO true when the damage arrived from the network and we are the ones
-        /// applying it. The prefix above records which of the two it was; CurrentlyUpdatingProgress covers
-        /// the queued case, and IsReapplying covers the memory's own re-application.
-        ///
-        /// The scene travels WITH the guid, and it has to: the receiver may be standing in another room, and
-        /// a bare GUID does not say which room it belongs to. There is no table to consult - that is the whole
-        /// point of this format.
+        /// Announces a genuine local break. Four guards, all load-bearing: the object must have
+        /// actually broken, it must not be a relayed application (<c>CurrentlyUpdatingProgress</c>
+        /// or <c>IsReapplying</c>), the machine must be connected, and the object must carry a
+        /// GUID. The scene travels with the GUID on the enemy-death channel, whose "brk|" prefix
+        /// keeps it clear of "sp|" spawn-point ids that share the channel.
         /// </summary>
         public static void Postfix(BreakableObject __instance, bool ___destroyed)
         {
@@ -87,81 +56,52 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             alreadyBroken.Remove(__instance);
 
             if (tracked && wasBroken)
-                return; // already broken before this call: the game did nothing, so there is nothing to tell
+                return; // already broken before this call: nothing to announce
 
             if (!___destroyed)
-                return; // the game refused the hit, so nothing actually broke
+                return; // the game refused the hit, nothing actually broke
 
             if (Main.Multiplayer.ProgressManager.CurrentlyUpdatingProgress)
-                return; // this break arrived from the network: do not send it back
+                return; // arrived from the network: do not send back
 
-            // And the same rule for the memory's own re-application.
-            //
-            // ReapplyCurrentScene calls GetCurrentPersistentState("use") directly, NOT through
-            // ProgressManager.Update, so CurrentlyUpdatingProgress is false while it runs - and without this
-            // guard the break it just applied would be announced straight back. That was invisible while the
-            // progress channel discarded the repeat, but this announcement now travels on a channel that
-            // discards nothing, so an echo would be a real relay: it could revive, on the peer, a break that
-            // its own bonfire had already undone.
+            // Same rule for the memory's own re-application, which runs outside
+            // ProgressManager.Update; on the enemy-death channel nothing is discarded, so an echo
+            // would be a real relay and could revive a break a bonfire had already undone.
             if (BreakSyncMemory.IsReapplying)
                 return;
 
             if (!Main.Multiplayer.NetworkManager.IsConnected)
-                return; // single player: nobody to tell
+                return;
 
             string persistentId = __instance.GetPersistenID();
             if (string.IsNullOrEmpty(persistentId))
-                return; // no UniqueId on this prefab: without an identity there is nothing to send
+                return; // no UniqueId on this prefab: nothing to send
 
             string scene = Core.LevelManager.currentLevel.LevelName;
             ModLog.Info($"Broke breakable: {persistentId} in {scene} (oggetto={__instance.gameObject.name})");
 
-            // ANNOUNCED ON THE ENEMY-DEATH CHANNEL, NOT AS A PROGRESS ENTRY.
-            //
-            // This is what the enemies already do, and the difference is the whole reason the lamps stopped
-            // coming back after a bonfire. The progress channel goes through TeamInfo.AddTeamProgress, which
-            // keeps a dictionary of ids for the life of the server session and forwards an id only if its
-            // value is HIGHER than the one it already has. Every persistent object sends value 0, so
-            // "0 > 0" is false and any repeat is discarded in silence - measured: after a bonfire the same
-            // lamp, broken again by the same player, never reached the other machine.
-            //
-            // EnemyDeathGlobal has no dictionary at all: the server relays it to everyone but the sender,
-            // every time. The scene rides along because the receiver may be in another room, and the
-            // "brk|" prefix keeps it clear of the spawn-point ids ("sp|") that share this channel.
+            // Announced on the enemy-death channel, not as a progress entry. The progress channel
+            // deduplicates per id for the life of the server session and every persistent object
+            // sends value 0, so repeats are discarded in silence; enemy-death relays every message.
             string id = BreakSyncMemory.BreakPrefix + scene + BreakSyncMemory.IdSeparator + persistentId;
             Main.Multiplayer.SendEnemyDeathGlobal(id);
         }
     }
 
     /// <summary>
-    /// The receiver, live path: this is the call PersistentObjectHelper.ApplyProgress makes inside
-    /// ProgressManager.Update, and therefore the one that runs while CurrentlyUpdatingProgress is set.
-    ///
-    /// It calls Use(), which is the game's own "this object just broke" entry point: Use() builds a default
-    /// Hit and calls Damage with it. That is not a stylistic choice.
-    /// BreakableObject.SetCurrentPersistentState CANNOT be used to apply a break: it reads the break from
-    /// BreakableManager.ContainsBreakable, and AddBreakable is called from exactly ONE place in the whole
-    /// assembly - BreakableObject.Damage. With an empty manager it concludes the object is not broken and
-    /// runs Restore() instead, so the break would be cancelled in silence, with no exception to warn anyone.
+    /// Receiver, live path (called from PersistentObjectHelper.ApplyProgress inside
+    /// ProgressManager.Update). Applies the break through <c>Use()</c>, which is the game's own
+    /// entry point. <c>SetCurrentPersistentState</c> cannot be used to apply a break: it reads
+    /// BreakableManager.ContainsBreakable, which is only populated by Damage, so with an empty
+    /// manager it would run Restore() and silently cancel the break.
     /// </summary>
     [HarmonyPatch(typeof(BreakableObject), "GetCurrentPersistentState")]
     class BreakableObjectReceive_Patch
     {
         /// <summary>
-        /// Applies a break, unless the object is ALREADY broken.
-        ///
-        /// This guard is what keeps a break from being applied twice, and it is not a micro-optimisation:
-        /// the re-application runs more than once per level load - the log shows two passes, each calling
-        /// Use() on both objects of a room - and every pass that reaches an object still standing breaks it
-        /// and plays the animation. The player sees the same vase shatter again for no reason.
-        ///
-        /// ___destroyed is Harmony's way of reading the private field, and it is the same source the sender
-        /// already trusts: when the object is already broken, Use() builds a Hit and Damage returns
-        /// immediately (ldfld destroyed / brfalse / ret, verified in IL), so the call is work that cannot
-        /// produce anything except a second animation.
-        ///
-        /// Nothing here touches the network, the pending memory or Forget. An object that genuinely needs
-        /// breaking has destroyed == false and goes through exactly as before.
+        /// Applies the break unless the object is already broken. The re-application runs more than
+        /// once per level load, and without this guard each pass would re-break the object and
+        /// re-play the animation. <c>___destroyed</c> is the same source the sender trusts.
         /// </summary>
         public static bool Prefix(string dataPath, BreakableObject __instance, bool ___destroyed)
         {
@@ -170,18 +110,9 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
 
             if (___destroyed)
             {
-                // MEASUREMENT, and it is the only way to know whether the guard above is doing its job.
-                //
-                // "rottura applicata" cannot answer that question: it is printed by the caller AFTER this
-                // returns, and the caller reports success either way. So the two passes of the
-                // re-application produced two identical lines whether the second one applied the break or
-                // refused it - which is exactly how a fix came to be called done without evidence.
-                //
-                // This line is the evidence, and it is cheap: it fires only when a break is refused, which
-                // is the case worth counting. If the guard works, an object already broken produces this
-                // and no animation; if it never appears, the guard is not being reached and the double
-                // animation has another cause.
-                ModLog.Info($"[BreakSync] gia'' rotto, applicazione saltata: {__instance.GetPersistenID()}");
+                // Marker fires only when the guard actually refuses: it is the evidence that the
+                // double-animation fix is being reached, not just declared.
+                ModLog.Info($"[BreakSync] already broken, apply skipped: {__instance.GetPersistenID()}");
                 return false;
             }
 
@@ -191,13 +122,9 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     }
 
     /// <summary>
-    /// The receiver, load path - and this one is not optional, it is a crash waiting to happen.
-    ///
-    /// BreakableObject.SetCurrentPersistentState casts the argument and immediately reads a field off it,
-    /// with no null check: ((BreakablePersistenceData)data).broken. The game never passes null - its own
-    /// loader checks ContainsKey first and skips - but this mod does: ProgressManager.LevelLoaded calls
-    /// persistence.SetCurrentPersistentState(null, false, null) to mean "play the instant state".
-    /// The day a BreakableObject becomes reachable from that path, it throws.
+    /// Receiver, load path - guards against the null data the mod's own LevelLoaded passes to
+    /// every PersistentObject. SetCurrentPersistentState casts the argument with no null check, so
+    /// a BreakableObject reached from that path would throw.
     /// </summary>
     [HarmonyPatch(typeof(BreakableObject), "SetCurrentPersistentState")]
     class BreakableObjectLoad_Patch
@@ -205,7 +132,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         public static bool Prefix(PersistentManager.PersistentData data, BreakableObject __instance)
         {
             if (data != null)
-                return true; // the game's own data: let the original method run
+                return true;
 
             __instance.Use();
             return false;
@@ -213,17 +140,9 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     }
 
     /// <summary>
-    /// Forgets a remembered break the moment the game brings that object back.
-    ///
-    /// Restore() is what a PrieDieu use runs on every breakable in the scene, and it is also what
-    /// SetCurrentPersistentState runs when the loaded snapshot says the object is intact. Both are "the
-    /// object is whole again", and in both cases any memory of it being broken is stale: keeping it would
-    /// break the object again the next time its scene loads, which is exactly the fight with the game that
-    /// this design is trying to avoid.
-    ///
-    /// This is the ONLY place the memory is cleared, and it is cleared per object rather than per scene
-    /// because that is how the game does it: Restore runs per breakable, on every machine, at every PrieDieu.
-    /// No global "respawn" announcement is needed or wanted.
+    /// Forgets a remembered break the moment the game restores that object (bonfire Restore or the
+    /// save loader). Keeping the memory would re-break it on the next load. Cleared per object,
+    /// because that is how the game does it - no global respawn announcement.
     /// </summary>
     [HarmonyPatch(typeof(BreakableObject), "Restore")]
     class BreakableObjectRestore_Patch
@@ -236,29 +155,21 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     }
 
     /// <summary>
-    /// Re-applies the remembered breaks once a scene has finished loading both its objects and its save.
-    ///
-    /// The hook point is the whole trick, and the project had already paid to learn it: Multiplayer's
-    /// OnLevelLoaded fires BEFORE the scene exists, so applying there would find nothing - and the game
-    /// loads its snapshot immediately afterwards, which would overwrite anything written too early anyway.
-    /// PersistentManager.LoadSnapShot is the first moment both conditions hold: it works on
-    /// FindObjectsOfType, so the objects are in the scene, and it is the game's own restore, so once its
-    /// postfix runs the state it wrote is final.
+    /// Re-applies remembered breaks once the scene has finished loading both its objects and its
+    /// save. The hook is LoadSnapShot, not OnLevelLoaded: the latter fires before the scene exists
+    /// and is overwritten by the save load immediately after.
     /// </summary>
     [HarmonyPatch(typeof(PersistentManager), "LoadSnapShot")]
     class PersistentManagerLoadSnapShot_Patch
     {
         /// <summary>
-        /// Suspends the erasure of remembered breaks for the duration of the load.
-        ///
-        /// Without this, the game's own restore inside LoadSnapShot deletes each remembered break just
-        /// before the postfix below can act on it - which is exactly why the hook ran, counted something to
-        /// apply, and painted nothing.
+        /// Suspends the erasure of remembered breaks for the duration of the load. Without this,
+        /// the game's own Restore inside LoadSnapShot deletes each entry a moment before the
+        /// postfix below can act on it.
         /// </summary>
         [HarmonyPrefix]
         public static void Prefix()
         {
-            // A new level replaces every object the map could be holding, so the entries are dead weight.
             BreakableObjectUse_Patch.ForgetTrackedObjects();
             BreakSyncMemory.BeginSnapshot();
         }
@@ -272,15 +183,9 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     }
 
     /// <summary>
-    /// Reports, once per session, WHERE the game is keeping its saves and whether Steam came up.
-    ///
-    /// This is a one-minute instrument that would have saved days of investigation. The save path is built
-    /// as persistentDataPath + "/Savegames/" + (SteamManager.Initialized ? SteamID : "") + "/", so starting
-    /// the game without Steam silently moves every save into a different folder - and with Steam Cloud
-    /// enabled the two locations then disagree, so a session started without Steam looks, from the player's
-    /// side, like the saves were corrupted or lost. They were never corrupted: they were somewhere else.
-    ///
-    /// That is not something the mod can fix. It is something it can make visible, once, in the log.
+    /// Reports, once per session, where the game keeps saves and whether Steam initialised. The
+    /// save path embeds the SteamID when Steam is up, so starting the game without Steam silently
+    /// uses a different folder - and with Steam Cloud enabled the two diverge.
     /// </summary>
     [HarmonyPatch(typeof(Multiplayer), "OnLateUpdate")]
     class MultiplayerSavePathReport_Patch
@@ -297,37 +202,31 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
 
             try
             {
-                ModLog.Info($"[Path] Steam inizializzato: {SteamManager.Initialized} · " +
-                            $"cartella salvataggi in uso: {PersistentManager.GetPathAppSettings("")}");
+                ModLog.Info($"[Path] Steam initialised: {SteamManager.Initialized} · " +
+                            $"save folder in use: {PersistentManager.GetPathAppSettings("")}");
 
                 if (!SteamManager.Initialized)
                 {
-                    ModLog.Error("[Path] Steam NON e' inizializzato: il gioco scrivera' i salvataggi in una " +
-                                 "cartella DIVERSA da quella usata quando Steam e' attivo. Se Steam Cloud e' " +
-                                 "abilitato per Blasphemous, le due cartelle divergono e la partita sembrera' " +
-                                 "persa o corrotta. Avvia STEAM PRIMA del gioco.");
+                    ModLog.Error("[Path] Steam is NOT initialised: the game will use a different " +
+                                 "save folder than when Steam is up. If Steam Cloud is enabled for " +
+                                 "Blasphemous the two folders diverge and the save will look lost or " +
+                                 "corrupted. Start STEAM first.");
                 }
             }
             catch (System.Exception e)
             {
-                ModLog.Error("[Path] non ho potuto leggere il percorso dei salvataggi: " +
+                ModLog.Error("[Path] could not read the save path: " +
                              e.GetType().Name + " - " + e.Message);
             }
         }
     }
 
     /// <summary>
-    /// A SECOND chance, one frame later.
-    ///
-    /// The re-application runs more than once per level load - the log shows two passes, both reaching the
-    /// objects - and duplicate work is harmless now that applying a break to an already broken object is
-    /// refused. This pass is kept because the two do not fire at the same moment: the LoadSnapShot one can
-    /// run while the objects are still being built, and this one runs after the level has been announced as
-    /// loaded. Whichever of the two finds an object that still needs breaking is the one that counts.
-    ///
-    /// The hook is OnLateUpdate rather than OnLevelLoaded: the mod class is not a MonoBehaviour, so there is
-    /// no coroutine to start and no frame to wait in - the frame boundary is taken from the update that
-    /// already runs every frame, and armed by the level load.
+    /// Second chance one frame later. The re-application runs more than once per level load and
+    /// duplicates are harmless now that applying a break to an already broken object is refused;
+    /// this pass is kept because the two do not fire at the same moment (LoadSnapShot's can run
+    /// while objects are still being built). Armed by OnLevelLoaded, executed on OnLateUpdate -
+    /// the mod class is not a MonoBehaviour, so no coroutine is available.
     /// </summary>
     [HarmonyPatch(typeof(Multiplayer), "OnLateUpdate")]
     class MultiplayerLateUpdate_Patch
@@ -347,18 +246,13 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             }
             catch (System.Exception e)
             {
-                // A throw here does not stay here. Harmony runs the several postfixes on
-                // Multiplayer.OnLateUpdate one after another, and an exception escaping one of them ALSO
-                // costs the others their turn - which is how a null level in the breakable memory silently
-                // suppressed the save-path report and made the mod look like it had failed to start.
-                //
-                // The failure is logged rather than swallowed, because a deferred re-application that stops
-                // happening is exactly the kind of silence this project has learned to distrust.
-                ModLog.Error($"[BreakSync] la passata differita e' fallita: {e.GetType().Name} - {e.Message}");
+                // A throw here stops the sibling postfixes on OnLateUpdate too, which is how a null
+                // level once silently suppressed the [Path] line. Logged, not swallowed.
+                ModLog.Error($"[BreakSync] deferred pass failed: {e.GetType().Name} - {e.Message}");
             }
         }
 
-        /// <summary>Arms the deferred pass. Called after the level has been announced as loaded.</summary>
+        /// <summary>Arms the deferred pass. Called after OnLevelLoaded.</summary>
         public static void Arm()
         {
             armed = true;
@@ -376,26 +270,17 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
     }
 
     /// <summary>
-    /// Remembers the breaks that could not be applied because their room was not loaded yet.
-    ///
-    /// This is the piece the first version was missing, and the reason a lamp stayed intact for the player
-    /// who walked in afterwards. The packet arrives fine - the server relays progress to the whole team, not
-    /// per scene - but the object it names lives in a room this machine has not loaded, so there is nothing
-    /// to act on. Applying would be impossible; forgetting is wrong; so it is held until the room arrives.
-    ///
-    /// The same shape as _pendingDeaths in EnemySyncManager, and for the same reason: a state change that
-    /// happened in a room the player was not standing in still has to be there when they walk in.
-    ///
-    /// Entries are keyed by "scene|guid" because a GUID alone cannot say which room it belongs to - the
-    /// BreakableObject table does not exist, by design.
+    /// Remembers breaks that arrived while their scene was not loaded - the server relays progress
+    /// to the whole team, so a break from another room arrives with nothing to act on. Entries are
+    /// keyed by "scene|guid", because a GUID alone cannot say which room it belongs to. Holds the
+    /// re-application flag so an applied break is never announced back.
     /// </summary>
     public static class BreakSyncMemory
     {
         /// <summary>
-        /// The separator between scene and payload. A '~' would collide with the "scene~index" entries the
-        /// older helpers put in the same field, and that collision is not cosmetic: the two formats are told
-        /// apart by whether the part after the separator parses as a number, so a separator that appears in
-        /// both would make a GUID look like a broken index.
+        /// Scene/payload separator. Must not be '~', which would collide with the "scene~index"
+        /// entries the older helpers put in the same field; the two formats are told apart by
+        /// whether the part after the separator parses as a number.
         /// </summary>
         public const char IdSeparator = '|';
 
@@ -404,55 +289,39 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         /// <summary>Breaks announced for a scene this machine had not loaded. Survives scene changes.</summary>
         private static readonly HashSet<string> pending = new HashSet<string>();
 
-        /// <summary>Breaks applied here, kept so that leaving and re-entering the room re-applies them.</summary>
+        /// <summary>Breaks applied here, kept so re-entering the room re-applies them.</summary>
         private static readonly HashSet<string> applied = new HashSet<string>();
 
         /// <summary>
-        /// True while PersistentManager.LoadSnapShot is running.
-        ///
-        /// This exists to stop Forget from destroying the very thing it was keeping. While a snapshot is
-        /// loaded, the game calls SetCurrentPersistentState on every object it has data for; for a breakable
-        /// whose break the mod remembers but which this machine never broke, IsBroken() is false (the
-        /// BreakableManager is not repopulated on load), so it runs Restore() - and the memory of that break
-        /// was cleared a moment before the hook that exists to re-apply it could look.
-        ///
-        /// The result was measured: the hook ran, the counter said there was something to apply, and nothing
-        /// was painted. So the erasure is simply suspended until the snapshot has finished, and the
-        /// re-application decides what to do with the entry afterwards.
+        /// True while PersistentManager.LoadSnapShot is running. During a load the game calls
+        /// SetCurrentPersistentState on every object; for a remembered break the BreakableManager
+        /// is not repopulated, so the game runs Restore() and would delete the pending entry a
+        /// moment before the postfix that re-applies it.
         /// </summary>
         private static bool loadingSnapshot;
 
-        /// <summary>Called by a prefix on LoadSnapShot. Diagnostics and correctness, both.</summary>
+        /// <summary>Called by a prefix on LoadSnapShot.</summary>
         public static void BeginSnapshot()
         {
             loadingSnapshot = true;
         }
 
-        /// <summary>Called by a postfix on LoadSnapShot, after the re-application has had its turn.</summary>
+        /// <summary>Called by a postfix on LoadSnapShot, after the re-application.</summary>
         public static void EndSnapshot()
         {
             loadingSnapshot = false;
         }
 
         /// <summary>
-        /// True while a break is being applied here, so the sender can tell an application from a swing.
-        ///
-        /// ReapplyCurrentScene runs OUTSIDE ProgressManager.Update, so CurrentlyUpdatingProgress - the guard
-        /// that normally stops an applied break from being announced back - is false while it works. That
-        /// went unnoticed while announcements travelled on the progress channel, because the channel threw
-        /// the repeat away. It is not harmless on the channel used now, which throws nothing away.
+        /// True while a break is being applied here, so the sender can tell an application from a
+        /// local swing. ReapplyCurrentScene runs outside ProgressManager.Update, so
+        /// CurrentlyUpdatingProgress is false while it works.
         /// </summary>
         public static bool IsReapplying { get { return reapplying; } }
 
         private static bool reapplying;
 
-        /// <summary>
-        /// Marks an announcement as a break rather than a death.
-        ///
-        /// The id travels as a free-form string on the enemy-death channel, whose only other convention is
-        /// the "sp|" prefix for spawn points. A distinct prefix is what keeps the two apart, and anything
-        /// unrecognised is ignored by the receiver - the same convention the project already uses.
-        /// </summary>
+        /// <summary>Break prefix on the enemy-death channel: "brk|".</summary>
         public const string BreakPrefix = "brk|";
 
         /// <summary>True when this id is a break announcement rather than a death.</summary>
@@ -462,11 +331,8 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         }
 
         /// <summary>
-        /// Splits a break id into its scene and guid. Returns false for anything malformed, so a rogue or
-        /// future format cannot be misinterpreted as a break.
-        ///
-        /// Note the separator: the SCENE comes first and the GUID second, both separated by '|'. The GUID
-        /// itself never contains one.
+        /// Splits "brk|scene|guid" into scene and guid. False for anything malformed so a rogue
+        /// format is never misinterpreted as a break. The GUID never contains the separator.
         /// </summary>
         public static bool TryParseBreakId(string id, out string scene, out string guid)
         {
@@ -491,12 +357,12 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         {
             int separator = id.IndexOf(SceneSeparator);
             if (separator < 0 || separator + 1 >= id.Length)
-                return false; // no separator, or nothing after it: never a valid table id
+                return false;
 
             for (int i = separator + 1; i < id.Length; i++)
             {
                 if (!char.IsDigit(id[i]))
-                    return false; // a GUID is not an index
+                    return false;
             }
 
             return true;
@@ -515,23 +381,9 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         }
 
         /// <summary>
-        /// Routes an announced break: applied now if its room is loaded, remembered if it is not.
-        ///
-        /// The remembered case is not an edge case. The announcement arrives for a room this machine may not
-        /// be standing in - the server relays it to everyone - and there is nothing to act on until the room
-        /// is entered. Dropping it there is what once left a lamp intact for the player who walked in later.
-        ///
-        /// AN APPLICATION MUST NEVER BE ANNOUNCED BACK, and this method is where that has to be enforced.
-        ///
-        /// ReapplyCurrentScene already marks its own work, but this entry point - the one the network uses -
-        /// did not, and the omission was not harmless. BreakableObject.Damage returns early when an object is
-        /// already broken, leaving the destroyed field true, so the sender's postfix saw a break and announced
-        /// it again; the peer applied it and announced it again; and so on. Two lamps produced 187 and 34
-        /// announcements on one machine, every received announcement turning into a sent one.
-        ///
-        /// The old channel hid this behind its own deduplication. The channel used now discards nothing, so
-        /// the echo became a real relay the moment the channel changed - which is the whole reason a change
-        /// of channel obliges a review of every guard that protected the previous one.
+        /// Routes an announced break: applied now if the scene is loaded, remembered otherwise.
+        /// Sets IsReapplying around the application so the sender does not announce it back - the
+        /// enemy-death channel discards nothing, so an echo here would be a real relay.
         /// </summary>
         public static void ApplyOrRemember(string scene, string guid)
         {
@@ -544,8 +396,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                 return;
             }
 
-            // Saved and restored rather than set and cleared: an application can nest inside this one, and
-            // clearing it in an inner frame would open a window in which a break is announced back.
+            // Saved/restored (not set/cleared) because applications can nest.
             bool wasReapplying = reapplying;
             reapplying = true;
             try
@@ -558,7 +409,7 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             }
         }
 
-        /// <summary>Holds a break until its scene is loaded, because there is nothing to act on yet.</summary>
+        /// <summary>Holds a break until its scene is loaded.</summary>
         public static void Remember(string scene, string guid)
         {
             if (string.IsNullOrEmpty(scene) || string.IsNullOrEmpty(guid))
@@ -576,23 +427,14 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
 
             applied.Remove(guid);
 
-            // NOT while a snapshot is loading, and this is the fix for the case that never painted.
-            //
-            // LoadSnapShot runs SetCurrentPersistentState on every object it holds data for, and for a
-            // breakable that means Restore() - because the BreakableManager is not repopulated on load, so
-            // IsBroken() answers false even for an object the snapshot says was broken. That Restore lands
-            // here, and it used to delete the pending entry a moment before the hook that exists to re-apply
-            // it could read it. The hook then ran, reported there was something to apply, and applied nothing.
-            //
-            // The entry stays. If the object really is whole again and is not in the room being loaded, the
-            // re-application simply will not find it and will leave it alone - which is the correct outcome.
+            // Not while a snapshot is loading: the game's own Restore during LoadSnapShot lands
+            // here and would delete the pending entry a moment before the re-application.
             if (loadingSnapshot)
                 return;
 
             int separator = guid.IndexOf(IdSeparator);
             string bare = separator < 0 ? guid : guid.Substring(separator + 1);
 
-            // Rebuild the pending keys rather than remove while enumerating.
             List<string> stale = null;
             foreach (string entry in pending)
             {
@@ -609,32 +451,19 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         }
 
         /// <summary>
-        /// Re-applies everything remembered for the scene that has just finished loading.
-        ///
-        /// Called from a postfix on PersistentManager.LoadSnapShot, and the hook point is the whole trick:
-        /// Multiplayer.OnLevelLoaded fires BEFORE the scene exists - the project already learned that with
-        /// the enemies - and applying there would find no objects and be overwritten by the save that is
-        /// loaded immediately afterwards. LoadSnapShot is the first moment both are true: the objects are
-        /// in the scene AND the game has finished writing its own state onto them.
+        /// Re-applies everything remembered for the scene that has just finished loading. Runs the
+        /// applications with IsReapplying set, so the sender cannot echo them.
         /// </summary>
         public static void ReapplyCurrentScene()
         {
-            // Nothing to do while an application is already in progress, and re-entering would let the
-            // finally below clear the flag while the outer pass is still running - leaving a window in which
-            // the sender would announce an application as if it were a swing.
+            // Nothing to do while an application is already in progress; re-entering would clear
+            // the flag while the outer pass is still running.
             if (reapplying)
                 return;
 
-            // THE LEVEL DOES NOT EXIST YET at this point, and that is the expected case, not an edge one.
-            // The deferred pass is armed by OnLevelLoaded, whose own comment above says it fires BEFORE the
-            // scene exists - so this method is called on the next frame precisely when currentLevel may
-            // still be null. Reading .LevelName straight through threw a NullReferenceException on every
-            // frame from the main menu onwards, and because the exception came out of a postfix on
-            // Multiplayer.OnLateUpdate it also took down the sibling postfix that reports the save path:
-            // that is why no [Path] line ever appeared, which looked like the mod failing to initialise.
-            //
-            // The scene is read the same way the rest of this file reads it - the enemy log asks
-            // "currentLevel == null ? "?" : ..." - and this one place had been missed.
+            // The level may not exist yet at this point - the deferred pass is armed by
+            // OnLevelLoaded, which itself runs before the scene exists. Reading LevelName straight
+            // through NREs on the main menu, and taking the sibling postfix down with it.
             if (Core.LevelManager == null || Core.LevelManager.currentLevel == null)
                 return;
 
@@ -660,11 +489,6 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
             if (toApply == null)
                 return;
 
-            // Applications are marked as such, so the sender can tell them from a swing.
-            //
-            // This method runs outside ProgressManager.Update, so the guard that normally swallows an
-            // applied break is false here and the announcement would go out. See IsReapplying: on the
-            // channel that discards nothing, that echo would be a real relay.
             reapplying = true;
             try
             {
@@ -685,8 +509,8 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
         }
 
         /// <summary>
-        /// Breaks the object with this id if the current scene holds it. False means "not here", which is a
-        /// normal answer, not a failure: it is what makes the caller remember instead of forgetting.
+        /// Breaks the object with this id if the current scene holds it. False means "not here",
+        /// which is what makes the caller remember instead of forgetting.
         /// </summary>
         private static bool ApplyToLoadedObject(string guid)
         {
@@ -697,9 +521,8 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync.Helpers.PersistentObjects
                     if (persistentObject.GetPersistenID() != guid)
                         continue;
 
-                    // GetCurrentPersistentState("use") is what the older helpers call, and the breakable
-                    // prefix turns it into Use(). Going through that path keeps the echo guard working:
-                    // it also means this call happens on the same route a relayed break always took.
+                    // GetCurrentPersistentState("use") is the same route a relayed break always
+                    // took; the breakable prefix turns it into Use().
                     persistentObject.GetCurrentPersistentState("use", false);
                     ModLog.Info($"[BreakSync] rottura applicata: {guid}");
                     return true;

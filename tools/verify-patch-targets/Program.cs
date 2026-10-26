@@ -1,10 +1,10 @@
 using Mono.Cecil; using System; using System.Linq; using System.IO; using System.Collections.Generic;
 class P {
-  // Tipo -> nomi dei metodi. Copre gioco E mod: la mod si patcha da sola.
+  // Type -> method names. Covers game AND mod: the mod patches itself.
   static Dictionary<string, HashSet<string>> idx = new Dictionary<string, HashSet<string>>();
   static int tot = 0, bad = 0, tmiss = 0, normale = 0, divisa = 0, incompleta = 0;
 
-  // Il bersaglio si verifica allo stesso modo in cui ci arriva Harmony: tipo esistente, metodo esistente.
+  // Verify the target the way Harmony resolves it: type exists, method exists.
   static void Verifica(string tn, string mn, string owner) {
     tot++;
     HashSet<string> ms;
@@ -19,48 +19,44 @@ class P {
     }
   }
 
-  // Un [HarmonyPatch(typeof(T))]: la META' TIPO della forma divisa (null se l'attributo non e' questa forma).
+  // From [HarmonyPatch(typeof(T))]: the TYPE half of the split form (null if not this shape).
   static string TipoDa(CustomAttribute ca) {
     var a = ca.ConstructorArguments;
     if (a.Count == 1 && a[0].Value is TypeReference) return ((TypeReference)a[0].Value).FullName;
     return null;
   }
 
-  // Un [HarmonyPatch("nome")]: la META' NOME della forma divisa (null se l'attributo non e' questa forma).
+  // From [HarmonyPatch("name")]: the NAME half of the split form (null if not this shape).
   static string NomeDa(CustomAttribute ca) {
     var a = ca.ConstructorArguments;
     if (a.Count == 1 && a[0].Value is string) return (string)a[0].Value;
     return null;
   }
 
-  // LA REGOLA PRUDENTE: fra i due attributi divisi non deve esserci NIENT'ALTRO che altri [Harmony*].
-  // Righe consecutive, o al massimo altri attributi Harmony in mezzo. Qualunque altra cosa interrompe
-  // l'accoppiamento: niente coppie a distanza, mai.
+  // Prudent rule: between the two split attributes only other [Harmony*] attributes may appear.
+  // No distant pairs, ever.
   static bool Vicini(IList<CustomAttribute> cas, int a, int b) {
     for (int k = a + 1; k < b; k++)
       if (!cas[k].AttributeType.Name.StartsWith("Harmony", StringComparison.Ordinal)) return false;
     return true;
   }
 
-  // IL PROTOCOLLO CON LO SCRIPT (perche' non basta l'exit code).
+  // SCRIPT PROTOCOL (exit code alone is not enough).
   //
-  // Un crash NON e' un esito, ma esce con un codice lo stesso - e non e' un codice nostro:
-  // un'eccezione non gestita esce con l'HRESULT (qui 0xE0434352, cioe' -532462766), un processo
-  // ucciso con un altro, e una libreria che fa `Environment.Exit(1)` esce con 1: lo STESSO 1 che
-  // prima significava "bersagli rotti". Percio' ogni esito MISURATO stampa, come ULTIMA riga, una
-  // marca macchina `SONDA-ESITO: <esito>`, e lo script crede al codice SOLO se combacia con la
-  // marca. Le combinazioni ammesse:
-  //     0 + TUTTI-VALIDI        la sonda ha controllato: tutti i bersagli esistono
-  //     2 + BERSAGLI-INVALIDI   la sonda ha controllato: ci sono bersagli rotti/incompleti
-  //     3 + ZERO-BERSAGLI       la sonda non ha trovato NESSUN attributo: non ha misurato niente
-  //     4 + ERRORE              la sonda e' partita e si e' fermata a meta': la riga
-  //                             `SONDA FALLITA: <tipo>: <messaggio>` dice perche'
-  // Qualunque altra combinazione = "non ho potuto verificare". Il 2 al posto dell'1 e' cio' che
-  // rende impossibile confondere "bersagli rotti" con un exit 1 di crash.
+  // A crash exits with a code that is not ours (unhandled exception = its HRESULT; killed process
+  // = another; Environment.Exit(1) from a library = the SAME 1 that used to mean "broken targets").
+  // So each MEASURED outcome prints, as the LAST line, a machine marker `SONDA-ESITO: <outcome>`,
+  // and the script trusts the code only if it matches the marker. Allowed combinations:
+  //     0 + TUTTI-VALIDI        probe ran: all targets exist
+  //     2 + BERSAGLI-INVALIDI   probe ran: broken/incomplete targets exist
+  //     3 + ZERO-BERSAGLI       probe found NO attribute: nothing measured
+  //     4 + ERRORE              probe stopped halfway; `SONDA FALLITA: <type>: <msg>` says why
+  // Anything else = "could not verify". Using 2 instead of 1 makes it impossible to confuse
+  // "broken targets" with a crash exit 1.
   const string MARCA_ESITO = "SONDA-ESITO";
   const string MARCA_CONTA = "SONDA-CONTA";
 
-  // Dichiara l'esito e termina. La marca si stampa DOPO i conteggi: e' l'ultima riga dell'output.
+  // Declare outcome and exit. Marker printed AFTER counts: it is the last line of the output.
   static void Dichiara(int codice, string esito) {
     Console.WriteLine("  " + MARCA_CONTA + ": totale=" + tot + " normale=" + normale + " divisa=" + divisa
                     + " tipoassente=" + tmiss + " metodoassente=" + bad + " incompleta=" + incompleta);
@@ -72,14 +68,14 @@ class P {
   static void Main(string[] a) {
     try { Esegui(a); }
     catch (Exception e) {
-      // La sonda non ha potuto controllare: lo DICHIARA (codice 4 + marca ERRORE) invece di
-      // lasciare che l'eccezione grezza arrivi a chi legge l'exit code. Senza questo, un
-      // BadImageFormatException su una DLL illeggibile veniva letto come "le patch sono sbagliate".
+      // The probe could not check: declare it (code 4 + ERRORE marker) instead of letting the
+      // raw exception reach whoever reads the exit code. Without this, a BadImageFormatException
+      // on an unreadable DLL was read as "patches are wrong".
       Console.Out.Flush();
       var causa = e;
       while (causa.InnerException != null) causa = causa.InnerException;
       var perche = e.GetType().Name + ": " + e.Message;
-      if (!ReferenceEquals(causa, e)) perche += "; causa: " + causa.GetType().Name + ": " + causa.Message;
+      if (!ReferenceEquals(causa, e)) perche += "; cause: " + causa.GetType().Name + ": " + causa.Message;
       Console.WriteLine("  SONDA FALLITA: " + perche);
       Console.WriteLine("  SONDA TRACCIA:");
       Console.WriteLine(e.ToString());
@@ -88,11 +84,11 @@ class P {
       Environment.Exit(4);
     }
 
-    // `Esegui` non torna mai: ogni sua strada dichiara un esito e termina. Se un giorno tornasse -
-    // una riga cancellata, un `Environment.Exit` diventato `return` - il default NON e' 0: e' un
-    // esito non dichiarato, cioe' "non ho potuto verificare". Un verde per omissione e' il difetto
-    // che questo file esiste per non avere.
-    Console.WriteLine("  SONDA FALLITA: la sonda e' tornata senza dichiarare un esito");
+    // `Esegui` never returns: every path declares an outcome and exits. If it ever returns -
+    // a deleted line, an `Environment.Exit` turned `return` - the default is NOT 0: it is an
+    // undeclared outcome, i.e. "could not verify". A false green is the defect this file exists
+    // to prevent.
+    Console.WriteLine("  SONDA FALLITA: the probe returned without declaring an outcome");
     Console.WriteLine("  " + MARCA_ESITO + ": ERRORE");
     Console.Out.Flush();
     Environment.Exit(4);
@@ -113,27 +109,27 @@ class P {
 
     foreach (var t in mod.MainModule.GetTypes()) {
       var cas = t.CustomAttributes;
-      var sospesiTipo = new List<int>();   // [HarmonyPatch(typeof(X))] in attesa del nome
+      var sospesiTipo = new List<int>();   // [HarmonyPatch(typeof(X))] awaiting its name
 
       for (int i = 0; i < cas.Count; i++) {
         var ca = cas[i];
         if (ca.AttributeType.Name != "HarmonyPatch") continue;
         var args = ca.ConstructorArguments;
 
-        // FORMA NORMALE: un attributo con tipo + nome.
+        // NORMAL FORM: single attribute carrying type + method.
         if (args.Count >= 2) {
           var tr = args[0].Value as TypeReference;
           var mn = args[1].Value as string;
-          if (tr == null || mn == null) continue;   // forme che non dichiarano tipo+metodo (es. MethodType)
+          if (tr == null || mn == null) continue;   // shapes without type+method (e.g. MethodType)
           normale++;
           Verifica(tr.FullName, mn, t.Name);
           continue;
         }
 
-        // FORMA DIVISA, prima meta': il tipo, che resta in attesa del nome.
+        // SPLIT FORM, first half: the type, kept pending the name.
         if (TipoDa(ca) != null) { sospesiTipo.Add(i); continue; }
 
-        // FORMA DIVISA, seconda meta': il nome, che cerca il suo tipo QUI VICINO.
+        // SPLIT FORM, second half: the name, which looks for its type NEARBY.
         var nome = NomeDa(ca);
         if (nome == null) continue;
         int preso = -1;
@@ -142,7 +138,7 @@ class P {
         }
         if (preso < 0) {
           incompleta++;
-          Console.WriteLine("  PATCH INCOMPLETA: [HarmonyPatch(\"" + nome + "\")] senza il suo [HarmonyPatch(typeof(...))]   [" + t.Name + "]");
+          Console.WriteLine("  PATCH INCOMPLETA: [HarmonyPatch(\"" + nome + "\")] without its [HarmonyPatch(typeof(...))]   [" + t.Name + "]");
           continue;
         }
         var tnDiviso = TipoDa(cas[preso]);
@@ -151,9 +147,9 @@ class P {
         Verifica(tnDiviso, nome, t.Name);
       }
 
-      // Un tipo dichiarato e mai accoppiato: O e' un idioma legittimo (il nome sta sui METODI della
-      // patch, come vuole Harmony), O e' una patch incompleta. Le due cose si distinguono guardando i
-      // metodi; se non c'e' nessun nome, e' un ERRORE e si dichiara.
+      // A type declared but never paired is either a legitimate idiom (the name lives on the
+      // patch's METHODS, as Harmony expects) or an incomplete patch; distinguished by looking at
+      // the methods. If no name exists at all, it is an ERROR and is reported.
       foreach (int i in sospesiTipo) {
         var tn = TipoDa(cas[i]);
         var nomi = new List<string>();
@@ -166,7 +162,7 @@ class P {
         }
         if (nomi.Count == 0) {
           incompleta++;
-          Console.WriteLine("  PATCH INCOMPLETA: [HarmonyPatch(typeof(" + tn + "))] senza il nome del metodo   [" + t.Name + "]");
+          Console.WriteLine("  PATCH INCOMPLETA: [HarmonyPatch(typeof(" + tn + "))] without the method name   [" + t.Name + "]");
           continue;
         }
         foreach (var n in nomi) {
@@ -177,20 +173,20 @@ class P {
       }
     }
 
-    // ZERO BERSAGLI non e' "tutti validi": e' "la sonda non ha misurato niente". Succede quando legge
-    // la DLL sbagliata (o una mod senza patch), e prima di questa guardia l'esito era verde con 0
-    // controlli - lo stesso difetto di `exit $null` = 0, un livello piu' in basso. Il codice 3 lo
-    // distingue da 1 ("ho misurato e ci sono bersagli rotti"), cosi' il .ps1 puo' dire la cosa vera.
+    // ZERO TARGETS is not "all valid": it is "the probe measured nothing". Happens when reading
+    // the wrong DLL (or a mod without patches); before this guard the outcome was green with 0
+    // checks - the same defect as `exit $null` = 0, one level lower. Code 3 distinguishes it from
+    // 1 ("I measured and there are broken targets"), so the .ps1 can report the truth.
     if (tot == 0) {
       Console.WriteLine("  bersagli controllati : 0");
-      Console.WriteLine("  ESITO                : NESSUN BERSAGLIO TROVATO - la verifica NON ha misurato niente");
+      Console.WriteLine("  RESULT               : NO TARGET FOUND - the check did NOT measure anything");
       Dichiara(3, "ZERO-BERSAGLI");
     }
 
     bool ok = bad == 0 && tmiss == 0 && incompleta == 0;
-    string esito = "tutti validi";
-    if (!ok) esito = (bad + tmiss > 0 ? "CI SONO BERSAGLI INESISTENTI" : "")
-                   + (incompleta > 0 ? ((bad + tmiss > 0 ? " E " : "") + "CI SONO PATCH INCOMPLETE") : "");
+    string esito = "all valid";
+    if (!ok) esito = (bad + tmiss > 0 ? "SOME TARGETS DO NOT EXIST" : "")
+                   + (incompleta > 0 ? ((bad + tmiss > 0 ? " AND " : "") + "SOME PATCHES ARE INCOMPLETE") : "");
 
     Console.WriteLine("  bersagli controllati : " + tot);
     Console.WriteLine("    forma normale      : " + normale);
@@ -198,7 +194,7 @@ class P {
     Console.WriteLine("  tipo assente         : " + tmiss);
     Console.WriteLine("  METODO assente       : " + bad);
     Console.WriteLine("  patch incompleta     : " + incompleta);
-    Console.WriteLine("  ESITO                : " + esito);
+    Console.WriteLine("  RESULT               : " + esito);
     Dichiara(ok ? 0 : 2, ok ? "TUTTI-VALIDI" : "BERSAGLI-INVALIDI");
   }
 }

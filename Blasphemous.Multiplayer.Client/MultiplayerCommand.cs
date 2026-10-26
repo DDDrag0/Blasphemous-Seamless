@@ -31,22 +31,9 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Enemy sync diagnostics. Everything is also written to the log file via ModLog, because console
-        /// output does not reach LogOutput.log - which previously meant a remote bug report contained none
-        /// of the data needed to diagnose it.
-        ///
-        ///   "multiplayer sync"        summary + tracked ids + raw scene scan (the usual one)
-        ///   "multiplayer sync brief"  summary only
-        ///   "multiplayer sync dump"   tracked ids only
-        ///   "multiplayer sync world"  raw scene scan only
-        /// </summary>
-        /// <summary>
-        ///   "multiplayer spawn"  every spawn point with the flags that decide whether it spawns
-        ///   "multiplayer dead"   the spawn points the game itself considers defeated
-        ///
-        /// Kept as two commands rather than more modes of "sync" because they answer a different question:
-        /// not what the sync thinks, but what the GAME thinks. Diagnosing the death problem needs the
-        /// game's own view, and the game tracks defeated enemies by spawn point position, not by id.
+        /// Enemy sync diagnostics. Every line is also written via ModLog because console output does
+        /// not reach LogOutput.log. Modes: "multiplayer sync" (all), "brief" (summary), "dump" (ids),
+        /// "world" (scene scan).
         /// </summary>
         private void Spawn(string[] parameters)
         {
@@ -72,7 +59,8 @@ namespace Blasphemous.Multiplayer.Client
             }
         }
 
-        private void Sync(string[] parameters)        {
+        private void Sync(string[] parameters)
+        {
             string mode = parameters.Length > 0 ? parameters[0].ToLowerInvariant() : "all";
 
             if (mode != "brief" && mode != "dump" && mode != "world")
@@ -91,7 +79,7 @@ namespace Blasphemous.Multiplayer.Client
             if (mode == "dump" || mode == "all")
             {
                 List<string> lines = EnemySyncManager.Dump();
-                Write($"Enemy sync dump ({lines.Count} righe):");
+                Write($"Enemy sync dump ({lines.Count} lines):");
                 foreach (string line in lines)
                 {
                     Write(line);
@@ -102,7 +90,7 @@ namespace Blasphemous.Multiplayer.Client
             if (mode == "world" || mode == "all")
             {
                 List<string> lines = EnemyDiagnostics.DumpWorld();
-                Write($"Enemy world scan ({lines.Count} righe):");
+                Write($"Enemy world scan ({lines.Count} lines):");
                 foreach (string line in lines)
                 {
                     Write(line);
@@ -115,21 +103,6 @@ namespace Blasphemous.Multiplayer.Client
         {
             Write("The multiplayer command has been removed.  Open the connection menu on the bottom of the screen.");
         }
-
-//        private void Help(string[] parameters)
-//        {
-//            if (!ValidateParameterList(parameters, 0))
-//                return;
-
-//            Write("Available MULTIPLAYER commands:");
-//            Write("multiplayer status: Display connection status");
-//            Write("multiplayer connect SERVER NAME [PASSWORD]: Connect to SERVER with player name as NAME with optional PASSWORD");
-//            Write("multiplayer disconnect: Disconnect from current server");
-//            Write("multiplayer players: List all connected players in the server");
-//#if DEBUG
-//            Write("multiplayer damage TYPE AMOUNT: Simulates receiving a pvp attack");
-//#endif
-//        }
 
         private void Damage(string[] parameters)
         {

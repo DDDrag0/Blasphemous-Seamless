@@ -11,101 +11,35 @@ using UnityEngine;
 
 namespace Blasphemous.Multiplayer.Client
 {
-    // =====================================================================================================
-    // ⭐⭐ IL VERSO NUOVO: IL NEMICO CHE FERISCE IL PEER — il passo ② del danno del boss.
-    //
-    // LA DIAGNOSI (`scratch\DIAGNOSI-DANNO-BOSS-COOP.md`) aveva una sola conclusione: **il canale
-    // nemico→giocatore non esiste**, e non e' un guasto di un punto — e' un pezzo di protocollo mai
-    // costruito. Ogni macchina ferisce il PROPRIO `Penitent` con la pipeline del gioco, che e' a
-    // collider; il padrone della simulazione ha la copia del nemico che mena, ma l'altro giocatore,
-    // su quella macchina, e' solo il proxy d'aggio (`_coop_remote_target`), che **non era
-    // danneggiabile**. ⇒ il colpo del boss mirato al peer arrivava su un collider che non accettava
-    // danno: zero vita, e (prima di `c89c368`) anche una `NullReferenceException`.
-    //
-    // LA FORMA DEL FIX, in una frase: **il proxy diventa un `IDamageable` che non tocca mai il
-    // `Penitent` locale e INOLTRA il colpo al peer**, il quale lo applica al **proprio** `Penitent`
-    // con la porta d'ingresso del gioco (`Penitent.Damage(Hit)`), esattamente come fa il gioco quando
-    // il colpo arriva sulla sua macchina.
-    //
-    // ⭐ E' GENERICO PER COSTRUZIONE, e questa e' la proprieta' che conta. Il proxy e' UNO SOLO nel mod
-    // (`_coop_remote_target`, `DontDestroyOnLoad`, layer `Penitent`, riposizionato da
-    // `EnemySyncManager.ApplyAggroTarget` su DOVE STA IL PEER): l'inoltro avviene a livello di
-    // **collisione**, cioe' dove il gioco ha gia' deciso che un colpo e' atterrato su quel posto. Non
-    // c'e' nessun `IsBoss`, nessun `ElderBrother`, nessun elenco di boss: **qualunque nemico e
-    // qualunque boss** che mena il proxy inoltra il suo colpo, senza che questo file sappia quale sia.
-    // Il boss della fight misurata (`ElderBrother`) e' solo il primo che arriva.
-    //
-    // ⚠️ E IL FILTRO CHE RENDE LA COSA SICURA E' UNO: **l'attaccante deve risolversi a un `Enemy`**
-    // (`hit.AttackingEntity.GetComponentInParent&lt;Enemy&gt;()`). Non e' un dettaglio: le trappole, le
-    // spine, gli `AreaEffect` e i `SimpleDamageArea` di livello costruiscono l'`Hit` con
-    // `AttackingEntity` = loro stessi (o un `AreaAttackDummyEntity`), e quei pericoli **esistono su
-    // entrambe le macchine**: il peer li prende gia' per conto suo, localmente. Inoltrarli
-    // significherebbe **danno doppio** — la trappola ferisce il suo `Penitent` e il nostro inoltro lo
-    // ferisce di nuovo. Idem per un attacco del giocatore locale (`AttackingEntity` = il `Penitent`).
-    //
-    // ⚠️ E L'ALTRA META' DELLA SICUREZZA: il colpo **non viene mai applicato due volte sulla stessa
-    // macchina**. Il proxy non chiama mai `Core.Logic.Penitent` (non lo tocca: la sua `Damage` fa solo
-    // l'inoltro); il ricevente lo applica una volta sola con la pipeline del gioco, che ha gia' i suoi
-    // cancelli — `CanTakeHit` (`Status.Invulnerable`, `PrayerProtectionEnabled`, `IsHurt`) e
-    // `DeltaRecoverTime &lt; RecoverTime` (`PenitentDamageArea.TakeDamage`): due pacchetti ravvicinati
-    // valgono UN colpo, come due colpi ravvicinati del gioco. Il server, infine, **esclude il mittente**
-    // (`playerIp != ip`) quindi la macchina che ha inoltrato non riceve mai il proprio pacchetto: non
-    // esiste nessun anello di ritorno.
-    //
-    // ⚠️ COSA NON SI INOLTRA, DICHIARATO:
-    //   1. **il contatto** (`ContactDamage`): resta SALTATO da `c89c368`
-    //      (`ContactDamageProxyIgnore_Patch`). Riaprirlo significherebbe riaprire anche il difetto che
-    //      quel commit ha chiuso: il metodo alza `IsTargetOverlapped` PRIMA di danneggiare, e gli
-    //      attacchi che leggono quella proprieta' colpiscono `Core.Logic.Penitent` senza misurare la
-    //      distanza (il giocatore locale, a venti unita', prendeva il colpo di un nemico che aveva
-    //      "sentito" solo il proxy). ⇒ i nemici con `DamageByContact` NON feriscono il peer.
-    //   2. **i colpi il cui attaccante e' un proiettile/area nata a se'** (non un `Enemy`): vedi sopra,
-    //      e' il filtro che evita il danno doppio.
-    //   3. **i tipi di danno che il `Penitent` non gestisce** (`Stunt`, `OptionalStunt`): la sua
-    //      `PenitentDamageArea.TakeDamage` finisce in `throw new ArgumentOutOfRangeException()`
-    //      (`Assembly-CSharp.cs:145500`). Il gioco non li usa contro il giocatore; il filtro e'
-    //      difensivo, cosi' un pacchetto storto non puo' far esplodere il ricevente.
-    // =====================================================================================================
-
     /// <summary>
-    /// Il proxy d'aggio del mod, reso **danneggiabile**: e' l'unica cosa che il gioco vede al posto
-    /// dell'altro giocatore, quindi e' l'unico punto in cui il colpo di un nemico puo' essere
-    /// intercettato sulla macchina che lo simula.
-    ///
-    /// ⚠️ NON tocca MAI il `Penitent` locale. Non lo legge, non lo danneggia, non lo sposta: chiama
-    /// solo l'inoltro. E' la lezione di `AggroProxyPatches` — il proxy e' un fantasma, e un fantasma
-    /// non deve poter ferire chi lo guarda.
-    ///
-    /// Gli altri tre membri di <see cref="IDamageable"/> sono obbligatori ma inutili qui: il proxy non
-    /// sanguina e non fa scintille (non ha né sangue né sprite), e la sua posizione e' quella del
-    /// giocatore remoto. `SparkOnImpact`/`BleedOnImpact` a `false` sono anche la risposta giusta per
-    /// il chiamante: sono i due predicati che il gioco consulta PRIMA di danneggiare, e il proxy non
-    /// deve produrre effetti propri.
+    /// Aggro proxy made damageable: it is the only object the game sees in place of the remote
+    /// player, so it is the only interception point for an enemy hit on the simulating machine.
+    /// It never touches the local <see cref="Penitent"/>: <see cref="Damage"/> only forwards the
+    /// hit to the peer, which applies it via <c>Penitent.Damage(Hit)</c>. <see cref="SparkOnImpact"/>
+    /// and <see cref="BleedOnImpact"/> return false because the game queries them before dealing
+    /// damage and the proxy must not produce local effects.
     /// </summary>
     public class CoopRemoteTargetDamageable : MonoBehaviour, IDamageable
     {
-        /// <summary>
-        /// Il colpo e' atterrato sul proxy: non si applica niente qui, si inoltra al peer.
-        /// Vedi <see cref="EnemyHitPeer.Forward"/> per i cancelli e per il perche'.
-        /// </summary>
+        /// <summary>Hit landed on the proxy: forward to the peer. See <see cref="EnemyHitPeer.Forward"/>.</summary>
         public void Damage(Hit hit)
         {
             EnemyHitPeer.Forward(hit);
         }
 
-        /// <summary>La posizione del proxy, cioe' dove questa macchina crede che stia l'altro giocatore.</summary>
+        /// <summary>Proxy position, i.e. where this machine believes the other player stands.</summary>
         public Vector3 GetPosition()
         {
             return transform.position;
         }
 
-        /// <summary>Mai: il proxy non deve chiedere scintille per un colpo che non e' suo (nessun danno locale).</summary>
+        /// <summary>Never: the proxy must not request sparks for a hit that is not its own.</summary>
         public bool SparkOnImpact()
         {
             return false;
         }
 
-        /// <summary>Mai: il proxy non sanguina e non deve produrre sangue sulla macchina sbagliata.</summary>
+        /// <summary>Never: the proxy does not bleed and must not spawn blood on the wrong machine.</summary>
         public bool BleedOnImpact()
         {
             return false;
@@ -113,88 +47,70 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// Il canale nemico→giocatore: due metodi pubblici e una forma di pacchetto.
+    /// Enemy-to-player channel. Reuses <c>NetworkType.Attack</c> (a scene broadcast the server relays
+    /// to every peer except the sender, with the sender name prefixed) and distinguishes this
+    /// direction with <c>AttackType.EnemyHit</c>. The player-to-enemy direction cannot be reused:
+    /// its payload is an enemy handle and it damages the enemy, the opposite of what is needed.
+    /// Reusing the Attack channel adds no protocol or server code and degrades gracefully on
+    /// mismatched peers (an old peer ignores type 200 and exits; an old server relays the bytes
+    /// without interpreting them).
     ///
-    /// PERCHE' NON UN `NetworkType` NUOVO — e perche' questa e' la scelta meno invasiva.
-    /// Il mod ha gia' un canale che fa esattamente il viaggio che serve: `NetworkType.Attack`, che il
-    /// server inoltra **a tutti i peer della stessa scena tranne il mittente**, con il nome del
-    /// mittente PREMESSO (`Server.cs:676-699`). Il verso giocatore→nemico (`[Danno] relay`,
-    /// `EnemyDamageRequest`) non puo' essere riusato: il suo payload e' un HANDLE DI NEMICO, e la sua
-    /// applicazione e' `((IDamageable)enemy).Damage(hit)` — cioe' ferisce **il nemico**, l'opposto di
-    /// quello che serve. ⇒ si riusa il canale Attack, distinguendo il nuovo verso con un valore di
-    /// `AttackType` (`EnemyHit = 200`), che e' un byte libero dell'enum.
-    ///
-    /// ⚠️ VANTAGGIO MISURABILE: **zero righe di protocollo e zero righe di server**. Nessun
-    /// `NetworkType` nuovo, nessuna `PROTOCOL_VERSION` da alzare (resta 11), nessuna patch al
-    /// `blas1mpserver.dll`. E le due macchine possono restare disallineate senza danni: un peer
-    /// vecchio legge il tipo 200, non lo trova in `attacks.json` e **esce** (`AttackManager.cs:31`)
-    /// senza eccezioni; un server vecchio inoltra i byte senza interpretarli. Il caso peggiore di un
-    /// disallineamento e' **il comportamento di oggi**: nessun danno al peer. Mai un crash.
-    ///
-    /// LA FORMA DEL PACCHETTO (dopo il nome del mittente premesso dal server; `startIdx` = indice del
-    /// primo byte del payload vero):
+    /// Packet layout after the server-prefixed sender name (<c>startIdx</c> = first byte of the real
+    /// payload):
     /// <code>
     ///   +0   byte    AttackType.EnemyHit (200)
     ///   +1   float   DamageAmount
     ///   +5   byte    DamageType
     ///   +6   byte    DamageElement
-    ///   +7   ushort  bandiere (9 booleani dell'Hit, vedi FlagsFrom)
+    ///   +7   ushort  flags (see FlagsFrom)
     ///   +9   float   Force
-    ///   +13  uint    handle del nemico (per ritrovare la copia locale dell'attaccante)
-    ///   +17  byte    lunghezza del nome del DESTINATARIO
-    ///   +18  string  nome del destinatario (UTF8)
-    ///   ..   byte    lunghezza dell'id del suono
-    ///   ..   string  id del suono d'impatto (UTF8)
+    ///   +13  uint    enemy handle (to resolve the local attacker copy)
+    ///   +17  byte    recipient name length
+    ///   +18  string  recipient name (UTF8)
+    ///   ..   byte    sound id length
+    ///   ..   string  impact sound id (UTF8)
     /// </code>
-    /// Il nome del destinatario c'e' perche' il canale Attack e' un broadcast di scena: senza, il
-    /// danno andrebbe a chiunque sia nella stanza. Il suono viaggia come **stringa esatta** e non come
-    /// chiave reinterpretata: e' il percorso di banca che il nemico usa davvero (`Hit.HitSoundId`,
-    /// campo `[EventRef]` del prefab), e il ricevente lo suona sulla propria copia del gioco.
+    /// The recipient name is required because the Attack channel is a scene broadcast. The sound
+    /// travels as the exact bank path the enemy uses (<c>Hit.HitSoundId</c>, an <c>[EventRef]</c>
+    /// field of the prefab), not as a reinterpreted key.
     /// </summary>
     internal static class EnemyHitPeer
     {
         /// <summary>
-        /// Il prefisso di TUTTE le righe di questo verso. Due sole righe contano, e sono quelle
-        /// richieste dal mandato: **una quando il colpo viene INOLTRATO** (sulla macchina che simula il
-        /// nemico) e **una quando viene APPLICATO** sul peer. Le righe `non inoltrato` / `non
-        /// applicato` esistono per rendere spiegabile il caso in cui il danno non arriva: senza,
-        /// "non e' successo niente" e "il pacchetto e' stato scartato per un motivo preciso" sarebbero
-        /// indistinguibili nel log, che e' la lezione di `[Danno] relay`.
+        /// Prefix of every log line of this direction. The "forwarded" / "applied" lines are the
+        /// measure of the fix; the "not forwarded" / "not applied" lines make a dropped hit
+        /// distinguishable from "nothing happened".
         /// </summary>
         internal const string Marker = "[DannoPeer]";
 
         /// <summary>
-        /// Distanza minima fra due inoltri dello STESSO nemico. Non e' un cancello sul danno — quello
-        /// lo mette il ricevente con le sue cornici di invulnerabilita' (`RecoverTime = 0.5f`) — e'
-        /// un cancello sul TRAFFICO: il proxy viene riposizionato sulla posizione remota a ogni giro di
-        /// scansione (`RESCAN_INTERVAL`), quindi puo' entrare e uscire dalla stessa area d'attacco piu'
-        /// volte, e ogni ingresso e' un `OnTriggerEnter2D` nuovo.
+        /// Minimum interval between two forwards by the SAME enemy. It is a traffic gate, not a
+        /// damage gate (the receiver applies its own invulnerability frames): the proxy is
+        /// repositioned on the remote player every rescan, so it can re-enter the same attack area
+        /// and produce a new <c>OnTriggerEnter2D</c> each time.
         /// </summary>
         private const float MIN_FORWARD_INTERVAL = 0.2f;
 
-        /// <summary>Quando ogni nemico ha inoltrato l'ultimo colpo (chiave: instance id del nemico).</summary>
+        /// <summary>Last forward time per enemy (key: enemy instance id).</summary>
         private static readonly Dictionary<int, float> _lastForward = new Dictionary<int, float>();
 
         /// <summary>
-        /// Quando e' stata scritta l'ultima riga `non inoltrato` / `non applicato`.
-        ///
-        /// Serve un freno perche' `SkipForward` viene chiamata anche per i colpi che NON ci riguardano:
-        /// una trappola o un'area di livello addosso al proxy puo' entrare e uscire di continuo, e una
-        /// riga per ingresso renderebbe il log illeggibile proprio dove servirebbe leggerlo. Le due
-        /// righe che CONTANO (inoltrato / applicato) non sono filtrate: una per colpo, sempre.
+        /// Last time a "not forwarded" / "not applied" line was written. Throttled because
+        /// <c>SkipForward</c> is also called for hits that do not concern us (traps on the proxy)
+        /// and would otherwise spam the log. The two lines that matter are not throttled.
         /// </summary>
         private static float _lastSkipLog;
 
         private const float SKIP_LOG_INTERVAL = 1f;
 
-        // ---------------------------------------------------------------------------------------------
-        // LATO SENDER: la macchina che simula il nemico.
-        // ---------------------------------------------------------------------------------------------
+        // ============================================================================================
+        // SENDER SIDE: the machine simulating the enemy.
+        // ============================================================================================
 
         /// <summary>
-        /// Chiamata dalla `Damage` del proxy. Decide se il colpo si puo' inoltrare, e lo fa.
-        /// Non lancia mai: un'inoltro mancato non deve fermare l'attacco del gioco (che e' gia' stato
-        /// deviato qui: il colpo non ha altre destinazioni su questa macchina).
+        /// Called from the proxy's <c>Damage</c>. Decides whether the hit can be forwarded and does
+        /// it. Never throws: a failed forward must not stop the game attack, which has already been
+        /// diverted here.
         /// </summary>
         internal static void Forward(Hit hit)
         {
@@ -202,35 +118,35 @@ namespace Blasphemous.Multiplayer.Client
             {
                 if (!Main.Multiplayer.NetworkManager.IsConnected)
                 {
-                    SkipForward("non connesso");
+                    SkipForward("not connected");
                     return;
                 }
 
                 Enemy attacker = AttackerOf(hit);
                 if (attacker == null)
                 {
-                    SkipForward("l'attaccante non e' un NEMICO (trappola, area di livello o giocatore): " +
-                                "il peer lo subisce per conto suo, inoltrarlo lo ferirebbe due volte");
+                    SkipForward("attacker is not an ENEMY (trap, level area or player): " +
+                                "the peer takes it locally, forwarding would double-damage it");
                     return;
                 }
 
                 if (!IsDamageTypeThePenitentHandles(hit.DamageType))
                 {
-                    SkipForward("tipo di danno " + hit.DamageType + " non gestito dal Penitent");
+                    SkipForward("damage type " + hit.DamageType + " not handled by the Penitent");
                     return;
                 }
 
                 float amount = hit.DamageAmount;
                 if (!(amount > 0f) || float.IsNaN(amount) || float.IsInfinity(amount))
                 {
-                    SkipForward("danno non positivo (" + amount.ToString("F2") + ")");
+                    SkipForward("non-positive damage (" + amount.ToString("F2") + ")");
                     return;
                 }
 
                 string peerName;
                 if (!EnemySyncManager.TryGetRemotePlayerHereAndAlive(out peerName))
                 {
-                    SkipForward("nessun altro giocatore QUI e VIVO");
+                    SkipForward("no other player HERE and ALIVE");
                     return;
                 }
 
@@ -238,8 +154,8 @@ namespace Blasphemous.Multiplayer.Client
                 float last;
                 if (_lastForward.TryGetValue(key, out last) && Time.time - last < MIN_FORWARD_INTERVAL)
                 {
-                    SkipForward("lo stesso nemico ha gia' inoltrato un colpo " +
-                                (Time.time - last).ToString("F2") + " s fa (il proxy rientra nell'area)");
+                    SkipForward("the same enemy already forwarded a hit " +
+                                (Time.time - last).ToString("F2") + " s ago (proxy re-entered the area)");
                     return;
                 }
 
@@ -260,8 +176,8 @@ namespace Blasphemous.Multiplayer.Client
 
                 Main.Multiplayer.NetworkManager.SendAttackPayload(payload);
 
-                ModLog.Info($"{Marker} colpo del NEMICO inoltrato al peer: " +
-                            $"nemico={(enemyId ?? "handle=" + handle.ToString("X8"))} " +
+                ModLog.Info($"{Marker} ENEMY hit forwarded to peer: " +
+                            $"enemy={(enemyId ?? "handle=" + handle.ToString("X8"))} " +
                             $"danno={amount:F0} tipo={hit.DamageType} elem={hit.DamageElement} " +
                             $"bandiere={FlagsFrom(hit):X4} a={peerName} " +
                             $"nemicoPos={Pos(attacker.transform.position)} " +
@@ -269,21 +185,17 @@ namespace Blasphemous.Multiplayer.Client
             }
             catch (Exception e)
             {
-                ModLog.Error($"{Marker} inoltro fallito ({e.GetType().Name}): {e.Message} - " +
-                             "il colpo non e' stato applicato ne' qui ne' la'");
+                ModLog.Error($"{Marker} forward failed ({e.GetType().Name}): {e.Message} - " +
+                             "the hit was not applied here nor there");
             }
         }
 
         /// <summary>
-        /// L'unico filtro che rende il verso sicuro: il colpo deve venire da un `Enemy`.
-        ///
-        /// `GetComponentInParent` e non `GetComponent`, perché molti attacchi dei nemici costruiscono
-        /// l'`Hit` con `AttackingEntity = base.EntityOwner.gameObject` (il nemico, `:74086`, `:75367`)
-        /// mentre altri lo costruiscono con un componente FIGLIO (`AttackingEntity = base.gameObject`,
-        /// `:75529`): risalire i parent copre entrambe le forme. Un `DamageObject` di livello, un
-        /// `SimpleDamageArea`, una trappola o il `Penitent` locale non hanno un `Enemy` fra i parent:
-        /// si fermano qui, e nessuno di quei pericoli (che ogni macchina applica per conto suo) viene
-        /// contato due volte.
+        /// The only filter that makes this direction safe: the hit must come from an <c>Enemy</c>.
+        /// <c>GetComponentInParent</c> is used because some enemy attacks build the <c>Hit</c> with
+        /// the enemy root and others with a child component. Level hazards (traps,
+        /// <c>SimpleDamageArea</c>, <c>DamageObject</c>) and the local <c>Penitent</c> have no
+        /// <c>Enemy</c> among their parents and stop here, avoiding double damage.
         /// </summary>
         private static Enemy AttackerOf(Hit hit)
         {
@@ -294,10 +206,9 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// I quattro tipi che `PenitentDamageArea.TakeDamage` sa trattare (`Assembly-CSharp.cs:145500`:
-        /// `Normal`, `Heavy`, `Simple`, `Critical`). `Stunt` e `OptionalStunt` finiscono nel ramo
-        /// `default: throw new ArgumentOutOfRangeException()`, e un pacchetto storto non deve poter
-        /// far esplodere il ricevente.
+        /// The four damage types <c>PenitentDamageArea.TakeDamage</c> handles. <c>Stunt</c> and
+        /// <c>OptionalStunt</c> reach <c>throw new ArgumentOutOfRangeException()</c>; filtering
+        /// them defensively prevents a malformed packet from crashing the receiver.
         /// </summary>
         private static bool IsDamageTypeThePenitentHandles(DamageArea.DamageType type)
         {
@@ -320,11 +231,8 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Una posizione in una riga di log, con la virgola decimale INGLESE.
-        ///
-        /// Non e' pedanteria: su una macchina in italiano `F1` scrive `12,3`, e due coordinate
-        /// separate da virgola diventano una lista di quattro numeri senza struttura. Il log deve
-        /// restare leggibile a chi lo confronta fra le due macchine.
+        /// Formats a position on one log line using the English decimal separator, so coordinate
+        /// lists stay structurally readable when compared across machines.
         /// </summary>
         private static string Pos(Vector3 position)
         {
@@ -332,21 +240,18 @@ namespace Blasphemous.Multiplayer.Client
                          position.y.ToString("F1", CultureInfo.InvariantCulture) + ")";
         }
 
-        // ---------------------------------------------------------------------------------------------
-        // IL PACCHETTO
-        // ---------------------------------------------------------------------------------------------
+        // ============================================================================================
+        // THE PACKET
+        // ============================================================================================
 
-        /// <summary>Lunghezza della testa fissa: tipo(1) danno(4) tipoDanno(1) elemento(1) bandiere(2) forza(4) handle(4) lenNome(1).</summary>
+        /// <summary>Fixed head length: type(1) damage(4) damageType(1) element(1) flags(2) force(4) handle(4) nameLen(1).</summary>
         private const int HEAD_LENGTH = 18;
 
         /// <summary>
-        /// I booleani dell'`Hit` che cambiano l'esito sul ricevente.
-        ///
-        /// Sono nove e viaggiano tutti, non solo i tre del canale nemico: qui il destinatario e' un
-        /// `Penitent`, e la sua `Penitent.Damage` RAMIFICA su questi (`forceGuardslide` decide il
-        /// guardslide invece del danno, `DamageType` sceglie l'animazione di dolore,
-        /// `ThrowbackDirByOwnerPosition` decide da dove arriva lo spintone). Un flag perso non sarebbe
-        /// una differenza cosmetica: sarebbe un colpo che reagisce in un modo che il gioco non prevede.
+        /// All nine <c>Hit</c> booleans travel, not just the three of the enemy channel:
+        /// <c>Penitent.Damage</c> branches on them (<c>forceGuardslide</c>, <c>DamageType</c>,
+        /// <c>ThrowbackDirByOwnerPosition</c>), so a lost flag is a hit that reacts differently
+        /// from what the game expects.
         /// </summary>
         private static ushort FlagsFrom(Hit hit)
         {
@@ -379,14 +284,9 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// L'id del suono d'impatto, **solo se e' un percorso di banca**.
-        ///
-        /// E' la lezione piu' cara di questo progetto: `Entity.Damage(float, string)` chiama
-        /// `Core.Audio.EventOneShotPanned(impactAudioId, ...)` PRIMA di sottrarre la vita, e con una
-        /// chiave che non e' un percorso di banca FMOD lancia — il colpo diventa zero danno e
-        /// l'eccezione esce dal percorso di danno (`EnemySyncManager.ApplyDamage`, il commento sulla
-        /// stringa sbagliata). Il campo del prefab e' un `[EventRef]`, quindi nella pratica e' sempre
-        /// `event:/...`; se non lo fosse, meglio **nessun suono** che nessun danno.
+        /// Returns the impact sound id only if it is a valid FMOD bank path. <c>Entity.Damage</c>
+        /// calls the audio system before subtracting health, and a non-bank key throws, turning
+        /// the hit into zero damage. Better no sound than no damage.
         /// </summary>
         private static string SoundFor(Hit hit)
         {
@@ -428,20 +328,20 @@ namespace Blasphemous.Multiplayer.Client
             return bytes.ToArray();
         }
 
-        // ---------------------------------------------------------------------------------------------
-        // LATO RICEVENTE: il peer, che applica il colpo al PROPRIO Penitent.
-        // ---------------------------------------------------------------------------------------------
+        // ============================================================================================
+        // RECEIVER SIDE: the peer, which applies the hit to its OWN Penitent.
+        // ============================================================================================
 
         /// <summary>
-        /// Applica un colpo arrivato dal canale Attack. `startIdx` e' l'indice del byte
-        /// `AttackType.EnemyHit` dentro `data` (cioe' subito dopo il nome del mittente premesso dal
-        /// server).
+        /// Applies a hit received on the Attack channel. <c>startIdx</c> is the index of the
+        /// <c>AttackType.EnemyHit</c> byte inside <c>data</c> (right after the server-prefixed
+        /// sender name).
         ///
-        /// PERCHE' `Penitent.Damage(Hit)` E NON `DamageArea.TakeDamage`: e' la stessa porta da cui
-        /// entra il colpo del gioco. Contiene i cancelli veri — `LungeAttack.Casting` + elemento
-        /// `Contact`, `IsOnExecution`, `IsPickingCollectibleItem`, `GuardSlide.Casting`, e la PARATA
-        /// (`Parry.IsOnParryChance` -> `Parry.CheckParry`): se il peer sta parando, il colpo viene
-        /// parato **da lui**, con la sua parata. Passare dalla hurtbox scavalcherebbe tutto questo.
+        /// <c>Penitent.Damage(Hit)</c> is used instead of <c>DamageArea.TakeDamage</c>: it is the
+        /// same door the game's hit uses and contains the real gates
+        /// (<c>LungeAttack.Casting</c>, <c>IsOnExecution</c>, <c>IsPickingCollectibleItem</c>,
+        /// <c>GuardSlide.Casting</c>, and PARRY: <c>Parry.IsOnParryChance</c> ->
+        /// <c>Parry.CheckParry</c>). Going through the hurtbox would bypass all of this.
         /// </summary>
         internal static void ApplyFromWire(string senderName, byte[] data, int startIdx)
         {
@@ -449,8 +349,8 @@ namespace Blasphemous.Multiplayer.Client
             {
                 if (data == null || startIdx < 0 || data.Length < startIdx + HEAD_LENGTH)
                 {
-                    SkipApply("pacchetto troppo corto (" +
-                              (data == null ? "null" : data.Length.ToString()) + " byte)");
+                    SkipApply("packet too short (" +
+                              (data == null ? "null" : data.Length.ToString()) + " bytes)");
                     return;
                 }
 
@@ -466,7 +366,7 @@ namespace Blasphemous.Multiplayer.Client
                 index++;
                 if (data.Length < index + nameLength + 1)
                 {
-                    SkipApply("nome del destinatario troncato");
+                    SkipApply("recipient name truncated");
                     return;
                 }
 
@@ -477,60 +377,54 @@ namespace Blasphemous.Multiplayer.Client
                 index++;
                 if (data.Length < index + soundLength)
                 {
-                    SkipApply("id del suono troncato");
+                    SkipApply("sound id truncated");
                     return;
                 }
 
                 string soundId = Encoding.UTF8.GetString(data, index, soundLength);
 
-                // 1. E' PER ME? Il canale Attack e' un broadcast di scena: senza questo controllo il
-                //    colpo andrebbe a chiunque sia nella stanza.
+                // 1. IS IT FOR ME? The Attack channel is a scene broadcast.
                 string me = Main.Multiplayer.PlayerName;
                 if (string.IsNullOrEmpty(me) || targetName != me)
                 {
-                    SkipApply("non e' per me (destinatario=" +
-                              (string.IsNullOrEmpty(targetName) ? "(vuoto)" : targetName) + ", io=" +
-                              (string.IsNullOrEmpty(me) ? "(senza nome)" : me) + ")");
+                    SkipApply("not for me (recipient=" +
+                              (string.IsNullOrEmpty(targetName) ? "(empty)" : targetName) + ", me=" +
+                              (string.IsNullOrEmpty(me) ? "(no name)" : me) + ")");
                     return;
                 }
 
-                // 2. C'E' QUALCUNO DA FERIRE? Un colpo sul morto non e' danno: e' la morte che si
-                //    confonde con un colpo (e la morte ha gia' il suo canale).
+                // 2. IS THERE ANYONE TO HURT? A hit on the dead is not damage.
                 Penitent penitent = Core.Logic.Penitent;
                 if (penitent == null)
                 {
-                    SkipApply("nessun Penitent locale (menu, cambio di livello)");
+                    SkipApply("no local Penitent (menu, level change)");
                     return;
                 }
 
                 if (PlayerDeathSync.IsLocalPlayerDead())
                 {
-                    SkipApply("il mio Penitent e' gia' morto");
+                    SkipApply("my Penitent is already dead");
                     return;
                 }
 
-                // 3. IL PACCHETTO E' RAGIONEVOLE?
+                // 3. IS THE PACKET REASONABLE?
                 if (!(amount > 0f) || float.IsNaN(amount) || float.IsInfinity(amount))
                 {
-                    SkipApply("danno non valido (" + amount.ToString("F2") + ")");
+                    SkipApply("invalid damage (" + amount.ToString("F2") + ")");
                     return;
                 }
 
                 DamageArea.DamageType type = (DamageArea.DamageType)damageType;
                 if (!IsDamageTypeThePenitentHandles(type))
                 {
-                    SkipApply("tipo di danno non gestito (" + type + ")");
+                    SkipApply("unhandled damage type (" + type + ")");
                     return;
                 }
 
-                // 4. L'ATTACCANTE deve essere un GameObject VERO, e non e' un dettaglio:
-                //    `PenitentDamageArea.TakeDamage` fa `hit.AttackingEntity.transform.position` per
-                //    orientare l'animazione di dolore (`Assembly-CSharp.cs:145493`) e andrebbe in
-                //    NullReferenceException con l'attaccante nullo.
-                //    La copia locale del nemico e' la scelta giusta (posizione → direzione dello
-                //    spintone, e metrica di morte col nome giusto); se non c'e' — nemico gia' sparito
-                //    da questa scena — si ripiega sul proprio `Penitent`, che non e' mai nullo qui, e
-                //    il colpo resta un colpo vero (nessuna eccezione, orientamento neutro).
+                // 4. THE ATTACKER must be a real GameObject: PenitentDamageArea.TakeDamage reads
+                //    hit.AttackingEntity.transform.position to orient the pain animation and would
+                //    NullReferenceException with a null attacker. Fall back to the local Penitent
+                //    when the enemy copy is missing (e.g. enemy already despawned from this scene).
                 Enemy attacker = EnemySyncManager.EnemyForHandle(handle);
                 GameObject attackerObject = attacker != null ? attacker.gameObject : penitent.gameObject;
 
@@ -552,34 +446,33 @@ namespace Blasphemous.Multiplayer.Client
 
                 float after = penitent.Stats.Life.Current;
 
-                // ⭐ LA RIGA CHE PROVA L'APPLICAZIONE. "APPLICATO" e non "ricevuto": dice il fatto
-                // misurabile (la vita e' scesa), non l'intenzione.
-                ModLog.Info($"{Marker} APPLICATO sul Penitent locale: da={senderName} " +
-                            $"nemico={(attacker != null ? attacker.name : "handle=" + handle.ToString("X8"))} " +
+                // The line that PROVES the application: states the measurable fact (health went
+                // down), not the intention.
+                ModLog.Info($"{Marker} APPLIED on local Penitent: da={senderName} " +
+                            $"enemy={(attacker != null ? attacker.name : "handle=" + handle.ToString("X8"))} " +
                             $"danno={amount:F0} tipo={type} elem={(DamageArea.DamageElement)damageElement} " +
                             $"vitaPrima={before:F0} vitaDopo={after:F0} " +
                             $"perso={Math.Max(0f, before - after):F0}");
             }
             catch (Exception e)
             {
-                ModLog.Error($"{Marker} applicazione fallita ({e.GetType().Name}): {e.Message}");
+                ModLog.Error($"{Marker} apply failed ({e.GetType().Name}): {e.Message}");
             }
         }
 
         private static void SkipForward(string why)
         {
-            LogSkip("non inoltrato", why);
+            LogSkip("not forwarded", why);
         }
 
         private static void SkipApply(string why)
         {
-            LogSkip("non applicato", why);
+            LogSkip("not applied", why);
         }
 
         /// <summary>
-        /// Una riga `non inoltrato` / `non applicato`, al massimo una al secondo: i colpi scartati
-        /// possono essere frequenti (trappole addosso al proxy, colpi con un attaccante che non e' un
-        /// nemico) e non sono la misura del fix. La misura sono le altre due righe.
+        /// One "not forwarded" / "not applied" line, at most once per second: dropped hits can be
+        /// frequent and are not the measure of the fix. The measure is the other two lines.
         /// </summary>
         private static void LogSkip(string verb, string why)
         {

@@ -3,89 +3,66 @@ using System;
 namespace Blasphemous.Multiplayer.Client.Network
 {
     /// <summary>
-    /// ⭐⭐ IL FORMATO DEL PACCHETTO P2P — l'intestazione **del trasporto**, non del protocollo.
-    ///
-    /// PERCHE' UN'INTESTAZIONE, E PERCHE' NON E' UN CAMBIO DI PROTOCOLLO. `ICoopTransport` consegna
-    /// buffer gia' impacchettati (`[ushort len][byte type][payload]`, protocollo 11, INVARIATO). Il
-    /// trasporto P2P ha bisogno di due cose che il filo TCP gli dava gratis e che il legacy
-    /// `SteamNetworking` non da':
-    ///   · **chi ha mandato** questo pacchetto, quando e' l'host a inoltrarlo (da soli si vedrebbe solo
-    ///     "host" e tutti i giocatori collasserebbero in un flusso solo);
-    ///   · **un numero di sequenza** sul canale 0, perche' `k_EP2PSendUnreliableNoDelay` non ordina:
-    ///     senza contatore vince l'ULTIMO ARRIVATO, non l'ultimo CAMPIONATO, e un pacchetto scavalcato
-    ///     trascina indietro l'avatar (`docs\STEAM_INVITES.md` §10.4).
-    /// Quindi ogni pacchetto di questo trasporto comincia con un prefisso di 3 byte, e solo il canale 0
-    /// (unreliable) aggiunge l'intestazione `[origin 8][seq 4]`. Le classi affidabili non hanno bisogno
-    /// di niente: Steam le consegna ordinate e complete.
-    ///
-    ///   pacchetto = [magic 0xCB][versione 0x01][tipo] [intestazione se tipo=DATA e canale 0] [frame...]
-    ///
-    /// 🔴 PERCHE' UN MAGIC, E PERCHE' NON SI CONFONDE CON UN FRAME. Il primo byte di un frame e' il
-    /// byte basso della lunghezza `ushort` (0..255). Un frame con lunghezza 0xCB esiste in teoria, e
-    /// quindi la sola `0xCB` non discrimina: si guardano **tre** byte, e il terzo (il tipo) vale 1..4,
-    /// mentre il terzo byte di un frame e' un `NetworkType` (0..25). Inoltre il prefisso viene messo da
-    /// NOI su ogni pacchetto: chi legge sa gia' che un pacchetto di questo trasporto comincia cosi'. Un
-    /// pacchetto **estraneo** (per esempio il byte della sonda `SteamP2PProbe`, che vive sullo stesso
-    /// canale 0) non ha il magic e viene **contato e scartato**, mai interpretato.
-    ///
-    /// ⚠️ QUESTO FILE NON NOMINA `Steamworks`: e' aritmetica sui byte, e la usano **entrambe** le
-    /// estremita' (il trasporto del peer e l'adapter dell'host) piu' un banco di prova offline.
+    /// Packet format of the P2P transport (transport header, not protocol header). Adds two
+    /// things TCP gives for free and legacy SteamNetworking does not: the origin SteamID (needed
+    /// when the host forwards a peer's frame) and a sequence on channel 0 (unreliable delivery
+    /// does not order packets). Layout:
+    ///   [magic 0xCB][version 0x01][kind] [origin 8][seq 4 if kind=DATA and channel 0] [frames...]
+    /// Magic + version + kind (1..4) distinguish a P2P packet from a plain frame (a frame's first
+    /// byte is the low half of a ushort length, its third byte is a NetworkType 0..25). A foreign
+    /// packet (e.g. the probe's single byte on channel 0) is dropped, never interpreted.
     /// </summary>
     internal static class P2PWire
     {
-        /// <summary>Il primo byte di OGNI pacchetto di questo trasporto.</summary>
+        /// <summary>First byte of every packet of this transport.</summary>
         internal const byte Magic = 0xCB;
 
-        /// <summary>La versione del formato. Un pacchetto con un'altra versione si scarta e lo si dice.</summary>
+        /// <summary>Format version. A packet with a different version is dropped.</summary>
         internal const byte Version = 0x01;
 
-        /// <summary>"Sono qui, accettami" (reliable, canale 1) — vedi `SteamP2PTransport.Connect`.</summary>
+        /// <summary>"I am here, accept me" (reliable, channel 1).</summary>
         internal const byte KindHello = 0x01;
 
-        /// <summary>Frame di gioco: uno o piu' `[ushort len][byte type][payload]` consecutivi.</summary>
+        /// <summary>Game frames: one or more consecutive [ushort len][byte type][payload].</summary>
         internal const byte KindData = 0x02;
 
-        /// <summary>"Sono ancora vivo" (reliable, canale 1): e' cio' che tiene in piedi il timeout.</summary>
+        /// <summary>"I am alive" (reliable, channel 1). Drives the timeout.</summary>
         internal const byte KindKeepAlive = 0x03;
 
-        /// <summary>"Me ne vado" (reliable, canale 1): chiude subito, senza aspettare il timeout.</summary>
+        /// <summary>"I am leaving" (reliable, channel 1). Closes immediately, no timeout wait.</summary>
         internal const byte KindBye = 0x04;
 
-        /// <summary>I tre byte davanti a tutto.</summary>
+        /// <summary>The three bytes in front of everything.</summary>
         internal const int PrefixBytes = 3;
 
-        /// <summary>Il numero di byte dell'intestazione `[origin 8][seq 4]` (solo canale 0).</summary>
+        /// <summary>Length of [origin 8][seq 4] (channel 0 only).</summary>
         internal const int SequenceBytes = 12;
 
-        /// <summary>Canale 0: `k_EP2PSendUnreliableNoDelay`, con intestazione (sequenza).</summary>
+        /// <summary>Channel 0: k_EP2PSendUnreliableNoDelay, with header (sequence).</summary>
         internal const int ChannelUnreliable = 0;
 
-        /// <summary>Canale 1: `k_EP2PSendReliable`, eventi atomici e fatti durevoli.</summary>
+        /// <summary>Channel 1: k_EP2PSendReliable, atomic events and durable facts.</summary>
         internal const int ChannelReliable = 1;
 
-        /// <summary>Canale 2: `k_EP2PSendReliable`, ma ISOLATO: skin e payload grassi.</summary>
+        /// <summary>Channel 2: k_EP2PSendReliable, ISOLATED: skins and heavy payloads.</summary>
         internal const int ChannelHeavy = 2;
 
-        /// <summary>Un pacchetto piu' corto del prefisso non e' nostro.</summary>
+        /// <summary>A packet shorter than the prefix is not ours.</summary>
         internal const int MinimumPacketBytes = PrefixBytes;
 
-        /// <summary>Il pacchetto di sola intestazione (DATA su canale 0 senza frame utili).</summary>
+        /// <summary>Header-only DATA on channel 0 (no useful frame).</summary>
         internal const int MinimumDataOnChannel0Bytes = PrefixBytes + SequenceBytes;
 
-        /// <summary>
-        /// Il canale di una classe: `Unreliable` -> 0, `Reliable` -> 1. Il canale 2 non si sceglie per
-        /// classe ma per **contenuto** (una skin), ed e' una decisione del chiamante che sa cos'e'
-        /// (vedi <see cref="ChannelFor(TransportClass, byte)"/>).
-        /// </summary>
+        /// <summary>Channel of a class: Unreliable -> 0, Reliable -> 1. Channel 2 is content-based.</summary>
         internal static int ChannelFor(TransportClass cls)
         {
             return cls == TransportClass.Reliable ? ChannelReliable : ChannelUnreliable;
         }
 
         /// <summary>
-        /// Il canale di un frame: la classe decide 0/1, ma una SKIN va sul 2 anche se e' affidabile —
-        /// e' il "class + isolation" di §10.1: un PNG non deve far aspettare una morte, e una morte non
-        /// deve aspettare un PNG. `networkType` e' il terzo byte del frame (`framed[2]`).
+        /// Channel of a frame: class decides 0/1, but a Skin goes to 2 even when reliable - a PNG
+        /// must not delay a death and a death must not delay a PNG. <paramref name="networkType"/>
+        /// is the third byte of the frame (framed[2]).
         /// </summary>
         internal static int ChannelFor(TransportClass cls, byte networkType)
         {
@@ -95,13 +72,12 @@ namespace Blasphemous.Multiplayer.Client.Network
             return ChannelFor(cls);
         }
 
-        /// <summary>`NetworkType.Skin` come numero: 5 (vedi `Common\Enums\NetworkType.cs`).</summary>
+        /// <summary>NetworkType.Skin as a byte.</summary>
         private const byte SKIN_TYPE = 5;
 
         /// <summary>
-        /// Costruisce un pacchetto HELLO/KEEPALIVE/BYE: `[magic][versione][tipo][steamId 8]`.
-        /// Il mittente ci mette il proprio id anche se `ReadP2PPacket` lo direbbe: e' il campo che
-        /// l'adapter logga, e un pacchetto di controllo deve essere leggibile da solo.
+        /// Builds a HELLO/KEEPALIVE/BYE packet: [magic][version][kind][steamId 8]. The sender is
+        /// included so a control packet is readable on its own.
         /// </summary>
         internal static byte[] BuildControl(byte kind, ulong senderSteamId)
         {
@@ -114,8 +90,8 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Costruisce un pacchetto DATA. Su canale 0 antepone `[origin][seq]`; sugli altri no.
-        /// Il buffer dei frame e' copiato: il chiamante resta padrone del suo.
+        /// Builds a DATA packet. On channel 0 prepends [origin][seq]; on other channels no header.
+        /// The frames buffer is copied; the caller keeps ownership of its array.
         /// </summary>
         internal static byte[] BuildData(byte[] framed, TransportClass cls, ulong originSteamId, uint sequence)
         {
@@ -141,8 +117,8 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// Il riconoscimento di un pacchetto: `true` se e' di questo trasporto, con la sua versione, e
-        /// con abbastanza byte per il tipo dichiarato. **Non lancia mai** su dati arbitrari.
+        /// Recognizes a packet of this transport. Never throws on arbitrary data. For DATA packets
+        /// the sequence header cannot be resolved without the channel - see <see cref="TryParseData"/>.
         /// </summary>
         internal static bool TryParse(byte[] packet, int length, out byte kind, out int payloadOffset, out ulong originSteamId, out uint sequence)
         {
@@ -161,7 +137,7 @@ namespace Blasphemous.Multiplayer.Client.Network
             if (kind < KindHello || kind > KindBye)
                 return false;
 
-            // I pacchetti di controllo portano 8 byte di mittente; i DATA no (il mittente lo da' Steam).
+            // Control packets carry 8 bytes of sender; DATA does not (Steam reports the sender).
             int offset = PrefixBytes;
 
             if (kind != KindData)
@@ -174,17 +150,13 @@ namespace Blasphemous.Multiplayer.Client.Network
                 return true;
             }
 
-            // ⚠️ `TryParse` non sa su che CANALE e' arrivato il pacchetto: glielo dice il chiamante
-            //    con `hasSequence`. Qui si prova la forma sequenziata se c'e' spazio, e si lascia al
-            //    chiamante la parola finale (vedi `TryParseData`).
             payloadOffset = offset;
             return true;
         }
 
         /// <summary>
-        /// Il riconoscimento di un pacchetto DATA, con il canale. `sequenced` viene da
-        /// <paramref name="channel"/>: solo il canale 0 ha l'intestazione. Ritorna `false` se i byte non
-        /// bastano, cosi' chi legge non interpreta mai un pacchetto troncato.
+        /// Recognizes a DATA packet with its channel. Only channel 0 has the sequence header.
+        /// Returns false on truncated bytes so a reader never interprets a partial packet.
         /// </summary>
         internal static bool TryParseData(byte[] packet, int length, int channel,
                                           out ulong originSteamId, out uint sequence, out int payloadOffset)
@@ -212,14 +184,10 @@ namespace Blasphemous.Multiplayer.Client.Network
         }
 
         /// <summary>
-        /// "Questo numero di sequenza e' piu' NUOVO di quello che ho gia' accettato?"
-        ///
-        /// ⚠️ STRETTAMENTE minore = vecchio; UGUALE = accettato. Non e' una svista: l'host che inoltra
-        /// spezza un pacchetto ricevuto in un pacchetto per frame (il server inoltra frame per frame) e
-        /// ognuno porta la **stessa** sequenza d'origine ⇒ con un confronto "minore-uguale" si
-        /// butterebbero via i frame 2..N dello stesso pacchetto. Il prezzo e' che un duplicato della rete
-        /// unreliable (raro) passa: per posizioni e effetti e' la copia di un campione, non un errore di
-        /// stato.
+        /// "Is this sequence number newer than the one already accepted?" Strictly less = stale;
+        /// equal = accepted. The equal case matters: the host splits a received packet into one
+        /// per-frame packet, all carrying the same origin sequence - a "strictly newer" comparison
+        /// would discard frames 2..N.
         /// </summary>
         internal static bool IsNewer(uint incoming, uint lastAccepted)
         {

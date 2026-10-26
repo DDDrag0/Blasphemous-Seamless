@@ -16,15 +16,12 @@ namespace Blasphemous.Multiplayer.Client.Map
         // A map update is queued whenever player changes team, enters/leaves a scene, etc.
         private bool mapUpdateQueued;
 
-        // ⭐ C — "la chiamata e' stata saltata" si stampa UNA volta per richiesta, non a ogni frame.
-        // Senza questo flag il marker diventerebbe una raffica di 60 righe al secondo: la stessa forma
-        // che il difetto aveva nel log delle eccezioni, solo con un'altra etichetta.
+        // Skip log is throttled to once per request: this runs every frame and would otherwise
+        // flood the log with 60 lines per second.
         private bool mapUpdateSkipLogged;
 
-        // ⭐ C — il widget della mappa, tenuto da parte, e l'orologio della ricerca.
-        // `FindObjectOfType` e' una SCANSIONE DI SCENA e non va fatta a ogni frame: si fa al massimo
-        // ogni MAP_LOOKUP_INTERVAL secondi NON SCALATI (in pausa `Time.time` e' fermo, `Time.unscaledTime`
-        // no: e' l'unico orologio che serve qui, come in `BossDeathWarning.cs:61-65`).
+        // Map widget cached, with a throttle: FindObjectOfType is a scene scan and must not run per
+        // frame. Throttled on unscaledTime because Time.time is frozen while paused.
         private NewMapMenuWidget mapWidget;
         private float nextMapLookupAt;
         private const float MAP_LOOKUP_INTERVAL = 0.25f;
@@ -38,41 +35,14 @@ namespace Blasphemous.Multiplayer.Client.Map
             mapUpdateQueued = true;
         }
 
-        // ============================================================================================
-        // ⭐⭐ C — IL FIX DELLA NULLREFERENCE (le 63 di `Map.MapManager.RefreshMap` ← `Multiplayer.OnLateUpdate`).
-        // Diagnosi completa: `scratch\DIAGNOSI-63-NRE.md`. Referto: `scratch\REFERTO-NRE-E-PAUSA.md`.
-        //
-        // LA CATENA, in cinque passi. `Multiplayer.OnLateUpdate` chiama questo `Update` ogni frame; qui,
-        // se c'e' una richiesta in coda, si chiama `RefreshMap(false)`; `RefreshMap` crea la UI **solo se
-        // `playerMarks == null`**; `CreateMapUI` **esce senza fare niente** se il widget della mappa non
-        // e' attivo; e `RefreshMap` **prosegue lo stesso** fino a `playerMarks.childCount` ⇒ NRE.
-        // Il difetto non e' la pausa: e' che **la guardia e' PRIMA del tentativo** invece che DOPO.
-        //
-        // PERCHE' LA PAUSA C'ENTRA, E VA DETTO BENE: **la mappa si apre DALLA pausa** — e' una scheda
-        // del menu di pausa (`PauseWidget.MapWidget`, `canvasMap = MapWidget.GetComponent<CanvasGroup>()`,
-        // `PauseWidget.cs:53`; la scheda mostrata la decide `SetChildActive` → `SetActive`, `:157-161`,
-        // `:199`). Le ALTRE vie di pausa (inventario, tutorial, popup di sblocco) alzano `Core.Logic.IsPaused`
-        // **senza mostrare la mappa** ⇒ finche' la scheda mappa non e' stata mostrata **nemmeno una volta**,
-        // **ogni** pausa di un'altra via puo' far cadere qui un evento del peer, e da li' la raffica:
-        // `mapUpdateQueued` non si azzerava (l'eccezione usciva prima) ⇒ **una eccezione per frame**.
-        // ⚠️ `0 giocatori connessi` NON e' una difesa (la `:59` viene PRIMA del ciclo sui giocatori):
-        //    la difesa e' che **`mapUpdateQueued` non si accende senza un peer**, perche' i suoi tre soli
-        //    scrittori sono tutti eventi del peer (`OtherPlayerManager.cs:501`, `:513`, `Multiplayer.cs:390`).
-        //
-        // LE TRE MODIFICHE, e ognuna toglie un pezzo della catena:
-        //   ① `CreateMapUI` **dice se ce l'ha fatta** (`bool`) e `RefreshMap` **esce prima della `:59`**.
-        //   ③ il predicato diventa **"la scheda mappa e' quella MOSTRATA"** (`IsMapOnScreen()`), non
-        //      "il gioco e' in pausa": con questo, il caso "in pausa sull'inventario" **non entra nemmeno**
-        //      in `RefreshMap`.
-        //   ② `mapUpdateQueued` si azzera **PRIMA** della chiamata — ma **servita, non buttata**: se la
-        //      mappa non e' a schermo la richiesta **resta in coda** e verra' servita quando lo sara'.
-        //      (Il difetto vicino che si chiude qui: prima il flag veniva azzerato in OGNI caso, quindi un
-        //      evento che cadeva su un frame non in pausa veniva **buttato via** in silenzio.)
-        //
-        // COSA PERDIAMO: **solo** l'icona che si aggiorna **a mappa gia' aperta**. L'apertura e' coperta
-        // dal patch `OnShow` → `RefreshMap(true)` (`MapPatches.cs:11-17`), che e' l'unico chiamante con
-        // `forceRecalculate`. Nessuna riga del gioco e' toccata: zero patch Harmony nuove.
-        // ============================================================================================
+        /// <summary>
+        /// Serves a queued map refresh when the map tab is on screen. The guard is IsMapOnScreen,
+        /// not IsPaused, because other pause tabs (inventory, tutorial, unlock) raise IsPaused
+        /// without showing the map, and CreateMapUI would return false leaving playerMarks null.
+        /// The queue flag is cleared BEFORE the call so an exception costs one line, not one per
+        /// frame; the request is only served, never silently discarded. The catch is a second line
+        /// of defense - nothing must escape Multiplayer.OnLateUpdate.
+        /// </summary>
         public void Update()
         {
             if (!mapUpdateQueued)
@@ -81,23 +51,22 @@ namespace Blasphemous.Multiplayer.Client.Map
                 return;
             }
 
-            // ⭐ ③ LA DECISIONE — "la scheda mappa e' quella mostrata", non "il gioco e' in pausa".
             if (!IsMapOnScreen())
             {
-                // La richiesta NON si butta: resta in coda. Il marker dice il PERCHE', una volta sola.
+                // The request is NOT discarded: it stays queued. The marker says WHY, once.
                 if (!mapUpdateSkipLogged)
                 {
                     mapUpdateSkipLogged = true;
-                    ModLog.Info("[Map] richiesta di ridisegno IN CODA e chiamata SALTATA: la scheda mappa NON e' " +
-                                "a schermo (quindi `CreateMapUI` non creerebbe niente e `playerMarks` sarebbe null) · " +
-                                "motivo=" + PauseCause() + " · mappaAschermo=false · la richiesta RESTA in coda " +
-                                "(servita, non buttata): verra' servita quando la mappa sara' aperta");
+                    ModLog.Info("[Map] refresh request QUEUED and call SKIPPED: map tab is NOT " +
+                                "on screen (CreateMapUI would return false and playerMarks would be null) · " +
+                                "motivo=" + PauseCause() + " · mappaAschermo=false · the request STAYS " +
+                                "queued (served, not discarded): it will be served when the map is open");
                 }
                 return;
             }
 
-            // ⭐ ② SERVITA, NON BUTTATA — e azzerata PRIMA della chiamata: se `RefreshMap` lanciasse
-            // comunque, l'evento costa UNA riga invece di una raffica da 60 al secondo.
+            // Served, not discarded - and cleared BEFORE the call: if RefreshMap threw, the event
+            // would cost one line instead of a 60-per-second flood.
             mapUpdateQueued = false;
             mapUpdateSkipLogged = false;
 
@@ -107,37 +76,26 @@ namespace Blasphemous.Multiplayer.Client.Map
             }
             catch (System.Exception e)
             {
-                // Difesa di secondo livello: le ①③ dovrebbero rendere questo ramo irraggiungibile.
-                // Non nasconde niente — lo dice — e non deve MAI uscire dentro `OnLateUpdate`.
-                ModLog.Error("[Map] RefreshMap ha lanciato " + e.GetType().Name + ": " + e.Message +
-                             " — l'icona dell'altro sulla mappa resta quella di prima, il resto della mod no " +
-                             "(questo catch non lancia)");
+                // Second line of defense: the guard and IsMapOnScreen should make this unreachable.
+                // Never let an exception escape OnLateUpdate.
+                ModLog.Error("[Map] RefreshMap threw " + e.GetType().Name + ": " + e.Message +
+                             " - the other player's icon stays at the previous one, the rest of the mod " +
+                             "does not (this catch does not throw)");
             }
         }
 
-        // ============================================================================================
-        // ⭐ ③ IL PREDICATO GIUSTO: **la scheda mappa e' quella MOSTRATA**.
-        //
-        // PERCHE' NON `Core.Logic.IsPaused`. `IsPaused` lo alzano CINQUE UI (`BasicUIBlockingWidget.cs:41`,
-        // `NewInventoryWidget.cs:197`, `:231`, `TutorialManager.cs:110`, `UIController.cs:651`,
-        // `MapMenuWidget.cs:623`, `:641`) e **la mappa e' una sola**: "in pausa" e' un SOPRAINSIEME della
-        // domanda che serve. Da quella differenza di una parola nasceva tutto il difetto.
-        //
-        // PERCHE' `activeInHierarchy` E' LA PROVA, e non una deduzione: `Object.FindObjectOfType<T>()`
-        // **non guarda gli oggetti disattivati**, quindi `FindObjectOfType<NewMapMenuWidget>() != null`
-        // significa esattamente "quel GameObject e' attivo" — ed e' lo stesso test che fa `CreateMapUI`
-        // prima di rinunciare. Qui la stessa domanda si fa su un riferimento tenuto da parte, perche'
-        // ripetere la scansione di scena a ogni frame sarebbe un costo che non serve a nessuno.
-        // (Equivalenti: `isActiveAndEnabled` chiederebbe in piu' che il componente sia `enabled`; il
-        // discriminante vero e' quello che il gioco scrive, cioe' `canvasMap.gameObject.SetActive(value)`,
-        // `PauseWidget.cs:157-161` e `:199`.)
-        // ============================================================================================
+        /// <summary>
+        /// True when the map tab is the one SHOWING, not merely when the game is paused: five UIs
+        /// raise IsPaused and only the map needs its icons refreshed. <c>activeInHierarchy</c> is
+        /// the exact proof (FindObjectOfType skips inactive objects), the same test CreateMapUI
+        /// does before giving up. The lookup is throttled so the scene scan does not run per frame.
+        /// </summary>
         private bool IsMapOnScreen()
         {
             if (mapWidget != null && mapWidget.gameObject.activeInHierarchy)
                 return true;
 
-            // Nessun riferimento (o non piu' attivo): si cerca, ma non a ogni frame.
+            // No reference (or no longer active): search, but not every frame.
             if (Time.unscaledTime < nextMapLookupAt)
                 return false;
 
@@ -146,34 +104,29 @@ namespace Blasphemous.Multiplayer.Client.Map
             return mapWidget != null && mapWidget.gameObject.activeInHierarchy;
         }
 
-        // ============================================================================================
-        // IL MOTIVO, per il marker. Se il gioco e' in pausa e la mappa non e' a schermo, **quale** delle
-        // vie e' aperta: i nomi sono quelli che il gioco mette nei blocker d'input
-        // (`BasicUIBlockingWidget.cs:39` UIBLOCKING, `NewInventoryWidget.cs:166` INVENTORY,
-        // `TutorialManager.cs:109` TUTORIAL, `UIController.cs:650` UNLOCK, `MapMenuWidget.cs:620`
-        // INGAME_MENU) e si leggono con `Core.Input.HasBlocker`, API PUBBLICA del gioco e gia' usata
-        // dalla mod (`PvP\AttackManager.cs:41`, `CutsceneProbe.cs:106`).
-        // ⚠️ Sono CINQUE stringhe, e sono SOLO un marker: se il gioco ne aggiungesse una sesta, il marker
-        // direbbe `pausa-senza-mappa`. **La decisione non legge nessun nome**: e' `IsMapOnScreen()`.
-        // ============================================================================================
+        /// <summary>
+        /// Reads which UI raised IsPaused, for the marker only - the decision is IsMapOnScreen.
+        /// Uses the input blockers the game exposes with public HasBlocker. A new blocker would
+        /// show as "pause-without-map" and would not affect the decision.
+        /// </summary>
         private static string PauseCause()
         {
             try
             {
                 if (!Core.Logic.IsPaused)
-                    return "gioco-non-in-pausa";
+                    return "game-not-paused";
 
-                if (Core.Input.HasBlocker("INVENTORY")) return "inventario-a-schermo";
-                if (Core.Input.HasBlocker("TUTORIAL")) return "tutorial-a-schermo";
-                if (Core.Input.HasBlocker("UNLOCK")) return "sblocco-a-schermo";
-                if (Core.Input.HasBlocker("INGAME_MENU")) return "mappa-in-game-senza-scheda";
-                if (Core.Input.HasBlocker("UIBLOCKING")) return "menu-di-pausa-su-un-altra-scheda";
+                if (Core.Input.HasBlocker("INVENTORY")) return "inventory-on-screen";
+                if (Core.Input.HasBlocker("TUTORIAL")) return "tutorial-on-screen";
+                if (Core.Input.HasBlocker("UNLOCK")) return "unlock-on-screen";
+                if (Core.Input.HasBlocker("INGAME_MENU")) return "in-game-map-without-tab";
+                if (Core.Input.HasBlocker("UIBLOCKING")) return "pause-menu-on-another-tab";
 
-                return "pausa-senza-mappa";
+                return "pause-without-map";
             }
             catch (System.Exception)
             {
-                return "? (lettura dei blocker fallita)";
+                return "? (blocker read failed)";
             }
         }
 
@@ -194,13 +147,13 @@ namespace Blasphemous.Multiplayer.Client.Map
             // If holder doesn't exist yet, create it
             if (playerMarks == null || playerSprites == null)
             {
-                // ⭐ ① LA GUARDIA DOPO IL TENTATIVO, che e' l'unica che dice la verita'.
-                // Prima qui si chiamava `CreateMapUI()` (che e' `void` e puo' uscire senza creare
-                // niente) e si proseguiva lo stesso: alla riga `playerMarks.childCount` ⇒ NRE.
+                // The guard is AFTER the attempt, not before: CreateMapUI returns whether it
+                // succeeded, and the old code continued to playerMarks.childCount regardless,
+                // throwing an NRE. If it fails, bail before touching playerMarks.
                 if (!CreateMapUI())
                 {
-                    ModLog.Info("[Map] CreateMapUI non ha creato niente (scheda mappa non a schermo): " +
-                                "esco PRIMA di leggere `playerMarks` — la NRE non c'e' piu' · motivo=" +
+                    ModLog.Info("[Map] CreateMapUI created nothing (map tab not on screen): " +
+                                "bailing BEFORE reading playerMarks - no more NRE · motivo=" +
                                 PauseCause() + " · mappaAschermo=false");
                     return;
                 }
@@ -249,11 +202,11 @@ namespace Blasphemous.Multiplayer.Client.Map
             }
         }
 
-        // ============================================================================================
-        // ⭐ ① — **DICE SE CE L'HA FATTA**. Era `void` e i due fallimenti erano due `return` muti: il
-        // chiamante non aveva modo di sapere che `playerMarks` era rimasto `null`. Ora il valore di ritorno
-        // e' l'unica cosa che `RefreshMap` deve guardare prima di usare l'holder.
-        // ============================================================================================
+        /// <summary>
+        /// Returns true only when playerMarks and playerSprites were actually created, so the
+        /// caller can bail before using them. Was void; the two failure paths returned silently and
+        /// the caller had no way to know.
+        /// </summary>
         private bool CreateMapUI()
         {
             // Find Map widget
@@ -264,7 +217,7 @@ namespace Blasphemous.Multiplayer.Client.Map
             if (rootRenderer == null)
                 return false;
 
-            // Il widget trovato e' quello giusto: si tiene da parte per `IsMapOnScreen()`.
+            // Keep the found widget for IsMapOnScreen.
             if (mapWidget == null)
                 mapWidget = widget;
 

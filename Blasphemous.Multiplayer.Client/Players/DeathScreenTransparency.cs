@@ -8,115 +8,46 @@ using UnityEngine.UI;
 namespace Blasphemous.Multiplayer.Client
 {
     /// <summary>
-    /// PASSO 1 — LA SCHERMATA DI MORTE TRASPARENTE, cosi' il morto VEDE.
-    ///
-    /// COSA FA, IN UNA RIGA. Quando il giocatore locale e' morto, azzera l'alpha dei **`Graphic` FIGLI di
-    /// `NormalGroup`** (`Image`/`RawImage`/`Text`) - cioe' dello sfondo/disegno della schermata di morte.
-    /// Il PROMPT resta visibile, perche' vive su un ALTRO `CanvasGroup` (`ContinueGroup`) e non si tocca.
-    ///
-    /// PERCHE' SUI FIGLI E NON SUL `CanvasGroup` (e' il punto di tutta la modifica).
-    /// `DeadScreenWidget.OnDeadAction` fa `NormalGroup.DOFade(1f, 2.15f)` (`DeadScreenWidget.cs:82`):
-    /// **il tween riscrive `CanvasGroup.alpha`**, quindi una scrittura una-tantum su quell'alpha verrebbe
-    /// annullata in 2,15 s (servirebbe `DOKill` o una riscrittura per frame, cioe' una lotta di frame).
-    /// L'alpha del `Graphic` invece **non e' animato da `DOFade`**, e il `CanvasGroup` lo **moltiplica**:
-    /// `color.a = 0` per 1 = 0. ⇒ **nessuna lotta col tween, nessun DOTween da referenziare.**
-    ///
-    /// PERCHE' `NormalGroup` E BASTA (e il prompt non c'entra).
-    /// `NormalGroup`, `BossRushGroup`, `DemakeGroup` e `ContinueGroup` sono quattro `CanvasGroup` distinti
-    /// e **il prompt non puo' essere annidato nello sfondo**: in Demake (`OnDeadDemake` :165-186) il gioco
-    /// accende `DemakeGroup` E `ContinueGroup` **senza mai toccare `NormalGroup`**, che resta a 0 da
-    /// `HideAll`. Se `ContinueGroup` stesse dentro `NormalGroup` sarebbe moltiplicato per alpha 0 e il
-    /// prompt in Demake non potrebbe mai apparire. ⇒ **rendere trasparente `NormalGroup` non tocca il prompt**.
-    ///
-    /// ⭐⭐ SOLO IN CO-OP, E SI PUO' TOGLIERE (richiesta dell'utente: "la schermata di morte torna ad
-    /// essere normale in single player, deve essere trasparente solo quando ci si connette a un server").
-    /// Il cancello e' lo **stesso predicato della Colpa** — `CoopGate.IsMultiplayerActive()`, cioe' il
-    /// socket verso il server, host o peer — e sta in cima a `Tick()`, prima di qualunque lettura:
-    /// in single player questo file **non scrive niente**.
-    ///
-    /// E siccome "non scrivere" non basta quando una sessione co-op ha GIA' azzerato gli alpha (la
-    /// trasparenza e' permanente sull'istanza di scena: sotto c'e' la spiegazione del perche'), ora c'e'
-    /// un **ripristino**: la prima volta che si azzera un `Graphic` si registra il suo alpha VERO, e
-    /// quando il cancello si chiude (connessione caduta, o partita single player) quei valori tornano.
-    /// ⇒ "in single player la schermata e' quella del gioco" e' vero **anche dopo** una sessione co-op
-    /// nello stesso processo. L'RGB non si tocca mai: si salva e si rimette **solo** `a`.
-    ///
-    /// PERCHE' NON C'ERA UN RIPRISTINO, E PERCHE' ADESSO C'E'. Mentre si gioca la schermata e' invisibile
-    /// **comunque**, perche' `HideAll()` mette il `CanvasGroup` a 0 (`Awake` :57 e dopo ogni respawn :94)
-    /// ⇒ azzerare l'alpha dei figli **non ha alcun effetto visibile fuori dalla morte**, e non c'era nulla
-    /// da rimettere al suo posto. Con la guardia, pero', il "fuori dalla morte" e' diventato uno STATO
-    /// OSSERVABILE (single player) e va riportato al valore del gioco. Il ripristino e' esatto, non
-    /// "rimetto 1": si registra l'alpha che c'era.
-    ///
-    /// IL RESTO DEL DISEGNO NON CAMBIA. `NormalGroup` e' usato **solo** dal percorso di morte normale
-    /// (`grep`: compare solo in `DeadScreenWidget.cs`, solo via `alpha`); BossRush e Demake usano i LORO
-    /// gruppi; il prompt vive su `ContinueGroup` e non si tocca. L'auto-riparazione resta sul fronte di
-    /// salita di `PlayerDeathSync.IsLocalPlayerDead()` + una riapplicazione al secondo.
-    ///
-    /// L'AUTO-RIPARAZIONE (scelta e dichiarata). L'applicazione avviene sul **fronte di salita** di
-    /// `PlayerDeathSync.IsLocalPlayerDead()`, e poi si **riapplica ogni `REAPPLY_INTERVAL`** finche' si e'
-    /// morti: se l'oggetto venisse ricreato (o un `Graphic` aggiunto a runtime) si ripara da se'. Non e'
-    /// "ogni frame" di proposito: `GetComponentsInChildren` alloca un array a ogni chiamata, e un'allocazione
-    /// per frame per 24 s e' esattamente il costo che `PerformanceProbe` misura. Un secondo di ritardo su una
-    /// finestra che dura ~24 s non si vede.
-    /// La riga di riapplicazione si scrive **solo quando cambia qualcosa**: un log identico ogni secondo
-    /// sarebbe spam.
-    ///
-    /// DOVE GIRA. `Multiplayer.OnLateUpdate`, lo stesso ciclo per frame di `CutsceneProbe`/`DeathScreenProbe`:
-    /// **zero patch Harmony nuove** (i bersagli restano 263), nessun `MonoBehaviour` nuovo, e `LateUpdate`
-    /// ⇒ **dopo** l'Update di DOTween.
-    ///
-    /// I DIVIETI, riga per riga.
-    ///   - ⛔ `Core.Input.SetBlocker`: **zero occorrenze** in questo file. Il blocker `DEAD_SCREEN` resta del
-    ///     gioco: lo spegne `DeadScreenWidget.OnPenitentReady` (:101).
-    ///   - ⛔ `TimeScale`: non citato.
-    ///   - ⛔ la camera: non citata (questo intervento **non ne ha bisogno**: e' il suo pregio).
-    ///   - ⛔ il `Penitent` dell'altro: non citato.
-    ///   - ⛔ `SetActive(false)`: **zero occorrenze**. Si scrive solo `Graphic.color`.
-    ///   - ⛔ `BossRushGroup`/`DemakeGroup`: **zero occorrenze** - romperebbero gli altri due percorsi di morte.
-    ///   - ✅ e il respawn NON e' in pericolo: `Respawn()` sta nel callback del fade (`:91-96`) e **non legge
-    ///     nessun alpha**; l'uscita dalla schermata e' `while (!Input.anyKey)` (`:87-90`).
+    /// Makes the death screen transparent during co-op only, by zeroing the alpha of the Graphic
+    /// children of NormalGroup. The prompt lives on ContinueGroup and is untouched. Works because
+    /// DOFade animates CanvasGroup.alpha while Graphic.color.a is a separate multiply, so the fix
+    /// does not fight DOTween. Registers the original alphas and restores them when the coop gate
+    /// closes (single player or disconnect), so the death screen is the game's again after a
+    /// co-op session.
     /// </summary>
     internal static class DeathScreenTransparency
     {
-        /// <summary>
-        /// Marker di ESITO. E' obbligatorio e sta su OGNI riga di questo file, perche' senza di lui
-        /// "non ho trovato il widget", "era gia' spento" e "l'ho spento io" hanno lo stesso aspetto in un log.
-        /// </summary>
+        /// <summary>Marker for every line of this class.</summary>
         private const string MARK = "[DeathScreen] trasparenza";
 
-        /// <summary>Cadenza dell'auto-riparazione, in secondi. Vedi il commento di classe.</summary>
+        /// <summary>
+        /// Reapply interval while dead. Not per frame: GetComponentsInChildren allocates, and a
+        /// 1s cadence is enough to repair a runtime-added Graphic on a ~24s death window.
+        /// </summary>
         private const float REAPPLY_INTERVAL = 1f;
 
-        // `_dead` e' la finestra di morte vista da noi, e serve SOLO a distinguere il primo giro
-        // (fronte di salita, che logga sempre) dai successivi (cadenza, che logga solo se cambia qualcosa).
         private static bool _dead;
         private static float _nextApply;
 
-        // Una sola riga d'errore per finestra di morte: se il widget non si trova, non lo si ripete ogni
-        // secondo per 24 s.
+        /// <summary>One error line per death window when the widget is not found.</summary>
         private static bool _missingReported;
 
-        // ⭐ GLI ALPHA VERI, per poter TORNARE INDIETRO. Da quando la trasparenza vale solo in co-op, la
-        // schermata deve tornare quella del gioco quando il cancello si chiude: si registra `a` PRIMA di
-        // azzerarlo (l'RGB non basta, l'alpha non si indovina) e lo si rimette. Due liste parallele invece
-        // di un `Dictionary` perche' gli elementi sono pochi e l'ordine non conta: meno codice, meno cose
-        // che possono lanciare. Si svuotano al ripristino.
+        // Original alphas of every Graphic we zeroed, to restore them when the coop gate closes.
+        // Two parallel lists for simplicity; entries are few and the order is irrelevant.
         private static readonly List<Graphic> _zeroedGraphics = new List<Graphic>();
         private static readonly List<float> _zeroedAlphas = new List<float>();
 
         /// <summary>
-        /// Un giro per frame. Chiamata da `Multiplayer.OnLateUpdate`, subito dopo `DeathScreenProbe.Tick()`.
-        /// Il `try/catch` non e' decorativo: un'eccezione qui uscirebbe da un punto di ingresso del ciclo
-        /// della mod - ed e' il guasto che una volta ha prodotto 2934 errori.
+        /// Per frame, from Multiplayer.OnLateUpdate. Applies transparency while dead and
+        /// connected; restores the original alphas when the coop gate closes. Guarded against
+        /// exceptions that would escape the mod's late-update cycle.
         /// </summary>
         internal static void Tick()
         {
             try
             {
-                // ⭐ IL CANCELLO DEL CO-OP, prima di qualunque lettura: "trasparente solo quando ci si
-                //   connette a un server" (host o peer, `CoopGate`). In single player: nessuna scrittura e,
-                //   se una sessione co-op aveva gia' azzerato gli alpha, RIPRISTINO ai valori veri.
+                // Coop gate before any read: single player does not write, and restores any
+                // alpha zeroed by a previous co-op session.
                 if (!CoopGate.IsMultiplayerActive())
                 {
                     if (_dead)
@@ -125,7 +56,7 @@ namespace Blasphemous.Multiplayer.Client
                         _missingReported = false;
                     }
 
-                    Restore("single player: nessun server");
+                    Restore("single player: no server");
                     return;
                 }
 
@@ -137,8 +68,8 @@ namespace Blasphemous.Multiplayer.Client
                     {
                         _dead = false;
                         _missingReported = false;
-                        ModLog.Info(MARK + ": fine finestra di morte, nessun ripristino " +
-                                    "(lo sfondo resta trasparente: non c'e' nulla da rimettere)");
+                        ModLog.Info(MARK + ": end of death window, no restore " +
+                                    "(the background stays transparent: nothing to restore)");
                     }
                     return;
                 }
@@ -160,15 +91,10 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Rimette gli alpha **veri** dei `Graphic` che questa mod ha azzerato, e svuota il registro.
-        /// Idempotente: la seconda chiamata non ha niente da rimettere e non scrive una riga di log.
-        ///
-        /// ⚠️ Perche' non basta "non applicare": l'azzeramento e' **permanente sull'istanza di scena**
-        /// (`Tick()` lo scrive e non lo rimette), quindi chi ha giocato in co-op e poi e' rimasto senza
-        /// server si troverebbe la schermata sbiadita anche in single player. E quel caso l'utente lo ha
-        /// chiesto esplicitamente: "in single player la schermata torna normale". Si controlla
-        /// `graphic == null` (semantica Unity: un oggetto distrutto e' null) perche' il registro puo'
-        /// sopravvivere a un cambio scena.
+        /// Restores the original alphas of every Graphic this class zeroed, and clears the
+        /// registry. Idempotent. Needed because the zeroing is permanent on the scene instance:
+        /// without it, a player who was in co-op then lost the server would see a faded screen in
+        /// single player too.
         /// </summary>
         private static void Restore(string why)
         {
@@ -195,28 +121,25 @@ namespace Blasphemous.Multiplayer.Client
 
                 if (restored > 0)
                 {
-                    ModLog.Info(MARK + " RIPRISTINATA (" + why + ") alphaRimessi=" +
-                                restored.ToString() + " · la schermata di morte e' di nuovo quella del gioco");
+                    ModLog.Info(MARK + " RESTORED (" + why + ") alphaRimessi=" +
+                                restored.ToString() + " · the death screen is the game's again");
                 }
             }
             catch (Exception e)
             {
-                // Se il ripristino fallisce si svuota comunque il registro: riprovare ogni frame su un
-                // oggetto rotto sarebbe solo spam. La schermata resta com'e' (invisibile fuori dalla morte).
+                // Clear the registry anyway: retrying every frame on a broken object would just
+                // be spam. The screen stays as it is (invisible outside of death).
                 _zeroedGraphics.Clear();
                 _zeroedAlphas.Clear();
-                ModLog.Error(MARK + " ripristino NO (" + e.GetType().Name + ": " + e.Message + ") " +
-                             "· la schermata resta com'e', niente di rotto");
+                ModLog.Error(MARK + " restore FAILED (" + e.GetType().Name + ": " + e.Message + ") " +
+                             "· the screen stays as is, nothing broken");
             }
         }
 
         /// <summary>
-        /// Azzera l'alpha dei `Graphic` di `NormalGroup`. Idempotente: riscrivere 0 su 0 non cambia niente,
-        /// e per questo puo' essere richiamata a cadenza senza stato da sbagliare.
-        ///
-        /// Il widget si cerca **a ogni applicazione**, non si tiene in cache per sempre: se la scena viene
-        /// ricaricata il widget vecchio viene distrutto, e una cache stantia renderebbe la modifica un
-        /// no-op silenzioso proprio dopo un respawn.
+        /// Zeroes the alpha of every Graphic child of NormalGroup. Idempotent. The widget is
+        /// looked up at each call rather than cached, so a scene reload does not leave a stale
+        /// reference that turns the whole fix into a silent no-op after a respawn.
         /// </summary>
         private static void Apply(bool first)
         {
@@ -225,10 +148,10 @@ namespace Blasphemous.Multiplayer.Client
 
             if (found > 1 && first)
             {
-                // Non e' un guasto: e' un fatto che il log deve dichiarare, perche' "uso il primo" puo'
-                // essere sbagliato se il primo non fosse quello vivo.
-                ModLog.Info(MARK + ": trovato=" + found + " widget con NormalGroup - uso il primo attivo " +
-                            "nella gerarchia (dichiarato, non silenzioso)");
+                // Declared: using "the first active in hierarchy" can be wrong if that one is
+                // not the live widget, so the choice is stated instead of hidden.
+                ModLog.Info(MARK + ": trovato=" + found + " widget with NormalGroup - using the first " +
+                            "active in hierarchy (declared, not silent)");
             }
 
             if (widget == null || widget.NormalGroup == null)
@@ -236,18 +159,14 @@ namespace Blasphemous.Multiplayer.Client
                 if (!_missingReported)
                 {
                     _missingReported = true;
-                    ModLog.Error(MARK + " NON applicata motivo=widget-non-trovato trovato=" + found +
-                                 " (Resources.FindObjectsOfTypeAll<DeadScreenWidget>() con NormalGroup != null)");
+                    ModLog.Error(MARK + " NOT applied motivo=widget-not-found found=" + found +
+                                 " (Resources.FindObjectsOfTypeAll<DeadScreenWidget>() with NormalGroup != null)");
                 }
                 return;
             }
 
             _missingReported = false;
 
-            // `GetComponentsInChildren<Graphic>(true)`: il `(bool)` esiste in questa Unity (verificato per
-            // riflessione su UnityEngine.CoreModule.dll) ed e' gia' usato dal progetto
-            // (EnemySyncManager.cs:2244, OtherPlayerScript.cs:293, ...). `true` perche' la schermata puo'
-            // avere figli disattivati che diventano attivi piu' tardi.
             Graphic[] graphics = widget.NormalGroup.GetComponentsInChildren<Graphic>(true);
             int children = graphics != null ? graphics.Length : 0;
 
@@ -262,9 +181,9 @@ namespace Blasphemous.Multiplayer.Client
                 if (color.a <= 0f)
                     continue;
 
-                // SOLO l'alpha. L'RGB resta: e il valore ORIGINALE di `a` si registra PRIMA di azzerarlo,
-                // perche' e' quello che `Restore()` rimette quando il cancello del co-op si chiude. Se lo
-                // stesso Graphic fosse gia' nel registro non si riscrive: il primo valore e' quello vero.
+                // Only alpha. RGB is preserved and the ORIGINAL alpha is registered before
+                // zeroing, since that is what Restore() puts back. A Graphic already in the list
+                // is not overwritten: the first value recorded is the true one.
                 if (!_zeroedGraphics.Contains(graphic))
                 {
                     _zeroedGraphics.Add(graphic);
@@ -275,30 +194,29 @@ namespace Blasphemous.Multiplayer.Client
                 zeroed++;
             }
 
-            // L'alpha del CanvasGroup NON si tocca, ma si LEGGE: e' il numero che dice se il DOFade sta
-            // facendo il suo lavoro (parte da 0 e va a 1 in 2,15 s) - cioe' se la schermata si sta
-            // accendendo mentre i suoi figli restano invisibili. E' la prova che le due cose sono separate.
+            // Group alpha is read but never written: it proves the DOFade still runs while the
+            // children stay invisible.
             float groupAlpha = widget.NormalGroup.alpha;
 
             if (first)
             {
-                ModLog.Info(MARK + " applicata: trovato=" + found + " figli=" + children +
+                ModLog.Info(MARK + " applied: trovato=" + found + " figli=" + children +
                             " azzerati=" + zeroed + " alphaGruppo=" + DeathScreenProbe.F(groupAlpha) +
                             " applicato=" + (children > 0 ? "si" : "no") +
-                            (zeroed == 0 && children > 0 ? " (gli alpha dei figli erano gia' tutti 0)" : "") +
-                            (children == 0 ? " motivo=nessun-graphic-figlio" : "") +
-                            " · il prompt e' su ContinueGroup e NON e' stato toccato");
+                            (zeroed == 0 && children > 0 ? " (the children alphas were already all 0)" : "") +
+                            (children == 0 ? " motivo=no-graphic-child" : "") +
+                            " · the prompt is on ContinueGroup and was NOT touched");
 
                 if (children == 0)
                 {
-                    ModLog.Error(MARK + " NON applicata motivo=NormalGroup-senza-Graphic figli=0 " +
-                                 "applicato=no (lo sfondo non e' un Graphic figlio di NormalGroup)");
+                    ModLog.Error(MARK + " NOT applied motivo=NormalGroup-without-Graphic children=0 " +
+                                 "applicato=no (the background is not a Graphic child of NormalGroup)");
                 }
             }
             else if (zeroed > 0)
             {
-                // Solo se e' cambiato qualcosa: un log identico ogni secondo sarebbe spam.
-                ModLog.Info(MARK + " riapplicata (auto-riparante) azzerati=" + zeroed +
+                // Only when something changed: an identical log every second would be spam.
+                ModLog.Info(MARK + " reapplied (auto-repair) azzerati=" + zeroed +
                             " figli=" + children + " alphaGruppo=" + DeathScreenProbe.F(groupAlpha));
             }
         }

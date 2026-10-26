@@ -3,113 +3,42 @@ using System;
 namespace Blasphemous.Multiplayer.Client.Network
 {
     /// <summary>
-    /// ⭐ IL SEAM DEL TRASPORTO, LATO CLIENT — la superficie minima con cui `NetworkManager` parla a
-    /// "un filo", senza sapere quale.
-    ///
-    /// PERCHE' ESISTE, e quanto e' piccolo: oggi l'unico filo e' un socket TCP (`SimpleTcpClient`, dalla
-    /// DLL di terzi `resources\data\SimpleTCP.dll`) e prima di questo file erano **8 righe** in
-    /// `NetworkManager` a toccarlo — la creazione (`:38`), la `Connect` (`:39`), la sottoscrizione agli
-    /// eventi (`:40`), `TcpClient.NoDelay` (`:41`), la `Disconnect` (`:56`), l'annullamento del campo
-    /// (`:75`) e **una sola** scrittura (`:103`, dentro `SendQueue`). Questo seam non sposta il filo:
-    /// mette quelle 8 righe in **una** implementazione (`TcpTransport`), che resta l'unica, e lascia
-    /// `NetworkManager` a parlare solo con questa interfaccia. `NoDelay` compreso: era l'eccezione che
-    /// bucava l'astrazione (`_client.TcpClient.NoDelay` arrivava al `TcpClient` sotto) e ora sta dentro
-    /// il trasporto, dove un socket ce l'ha e un trasporto diverso non ce l'ha.
-    ///
-    /// ⚠️ IL CONTRATTO E' A **BYTE**, NON A MESSAGGI — e non e' un dettaglio, e' la ragione per cui
-    /// questo refactor e' verificabile:
-    ///   `Send(byte[] framed)` riceve il buffer **gia' impacchettato** da `QueueMesssage`, testa
-    ///   `[ushort len][byte type]` compresa: cioe' **esattamente i byte che oggi finiscono in
-    ///   `SimpleTcpClient.Write`** (`NetworkManager.QueueMesssage`, `:85-95` di HEAD, costruisce la lista;
-    ///   `SendQueue`, `:103` di HEAD, la passa a `Write`). Il trasporto a flusso li scrive **verbatim**, senza
-    ///   toccarli. Domani un trasporto a **messaggi** (Steam) ricevera' **lo stesso array**: il confine
-    ///   del messaggio lo da' lui, quindi potra' anche smettere di aver bisogno della testa di
-    ///   lunghezza — ma quella decisione resta **dentro `QueueMesssage`**, che il seam non tocca. In
-    ///   nessuno dei due casi il chiamante cambia: se il filo cambia di un byte, e' un errore del seam,
-    ///   non una scelta di questo file.
-    ///
-    /// ⚠️ IL THREADING FA PARTE DEL CONTRATTO: `DataReceived` e' consegnato **sul thread che il
-    /// trasporto usa per leggere**. Per il TCP e' il thread di lettura di `SimpleTCP`, esattamente come
-    /// oggi: nessuna implementazione deve fare marshal sul main thread. Spostare la consegna cambierebbe
-    /// il comportamento di tutta la ricezione (`ProcessQueue` gira da `OnLateUpdate` e prende
-    /// `datalock`), quindi non si fa — nemmeno "per pulizia".
-    ///
-    /// ⚠️ LE ECCEZIONI SONO QUELLE DI OGGI, e fanno parte del contratto:
-    ///   · `Connect` puo' lanciare `System.Net.Sockets.SocketException` quando il socket non si apre:
-    ///     `NetworkManager.Connect` la cattura (`:43-48`) per rispondere `RefusalType.Connection`;
-    ///   · `Send` puo' lanciare `System.IO.IOException` quando il socket e' caduto: `NetworkManager.SendQueue`
-    ///     la cattura (`:105-108`) per chiamare `OnDisconnect()`.
-    /// Un'implementazione che **assorbe** queste due eccezioni non e' conforme: spegnerebbe le due sole
-    /// vie con cui il client si accorge che la connessione e' caduta.
-    ///
-    /// ⚠️ COSA NON C'E' DI PROPOSITO: nessun `event` di "errore", nessun `byte[] Receive()`, nessuno
-    /// stato di riconnessione, nessun `int` di byte scritti. Sono tutte cose che oggi il client non usa;
-    /// aggiungerle qui sarebbe superficie da mantenere senza un chiamante.
-    ///
-    /// 📌 STEP 1b (NON fatto qui): il **server** ha lo stesso socket in `Server.cs` (`:16` campo,
-    /// `:46-51` creazione + 3 eventi + `Start`, `:73` una sola `Send(ip, byte[])`), ma il suo seam e' un
-    /// altro lavoro perche' la sua identita' di peer e' la **stringa IP** (~115 righe su 864). In questo
-    /// giro il server non e' toccato.
+    /// Transport seam: the minimum surface NetworkManager uses to talk to any wire, without
+    /// knowing which. Byte-based - Send receives the buffer already framed by QueueMesssage
+    /// ([ushort len][byte type][payload]). DataReceived fires on the transport's read thread;
+    /// no implementation marshals to the main thread. Connect may throw SocketException, Send
+    /// may throw IOException - callers rely on both.
     /// </summary>
     internal interface ICoopTransport
     {
-        /// <summary>
-        /// Apre il filo verso `host`:`port`.
-        ///
-        /// Puo' lanciare `System.Net.Sockets.SocketException` se il socket non si apre: il chiamante ha
-        /// gia' il `catch` che serve (`NetworkManager.Connect`, `:70`) e la risposta al giocatore e'
-        /// `RefusalType.Connection`. Non catturarla qui.
-        /// </summary>
+        /// <summary>Opens the wire. May throw SocketException; caller handles it. Do not catch here.</summary>
         void Connect(string host, int port);
 
-        /// <summary>
-        /// Chiude il filo. Non lancia: un guasto in chiusura non deve impedire al chiamante di
-        /// riportare il suo stato a "disconnesso" (`NetworkManager.OnDisconnect`).
-        /// </summary>
+        /// <summary>Closes the wire. Must not throw; caller must still reach OnDisconnect.</summary>
         void Disconnect();
 
         /// <summary>
-        /// `true` se il filo e' aperto.
-        ///
-        /// ⚠️ `NetworkManager` **non** consuma questa proprieta': la sua `IsConnected` e' rimasta
-        /// `_connectionStatus == Connected &amp;&amp; trasporto != null`, che e' l'espressione di oggi
-        /// (`NetworkManager.cs:36`). Usare il `Connected` del socket sarebbe un cambio di comportamento,
-        /// perche' oggi la caduta del socket non viene osservata finche' una scrittura non fallisce.
+        /// True if the wire is open. NetworkManager does not consume it - it uses status + non-null
+        /// transport, so socket loss is only observed on a failed write.
         /// </summary>
         bool IsConnected { get; }
 
         /// <summary>
-        /// Scrive sul filo un buffer **gia' impacchettato** (`[ushort len][byte type][payload]`), senza
-        /// interpretarlo, spezzarlo o ri-impacchettarlo: i byte che arrivano sono i byte che partono.
-        ///
-        /// ⭐⭐ E CI DICE **LA CLASSE** (`TransportClass`), che e' la cosa che il contratto di C1b-1 non
-        /// diceva e senza la quale un trasporto a messaggi non sa su **quale canale** mandare:
-        /// `Unreliable` = puo' essere perso, la copia dopo lo sovrascrive; `Reliable` = se si perde lo
-        /// stato resta sbagliato per sempre. Non si deduce dal tipo (`NetworkType.Attack` e'
-        /// un demultiplexer, `Effect` ha due classi, `Animation` ha un byte reliable su un messaggio
-        /// unreliable): la decide **il punto in cui il payload nasce**, secondo `docs\STEAM_INVITES.md`
-        /// §10, e il chiamante la passa qui.
-        ///
-        /// ⚠️ IL TCP LA IGNORA, di proposito: c'e' un solo flusso ordinato e affidabile, e li' la classe
-        /// non ha nessun effetto. `TcpTransport.Send` scrive gli stessi byte e basta — il filo TCP non
-        /// cambia di un byte (`scratch\REFERTO-C1B2-P2P.md`).
-        ///
-        /// Puo' lanciare `System.IO.IOException` se il socket e' caduto: e' load-bearing, il chiamante
-        /// la usa per disconnettersi (`NetworkManager.SendQueue`, `:142`). Non catturarla qui. Per il
-        /// P2P lo stesso `IOException` e' il link dichiarato perso (timeout): la via e' quella che c'e'.
+        /// Writes a pre-framed buffer verbatim. TransportClass is decided where the payload is
+        /// produced; TCP ignores it and writes the same bytes. May throw IOException when the wire
+        /// is down (the caller uses it to disconnect).
         /// </summary>
         void Send(byte[] framed, TransportClass cls);
 
-        /// <summary>Il filo si e' aperto (dopo un `Connect` riuscito).</summary>
+        /// <summary>The wire opened (after a successful Connect).</summary>
         event Action Connected;
 
-        /// <summary>Il filo si e' chiuso (da `Disconnect`).</summary>
+        /// <summary>The wire closed (from Disconnect).</summary>
         event Action Disconnected;
 
         /// <summary>
-        /// Sono arrivati dei byte, cosi' come sono usciti dal socket: nessun riassemblaggio e nessuna
-        /// interpretazione (il framing lo fa `ProcessQueue`). Consegnato sul thread di lettura del
-        /// trasporto, che per il TCP e' quello di `SimpleTCP`.
+        /// Bytes arrived, as they came off the socket: no reassembly, no interpretation (framing
+        /// is ProcessQueue's job). Delivered on the transport's read thread.
         /// </summary>
         event Action<byte[]> DataReceived;
     }

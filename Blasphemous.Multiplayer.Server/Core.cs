@@ -8,6 +8,10 @@ using Basalt.CommandParser;
 
 namespace Blasphemous.Multiplayer.Server;
 
+/// <summary>
+/// Server entry point (standalone build) and shared team-data helpers used by
+/// <c>Server.cs</c> in both builds.
+/// </summary>
 internal static class Core
 {
     private static readonly Dictionary<byte, TeamInfo> teamGameDatas = [];
@@ -33,18 +37,10 @@ internal static class Core
         // Read options from args
         var options = CommandParser.ProcessArguments<ServerArguments>(args);
 
-        // Create server
-        // ⭐⭐ C1b-1 — IL TRASPORTO SI SCEGLIE **QUI**, NON DENTRO IL SERVER. Il `Server` parla solo con
-        // `IServerTransport`; l'unica implementazione di questo giro e' il TCP, che contiene le righe
-        // del socket che prima stavano in `Server.Start`. Il composito c'e' perche' domani i fili
-        // possono essere due (TCP per l'host locale + P2P per i peer): oggi ne contiene **uno**.
+        // Transport is chosen here; the server only knows IServerTransport.
         CompositeServerTransport transport = new CompositeServerTransport();
         transport.Add(new TcpServerTransport());
 
-        // ⭐ IL SERVER E' UNA VARIABILE LOCALE, non un campo statico: prima era `private static Server
-        // server` (`#if !COOP_HOST`) assegnato qui e letto SOLO dalla riga qui sotto, nello stesso `Main`.
-        // Come campo era write-only: nessun altro file lo nominava (e non poteva, essendo `private`).
-        // Il tipo e' locale, la vita e' quella di `Main`, e il comportamento non cambia.
         Server server = new Server(options.MaxPlayers, options.Password, transport);
         if (!server.Start(options.Port))
         {
@@ -71,21 +67,9 @@ internal static class Core
 
 #endif
 
-    // ⚠️ NEL CLIENT QUESTA CLASSE NON HA UN `Main`, E NON E' UNA SVISTA.
-    //
-    // Qui sopra `#if !COOP_HOST` chiude fuori il `Main` dello standalone: e' l'unico posto di tutto il
-    // server che dipende dalla CONSOLE (`Console.Title`, `Console.ReadKey`) e dagli ARGOMENTI della
-    // riga di comando (`Basalt.CommandParser` + `ServerArguments`), cioe' due cose che nel processo
-    // del gioco non esistono. Le altre due cose che `Main` faceva - `Environment.Exit(0)` per uscire
-    // e il ciclo di lettura dei tasti - le sostituisce il bottone "Host session", che chiama
-    // `Server.Start(port)` e `Server.Stop()`.
-    //
-    // Quello che RESTA di questa classe in entrambe le build e' il pezzo che serve al server vero: i
-    // dati di squadra (`teamGameDatas`), che `Server.cs` legge e scrive in ~10 punti. Toglierli di
-    // qui avrebbe voluto dire toccare `Server.cs` in quei punti, cioe' riscriverne la logica.
-    //
-    // ⇒ LA PORTA DELLO STANDALONE E' INVARIATA: stesso exe, stessa console, stessi argomenti
-    //   `-p/--port`, `-mp/--max-players`, `-ps/--password`, stesso `ServerOutput.log`.
+    // No Main in the client build: Main depends on Console and command-line args, which do not
+    // exist in the game process. What remains in both builds is the team-data store, used by
+    // Server.cs.
 
     public static TeamInfo getTeamData(byte team)
     {
@@ -99,23 +83,13 @@ internal static class Core
     }
 
     /// <summary>
-    /// Butta via i dati delle squadre in cui non c'e' piu' nessuno. La chiave del dizionario e' un
-    /// <see cref="PeerId"/> (prima era `string ip`): a questo metodo la chiave NON serve — guarda solo
-    /// i valori (`player.team`) — quindi cambia solo il tipo del parametro, non una riga di logica.
-    /// Questo file e' compilato anche nel CLIENT (`COOP_HOST`): e' uno dei due punti in cui il tipo
-    /// nuovo compare nel client, oltre al server.
+    /// Drops team data for teams with no remaining player. Iterates the full byte domain (0..255,
+    /// not just the valid 1..10 range): a packet carrying an out-of-range <c>team</c> creates an
+    /// entry that no narrower loop would ever clean up.
     /// </summary>
     public static void removeUnusedGameData(Dictionary<PeerId, PlayerInfo> allPlayers)
     {
-        // ⭐⭐ TUTTI i valori possibili della chiave, non 1..10. Prima questo ciclo era
-        // `for (byte i = 1; i <= 10; i++)`, e le squadre 0 e 11..255 non venivano MAI guardate: `team`
-        // arriva dal filo e `getTeamData` crea una voce per qualunque valore, quindi bastava UN
-        // pacchetto con `team = 200` per lasciare nel dizionario una squadra che nessuna pulizia
-        // avrebbe piu' rimosso - e nel client questo processo e' il gioco, che vive per ore.
-        // ⇒ 256 valori, l'intero dominio di un `byte`: nessuna squadra puo' restare immortale, nemmeno
-        // se un domani l'intervallo valido cambia (`Server.MIN_TEAM`/`MAX_TEAM`, che oggi e' 1..10).
-        // Il conto e' `int` e non `byte` di proposito: con `byte` la condizione `i <= 255` non
-        // finirebbe mai (al 255 l'incremento avvolge a 0).
+        // int, not byte: a byte counter would wrap at 255 and never exit the loop.
         for (int i = 0; i <= byte.MaxValue; i++)
         {
             byte team = (byte)i;

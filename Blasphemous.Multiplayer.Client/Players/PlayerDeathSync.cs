@@ -7,77 +7,51 @@ using HarmonyLib;
 namespace Blasphemous.Multiplayer.Client
 {
     /// <summary>
-    /// Watches a player's death, and decides whether this machine should suppress what the game does to the
-    /// WORLD when it happens.
-    ///
-    /// WHY THIS EXISTS. When a player dies the game respawns every enemy it had consumed, and it does so
-    /// LOCALLY: the whole chain - Penitent.Respawn, EnemySpawner.Reset, SpawnManager.Respawn, ChangeLevel,
-    /// SpawnEnemiesOnLoad - contains no network call at all, and the mod has no hook on death. Measured, not
-    /// assumed: in one session the dying machine came back to a room with five enemies where the other
-    /// machine still had three, and the two only agreed again because a bonfire announcement happened to
-    /// arrive later - for a DIFFERENT room.
-    ///
-    /// So the effect is not "one player's death is unfair to the others". It is that the two machines
-    /// DISAGREE about which enemies are alive, and stay that way until something else forces them together.
-    /// In a Metroidvania that is worse than unfair: if one player is halfway through a punishing platform
-    /// section and the other dies at the start of the map, the survivor should not have the world reset in
-    /// their face - and the dying player should not silently invalidate the survivor's progress.
-    ///
-    /// WHAT IS SUPPRESSED, AND WHAT IS NOT. Only the part that touches the world. The health and flask
-    /// refill lives in PersistentManager.RestoreStored, a SEPARATE call inside Penitent.Respawn, so
-    /// suppressing the enemy reset leaves the refill intact - and it must stay: without it the player comes
-    /// back to the bonfire with nothing.
-    ///
-    /// THE FLAG IS READ BY EVERYTHING THAT NEEDS IT. EnemySpawner.Reset must not clear the consumed list,
-    /// and the mod's own death memory must not be cleared either - because those are the two halves of the
-    /// same fact, "those enemies are alive again". If only one of them were suppressed the game and the mod
-    /// would disagree, and a machine holding dead enemies would stop announcing them to a joiner. Reading
-    /// one flag is what makes that impossible rather than merely remembered.
+    /// Watches the local player's death and decides whether this machine should suppress the
+    /// game's world reset (enemy respawn) at that moment. The game does the reset LOCALLY with no
+    /// network call, so without this the two machines disagree about which enemies are alive. Only
+    /// the world effects are suppressed; the player's health/flask refill (a separate call inside
+    /// Penitent.Respawn) is kept, so the player still benefits from the bonfire. The flag is read
+    /// by EnemySpawner.Reset and by the mod's own death-memory reset - reading one flag guarantees
+    /// those two cannot diverge.
     /// </summary>
     public static class PlayerDeathSync
     {
         /// <summary>
         /// True while Penitent.Respawn is running on a machine that is suppressing the world reset.
-        ///
-        /// Read by the EnemySpawner.Reset prefix and by the death-memory reset, both of which are waiting
-        /// for it. Set in a prefix on Respawn and cleared in a FINALIZER, not a postfix: Respawn calls the
-        /// enemy reset, the restore and the level load in a row, and if any of them throws, a postfix would
-        /// never run and the flag would stay raised for the rest of the session - the same trap the progress
-        /// queue had, where one exception could freeze synchronisation permanently.
+        /// Set in a Prefix and cleared in a Finalizer (not a Postfix): Respawn calls enemy reset,
+        /// restore, and level load in a row, and if any throws a Postfix would never run - the
+        /// flag would stay raised for the session. A Finalizer runs on every exit path.
         /// </summary>
         public static bool SuppressingWorldReset { get; internal set; }
 
         /// <summary>
-        /// Whether this machine has told the others that its own player is down.
-        ///
-        /// It exists so that "I am alive again" can be sent only when it has something to cancel. CreatePlayer
-        /// runs on every level load, so without this the alive message goes out constantly - measured at four
-        /// for a single death - and on a channel whose purpose is to be believed, a message that is usually
-        /// meaningless is worse than a rare one.
+        /// Whether this machine has told others that its own player is down. Prevents "I am alive
+        /// again" from being sent on every level load: CreatePlayer runs per level, and would
+        /// otherwise flood the channel with messages that cancel nothing.
         /// </summary>
         private static bool localDeathAnnounced;
 
         /// <summary>
-        /// Marks a death announcement. Fourth convention on the enemy-death channel, whose only others are
-        /// "sp|" for spawn points, "brk|" for a broken vase and "falo|" for a bonfire. The server relays
-        /// that channel to everyone but the sender with no dictionary and no scene filter, so a new prefix
-        /// costs nothing and needs no protocol bump.
+        /// Death marker on the enemy-death channel. The server relays that channel to every peer
+        /// but the sender with no scene filter, so a new prefix costs nothing and needs no
+        /// protocol bump.
         /// </summary>
         public const string DeathPrefix = "pdead|";
 
         /// <summary>
-        /// The counterpart, and it is not decoration: without it the set of dead players only grows, so
-        /// "is everybody down?" could never be answered and the spectator state would have no end.
+        /// Alive counterpart. Without it the set of dead players only grows and the spectator state
+        /// could never end.
         /// </summary>
         public const string AlivePrefix = "palive|";
 
-        /// <summary>True when this id is a death announcement rather than a death of an enemy.</summary>
+        /// <summary>True when this id is a death announcement rather than an enemy death.</summary>
         public static bool IsDeathId(string id)
         {
             return !string.IsNullOrEmpty(id) && id.StartsWith(DeathPrefix, System.StringComparison.Ordinal);
         }
 
-        /// <summary>True when this id is the "I am alive again" counterpart.</summary>
+        /// <summary>True when this id is the alive counterpart.</summary>
         public static bool IsAliveId(string id)
         {
             return !string.IsNullOrEmpty(id) && id.StartsWith(AlivePrefix, System.StringComparison.Ordinal);
@@ -94,16 +68,10 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// True while this machine's own player is down.
-        ///
-        /// Read straight from the game rather than from our own announcement flag, because the two are not
-        /// the same window: the flag is raised when the death is TOLD, while Status.Dead is true from the
-        /// instant the player falls until the respawn finishes. Anything that has to stop treating a corpse
-        /// as a participant needs the second one - most of all the ownership rule, which decided which
-        /// machine simulates each enemy.
-        ///
-        /// The game exposes this as a public FIELD on Entity, not a property, which is why it is reached
-        /// through Status.Dead.
+        /// True while this machine's own player is down. Read from the game's Status.Dead, not from
+        /// our announcement flag: the flag is raised when the death is TOLD, while Status.Dead is
+        /// true from the fall until respawn finishes - and consumers that need to stop treating a
+        /// corpse as a participant (the ownership rule) need the second window.
         /// </summary>
         public static bool IsLocalPlayerDead()
         {
@@ -121,8 +89,8 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Whether this player is alive AND we know it - used where "not dead" and "known to be alive" are
-        /// different things. A remote player we have never heard from is not evidence of life.
+        /// True when this player is alive AND we know it. A remote player we have never heard from
+        /// is not evidence of life.
         /// </summary>
         public static bool IsRemotePlayerKnownAlive(string name)
         {
@@ -131,16 +99,11 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Tells the other machines that this player has just died.
-        ///
-        /// The name must travel. ReceiveMessage discards the sender and ProcessQueue passes only the bytes,
-        /// so without a name in the payload the receiver cannot tell who died - and "who" is the whole
-        /// question, both for the boss that has to hand over and for counting how many are still standing.
-        /// The name cannot contain '|' (the validator allows "_-.' " up to sixteen characters), so it cannot
-        /// be mistaken for a spawn-point id on a channel where that would matter.
-        ///
-        /// Returns whether the announcement actually went out, because "I died" and "I told them I died"
-        /// are different facts and only the second one earns a matching "I am alive again".
+        /// Tells other machines this player died. The name must travel: the receiver discards the
+        /// sender and ProcessQueue passes only the bytes, so without a name the receiver cannot
+        /// tell who died. The validator forbids '|' in names, so the payload cannot collide with a
+        /// spawn-point id. Returns whether the announcement went out; only that earns a matching
+        /// "alive again".
         /// </summary>
         public static bool AnnounceDeath()
         {
@@ -153,21 +116,15 @@ namespace Blasphemous.Multiplayer.Client
 
             Main.Multiplayer.SendEnemyDeathGlobal(DeathPrefix + name);
             localDeathAnnounced = true;
-            ModLog.Info($"[Morte] annuncio inviato: {name} e' morto");
+            ModLog.Info($"[Morte] announcement sent: {name} is dead");
             return true;
         }
 
         /// <summary>
-        /// Tells the other machines that this player is back on their feet - but only if we ever said they
-        /// went down.
-        ///
-        /// CreatePlayer runs again every time the level loads rebuilds the Penitent, so this is reached far
-        /// more often than a death is. Announcing every time produced four "alive" messages for one death in
-        /// the measured session. Harmless while nothing kept state, but it is noise on a channel whose whole
-        /// job is to be believed, and once the dead set is tracked it would be actively misleading.
-        ///
-        /// The pairing also means a machine that never heard the death hears nothing now - which is correct:
-        /// there is no state to clear.
+        /// Tells others this player is back up, but only if a death was announced. CreatePlayer runs
+        /// on every level load, so announcing unconditionally floods the channel and - now that
+        /// dead state is tracked - would actively mislead. The pairing also means a machine that
+        /// never heard the death hears nothing now: correct, there is no state to clear.
         /// </summary>
         public static void AnnounceAlive()
         {
@@ -183,32 +140,27 @@ namespace Blasphemous.Multiplayer.Client
 
             Main.Multiplayer.SendEnemyDeathGlobal(AlivePrefix + name);
             localDeathAnnounced = false;
-            ModLog.Info($"[Morte] annuncio inviato: {name} e' di nuovo vivo");
+            ModLog.Info($"[Morte] announcement sent: {name} is alive again");
         }
 
         /// <summary>
-        /// Applies a death or resurrection heard from another machine, and reports the resulting state.
-        ///
-        /// The per-player flag lives on PlayerStatus because that is where the identity already is, and
-        /// because it has to disappear with the player: RemoveConnectedPlayer drops the whole entry, so a
-        /// player who leaves while down cannot leave a permanent "somebody is dead" behind.
+        /// Applies a death or resurrection heard from another machine. The per-player flag lives on
+        /// PlayerStatus so it disappears with the player entry - a player who leaves while down
+        /// cannot leave a permanent "somebody is dead" behind.
         /// </summary>
         public static void ApplyRemoteState(string name, bool dead)
         {
             Main.Multiplayer.OtherPlayerManager.SetPlayerDead(name, dead);
 
-            ModLog.Info($"[Morte] stato aggiornato: {name} {(dead ? "morto" : "vivo")} · " +
-                        $"morti in questo momento: {Main.Multiplayer.OtherPlayerManager.CountDeadPlayers()}" +
+            ModLog.Info($"[Morte] state updated: {name} {(dead ? "dead" : "alive")} · " +
+                        $"currently dead: {Main.Multiplayer.OtherPlayerManager.CountDeadPlayers()}" +
                         $"/{Main.Multiplayer.OtherPlayerManager.AllConnectedPlayers.Count}");
         }
 
         /// <summary>
-        /// True when nobody is left standing, this player included.
-        ///
-        /// This is what the spectator state will end on, and the game cannot answer it: there is one
-        /// Penitent, the remote players are not Penitents, and position packets are not a liveness signal -
-        /// they are only sent when the position changes, so a player standing still looks exactly like a
-        /// player who is not there. The only trustworthy source is the announcements themselves.
+        /// True when nobody is left standing, this player included. The game cannot answer this
+        /// (one Penitent, remotes are not Penitents) and position packets are not a liveness signal,
+        /// so the announcements are the only trustworthy source.
         /// </summary>
         public static bool IsEveryoneDead(bool localPlayerDead)
         {
@@ -216,20 +168,11 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// True when this machine should suppress the world reset on death.
-        ///
-        /// Two conditions, both required: a connection, and at least one other player on it. Alone - single
-        /// player, or the host of an empty server - the game's own behaviour is correct and better left
-        /// alone.
-        ///
-        /// IsConnected is used rather than EnemySyncManager.IsHost, and that is deliberate: IsHost is
-        /// "_isHost || !IsConnected", so it answers true when nobody is connected at all. Here the question
-        /// is literally "is anybody else here", so it is asked directly.
-        ///
-        /// KNOWN LIMITATION: AllConnectedPlayers is filled when the server's connection packet arrives, so
-        /// there is a short window at startup where the socket is up but the list is still empty. For an
-        /// event like a death, and not a per-frame test, that is acceptable - and saying so is better than
-        /// pretending the check is instantaneous.
+        /// True when this machine should suppress the world reset on death. Two conditions: a
+        /// connection, and at least one other player on it. Alone, the game's own behaviour is
+        /// correct and better left alone. Uses IsConnected rather than EnemySyncManager.IsHost,
+        /// because IsHost returns true when nobody is connected at all - the exact opposite of what
+        /// is needed here.
         /// </summary>
         public static bool ShouldSuppressWorldReset()
         {
@@ -240,76 +183,37 @@ namespace Blasphemous.Multiplayer.Client
         }
 
         /// <summary>
-        /// Reads the values back, for logs. Null-safe: the player may not exist yet.
-        ///
-        /// WHICH MAXIMUM, AND WHY IT MATTERS. Everything is reported against **Final**, which is what the
-        /// game's own bars divide by: `PlayerHealth.BarTarget = Life.Current / Life.Final`, and PlayerFlask
-        /// builds its total from Flask.Final. CurrentMax is a different number - it is Final clamped to
-        /// MaxValue and then scaled by MaxFactor, so it moves when the game's guilt penalty moves it.
-        ///
-        /// The first version printed CurrentMax and produced a reading that looked impossible: fervour=37/6,
-        /// a current larger than its own maximum. It was not a bug in the game and not a bug in the player -
-        /// it was this line reading two numbers from two different moments. The prefix on Respawn runs while
-        /// the player is dead and the Penitent is being rebuilt, and the guilt factor is re-applied DURING
-        /// the respawn, so CurrentMax was caught mid-transition while Current had not been clamped yet.
-        ///
-        /// Final does not take part in that clamp, so it is the stable number and the one the bar uses. For
-        /// fervour the clamped value is reported too, because PlayerFervour draws its segments from
-        /// CurrentMax and it is worth seeing both when they disagree.
-        ///
-        /// MaxFactor is printed as well, because when a maximum moves it is worth knowing whether the cause
-        /// was ours or the game's native guilt system - which, as it turns out, is the only thing that ever
-        /// moves it: `set_MaxFactor` has two callers in the whole assembly, both GuiltManager, both on
-        /// Fervour.
+        /// Stats line for the logs. Reports against Final (what the game's own bars divide by:
+        /// PlayerHealth.BarTarget = Current / Final) rather than CurrentMax, which is Final clamped
+        /// and scaled by MaxFactor and can move mid-transition. The clamped fervour value and the
+        /// two MaxFactors are printed alongside so the source of any movement is visible.
         /// </summary>
         public static string StatsLine()
         {
             try
             {
                 if (Core.Logic == null || Core.Logic.Penitent == null || Core.Logic.Penitent.Stats == null)
-                    return "stats=non disponibili";
+                    return "stats=unavailable";
 
                 var stats = Core.Logic.Penitent.Stats;
                 return $"vita={stats.Life.Current:F0}/{stats.Life.Final:F0} " +
                        $"fiale={stats.Flask.Current:F0}/{stats.Flask.Final:F0} " +
                        $"fervour={stats.Fervour.Current:F0}/{stats.Fervour.Final:F0} " +
-                       $"[fervour con la penalita' di colpa: max={stats.Fervour.CurrentMax:F0}] " +
+                       $"[fervour with guilt penalty: max={stats.Fervour.CurrentMax:F0}] " +
                        $"(fattori: vita={stats.Life.MaxFactor:F2} fervour={stats.Fervour.MaxFactor:F2})";
             }
             catch (System.Exception e)
             {
-                return $"stats=errore ({e.GetType().Name})";
+                return $"stats=error ({e.GetType().Name})";
             }
         }
 
         /// <summary>
-        /// The measurement the guilt-on-life study is missing, and it MEASURES ONLY.
-        ///
-        /// WHY IT EXISTS. The native guilt lives on the Fervour, not on the life: the curve that moves it
-        /// is an AnimationCurve inside the asset `Resources/GuiltConfig`, which is not on disk, so its
-        /// numbers exist nowhere in the code - the only known datum is one measured session (1 death:
-        /// Fervour max 60 -> 50). And `Life.MaxFactor` exists but the game has never exercised it, so
-        /// clamp, refills and bar are deduced from the code, not observed. This line is where they get
-        /// observed: it prints the maximum WITH the factor, the factor itself, Final and Current (which
-        /// are what PlayerHealth divides and what it uses as the bar WIDTH - Final ignores MaxFactor), the
-        /// same pair for the Fervour, and the number of guilt drops the game is holding.
-        ///
-        /// READ-ONLY, ON PURPOSE. Nothing here writes MaxFactor, counts guilt, or touches the bonfire: the
-        /// values are read and formatted. `Current` and `CurrentMax` do run VariableAttribute.CalculateValue,
-        /// which clamps the current value down to the maximum - but that is precisely what every other
-        /// reader in the game does, it is idempotent, and it does not raise OnChanged (only the setter
-        /// does), so nothing downstream can tell the difference.
-        ///
-        /// EVERY FIELD IS PUBLIC, checked before writing: MaxFactor and CurrentMax on VariableAttribute
-        /// (:28, :60), Current (:41), Final on Attribute (:23), GetDropsCount on GuiltManager (:197), and
-        /// Core.GuiltManager itself (Core.cs:76). No reflection and no substitutions: no field had to be
-        /// dropped.
-        ///
-        /// The string starts with the marker so a log grep finds it, and `dove=` is appended by the two
-        /// call sites, because "at a spawn" and "at a death" are different moments and must not be
-        /// confused: at the death instant the game has not yet added the new drop (GuiltManager.AddDrop
-        /// runs later, in OnDead), so `colpe` there is the count BEFORE this death. That is the point -
-        /// the two lines show the step.
+        /// Measurement line for the guilt-on-life study. Read-only: nothing here writes MaxFactor,
+        /// counts guilt, or touches the bonfire. Reports CurrentMax (with the factor applied), the
+        /// factors themselves, Final and Current for both Life and Fervour, and the current guilt
+        /// drop count. Called at spawn (post native guilt application) and at death (before the
+        /// new drop is added); the two lines show the step.
         /// </summary>
         public static string ColpaLine()
         {
@@ -322,13 +226,13 @@ namespace Blasphemous.Multiplayer.Client
             }
             catch (System.Exception)
             {
-                colpe = "errore";
+                colpe = "error";
             }
 
             try
             {
                 if (Core.Logic == null || Core.Logic.Penitent == null || Core.Logic.Penitent.Stats == null)
-                    return $"[Colpa] stats=non disponibili · colpe={colpe}";
+                    return $"[Colpa] stats=unavailable · colpe={colpe}";
 
                 var stats = Core.Logic.Penitent.Stats;
                 return $"[Colpa] vita: max={stats.Life.CurrentMax:F1} fattore={stats.Life.MaxFactor:F2} " +
@@ -338,42 +242,20 @@ namespace Blasphemous.Multiplayer.Client
             }
             catch (System.Exception e)
             {
-                return $"[Colpa] stats=errore ({e.GetType().Name}) · colpe={colpe}";
+                return $"[Colpa] stats=error ({e.GetType().Name}) · colpe={colpe}";
             }
         }
     }
 
     /// <summary>
-    /// The death, the instant it happens - which is NOT where the first version watched.
-    ///
-    /// Respawn has exactly one caller, DeadScreenWidget, and it runs only after the player has pressed a
-    /// key on the death screen. In one measured session the death state was set 151 lines before the
-    /// Respawn prefix fired: that gap is however long the player leaves the screen up. Announcing a death
-    /// there would tell the other machines that a player is down only once that player decided to come
-    /// back - so a boss would keep chasing a corpse, and the spectator camera would have nothing to follow.
-    ///
-    /// So the announcement has to happen at the death itself: Penitent.OnUpdate, right after the game
-    /// raises OnDead.
-    ///
-    /// WHY A PREFIX RATHER THAN SUBSCRIBING TO OnDead. Subscribing looks natural and is a trap:
-    ///   - the Penitent is REBUILT on every level load (InitializeLevel -> SpawnPlayerOnLevelLoad ->
-    ///     CreatePlayer -> Instantiate), so a subscription would last exactly one death;
-    ///   - an exception in a subscriber BREAKS THE MULTICAST CHAIN, and two of the other subscribers are
-    ///     GuiltManager (which drops the guilt) and DeadScreenWidget (which shows the death screen) - so a
-    ///     mistake in our handler could cost the player the death screen entirely;
-    ///   - the invocation order is not deterministic.
-    /// A prefix has none of those problems, and the original method still runs afterwards, so the other
-    /// seventeen subscribers are untouched.
-    ///
-    /// THE GUARD IS THE GAME'S OWN. OnUpdate runs every frame, so the handler needs to fire once per death.
-    /// Doing it with a flag of ours would work until two of our features needed the same event; the game
-    /// already has one - DeathEventLaunched, public, set immediately before OnDead is invoked - and using
-    /// it means our "once" and the game's "once" cannot drift apart. The cost is one boolean per frame.
-    ///
-    /// PIECE 3a, AND IT ONLY MEASURES AND ANNOUNCES. It reports the death, and the receive side logs the
-    /// announcement. Keeping the state - who is dead, whether everyone is dead - comes next, deliberately
-    /// separate: with both at once, "the announcement never left" and "the state was wrong" would look
-    /// identical in the log.
+    /// Detects the death at the exact instant, not after the player leaves the death screen.
+    /// Penitent.Respawn fires only when the player presses a key on the death screen, so announcing
+    /// there would tell others a player is down only once they chose to come back - while the boss
+    /// would keep chasing a corpse. Hooks Penitent.OnUpdate with a Prefix rather than subscribing
+    /// to OnDead: the Penitent is rebuilt on every level load, an exception in a subscriber breaks
+    /// the multicast chain (other subscribers are GuiltManager and DeadScreenWidget), and the
+    /// invocation order is not deterministic. Uses the game's own DeathEventLaunched for once-per-
+    /// death semantics.
     /// </summary>
     [HarmonyPatch(typeof(Penitent), "OnUpdate")]
     public static class PenitentOnUpdateDeath_Patch
@@ -385,29 +267,20 @@ namespace Blasphemous.Multiplayer.Client
                 return;
 
             if (!__instance.Status.Dead || __instance.DeathEventLaunched)
-                return; // alive, or this death has already been announced by the game itself
+                return;
 
-            // ⭐ ⑤ LA MORTE CHIUDE I MENU' PRIMA (`DeathMenuCloser.cs`) — e la riga e' la PRIMA di
-            // proposito. Questa prefix gira PRIMA che il corpo di `OnUpdate` invochi `OnDead`
-            // (`Penitent.cs:490-498`), cioe' prima che parta la schermata di morte; e' l'unico punto del
-            // progetto che garantisce quell'ordine, perche' `DeadScreenWidget` e `UIController.OnDead`
-            // sono due iscritti allo stesso evento in ordine non deterministico. Con il tempo che corre
-            // in pausa (`TimeWhilePaused.cs`) si puo' morire CON un menu' aperto, e i tasti di quel menu'
-            // farebbero saltare `while (!Input.anyKey)` nella schermata di morte
-            // (`DeadScreenWidget.cs:87`): chiudendo adesso, quei tasti non sono piu' premuti quando il
-            // ciclo viene raggiunto (~6,3 s di attese non scalate dopo).
+            // Close open menus before the death screen, first line so it runs before OnDead. With
+            // the world running during pause it is possible to die with a menu open, and those
+            // keys would skip the death screen's while(!Input.anyKey).
             DeathMenuCloser.CloseBeforeDeathScreen();
 
-            // MEASUREMENT ONLY - the death instant, once per death. It runs BEFORE the game's own
-            // GuiltManager.OnPenitentDead (which is reached through OnDead, later in the same OnUpdate),
-            // so the guilt count printed here is the one from the deaths BEFORE this one: the spawn line
-            // that follows is what shows the step.
+            // Measurement only. Runs before the native GuiltManager receives the death, so the
+            // guilt count printed here is the one before this death.
             ModLog.Info($"{PlayerDeathSync.ColpaLine()} · dove=morte");
 
-            // ⭐ ① LA COLPA SULLA VITA — il suo unico contatore, e questa guardia del gioco e' anche la
-            // sua: `Status.Dead && !DeathEventLaunched` e' vero UNA volta per morte. Il +1 sta qui e non
-            // in `AnnounceDeath`, che ritorna subito quando non c'e' rete: la colpa non e' una cosa di
-            // rete, e in single player deve contare lo stesso. Vedi `LifeGuilt.cs`.
+            // Guilt-on-life counter: the death guard above is also its once-per-death condition.
+            // Counts on this machine only - Guilt is not a network feature, it must count in
+            // single player too.
             LifeGuilt.RegisterDeath();
 
             PlayerDeathSync.AnnounceDeath();
@@ -415,25 +288,13 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// The alive counterpart, and it is not optional.
+    /// Announces "alive again" after each spawn. Without it the dead set only grows, so "is
+    /// everybody down?" could never be answered. A lost "pdead" heals itself eventually (a later
+    /// "palive" arrives); a "pdead" with no "palive" never heals.
     ///
-    /// Without it the set of dead players only ever grows: a machine that hears "X died" and never hears
-    /// anything else will believe X dead for the rest of the session, so "is everybody down?" can never be
-    /// answered - and the spectator state has no way to know when to end.
-    ///
-    /// The asymmetry is what settles it. A LOST "pdead" heals itself, because the player eventually comes
-    /// back and "palive" arrives. A "pdead" with no "palive" NEVER heals.
-    ///
-    /// WHY THIS PATCHES CreatePlayer AND NOT OnPlayerSpawn. The first attempt used
-    /// `[HarmonyPatch(typeof(SpawnManager), "OnPlayerSpawn")]` and it was wrong in a way that cost a whole
-    /// session: OnPlayerSpawn is an EVENT FIELD, not a method. Harmony looked for a method by that name,
-    /// found none, threw, and PatchAll ABORTED - so every patch after this one in the assembly was never
-    /// applied. The mod then produced no log lines at all and OnLateUpdate threw on every frame. A wrong
-    /// name in a HarmonyPatch attribute is a string: it compiles, and it fails at runtime.
-    ///
-    /// CreatePlayer is the method that actually exists and actually runs on every spawn - private, in
-    /// SpawnManager, called from SpawnPlayerOnLevelLoad, and it is where the new Penitent is instantiated
-    /// and assigned. It is also the right moment to re-subscribe anything that lives on the instance.
+    /// Hooks CreatePlayer, not OnPlayerSpawn: OnPlayerSpawn is an event FIELD, not a method, and a
+    /// HarmonyPatch on a field name compiles but throws at PatchAll time - which aborts every
+    /// subsequent patch in the assembly. CreatePlayer is the method that actually runs per spawn.
     /// </summary>
     [HarmonyPatch(typeof(SpawnManager), "CreatePlayer")]
     public static class SpawnManagerCreatePlayer_Patch
@@ -443,32 +304,22 @@ namespace Blasphemous.Multiplayer.Client
         {
             PlayerDeathSync.AnnounceAlive();
 
-            // ⭐ ② LA COLPA SULLA VITA — la riapplicazione, e NON e' un'ottimizzazione: `MaxFactor` vive
-            // sull'ISTANZA dell'attributo, che rinasce a ogni `Instantiate` (`SpawnManager.cs:489`) con
-            // `_maxFactor = 1f`. Senza questa riga la penalita' sparirebbe al primo respawn. Va PRIMA
-            // della riga `[Colpa]` qui sotto di proposito: cosi' quella riga, che gia' stampa
-            // `vita: fattore = ...` e `vita: max = ...`, diventa la verifica della scrittura.
+            // Reapplies Life.MaxFactor to the freshly instantiated Penitent: the attribute is
+            // rebuilt per Instantiate with MaxFactor = 1. Applied before the Colpa line so that
+            // line's fattore= and max= values verify the write.
             LifeGuilt.ApplyOnSpawn();
 
-            // MEASUREMENT ONLY - every spawn, including the respawn after a death and every level load.
-            // This is the moment the native guilt is applied (GuiltManager.OnPenitentReady sets
-            // Fervour.MaxFactor during OnPlayerSpawn, inside CreatePlayer), so it is where the curve the
-            // code does not contain becomes readable: one line per spawn, one step per death.
+            // Measurement only, one line per spawn: the native guilt is applied during OnPlayerSpawn
+            // inside CreatePlayer, so this is where the curve becomes readable - one step per death.
             ModLog.Info($"{PlayerDeathSync.ColpaLine()} · dove=spawn");
         }
     }
 
     /// <summary>
-    /// The death, as this machine sees it.
-    ///
-    /// Respawn has exactly one caller in the whole assembly - DeadScreenWidget, after the player pressed a
-    /// key - which is what makes it a reliable place to detect a death: it runs once, when the player has
-    /// actually chosen to come back, and not while the death screen is merely sitting there.
-    ///
-    /// PIECE 1 OF THE DEATH WORK, AND IT ONLY MEASURES. It raises the flag, reports the decision and the
-    /// stats, and changes nothing. The suppression itself is the next step, deliberately separate: with the
-    /// detection and the suppression in the same commit, "the flag was never raised" and "the suppression
-    /// did not work" would look identical in the log.
+    /// Detects the death at the moment the player chooses to come back. Respawn has one caller
+    /// (DeadScreenWidget), so it fires once per death. Piece 1 of the death work: measures and
+    /// reports, changes nothing - the suppression itself is a separate step so that "flag never
+    /// raised" and "suppression failed" would not look the same in the log.
     /// </summary>
     [HarmonyPatch(typeof(Penitent), "Respawn")]
     public static class PenitentRespawn_Patch
@@ -490,17 +341,14 @@ namespace Blasphemous.Multiplayer.Client
             bool suppress = PlayerDeathSync.ShouldSuppressWorldReset();
             PlayerDeathSync.SuppressingWorldReset = suppress;
 
-            ModLog.Info($"[Morte] il giocatore e' morto: connesso={connected} altri giocatori={peers} " +
-                        $"=> {(suppress ? "SOPPRIMO il respawn del mondo" : "lascio fare al gioco")} · " +
+            ModLog.Info($"[Morte] player died: connesso={connected} altri giocatori={peers} " +
+                        $"=> {(suppress ? "SUPPRESSING world reset" : "leaving it to the game")} · " +
                         $"{PlayerDeathSync.StatsLine()}");
         }
 
         /// <summary>
-        /// The flag comes down even if Respawn throws.
-        ///
-        /// A finalizer runs on every exit path, including the exceptional one. A postfix would not - which
-        /// is how a flag with no guaranteed way down becomes a permanent freeze, and the project has
-        /// already paid for that lesson once.
+        /// Clears the flag even if Respawn throws. A Postfix would not run on an exception, leaving
+        /// the flag raised for the session.
         /// </summary>
         [HarmonyFinalizer]
         public static void Finalizer()
@@ -510,18 +358,11 @@ namespace Blasphemous.Multiplayer.Client
     }
 
     /// <summary>
-    /// Reports the player's stats right after the bonfire has applied its benefits.
-    ///
-    /// Resting at a bonfire is where the "world yes, comfort no" boundary would break if it ever broke: the
-    /// benefits live in PrieDieu.ShallowActivationLogic, which the replication deliberately never calls -
-    /// so the receiving machine should finish this method with the same health and flasks it had before.
-    /// That was guaranteed by construction but never MEASURED, because nothing in the logs reported the
-    /// player's own values. This line is the measurement: sit at a bonfire on one machine and compare the
-    /// two logs.
-    ///
-    /// It hooks RespawnDeadEnemies rather than PrieDieu.OnUse on purpose. The postfix on OnUse runs BEFORE
-    /// the coroutine body does anything, so it would read the values before the benefits; this hook runs
-    /// after ShallowActivationLogic in the first-activation path, which is where "after" means something.
+    /// Reports the player's stats right after the bonfire's effects. Hooks RespawnDeadEnemies (not
+    /// PrieDieu.OnUse) because the postfix on OnUse runs before the coroutine body, so it would
+    /// read values before the benefits. This is the measurement point where the "world yes,
+    /// comfort no" boundary is verified for the replicated bonfire: sit on one machine and compare
+    /// both logs.
     /// </summary>
     [HarmonyPatch(typeof(EnemySpawner), "RespawnDeadEnemies")]
     public static class RespawnDeadEnemiesStats_Patch
@@ -529,18 +370,16 @@ namespace Blasphemous.Multiplayer.Client
         [HarmonyPostfix]
         public static void Postfix()
         {
-            // The suffix reports whether THIS call came from a replicated bonfire, and it used to read the
-            // wrong flag: PlayerDeathSync.SuppressingWorldReset is the DEATH flag, while a replication is
-            // marked by EnemySyncManager.IsReplicatingBonfire. The two are unrelated, so the suffix never
-            // appeared - not even on the line that genuinely was a replication, which is how the mistake was
-            // caught. A label that is always false is worse than no label: it reads as evidence.
+            // Reports the true source of this call: SuppressingWorldReset is the death flag,
+            // IsReplicatingBonfire marks the replication. Using the wrong one makes the label
+            // always false - and a label that is always false reads as evidence.
             string origin = EnemySyncManager.IsReplicatingBonfire
-                ? " (stiamo replicando un falo'')"
+                ? " (replicating a bonfire)"
                 : PlayerDeathSync.SuppressingWorldReset
-                    ? " (stiamo sopprimendo il respawn di una morte)"
-                    : " (falo' locale)";
+                    ? " (suppressing a death's world reset)"
+                    : " (local bonfire)";
 
-            ModLog.Info($"[Falo''] stats dopo il respawn: {PlayerDeathSync.StatsLine()}{origin}");
+            ModLog.Info($"[Falo''] stats after respawn: {PlayerDeathSync.StatsLine()}{origin}");
         }
     }
 }

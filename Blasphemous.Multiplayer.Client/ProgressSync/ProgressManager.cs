@@ -59,19 +59,11 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
         {
             CurrentlyUpdatingProgress = true;
 
-            // The flag MUST come down, whatever happens inside.
-            //
-            // It went up and down around this loop with no try and no finally, and the outer try/finally in
-            // Multiplayer.cs resets the performance probe, not this. So a single exception raised by any of
-            // the helpers would leave CurrentlyUpdatingProgress true for the rest of the session, and the
-            // damage is silent and total: ApplyProgress would stop taking anything off the queue, every
-            // sender's "if (!CurrentlyUpdatingProgress) Send..." guard would suppress the announcement, and
-            // co-op would simply stop synchronising while the game kept running normally. No crash, no
-            // visible error - just a session that quietly stops working.
-            //
-            // The project already knew the risk and wrote it down: the comment in BreakSyncMemory.IsTableId
-            // says an exception there would be fatal "because ProgressManager.Update drains the queue in a
-            // single pass with no try/catch". That knowledge never became a fix. This is the fix.
+            // The flag MUST come down, whatever happens inside. Without a finally, one throwing helper
+            // would leave CurrentlyUpdatingProgress true for the rest of the session and silently stop
+            // all progress sync: every sender's "if (!CurrentlyUpdatingProgress) Send..." guard would
+            // suppress announcements, no crash, no visible error. Also clears the queue in finally so a
+            // throwing entry is not retried every frame.
             try
             {
                 for (int i = 0; i < progressQueue.Count; i++)
@@ -81,8 +73,6 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
             }
             finally
             {
-                // In the finally, not after the loop: a partial queue must still be dropped, or the same
-                // throwing entry would be retried on every frame and the log would fill with it.
                 progressQueue.Clear();
                 CurrentlyUpdatingProgress = false;
             }
@@ -99,21 +89,15 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
                 return;
             }
 
-            // One bad entry must not take the rest of the queue with it.
-            //
-            // The loop above now guarantees the flag comes down, so this is no longer the difference between
-            // a working session and a dead one - but it is still the difference between losing one update and
-            // losing every update queued behind it. ApplyProgress parses an id that arrives from the network
-            // (int.Parse on the part after '~', and a lookup that can run off the end of the table), so a
-            // malformed entry from a peer is a real possibility, not a theoretical one.
+            // One bad entry must not take the rest of the queue with it. ApplyProgress parses an id
+            // that arrives from the network (int.Parse and a lookup into a table), so a malformed
+            // entry from a peer is a real possibility - logged with the id so it is findable later.
             try
             {
                 helper.ApplyProgress(progress);
             }
             catch (System.Exception e)
             {
-                // Logged with the id, because that is what makes it findable and diagnosable later. A silent
-                // catch would hide the one piece of evidence that explains why an update went missing.
                 ModLog.Error($"[Progress] apply failed for '{progress.Id}' ({progress.Type}): " +
                              $"{e.GetType().Name} - {e.Message}");
             }
@@ -192,12 +176,8 @@ namespace Blasphemous.Multiplayer.Client.ProgressSync
             if (string.IsNullOrEmpty(objectSceneId))
                 return;
 
-            // Added once, not once per event.
-            //
-            // There was no check here, and the file on disk showed it: eight entries where four were
-            // distinct. It is harmless in effect - this list is written to savegame_N_modded.save, which the
-            // game never reads - but it is the kind of harmless that stops being harmless the day someone
-            // starts counting entries or comparing lists for equality.
+            // Added once, not once per event: this list is written to the modded savegame and never
+            // read back, but duplicate entries break any future equality or count comparison.
             if (interactedPersistenceObjects.Contains(objectSceneId))
                 return;
 

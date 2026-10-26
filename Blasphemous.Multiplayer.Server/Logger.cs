@@ -6,20 +6,12 @@ using Blasphemous.ModdingAPI;
 namespace Blasphemous.Multiplayer.Server;
 
 /// <summary>
-/// Il log del server: UNA porta sola per tutte le sue righe, con DUE destinazioni che dipendono da
-/// dove gira l'engine.
+/// Single entry point for server log lines, with two destinations depending on the build.
 ///
-/// · STANDALONE (`net8.0`, cartella `SERVER-COOP\`): console colorata + specchio su file
-///   (`ServerLog` -> `ServerOutput.log` accanto all'eseguibile). Identico a prima.
-/// · DENTRO IL CLIENT (`net35`, bottone "Host session"): **`ModLog`**, cioe' il log della mod.
-///   Ed e' obbligatorio, non una preferenza: `Console.ForegroundColor` e `Console.WriteLine`
-///   LANCIANO `IOException` quando il processo non ha una console - cioe' sempre, dentro il gioco -
-///   quindi qui non possono nemmeno essere nominati. Stessa ragione per `ServerLog`: scriverebbe
-///   `ServerOutput.log` nella cartella di gioco del PROCESSO, fuori dal log che si guarda.
-///
-/// Le due destinazioni condividono la stessa formattazione (una riga, `[HH:mm:ss] messaggio`) e la
-/// stessa severita', che nel client diventa quella di `ModLog` (`Info`/`Warn`/`Error`): un
-/// `Logger.Error` del server non deve arrivare al log della mod come se fosse un'informazione.
+/// Standalone (<c>net8.0</c>): coloured console plus mirror to <c>ServerOutput.log</c>. In the
+/// client (<c>net35</c>): <c>ModLog</c>, because <c>Console.*</c> throws <c>IOException</c> when no
+/// console exists (i.e. always inside the game). Same line format and severity on both
+/// destinations, so <c>Logger.Error</c> is not logged as plain info by <c>ModLog</c>.
 /// </summary>
 public static class Logger
 {
@@ -75,10 +67,7 @@ public static class Logger
 
 #if COOP_HOST
 
-    /// <summary>
-    /// Le tre severita' che questo file usa davvero. Un `enum` privato e non una `stringa` perche'
-    /// una severita' scritta a mano e' una severita' che si sbaglia: qui il compilatore la controlla.
-    /// </summary>
+    /// <summary>The three severities this file actually uses. Enum so the compiler checks them.</summary>
     private enum HostLevel
     {
         Info,
@@ -87,11 +76,9 @@ public static class Logger
     }
 
     /// <summary>
-    /// La riga, sul log della mod. Stessa forma dello standalone (`[HH:mm:ss] messaggio`) e stessa
-    /// severita', con una sola differenza dichiarata: nessun colore, perche' un log di file non ne ha.
-    ///
-    /// ⚠️ `Logger.Info` e' chiamato anche dal thread di lettura di `SimpleTCP` (connessioni,
-    /// disconnessioni): `ModLog` e' thread-safe, quindi non serve nessun lock qui.
+    /// Formats the line for ModLog, same shape as standalone (<c>[HH:mm:ss]</c> + message) and
+    /// same severity, minus colour. ModLog is thread-safe, so no lock is needed even when this is
+    /// called from SimpleTCP's reader thread.
     /// </summary>
     private static void Print(object message, HostLevel level)
     {
@@ -109,12 +96,8 @@ public static class Logger
 
     public static void Print(object message)
     {
-        // One line, in one place, on both destinations.
-        //
-        // The console is what the operator watches; the file is what survives the window being closed, and
-        // it is the only reason the server's account of a session can be examined afterwards. They are
-        // formatted together so the two can never drift apart - a mismatch between what was seen and what
-        // was kept would be worse than having no file at all.
+        // Console is what the operator watches; the file survives the window being closed and is
+        // what can be examined afterwards. Formatted together so the two cannot drift apart.
         string line = $"[{DateTime.Now:HH:mm:ss}] {message}";
 
         Console.WriteLine(line);

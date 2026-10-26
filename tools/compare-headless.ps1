@@ -1,21 +1,14 @@
-# ⭐ CONFRONTO PRIMA/DOPO DEI DUE RUN DEL BANCO, normalizzato in modo DICHIARATO.
+# tools\compare-headless.ps1 - normalize and compare two headless bench runs.
 #
-#   pwsh -NoProfile -File tools\compare-headless.ps1 -Before <cartella> -After <cartella> [-Kind server|harness]
+#   pwsh -NoProfile -File tools\compare-headless.ps1 -Before <folder> -After <folder> [-Kind server|harness]
 #
-# Era `scratch\c1a-test\compare.ps1`: sta qui perche' una prova che vive fuori dalla repo non esiste
-# per chi clona. L'ha accompagnata `tools\run-headless.ps1` (stesso giro).
+# -Kind server compares section A golden files (frames.txt, bytes.txt, server-log-pulito.txt).
+# Section B captures (frames-fanout.txt, ...) are NOT compared against a baseline: they are judged
+# by the bench's own assertions, which know who was supposed to receive what.
 #
-# Cosa viene confrontato ( `-Kind server`, il caso normale ) — i file della SEZIONE A del banco, cioe'
-# il golden dei 42 frame: `frames.txt`, `bytes.txt`, `server-log-pulito.txt`. Le catture della sezione
-# B (`frames-fanout.txt`, …) NON si confrontano con un baseline: si GIUDICANO con le asserzioni del
-# banco, che sanno chi doveva ricevere cosa.
-#
-# Cosa viene normalizzato, e perche' e' lecito:
-#   · `[HH:mm:ss]` e `# ... started <data>`  -> orologio, non contenuto.
-#   · `:\d{4,5}` (porta EFFIMERA del peer)  -> la porta la sceglie il sistema operativo a ogni
-#     connessione; con `-Kind harness` si normalizza anche la porta scelta dal test.
-#   · `port \d+` (la porta del server)      -> scelta dal test.
-# ⚠️ NIENT'ALTRO viene toccato: ogni altra differenza e' una differenza VERA e va guardata.
+# Normalization is declared: clock headers and timestamps, ephemeral peer ports, and the server
+# port (also inside Start(N)). Nothing else is touched - every other difference is real and must
+# be looked at.
 param(
     [Parameter(Mandatory = $true)][string]$Before,
     [Parameter(Mandatory = $true)][string]$After,
@@ -52,19 +45,19 @@ foreach ($name in $files) {
     $b = Join-Path $Before $name
     $a = Join-Path $After $name
     if (-not (Test-Path $b) -or -not (Test-Path $a)) {
-        "  SALTATO  $name (manca in $Before o in $After)"
+        "  SKIPPED  $name (missing in $Before or in $After)"
         continue
     }
     $nb = Normalize $b
     $na = Normalize $a
     $diff = Compare-Object $nb $na
     if ($null -eq $diff) {
-        "  IDENTICO {0,-24} ({1} righe)" -f $name, $nb.Count
+        "  IDENTICAL {0,-24} ({1} lines)" -f $name, $nb.Count
     } else {
         $ok = $false
-        "  DIVERSE  {0,-24} ({1} righe di differenza)" -f $name, $diff.Count
+        "  DIFFERENT {0,-24} ({1} differing lines)" -f $name, $diff.Count
         $diff | Select-Object -First 20 | ForEach-Object { "           {0} {1}" -f $_.SideIndicator, $_.InputObject }
     }
 }
-if ($ok) { "ESITO: PRIMA e DOPO sono IDENTICI (a meno di orologio e porte, dichiarati)" ; exit 0 }
-else { "ESITO: CI SONO DIFFERENZE VERE" ; exit 1 }
+if ($ok) { "ESITO: BEFORE and AFTER are IDENTICAL (clock and ports aside, as declared)" ; exit 0 }
+else { "ESITO: THERE ARE REAL DIFFERENCES" ; exit 1 }
