@@ -1,0 +1,115 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net35</TargetFramework>
+    <LangVersion>latest</LangVersion>
+
+    <Title>Multiplayer</Title>
+    <Product>Multiplayer</Product>
+    <Authors>Damocles</Authors>
+    <Company>Damocles</Company>
+    <Description>A multiplayer mod that allows you to play Blasphemous cooperatively or against other people</Description>
+    <!-- Version handled in Directory.Build.props -->
+
+    <TargetName>BlasClient</TargetName>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetName).xml</DocumentationFile>
+    <RepositoryUrl>https://github.com/BrandenEK/Blasphemous.Multiplayer</RepositoryUrl>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+
+    <!-- Deploy to game folder toggle. Default FALSE: build does not touch the game.
+         For an explicit copy: dotnet build .\Blasphemous.Multiplayer.sln -p:DeployToGame=true -->
+    <DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
+
+    <!-- COOP_HOST: tells the server sources (compiled into this project) they run inside the game
+         process instead of a console window - no Console.* (throws IOException without a console),
+         no Main/Console.ReadKey/Environment.Exit, no CLI args (Basalt), no ServerLog/ServerOutput.log:
+         log goes through ModLog. The standalone server build does not define it and stays unchanged. -->
+    <DefineConstants>$(DefineConstants);COOP_HOST</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Server embedded in the client: same sources as the server project, not a copy. Anything
+         that cannot be shared is guarded by #if COOP_HOST inside the files themselves.
+         Not compiled here on purpose: ServerArguments.cs (CLI args, no game equivalent) and
+         ServerLog.cs (writes ServerOutput.log, replaced by ModLog inside the game). -->
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Server.cs" Link="Host\Server.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Logger.cs" Link="Host\Logger.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Core.cs" Link="Host\Core.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\IServerTransport.cs" Link="Host\IServerTransport.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\TcpServerTransport.cs" Link="Host\TcpServerTransport.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\CompositeServerTransport.cs" Link="Host\CompositeServerTransport.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Models\PlayerInfo.cs" Link="Host\Models\PlayerInfo.cs" />
+    <Compile Include="..\Blasphemous.Multiplayer.Server\Models\TeamInfo.cs" Link="Host\Models\TeamInfo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Blasphemous.CheatConsole" Version="1.1.0" />
+    <PackageReference Include="Blasphemous.GameLibs" Version="4.0.67" />
+    <PackageReference Include="Blasphemous.ModdingAPI" Version="3.0.0" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Blasphemous.Multiplayer.Common\Blasphemous.Multiplayer.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="SimpleTCP">
+      <HintPath>..\resources\data\SimpleTCP.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="Development" AfterTargets="PostBuildEvent">
+
+    <!-- Update dependencies -->
+    <Copy SourceFiles="$(OutDir)Blasphemous.Multiplayer.Common.dll" DestinationFolder="$(SolutionDir)\resources\data" SkipUnchangedFiles="true" />
+
+    <!-- Get plugin & resources -->
+    <ItemGroup>
+      <PluginDll Include="$(TargetPath)" />
+      <Resources Include="$(SolutionDir)\resources\**\*.*" />
+    </ItemGroup>
+
+    <PropertyGroup>
+      <!-- DevFolder is NOT a build target: the Copy into it runs only with -p:DeployToGame=true.
+           Deployments go through tools\deploy-local.ps1 so that a stray build in any worktree
+           cannot silently overwrite the deployed plugin. -->
+      <DevFolder>D:\SteamLibrary\steamapps\common\Blasphemous\Modding\</DevFolder>
+      <PublishFolder>$(SolutionDir)\publish\$(TargetName)</PublishFolder>
+    </PropertyGroup>
+
+    <!-- Export to dev folder, only when explicitly requested with -p:DeployToGame=true.
+         No SkipUnchangedFiles on purpose: a deliberate deploy must update timestamps too. -->
+    <Copy SourceFiles="@(Resources)" DestinationFolder="$(DevFolder)\%(RecursiveDir)" Condition="'$(DeployToGame)' == 'true'" />
+    <Copy SourceFiles="@(PluginDll)" DestinationFolder="$(DevFolder)\plugins" Condition="'$(DeployToGame)' == 'true'" />
+
+    <!-- Export to publish folder -->
+    <RemoveDir Directories="$(PublishFolder)" />
+    <Copy SourceFiles="@(Resources)" DestinationFolder="$(PublishFolder)\%(RecursiveDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PluginDll)" DestinationFolder="$(PublishFolder)\plugins" SkipUnchangedFiles="true" />
+    <ZipDirectory SourceDirectory="$(PublishFolder)" DestinationFile="$(PublishFolder)\..\$(TargetName).zip" Overwrite="true" />
+
+  </Target>
+
+  <Target Name="AddGeneratedFile" BeforeTargets="BeforeCompile;CoreCompile" Inputs="$(MSBuildAllProjects)" Outputs="$(IntermediateOutputPath)GeneratedFile.cs">
+
+    <!-- Create ModInfo class from relevant data -->
+    <PropertyGroup>
+      <GeneratedText>
+        <![CDATA[ namespace $(RootNamespace) { internal static class ModInfo { public const string MOD_ID = "$(AssemblyName)"%3B public const string MOD_NAME = "$(Product)"%3B public const string MOD_AUTHOR = "$(Company)"%3B public const string MOD_VERSION = "$(Version)"%3B } } ]]>
+      </GeneratedText>
+      <GeneratedFilePath>$(IntermediateOutputPath)ModInfo.cs</GeneratedFilePath>
+    </PropertyGroup>
+
+    <!-- Write ModInfo data to intermediate output -->
+    <ItemGroup>
+      <Compile Include="$(GeneratedFilePath)" />
+      <FileWrites Include="$(GeneratedFilePath)" />
+    </ItemGroup>
+    <WriteLinesToFile Lines="$(GeneratedText)" File="$(GeneratedFilePath)" WriteOnlyWhenDifferent="true" Overwrite="true" />
+
+  </Target>
+  
+</Project>

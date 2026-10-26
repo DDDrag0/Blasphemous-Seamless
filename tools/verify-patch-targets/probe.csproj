@@ -1,0 +1,25 @@
+<!--
+  The probe that verifies every [HarmonyPatch] target lives HERE, inside the repository, and is tracked
+  on purpose.
+
+  It used to live in a scratch folder OUTSIDE the repo. On a clean clone the gate then exited 1 with
+  "targets do not exist" - a false negative: the targets were fine, the probe was simply missing - and
+  the probe's own build had to be kept working by hand, off to the side. A verification that only
+  exists on one machine is not a verification.
+
+  `verify-patch-targets.ps1` copies this file and Program.cs into %TEMP% before building, so the
+  repository is never polluted by the probe's bin/obj.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AssemblyName>probe</AssemblyName>
+    <RootNamespace>probe</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,105 @@
+# Blasphemous Seamless — release workflow
+#
+# ⚠️ THIS FILE DOES NOTHING UNTIL THERE IS A GITHUB REMOTE.
+#    It runs on `ubuntu-latest` when a **tag** is pushed, and it publishes a draft release.
+#    Nothing here runs on a developer machine: the local equivalent is `pwsh ./tools/check.ps1`
+#    (which is stricter, because it also runs the Harmony target gate — see the note at the bottom).
+#
+# What it verifies before publishing:
+#   · the solution builds in Release (all three projects, net35 included — its reference
+#     assemblies come from the `Microsoft.NETFramework.ReferenceAssemblies` NuGet package);
+#   · the server publishes for the three RIDs declared in Server.csproj;
+#   · the headless wire bench reproduces its golden `sha256`. That step is the real gate: if a
+#     single byte of the protocol changed, the run fails and the release is never created.
+#
+# What it deliberately does NOT do:
+#   · `dotnet nuget push` — the .nupkg is produced by `GeneratePackageOnBuild`, but publishing it
+#     is public and irreversible and serves no purpose for a game mod;
+#   · the Harmony target gate — it needs the game's `Assembly-CSharp.dll`, which cannot be shipped.
+
+name: Build
+
+on:
+  push:
+    tags: [ "**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Export Settings
+      run: |
+        CLIENT_NAME=$(grep -oP '<TargetName>\K[^<]+' Blasphemous.Multiplayer.Client/Blasphemous.Multiplayer.Client.csproj)
+        echo "CLIENT_NAME=$CLIENT_NAME" >> $GITHUB_ENV
+        SERVER_NAME=$(grep -oP '<ExportName>\K[^<]+' Blasphemous.Multiplayer.Server/Blasphemous.Multiplayer.Server.csproj)
+        echo "SERVER_NAME=$SERVER_NAME" >> $GITHUB_ENV
+        MP_VERSION=$(grep -oP '<Version>\K[^<]+' Directory.Build.props)
+        echo "MP_VERSION=$MP_VERSION" >> $GITHUB_ENV
+        echo "client=$CLIENT_NAME  server=$SERVER_NAME  version=$MP_VERSION"
+
+    - name: Build and Publish
+      run: |
+        dotnet restore
+        dotnet build --configuration Release --no-restore
+        # The `PreparePublish` target of Server.csproj zips each RID into publish/<ExportName>-<RID>.zip
+        dotnet publish Blasphemous.Multiplayer.Server/Blasphemous.Multiplayer.Server.csproj -c Release -r win-x64   -o publish/${{ env.SERVER_NAME }}-win-x64
+        dotnet publish Blasphemous.Multiplayer.Server/Blasphemous.Multiplayer.Server.csproj -c Release -r linux-x64 -o publish/${{ env.SERVER_NAME }}-linux-x64
+        dotnet publish Blasphemous.Multiplayer.Server/Blasphemous.Multiplayer.Server.csproj -c Release -r osx-x64   -o publish/${{ env.SERVER_NAME }}-osx-x64
+
+    - name: Collect release assets
+      run: |
+        set -e
+        # The client package is produced by the build; if a project layout change ever stops
+        # producing it, build the zip here instead of shipping a release without the mod.
+        if [ ! -f "publish/${{ env.CLIENT_NAME }}.zip" ]; then
+          echo "::warning::publish/${{ env.CLIENT_NAME }}.zip was not produced by the build, zipping it here"
+          ( cd "publish/${{ env.CLIENT_NAME }}" && zip -r "../${{ env.CLIENT_NAME }}.zip" . )
+        fi
+        echo "--- publish/ ---"
+        ls -la publish
+        echo "--- release assets present? ---"
+        for f in "publish/${{ env.CLIENT_NAME }}.zip" \
+                 "publish/${{ env.SERVER_NAME }}-win-x64.zip" \
+                 "publish/${{ env.SERVER_NAME }}-linux-x64.zip" \
+                 "publish/${{ env.SERVER_NAME }}-osx-x64.zip"; do
+          test -f "$f" || { echo "::error::missing release asset: $f"; exit 1; }
+          echo "ok: $f"
+        done
+
+    - name: Run headless wire bench
+      # `-ExpectFramesSha256` makes the bench its own gate: it fails if the protocol bytes changed.
+      # NOTE: -ServerDir is the BUILD output (bin/Release/net8.0), not publish/: the published
+      # server is single-file and has no blas1mpserver.dll for `dotnet blas1mpserver.dll` to load.
+      # `compare-headless.ps1` is intentionally not used here: it needs a committed baseline.
+      run: |
+        pwsh ./tools/run-headless.ps1 `
+          -ServerDir 'Blasphemous.Multiplayer.Server/bin/Release/net8.0' `
+          -OutDir    "${{ runner.temp }}/bench" `
+          -ExpectFramesSha256 '9ecdfa429aacd33031e0bedaed1af7755e4be2b8a6f40a13fd4beaea1d666dd2'
+
+    - name: Create Release & Upload
+      uses: softprops/action-gh-release@v2
+      with:
+        # `github.ref_name` is the tag name (v1.2.3); `github.ref` would be "refs/tags/v1.2.3".
+        tag_name: ${{ github.ref_name }}
+        name: Multiplayer v${{ env.MP_VERSION }}
+        draft: true
+        fail_on_unmatched_files: true
+        files: |
+          publish/${{ env.CLIENT_NAME }}.zip
+          publish/${{ env.SERVER_NAME }}-win-x64.zip
+          publish/${{ env.SERVER_NAME }}-linux-x64.zip
+          publish/${{ env.SERVER_NAME }}-osx-x64.zip

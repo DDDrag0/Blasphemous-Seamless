@@ -1,0 +1,25 @@
+
+namespace Blasphemous.Multiplayer.Common.Enums;
+
+public enum NetworkType
+{
+    Position = 0,
+    Animation = 1,
+    Direction = 2,
+    EnterScene = 3,
+    LeaveScene = 4,
+    Skin = 5,
+    Team = 6,
+    Connection = 7,
+    Intro = 8,
+    Progress = 9,
+    Attack = 10,
+    Effect = 11,
+    Ping = 12,
+    HostAssign = 13,
+    EnemyUpdate = 21,
+    EnemyDamageRequest = 22,
+    EnemyDeath = 23,
+    EnemyDeathGlobal = 24,
+    EnemyOwnership = 25,
+}
