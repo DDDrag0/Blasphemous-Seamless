@@ -84,8 +84,9 @@ jobs:
       # NOTE: -ServerDir is the BUILD output (bin/Release/net8.0), not publish/: the published
       # server is single-file and has no blas1mpserver.dll for `dotnet blas1mpserver.dll` to load.
       # `compare-headless.ps1` is intentionally not used here: it needs a committed baseline.
+      shell: pwsh
       run: |
-        pwsh ./tools/run-headless.ps1 `
+        ./tools/run-headless.ps1 `
           -ServerDir 'Blasphemous.Multiplayer.Server/bin/Release/net8.0' `
           -OutDir    "${{ runner.temp }}/bench" `
           -ExpectFramesSha256 '9ecdfa429aacd33031e0bedaed1af7755e4be2b8a6f40a13fd4beaea1d666dd2'
